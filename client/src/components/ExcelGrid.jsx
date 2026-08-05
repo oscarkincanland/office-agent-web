@@ -10,10 +10,25 @@ function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s =
 export default function ExcelGrid({ name, sheets, grids }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
-  const [sheet, setSheet] = useState(sheets?.[0] || "Sheet1");
+  const [sheet, setSheet] = useState(sheets?.[0] || "");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   const initialRef = useRef(null);
+
+  // sheets 为空（文件读取失败）时显示错误
+  if (!sheets || sheets.length === 0) {
+    return (
+      <div className="excel-wrap">
+        <div className="excel-toolbar">
+          <span className="badge">可编辑</span>
+        </div>
+        <div className="excel-empty">
+          <div>⚠ 无法读取工作表</div>
+          <div className="hint">文件可能已损坏、被占用（Excel 打开中），或格式不受支持</div>
+        </div>
+      </div>
+    );
+  }
 
   useEffect(() => {
     if (!hostRef.current) return;

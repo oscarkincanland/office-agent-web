@@ -22,6 +22,19 @@ function shortenCwd(cwd) {
   return "\u2026/" + parts.slice(-2).join("/");
 }
 
+// 相对时间（基于毫秒时间戳）
+function formatRelTime(ms) {
+  if (!ms) return "";
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "刚刚";
+  if (mins < 60) return `${mins}分钟前`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  return `${days}天前`;
+}
+
 // 会话列表：按 modified 倒序，显示标签/首条消息/时间
 function SessionList({ sessions, onSelect, onDelete, onRename }) {
   const [editingId, setEditingId] = useState(null);
@@ -79,7 +92,7 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
 
 const EXT_LABELS = { docx: "W", xlsx: "X", pptx: "P" };
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention }) {
   const fileRef = useRef(null);
   const [tab, setTab] = useState("files"); // "files" | "sessions"
   const [customMode, setCustomMode] = useState(false);
@@ -162,6 +175,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
       )}
       <div className="sidebar-tabs">
         <button className={`tab-btn ${tab === "files" ? "active" : ""}`} onClick={() => setTab("files")}>文件</button>
+        <button className={`tab-btn ${tab === "artifacts" ? "active" : ""}`} onClick={() => setTab("artifacts")}>产物</button>
         <button className={`tab-btn ${tab === "sessions" ? "active" : ""}`} onClick={() => setTab("sessions")}>历史</button>
       </div>
 
@@ -198,6 +212,15 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
               >
                 <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? "DIR" : (EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?" )}</span>
                 <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
+                <span
+                  className="file-at"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
+                    onAtMention && onAtMention(rel, f.isDir);
+                  }}
+                  title="@ 到对话中作为参考"
+                >@</span>
                 {!f.isDir && (
                   <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(currentDir ? `${currentDir}/${f.name}` : f.name); }}>x</span>
                 )}
@@ -205,6 +228,39 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
             ))}
           </div>
           <div className="sidebar-foot">office-workspace</div>
+        </>
+      )}
+
+      {tab === "artifacts" && (
+        <>
+          <div className="sidebar-actions">
+            <button className="btn-sm" onClick={onRefreshFiles}>刷新</button>
+          </div>
+          <div className="file-list">
+            {files.length === 0 && <div className="empty">暂无文件，agent 生成的文档会显示在这里</div>}
+            {/* 按修改时间倒序展示（产物优先） */}
+            {[...files]
+              .filter((f) => !f.isDir)
+              .sort((a, b) => b.mtime - a.mtime)
+              .map((f) => (
+                <div
+                  key={f.name}
+                  className={`file-item ${f.name === currentName ? "active" : ""}`}
+                  onClick={() => {
+                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
+                    onOpenFile(rel);
+                  }}
+                  title={f.name}
+                >
+                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?"}</span>
+                  <span className="file-name">{f.name}</span>
+                  <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
+                    {formatRelTime(f.mtime)}
+                  </span>
+                </div>
+              ))}
+          </div>
+          <div className="sidebar-foot">产物保存目录: {currentDir || "工作区根目录"}</div>
         </>
       )}
 
