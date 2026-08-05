@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+client/node_modules/
+
+# 构建产物
+client/dist/
+dist/
+
+# 运行日志
+server_out.log
+server_err.log
+*.log
+
+# 工作区文档（用户文件，不入库）
+office-workspace/
+.sessions/
+
+# 环境与临时文件
+.env
+*.local
+_temp/
+_tmp/
+_verify*.mjs
+_t.mjs
+_test*.mjs
+
+# pi agent 上下文（运行时生成）
+.agent-context.md
+
+# 系统文件
+.DS_Store
+Thumbs.db
