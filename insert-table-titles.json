@@ -1,0 +1,9 @@
+[
+  {"command":"remove","path":"/body/p[@paraId=00100172]"},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[1]","props":{"text":"表1 政策依据表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[2]","props":{"text":"表2 全国先行城市案例表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[3]","props":{"text":"表3 成果清单表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[4]","props":{"text":"表4 报价明细表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[5]","props":{"text":"表5 同类项目招标参考表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}},
+  {"command":"add","parent":"/body","type":"paragraph","before":"/body/tbl[6]","props":{"text":"表6 付款方式表","align":"center","bold":"true","font.ea":"黑体","font.latin":"Times New Roman","size":"14pt"}}
+]
