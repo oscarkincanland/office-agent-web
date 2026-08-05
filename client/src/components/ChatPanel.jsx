@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,7 +7,7 @@ let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 
-export default function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession }) {
+export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]);
@@ -47,6 +47,16 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
     setImages([]);
     if (onNewSession) onNewSession();
   }, [onNewSession]);
+
+  // 暴露插入文本方法（供 @ 按钮调用）
+  useImperativeHandle(ref, () => ({
+    insertText(text) {
+      setInput((v) => {
+        const sep = v && !v.endsWith(" ") ? " " : "";
+        return v + sep + text;
+      });
+    },
+  }));
 
   // 流式刷新调度：合并同一帧内的多次文本追加
   const patch = useCallback((id, fn) => {
@@ -384,7 +394,7 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
       </div>
     </div>
   );
-}
+});
 
 // ========== 消息组件（参考 pi-web MessageView：block 分派 + 复制 + 时间戳） ==========
 function Message({ m, onToggleTool }) {

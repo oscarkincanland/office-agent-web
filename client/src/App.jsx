@@ -17,30 +17,13 @@ export default function App() {
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
+  const [docLoading, setDocLoading] = useState(false); // 文档加载中
+  const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
 
-  // 点击历史会话：加载该会话的消息记录
-  const handleSelectSession = useCallback(async (session) => {
-    try {
-      const d = await getSession(session.id);
-      const msgs = (d.entries || [])
-        .filter((e) => e.type === "message" && e.message)
-        .map((e) => {
-          const m = e.message;
-          let text = "";
-          if (typeof m.content === "string") text = m.content;
-          else if (Array.isArray(m.content)) text = m.content.filter((b) => b.type === "text").map((b) => b.text).join(" ");
-          return {
-            id: e.id,
-            role: m.role === "assistant" ? "assistant" : "user",
-            text,
-            images: [],
-            tools: [],
-            thinking: "",
-            status: "done",
-          };
-        });
-      setHistoryMessages(msgs);
-    } catch (e) { alert("加载会话失败: " + e.message); }
+  // @ 按钮：把文件/文件夹路径插入到对话输入框
+  const handleAtMention = useCallback((rel, isDir) => {
+    const marker = isDir ? rel + "/" : rel;
+    chatInputRef.current?.insertText(`@${marker}`);
   }, []);
 
   // 新建会话：清空历史消息和当前文档
@@ -95,11 +78,46 @@ export default function App() {
   }, [refreshFiles]);
 
   const open = useCallback(async (name) => {
+    setDocLoading(true);
     try {
       const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
       setCurrent({ name, ...doc });
     } catch (e) { alert("打开失败: " + e.message); }
+    finally { setDocLoading(false); }
   }, [clientId]);
+
+  // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
+  const handleSelectSession = useCallback(async (session) => {
+    try {
+      const d = await getSession(session.id);
+      const msgs = (d.entries || [])
+        .filter((e) => e.type === "message" && e.message)
+        .map((e) => {
+          const m = e.message;
+          let text = "";
+          if (typeof m.content === "string") text = m.content;
+          else if (Array.isArray(m.content)) text = m.content.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+          return {
+            id: e.id,
+            role: m.role === "assistant" ? "assistant" : "user",
+            text,
+            images: [],
+            tools: [],
+            thinking: "",
+            status: "done",
+          };
+        });
+      setHistoryMessages(msgs);
+      // 从消息里解析会话关联的文件，尝试打开
+      const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
+      if (fileMatch) {
+        const fn = fileMatch.text.match(/当前打开文件:\s*([^\]\n]+)/);
+        if (fn?.[1]) {
+          try { await open(fn[1].trim()); } catch {}
+        }
+      }
+    } catch (e) { alert("加载会话失败: " + e.message); }
+  }, [open]);
 
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
@@ -129,6 +147,7 @@ export default function App() {
             currentDir={currentDir}
             onDirChange={handleDirChange}
             onSelectSession={handleSelectSession}
+            onAtMention={handleAtMention}
           />
           <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
         </>
@@ -147,11 +166,12 @@ export default function App() {
             <span className="topbar-title">{current?.name || "Office Agent"}</span>
             <span className="topbar-badge">{models.length} 模型</span>
           </div>
-          <DocViewer doc={current} />
+          <DocViewer doc={current} loading={docLoading} />
         </div>
       </div>
       <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
       <ChatPanel
+        ref={chatInputRef}
         clientId={clientId}
         onFileChanged={handleFileChanged}
         currentDoc={current?.name}

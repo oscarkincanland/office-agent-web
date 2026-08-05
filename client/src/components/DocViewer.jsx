@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ExcelGrid from "./ExcelGrid.jsx";
 
-export default function DocViewer({ doc }) {
+export default function DocViewer({ doc, loading }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
@@ -38,6 +38,18 @@ export default function DocViewer({ doc }) {
         <div className="empty-view">
           <div>从左侧选择一个文件</div>
           <div className="hint">.docx / .xlsx / .pptx — 可通过右侧 agent 编辑</div>
+        </div>
+      </div>
+    );
+  }
+
+  // 文件加载中
+  if (loading && !doc.kind) {
+    return (
+      <div className="docview">
+        <div className="empty-view">
+          <div className="loading-spinner"></div>
+          <div>正在加载文件...</div>
         </div>
       </div>
     );

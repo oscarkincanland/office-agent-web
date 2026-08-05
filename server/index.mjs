@@ -50,20 +50,29 @@ function sheetToGrid(children) {
 }
 
 async function readWorkbook(file) {
-  const info = await get(file, "/", 1);
-  const sheets = [];
-  const grids = {};
-  const results = info.json?.data?.results || [];
-  // root node (workbook) has sheets in children
+  // 枚举 sheets：depth 1 不够则递增重试
+  let info = await get(file, "/", 1);
   const sheetNodes = [];
-  for (const r of results) {
-    if (r.type === "sheet") sheetNodes.push(r);
-    if (r.children) {
-      for (const c of r.children) {
-        if (c.type === "sheet") sheetNodes.push(c);
+  const collect = (results) => {
+    for (const r of results || []) {
+      if (r.type === "sheet") sheetNodes.push(r);
+      if (r.children) {
+        for (const c of r.children) {
+          if (c.type === "sheet") sheetNodes.push(c);
+        }
       }
     }
+  };
+  collect(info.json?.data?.results || []);
+  if (sheetNodes.length === 0) {
+    info = await get(file, "/", 2);
+    collect(info.json?.data?.results || []);
   }
+  if (sheetNodes.length === 0) {
+    throw new Error("无法枚举工作表（文件可能损坏或格式不支持）");
+  }
+  const sheets = [];
+  const grids = {};
   for (const s of sheetNodes) {
     const name = s.preview || s.path.split("/").pop();
     if (!sheets.some((x) => x.name === name)) {
@@ -336,6 +345,10 @@ app.get("/api/sessions", (_req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
+        // 只显示 office agent 的会话（cwd 属于本项目或当前工作区），过滤 pi TUI 等其他会话
+        const cwd = h.cwd || "";
+        const isOaw = cwd.includes("office-agent-web") || cwd === getWorkspace();
+        if (!isOaw) continue;
         // 提取第一条用户消息作为标题
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
