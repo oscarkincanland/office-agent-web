@@ -49,6 +49,10 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
   }, [onNewSession]);
 
   // 流式刷新调度：合并同一帧内的多次文本追加
+  const patch = useCallback((id, fn) => {
+    setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
+  }, []);
+
   const scheduleFlush = useCallback((type, data) => {
     if (!streamBufRef.current) return;
     const buf = streamBufRef.current;
@@ -71,10 +75,6 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
       });
     }
   }, [patch]);
-
-  const patch = useCallback((id, fn) => {
-    setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
-  }, []);
 
   // 同步外部 models
   useEffect(() => { if (modelsProp?.length) setModels(modelsProp); }, [modelsProp]);
