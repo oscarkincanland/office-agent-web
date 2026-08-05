@@ -43,6 +43,13 @@ export default function App() {
     } catch (e) { alert("加载会话失败: " + e.message); }
   }, []);
 
+  // 新建会话：清空历史消息和当前文档
+  const handleNewSession = useCallback(() => {
+    setHistoryMessages(null);
+    setCurrent(null);
+    setCurrentDir("");
+  }, []);
+
   const refreshFiles = useCallback(async (dir) => {
     try { setFiles((await listFiles(dir || currentDir)).files); } catch {}
   }, [currentDir]);
@@ -152,6 +159,7 @@ export default function App() {
         defaultModel={defaultModel}
         onAgentEnd={handleAgentEnd}
         historyMessages={historyMessages}
+        onNewSession={handleNewSession}
       />
     </div>
   );

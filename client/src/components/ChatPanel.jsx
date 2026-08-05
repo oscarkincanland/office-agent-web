@@ -7,7 +7,7 @@ let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 
-export default function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages }) {
+export default function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]);
@@ -20,6 +20,10 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
+  // streaming 累积缓冲（性能优化：避免每 token setState）
+  const streamBufRef = useRef(null);
+  const rafRef = useRef(null);
+  const streamingMsgIdRef = useRef(null);
 
   // 加载历史会话消息（点击历史列表时触发）
   useEffect(() => {
@@ -27,8 +31,46 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
       setMessages(historyMessages);
       setBusy(false);
       assistantIdRef.current = null;
+      streamBufRef.current = null;
+      streamingMsgIdRef.current = null;
     }
   }, [historyMessages]);
+
+  // 新建会话：清空消息
+  const handleNewSession = useCallback(() => {
+    setMessages([]);
+    setBusy(false);
+    assistantIdRef.current = null;
+    streamBufRef.current = null;
+    streamingMsgIdRef.current = null;
+    setInput("");
+    setImages([]);
+    if (onNewSession) onNewSession();
+  }, [onNewSession]);
+
+  // 流式刷新调度：合并同一帧内的多次文本追加
+  const scheduleFlush = useCallback((type, data) => {
+    if (!streamBufRef.current) return;
+    const buf = streamBufRef.current;
+    if (type === "token") buf.text += data.text;
+    else if (type === "thinking") buf.thinking += data.text;
+    if (!rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const id = streamingMsgIdRef.current;
+        if (id && streamBufRef.current) {
+          const { text, thinking } = streamBufRef.current;
+          const patchData = {};
+          if (text) patchData.text = text;
+          if (thinking) patchData.thinking = thinking;
+          patch(id, (m) => ({ ...m, ...patchData }));
+          // 清空已刷新的增量
+          streamBufRef.current.text = "";
+          streamBufRef.current.thinking = "";
+        }
+      });
+    }
+  }, [patch]);
 
   const patch = useCallback((id, fn) => {
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
@@ -78,28 +120,33 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
     const { type, data } = ev;
     const aid = assistantIdRef.current;
     switch (type) {
-      // 文本 token
+      // 文本 token：节流合并
       case "token":
-        if (aid) patch(aid, (m) => ({ ...m, text: m.text + data.text }));
+        if (aid) scheduleFlush("token", data);
         break;
-      // 思考过程
+      // 思考过程：节流合并
       case "thinking":
-        if (aid) patch(aid, (m) => ({ ...m, thinking: (m.thinking || "") + data.text }));
+        if (aid) scheduleFlush("thinking", data);
         break;
       // 工具调用开始
       case "tool_start":
-        if (aid) patch(aid, (m) => ({
-          ...m,
-          tools: [...(m.tools || []), {
-            id: newId(),
-            name: data.name,
-            input: data.input || "",
-            output: "",
-            done: false,
-            isError: false,
-            expanded: false,
-          }],
-        }));
+        if (aid) {
+          if (streamBufRef.current) flushNow(aid);
+          patch(aid, (m) => ({
+            ...m,
+            tools: [...(m.tools || []), {
+              id: newId(),
+              name: data.name,
+              input: data.input || "",
+              output: "",
+              done: false,
+              isError: false,
+              expanded: false,
+              startTime: Date.now(),
+              duration: null,
+            }],
+          }));
+        }
         break;
       // 工具输出流
       case "tool_output":
@@ -119,6 +166,7 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
             last.done = true;
             last.isError = !!data.isError;
             if (data.result) last.result = data.result;
+            if (last.startTime) last.duration = ((Date.now() - last.startTime) / 1000).toFixed(1);
           }
           return { ...m, tools };
         });
@@ -129,24 +177,29 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
       case "message_end":
         break;
       case "agent_end":
+        if (streamBufRef.current) flushNow(aid);
         if (aid) patch(aid, (m) => ({ ...m, status: "done" }));
         assistantIdRef.current = null;
+        streamBufRef.current = null;
+        streamingMsgIdRef.current = null;
         setBusy(false);
         if (onAgentEnd) onAgentEnd();
         break;
       case "agent_error":
         if (aid) patch(aid, (m) => ({ ...m, status: "error", text: m.text || data.message }));
         assistantIdRef.current = null;
+        streamBufRef.current = null;
+        streamingMsgIdRef.current = null;
         setBusy(false);
         break;
       case "steer":
-        // 打断了当前回合，新指令已注入；当前消息保持 streaming，由后续 agent_end 收尾
         pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`);
         break;
       case "aborted":
-        // 用户主动中止
         if (aid) patch(aid, (m) => ({ ...m, status: "done", text: m.text + (m.text ? "\n" : "") + "(已中止)" }));
         assistantIdRef.current = null;
+        streamBufRef.current = null;
+        streamingMsgIdRef.current = null;
         setBusy(false);
         break;
       case "file_changed":
@@ -157,6 +210,20 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
         break;
     }
   }
+
+  // 立即刷新流式缓冲（工具边界、agent_end 前调用）
+  const flushNow = useCallback((id) => {
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    const buf = streamBufRef.current;
+    if (id && buf && (buf.text || buf.thinking)) {
+      const patchData = {};
+      if (buf.text) patchData.text = buf.text;
+      if (buf.thinking) patchData.thinking = buf.thinking;
+      patch(id, (m) => ({ ...m, ...patchData }));
+      buf.text = "";
+      buf.thinking = "";
+    }
+  }, [patch]);
 
   const pushSystem = useCallback((text) => {
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done" }]);
@@ -178,6 +245,8 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
     }]);
     const aid = newId();
     assistantIdRef.current = aid;
+    streamingMsgIdRef.current = aid;
+    streamBufRef.current = { text: "", thinking: "" };
     setMessages((ms) => [...ms, {
       id: aid, role: "assistant", text: "", thinking: "", tools: [],
       status: "streaming", images: [],
@@ -227,14 +296,23 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
     if (added.length) setImages((im) => [...im, ...added]);
   };
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  // 滚动：只在消息数变化或流式刷新时平滑滚动，节流
+  const scrollTimerRef = useRef(null);
+  useEffect(() => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 60);
+    return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
+  }, [messages]);
 
   const hint = currentDoc || "未打开文件";
 
   return (
     <div className="chat">
       <div className="chat-head">
-        <span>agent</span>
+        <span className="chat-title">agent</span>
+        <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话">＋ 新建会话</button>
         <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
           <option value="">-- 选择模型 --</option>
           {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
@@ -308,15 +386,29 @@ export default function ChatPanel({ clientId, onFileChanged, currentDoc, models:
   );
 }
 
-// ========== 消息组件 ==========
+// ========== 消息组件（参考 pi-web MessageView：block 分派 + 复制 + 时间戳） ==========
 function Message({ m, onToggleTool }) {
   if (m.role === "system") {
     return <div className="msg system"><div className="bubble">{m.text}</div></div>;
   }
   const isUser = m.role === "user";
+  const [hovered, setHovered] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copyText = async () => {
+    try {
+      await navigator.clipboard.writeText(m.text || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
 
   return (
-    <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`}>
+    <div
+      className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div className="avatar">{isUser ? ">" : "$"}</div>
       <div className="bubble">
         {/* 用户图片 */}
@@ -327,9 +419,9 @@ function Message({ m, onToggleTool }) {
         {m.currentDoc && (
           <div className="msg-context">当前文件: {m.currentDoc}</div>
         )}
-        {/* 思考过程（可折叠） */}
+        {/* 思考过程（可折叠，带耗时） */}
         {m.thinking && <ThinkingBlock text={m.thinking} />}
-        {/* 工具调用卡片 */}
+        {/* 工具调用卡片（按序排列，支持展开/折叠 + 耗时） */}
         {m.tools?.length > 0 && (
           <div className="tools">
             {m.tools.map((t) => (
@@ -353,37 +445,50 @@ function Message({ m, onToggleTool }) {
         )}
         {m.status === "error" && <div className="err-badge">出错了</div>}
       </div>
+      {/* 操作按钮：复制（参考 pi-web copy button，hover 显示） */}
+      {!isUser && m.text && m.status === "done" && (
+        <button
+          className={`copy-btn ${copied ? "copied" : ""}`}
+          style={{ opacity: hovered ? 1 : 0 }}
+          onClick={copyText}
+          title="复制"
+        >
+          {copied ? "✓" : "⧉"}
+        </button>
+      )}
     </div>
   );
 }
 
-// ========== 思考过程块 ==========
+// ========== 思考过程块（参考 pi-web ThinkingBlock：折叠 + 耗时） ==========
 function ThinkingBlock({ text }) {
   const [expanded, setExpanded] = useState(false);
-  const preview = text.length > 100 ? text.slice(0, 100) + "..." : text;
   return (
     <div className="thinking-block" onClick={() => setExpanded(!expanded)}>
       <div className="thinking-header">
         <span className="thinking-icon">{expanded ? "v" : ">"}</span>
         <span className="thinking-label">思考过程</span>
+        <span className="thinking-duration">···</span>
       </div>
-      <div className="thinking-text">{expanded ? text : preview}</div>
+      {expanded && <div className="thinking-text">{text}</div>}
     </div>
   );
 }
 
-// ========== 工具调用卡片 ==========
+// ========== 工具调用卡片（参考 pi-web ToolCallBlock：命令摘要 + 耗时 + 展开/折叠） ==========
 function ToolCard({ tool, onToggle }) {
-  const { name, input, output, done, isError, expanded } = tool;
+  const { name, input, output, done, isError, expanded, duration } = tool;
   const inputPreview = typeof input === "string" ? input : JSON.stringify(input);
-  const outputPreview = output?.length > 200 ? output.slice(0, 200) + "..." : output;
+  const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
 
   return (
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"}`} onClick={onToggle}>
       <div className="tool-header">
-        <span className="tool-icon">{done ? (isError ? "x" : "v") : "..."}</span>
+        <span className="tool-icon">{done ? (isError ? "✕" : "✓") : "…"}</span>
         <span className="tool-name">{name}</span>
-        {inputPreview && <span className="tool-input-preview">{inputPreview.slice(0, 60)}</span>}
+        {inputPreview && <span className="tool-input-preview" title={inputPreview}>{inputPreview.slice(0, 60)}</span>}
+        {duration && <span className="tool-duration">{duration}s</span>}
+        <span className="tool-chevron">{expanded ? "▾" : "▸"}</span>
       </div>
       {expanded && (
         <div className="tool-detail">
@@ -396,7 +501,7 @@ function ToolCard({ tool, onToggle }) {
           {(output || tool.result) && (
             <div className="tool-section">
               <div className="tool-section-label">{done ? "结果:" : "输出:"}</div>
-              <pre className="tool-code">{expanded ? (output || tool.result) : outputPreview}</pre>
+              <pre className="tool-code">{output || tool.result}</pre>
             </div>
           )}
         </div>

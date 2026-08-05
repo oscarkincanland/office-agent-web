@@ -448,3 +448,53 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   font-size: 10px;
   padding: 3px 5px;
 }
+
+/* ===== 对话流增强（参考 pi-web） ===== */
+.chat-title { font-weight: 600; }
+.new-session-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.new-session-btn:hover { background: var(--accent); color: var(--body-bg); }
+/* 复制按钮（hover 显示） */
+.copy-btn {
+  position: absolute;
+  right: -34px;
+  top: 8px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+  font-size: 12px;
+}
+.copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+.copy-btn.copied { color: var(--success); border-color: var(--success); }
+.msg { position: relative; }
+/* 思考过程耗时 */
+.thinking-duration {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+/* 工具卡片增强 */
+.tool-duration {
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.tool-chevron {
+  font-size: 10px;
+  color: var(--dim);
+  flex-shrink: 0;
+}
