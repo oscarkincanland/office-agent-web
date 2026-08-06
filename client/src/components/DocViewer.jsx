@@ -2,14 +2,16 @@ import React, { useState, useCallback, useEffect } from "react";
 import MarkdownBody from "./MarkdownBody.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
 
-export default function DocViewer({ doc, loading }) {
+const ICONS = { docx: "W", xlsx: "X", pptx: "P", md: "M", html: "H", htm: "H", txt: "T" };
+
+// 文件内容渲染（单个 tab 的正文）
+function DocContent({ doc, loading }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
   const [comments, setComments] = useState([]);
   const [commentsOpen, setCommentsOpen] = useState(false);
 
-  // 切换文档时重置状态 + 加载批注
   useEffect(() => {
     setWatchUrl(null);
     setWatchLoading(false);
@@ -41,21 +43,9 @@ export default function DocViewer({ doc, loading }) {
     setWatchLoading(false);
   }, [doc]);
 
-  if (!doc) {
-    return (
-      <div className="docview">
-        <div className="empty-view">
-          <div>从左侧选择一个文件</div>
-          <div className="hint">.docx / .xlsx / .pptx — 可通过右侧 agent 编辑</div>
-        </div>
-      </div>
-    );
-  }
-
-  // 文件加载中
   if (loading && !doc.kind) {
     return (
-      <div className="docview">
+      <div className="docview-body">
         <div className="empty-view">
           <div className="loading-spinner"></div>
           <div>正在加载文件...</div>
@@ -65,7 +55,7 @@ export default function DocViewer({ doc, loading }) {
   }
 
   return (
-    <div className="docview">
+    <>
       <div className="docview-head">
         <span className="doc-title">{doc.name}</span>
         {doc.kind === "html" && (
@@ -108,11 +98,8 @@ export default function DocViewer({ doc, loading }) {
         </div>
       )}
       <div className="docview-body">
-        {doc.kind === "html" && watchUrl && (
-          <iframe title={doc.name} src={watchUrl} className="docframe" />
-        )}
-        {doc.kind === "html" && !watchUrl && (
-          <iframe title={doc.name} src={doc.url} className="docframe" />
+        {doc.kind === "html" && (
+          <iframe title={doc.name} src={watchUrl || doc.url} className="docframe" />
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
         {doc.kind === "htmlfile" && (
@@ -126,11 +113,49 @@ export default function DocViewer({ doc, loading }) {
         {doc.kind === "text" && (
           <div className="mdview">
             <div className="markdown-body">
-              <MarkdownBody>{doc.content || ""}</MarkdownBody>
+              <MarkdownBody withToc>{doc.content || ""}</MarkdownBody>
             </div>
           </div>
         )}
       </div>
+    </>
+  );
+}
+
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading }) {
+  const doc = tabs.find((t) => t.name === activeTab) || null;
+  return (
+    <div className="docview">
+      {/* 文件 tab 栏（类似浏览器标签页） */}
+      {tabs.length > 0 && (
+        <div className="doc-tabs">
+          {tabs.map((t) => (
+            <div
+              key={t.name}
+              className={`doc-tab ${t.name === activeTab ? "active" : ""}`}
+              onClick={() => onSwitchTab && onSwitchTab(t.name)}
+              title={t.name}
+            >
+              <span className="doc-tab-icon">{ICONS[t.ext] || (t.kind === "text" ? "M" : "?")}</span>
+              <span className="doc-tab-name">{t.name}</span>
+              <span
+                className="doc-tab-close"
+                onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(t.name); }}
+              >×</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {!doc ? (
+        <div className="docview-body">
+          <div className="empty-view">
+            <div>从左侧选择一个文件</div>
+            <div className="hint">.docx / .xlsx / .pptx / .md / .html — 支持多标签打开</div>
+          </div>
+        </div>
+      ) : (
+        <DocContent doc={doc} loading={loading} />
+      )}
     </div>
   );
 }
