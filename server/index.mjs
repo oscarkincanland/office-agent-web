@@ -159,6 +159,25 @@ app.get("/api/doc/:file/html", async (req, res) => {
 });
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
+// 获取 docx 批注列表
+app.get("/api/doc/:file/comments", async (req, res) => {
+  const p = resolvePath(req.params.file);
+  if (!p) return res.status(404).json({ error: "not found" });
+  try {
+    const r = await runOfficecli(["query", p, "comment", "--json"]);
+    const results = r.json?.data?.results || [];
+    const comments = results.map((c) => ({
+      path: c.path,
+      author: c.format?.author || c.author || "",
+      text: c.text || c.preview || "",
+      date: c.format?.date || c.date || "",
+    }));
+    res.json({ comments });
+  } catch (e) {
+    res.json({ comments: [] });
+  }
+});
+
 app.get("/api/doc/:file/watch", async (req, res) => {
   const p = resolvePath(req.params.file);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -345,9 +364,9 @@ app.get("/api/sessions", (_req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
-        // 只显示 office agent 的会话（cwd 属于本项目或当前工作区），过滤 pi TUI 等其他会话
+        // 只显示 office agent 的会话（cwd 含 .sessions 专属目录），过滤 pi TUI 等其他会话
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes("office-agent-web") || cwd === getWorkspace();
+        const isOaw = cwd.includes(".sessions") && cwd.includes("office-agent-web");
         if (!isOaw) continue;
         // 提取第一条用户消息作为标题
         let title = "";
