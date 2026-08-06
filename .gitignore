@@ -30,3 +30,5 @@ _test*.mjs
 # 系统文件
 .DS_Store
 Thumbs.db
+# 根目录临时 HTML 产物（agent 生成）
+/*.html
