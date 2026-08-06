@@ -10,10 +10,11 @@ function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s =
 export default function ExcelGrid({ name, sheets, grids }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
-  const [sheet, setSheet] = useState(sheets?.[0] || "");
+  const [activeSheet, setActiveSheet] = useState(sheets?.[0] || "");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
-  const initialRef = useRef(null);
+  // 保存时记录每个 sheet 的初始数据
+  const initialRef = useRef({});
 
   // sheets 为空（文件读取失败）时显示错误
   if (!sheets || sheets.length === 0) {
@@ -41,35 +42,59 @@ export default function ExcelGrid({ name, sheets, grids }) {
     return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
   }, []);
 
+  // 一次加载所有 sheets（带 name），x-spreadsheet 底部标签栏可切换
   useEffect(() => {
     if (!spread) return;
-    const grid = grids[sheet] || {};
-    initialRef.current = JSON.parse(JSON.stringify(grid));
-    spread.loadData(grid);
+    const allSheets = sheets.map((s) => ({
+      name: s,
+      rows: grids[s]?.rows || grids[s] || {},
+    }));
+    initialRef.current = {};
+    for (const s of sheets) {
+      initialRef.current[s] = JSON.parse(JSON.stringify(grids[s]?.rows || grids[s] || {}));
+    }
+    spread.loadData(allSheets);
     if (typeof spread.change === "function") spread.change(() => {});
-  }, [spread, sheet, grids]);
+    // 记录当前激活的 sheet（x-spreadsheet 切换 sheet 时触发）
+    try {
+      spread.on("change", () => {});
+    } catch {}
+  }, [spread, sheets, grids]);
 
   const handleSave = async () => {
     if (!spread) return;
-    const current = spread.getData().rows || {};
-    const initial = initialRef.current || {};
-    const cells = [];
-    const allKeys = new Set([...Object.keys(current), ...Object.keys(initial)]);
-    for (const ri of allKeys) {
-      const cur = current[ri]?.cells || {};
-      const ini = initial[ri]?.cells || {};
-      for (const ci of new Set([...Object.keys(cur), ...Object.keys(ini)])) {
-        const cv = cur[ci]?.text ?? "";
-        const iv = ini[ci]?.text ?? "";
-        if (cv !== iv) cells.push({ ref: indexToCol(Number(ci)) + ri, value: cv });
+    // getData 返回所有 sheet 的数据数组
+    const allData = spread.getData(); // [{ name, rows }]
+    const changedBySheet = {};
+    for (const sd of allData) {
+      const sname = sd.name;
+      const current = sd.rows || {};
+      const initial = initialRef.current[sname] || {};
+      const cells = [];
+      const allKeys = new Set([...Object.keys(current), ...Object.keys(initial)]);
+      for (const ri of allKeys) {
+        const cur = current[ri]?.cells || {};
+        const ini = initial[ri]?.cells || {};
+        for (const ci of new Set([...Object.keys(cur), ...Object.keys(ini)])) {
+          const cv = cur[ci]?.text ?? "";
+          const iv = ini[ci]?.text ?? "";
+          if (cv !== iv) cells.push({ ref: indexToCol(Number(ci)) + ri, value: cv });
+        }
       }
+      if (cells.length) changedBySheet[sname] = cells;
     }
-    if (!cells.length) { setMsg("no changes"); return; }
+    const total = Object.values(changedBySheet).reduce((a, b) => a + b.length, 0);
+    if (!total) { setMsg("no changes"); return; }
     setSaving(true);
     try {
-      await saveCells(name, sheet, cells);
-      setMsg(`saved ${cells.length} cells`);
-      initialRef.current = JSON.parse(JSON.stringify(current));
+      for (const [sname, cells] of Object.entries(changedBySheet)) {
+        await saveCells(name, sname, cells);
+      }
+      setMsg(`saved ${total} cells`);
+      // 更新初始数据
+      for (const sd of allData) {
+        initialRef.current[sd.name] = JSON.parse(JSON.stringify(sd.rows || {}));
+      }
     } catch (e) { setMsg("save failed: " + e.message); }
     setSaving(false);
     setTimeout(() => setMsg(""), 2500);
@@ -78,9 +103,8 @@ export default function ExcelGrid({ name, sheets, grids }) {
   return (
     <div className="excel-wrap">
       <div className="excel-toolbar">
-        <select value={sheet} onChange={(e) => setSheet(e.target.value)}>
-          {sheets.map((s) => <option key={s} value={s}>{s}</option>)}
-        </select>
+        <span className="badge">工作簿 · {sheets.length} 个工作表</span>
+        <span className="excel-sheet-hint">底部标签栏可切换工作表</span>
         <button className="btn primary" onClick={handleSave} disabled={saving}>
           {saving ? "saving..." : "save changes"}
         </button>

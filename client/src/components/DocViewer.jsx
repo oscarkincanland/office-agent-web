@@ -7,12 +7,22 @@ export default function DocViewer({ doc, loading }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
+  const [comments, setComments] = useState([]);
+  const [commentsOpen, setCommentsOpen] = useState(false);
 
-  // 切换文档时重置 watch 状态
+  // 切换文档时重置状态 + 加载批注
   useEffect(() => {
     setWatchUrl(null);
     setWatchLoading(false);
     setWatchErr("");
+    setComments([]);
+    setCommentsOpen(false);
+    if (doc?.kind === "html") {
+      fetch(`/api/doc/${encodeURIComponent(doc.name)}/comments`)
+        .then((r) => r.json())
+        .then((d) => setComments(d.comments || []))
+        .catch(() => {});
+    }
   }, [doc?.name, doc?.kind]);
 
   const startLive = useCallback(async () => {
@@ -70,6 +80,11 @@ export default function DocViewer({ doc, loading }) {
             {watchUrl && (
               <button className="btn-sm" onClick={() => setWatchUrl(null)}>静态预览</button>
             )}
+            {comments.length > 0 && (
+              <button className={`btn-sm comment-btn ${commentsOpen ? "active" : ""}`} onClick={() => setCommentsOpen(!commentsOpen)}>
+                💬 批注 ({comments.length})
+              </button>
+            )}
           </>
         )}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
@@ -77,6 +92,21 @@ export default function DocViewer({ doc, loading }) {
         {watchErr && <span className="badge err-badge">⚠ {watchErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
       </div>
+      {commentsOpen && comments.length > 0 && (
+        <div className="comments-panel">
+          <div className="comments-head">文档批注</div>
+          {comments.map((c, i) => (
+            <div className="comment-item" key={i}>
+              <div className="comment-meta">
+                <span className="comment-author">{c.author || "匿名"}</span>
+                {c.date && <span className="comment-date">{String(c.date).slice(0, 10)}</span>}
+              </div>
+              <div className="comment-text">{c.text}</div>
+              {c.path && <div className="comment-path">{c.path}</div>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="docview-body">
         {doc.kind === "html" && watchUrl && (
           <iframe title={doc.name} src={watchUrl} className="docframe" />
