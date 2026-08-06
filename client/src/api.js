@@ -25,6 +25,12 @@ export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
 export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
+
+export const listSkills = () => api("/api/skills");
+export const exportSkill = (name) =>
+  api("/api/skills/export", { method: "POST", body: JSON.stringify({ name }) });
+export const importSkill = (payload) =>
+  api("/api/skills/import", { method: "POST", body: JSON.stringify(payload) });
 export const getSession = (id) => api(`/api/sessions/${encodeURIComponent(id)}`);
 export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());

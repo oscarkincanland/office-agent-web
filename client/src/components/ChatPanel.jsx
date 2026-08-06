@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import MarkdownBody from "./MarkdownBody.jsx";
 
 let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
@@ -445,7 +444,7 @@ function Message({ m, onToggleTool }) {
             <div className="msg-text">{m.text}</div>
           ) : (
             <div className="msg-text markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.text}</ReactMarkdown>
+              <MarkdownBody>{m.text}</MarkdownBody>
             </div>
           )
         ) : null}

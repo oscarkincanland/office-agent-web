@@ -3,6 +3,7 @@ import SessionSidebar from "./components/SessionSidebar.jsx";
 import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
+import SkillsManager from "./components/SkillsManager.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
 
 export default function App() {
@@ -10,6 +11,7 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [current, setCurrent] = useState(null); // { name, kind, url?, sheets?, grids? }
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -164,6 +166,7 @@ export default function App() {
               <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
             )}
             <span className="topbar-title">{current?.name || "Office Agent"}</span>
+            <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
             <span className="topbar-badge">{models.length} 模型</span>
           </div>
           <DocViewer doc={current} loading={docLoading} />
@@ -180,6 +183,11 @@ export default function App() {
         onAgentEnd={handleAgentEnd}
         historyMessages={historyMessages}
         onNewSession={handleNewSession}
+      />
+      <SkillsManager
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+        onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
       />
     </div>
   );

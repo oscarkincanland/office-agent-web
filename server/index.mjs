@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath } from "./workspace.mjs";
+import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { agentManager } from "./agent.mjs";
 
@@ -107,7 +107,7 @@ app.post("/api/files/upload", async (req, res) => {
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
-  if (!/\.(docx|xlsx|pptx)$/i.test(safe)) return res.status(400).json({ error: "only docx/xlsx/pptx allowed" });
+  if (!/\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
   fs.writeFileSync(path.join(WORKSPACE_DIR, safe), buf);
   res.json({ ok: true, file: safe });
 });
@@ -136,6 +136,9 @@ app.get("/api/doc/:file", async (req, res) => {
     } else if (ext === "md" || ext === "markdown" || ext === "txt") {
       const content = fs.readFileSync(p, "utf8");
       res.json({ kind: "text", name: req.params.file, content, ext });
+    } else if (ext === "html" || ext === "htm") {
+      const content = fs.readFileSync(p, "utf8");
+      res.json({ kind: "htmlfile", name: req.params.file, content });
     } else {
       res.json({ kind: "html", name: req.params.file, url: `/api/doc/${encodeURIComponent(req.params.file)}/html` });
     }
@@ -254,6 +257,109 @@ app.post("/api/agent/model", async (req, res) => {
 // 会话 JSONL 文件存放在 AGENT_DIR/sessions/ 目录下，遵循 pi SDK SessionManager 格式
 const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+
+// ---------- skills ----------
+// 扫描用户所有 skills 目录（含 .pi/agent/skills、.agents/skills、项目 .agents/skills）
+function scanSkills() {
+  const roots = [
+    path.join(AGENT_DIR, "skills"),
+    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".agents", "skills"),
+    path.join(PROJECT_DIR, ".agents", "skills"),
+    path.join(PROJECT_DIR, ".pi", "skills"),
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      const skillDir = path.join(root, e.name);
+      const skillFile = path.join(skillDir, "SKILL.md");
+      if (!fs.existsSync(skillFile)) continue;
+      if (seen.has(e.name)) continue;
+      seen.add(e.name);
+      // 解析 frontmatter 里的 description
+      let desc = "";
+      try {
+        const content = fs.readFileSync(skillFile, "utf8");
+        const m = content.match(/^---\s*\n([\s\S]*?)\n---/);
+        if (m) {
+          const dm = m[1].match(/description:\s*["']?([^"'\n]+)/);
+          if (dm) desc = dm[1].trim();
+        }
+      } catch {}
+      out.push({
+        name: e.name,
+        description: desc,
+        path: skillDir,
+        source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent",
+      });
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// GET /api/skills - 列出所有 skills
+app.get("/api/skills", (_req, res) => {
+  res.json({ skills: scanSkills() });
+});
+
+// POST /api/skills/export - 导出 skill（返回 base64 内容）
+app.post("/api/skills/export", (req, res) => {
+  const { name } = req.body || {};
+  const skills = scanSkills();
+  const skill = skills.find((s) => s.name === name);
+  if (!skill) return res.status(404).json({ error: "skill not found" });
+  try {
+    const skillFile = path.join(skill.path, "SKILL.md");
+    const content = fs.readFileSync(skillFile, "utf8");
+    // 附带同目录的其他辅助文件（脚本等）
+    const extra = {};
+    for (const e of fs.readdirSync(skill.path, { withFileTypes: true })) {
+      if (e.isFile() && e.name !== "SKILL.md") {
+        extra[e.name] = fs.readFileSync(path.join(skill.path, e.name), "base64");
+      }
+    }
+    res.json({
+      ok: true,
+      skill: {
+        name: skill.name,
+        description: skill.description,
+        content: Buffer.from(content).toString("base64"),
+        extra,
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/skills/import - 导入 skill 到用户 skills 目录
+app.post("/api/skills/import", (req, res) => {
+  const { name, description, content, extra } = req.body || {};
+  if (!name || !content) return res.status(400).json({ error: "name and content required" });
+  // 安全校验：只允许合法 skill 名
+  if (!/^[a-z0-9-]+$/.test(name)) return res.status(400).json({ error: "invalid skill name (小写字母/数字/连字符)" });
+  const targetDir = path.join(AGENT_DIR, "skills", name);
+  try {
+    fs.mkdirSync(targetDir, { recursive: true });
+    // 写入 SKILL.md（带 frontmatter）
+    const body = Buffer.from(content, "base64").toString("utf8");
+    let skillContent = body;
+    if (!body.startsWith("---")) {
+      skillContent = `---\nname: ${name}\ndescription: ${description || name}\n---\n\n` + body;
+    }
+    fs.writeFileSync(path.join(targetDir, "SKILL.md"), skillContent, "utf8");
+    // 写入辅助文件
+    for (const [fname, b64] of Object.entries(extra || {})) {
+      if (/[\\/:*?"<>|]/.test(fname)) continue;
+      fs.writeFileSync(path.join(targetDir, fname), Buffer.from(b64, "base64"));
+    }
+    res.json({ ok: true, name });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // 递归扫描 sessions 目录（含 cwd 分组子目录）下所有 .jsonl 文件
 function listSessionFiles() {

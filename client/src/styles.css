@@ -563,3 +563,102 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   color: var(--dim);
   flex-shrink: 0;
 }
+
+/* ===== 技能管理弹层 ===== */
+.skills-btn { margin-left: auto; }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.skills-modal {
+  width: 720px;
+  max-width: 92vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-search {
+  flex: 1;
+}
+.modal-msg { padding: 6px 16px; color: var(--success); font-size: 11px; }
+.skills-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 16px;
+}
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin-bottom: 6px;
+  background: var(--panel2-bg);
+}
+.skill-item:hover { border-color: var(--accent); }
+.skill-info { flex: 1; min-width: 0; }
+.skill-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.skill-source {
+  font-size: 9px;
+  font-weight: 400;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.skill-source.src-agents { color: var(--warning); }
+.skill-source.src-pi { color: var(--success); }
+.skill-desc {
+  font-size: 10px;
+  color: var(--dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.skill-actions {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+/* ===== MD 增强样式 ===== */
+.md-table-wrap { overflow-x: auto; }
+.md-img { max-width: 100%; border-radius: 4px; }
+.markdown-body pre { position: relative; }
+.markdown-body pre code.hljs { background: transparent; padding: 0; }
