@@ -949,3 +949,172 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-color: var(--success);
   color: var(--success);
 }
+
+/* ===== Markdown 目录浮窗 ===== */
+.mdview-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.md-toc-panel {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 10;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: width 0.2s ease;
+  max-height: calc(100% - 16px);
+  overflow: hidden;
+}
+
+.md-toc-panel:not(.open) {
+  width: 32px;
+}
+
+.md-toc-panel.open {
+  width: 240px;
+}
+
+.md-toc-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.md-toc-toggle:hover {
+  background: var(--selected);
+}
+
+.md-toc-icon {
+  font-size: 14px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.md-toc-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.md-toc-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(100vh - 200px);
+  border-top: 1px solid var(--border);
+}
+
+.md-toc-item {
+  padding: 5px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.1s, color 0.1s;
+}
+
+.md-toc-item:hover {
+  background: var(--selected);
+  color: var(--text);
+}
+
+.md-toc-item.active {
+  color: var(--accent);
+  background: var(--surface);
+  border-left: 2px solid var(--accent);
+}
+
+.md-toc-item.level-1 { font-weight: 600; color: var(--text); }
+.md-toc-item.level-2 { font-weight: 500; }
+.md-toc-item.level-3 { font-size: 10px; }
+.md-toc-item.level-4,
+.md-toc-item.level-5,
+.md-toc-item.level-6 { font-size: 10px; color: var(--dim); }
+
+.md-toc-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+/* ===== 错误边界样式 ===== */
+.chat-error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: var(--panel-bg);
+}
+
+.error-content {
+  text-align: center;
+  padding: 20px;
+}
+
+.error-icon {
+  font-size: 32px;
+  color: var(--error);
+  margin-bottom: 12px;
+}
+
+.error-text {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+/* ===== 全局应用错误边界 ===== */
+.app-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--body-bg);
+}
+
+.app-error-content {
+  text-align: center;
+  padding: 40px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 400px;
+}
+
+.app-error-icon {
+  font-size: 48px;
+  color: var(--error);
+  margin-bottom: 16px;
+}
+
+.app-error-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.app-error-text {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 20px;
+  word-break: break-word;
+}

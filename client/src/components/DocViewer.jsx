@@ -1,5 +1,6 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import MarkdownBody from "./MarkdownBody.jsx";
+import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
 
 const ICONS = { docx: "W", xlsx: "X", pptx: "P", md: "M", html: "H", htm: "H", txt: "T" };
@@ -42,6 +43,8 @@ function DocContent({ doc, loading }) {
     }
     setWatchLoading(false);
   }, [doc]);
+
+  const mdContentRef = useRef(null);
 
   if (loading && !doc.kind) {
     return (
@@ -111,9 +114,12 @@ function DocContent({ doc, loading }) {
           />
         )}
         {doc.kind === "text" && (
-          <div className="mdview">
-            <div className="markdown-body">
-              <MarkdownBody withToc>{doc.content || ""}</MarkdownBody>
+          <div className="mdview-container">
+            <MarkdownToc content={doc.content} targetRef={mdContentRef} />
+            <div className="mdview" ref={mdContentRef}>
+              <div className="markdown-body">
+                <MarkdownBody withToc>{doc.content || ""}</MarkdownBody>
+              </div>
             </div>
           </div>
         )}
