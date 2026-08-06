@@ -130,10 +130,10 @@ class AgentManager extends EventEmitter {
           }
           break;
         case "tool_execution_start":
-          // 工具调用开始：传递工具名 + 输入参数
+          // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
             name: ev.toolName,
-            input: ev.toolInput || ev.input || "",
+            input: typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args || "", null, 2),
           });
           break;
         case "tool_execution_update":

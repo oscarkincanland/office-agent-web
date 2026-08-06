@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECharts 数据仪表盘 Demo</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: rgba(16, 30, 54, 0.72);
+    --panel-border: rgba(64, 128, 255, 0.28);
+    --accent: #38bdf8;
+    --accent2: #a78bfa;
+    --text: #e2e8f0;
+    --text-dim: #8fa3bf;
+    --good: #34d399;
+    --warn: #fbbf24;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: radial-gradient(1200px 600px at 20% -10%, #123, transparent),
+                radial-gradient(1000px 500px at 90% 110%, #1a1330, transparent),
+                var(--bg);
+    color: var(--text);
+    font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+    min-height: 100vh;
+    padding: 20px 24px 32px;
+  }
+  .header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 6px 4px 18px;
+  }
+  .header h1 {
+    font-size: 26px; font-weight: 700; letter-spacing: 4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .header .sub { color: var(--text-dim); font-size: 13px; margin-top: 6px; letter-spacing: 1px; }
+  .header .clock { text-align: right; font-variant-numeric: tabular-nums; }
+  .header .clock .time { font-size: 24px; font-weight: 600; color: var(--accent); }
+  .header .clock .date { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+
+  .kpis {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px;
+  }
+  .kpi {
+    position: relative; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 12px; padding: 14px 16px;
+    backdrop-filter: blur(6px);
+  }
+  .kpi::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+  }
+  .kpi .label { font-size: 13px; color: var(--text-dim); }
+  .kpi .value { font-size: 28px; font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+  .kpi .delta { font-size: 12px; }
+  .kpi .delta.up { color: var(--good); }
+  .kpi .delta.down { color: #f87171; }
+  .kpi .spark { position: absolute; right: 8px; bottom: 8px; width: 90px; height: 36px; opacity: 0.9; }
+
+  .grid {
+    display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-border);
+    border-radius: 12px; padding: 12px 14px;
+    backdrop-filter: blur(6px);
+    position: relative;
+  }
+  .card .title {
+    font-size: 14px; font-weight: 600; color: var(--text);
+    padding-left: 10px; border-left: 3px solid var(--accent); margin-bottom: 6px;
+  }
+  .card .chart { width: 100%; height: 100%; min-height: 240px; }
+  .col-3 { grid-column: span 3; }
+  .col-4 { grid-column: span 4; }
+  .col-6 { grid-column: span 6; }
+  .col-8 { grid-column: span 8; }
+  .row-2 { grid-row: span 2; }
+  .card.tall .chart { min-height: 520px; }
+
+  .footer { text-align: center; color: var(--text-dim); font-size: 12px; padding-top: 18px; letter-spacing: 1px; }
+
+  @media (max-width: 1100px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .col-3, .col-4, .col-6, .col-8 { grid-column: span 6; }
+  }
+  @media (max-width: 640px) {
+    .kpis { grid-template-columns: 1fr; }
+    .col-3, .col-4, .col-6, .col-8 { grid-column: span 12; }
+    .header { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .header .clock { text-align: left; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <h1>ECharts 数据仪表盘 · DEMO</h1>
+      <div class="sub">综合运营监控 · 实时数据模拟</div>
+    </div>
+    <div class="clock">
+      <div class="time" id="clockTime">--:--:--</div>
+      <div class="date" id="clockDate">----年--月--日</div>
+    </div>
+  </div>
+
+  <!-- KPI 卡片 -->
+  <div class="kpis">
+    <div class="kpi">
+      <div class="label">今日营收（万元）</div>
+      <div class="value" id="kpiRevenue">1,286.4</div>
+      <div class="delta up">▲ 8.6% 较昨日</div>
+      <div class="spark" id="sparkRevenue"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">订单量（单）</div>
+      <div class="value" id="kpiOrders">23,847</div>
+      <div class="delta up">▲ 3.2% 较昨日</div>
+      <div class="spark" id="sparkOrders"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">活跃用户（万）</div>
+      <div class="value" id="kpiUsers">156.2</div>
+      <div class="delta up">▲ 12.4% 较上周</div>
+      <div class="spark" id="sparkUsers"></div>
+    </div>
+    <div class="kpi">
+      <div class="label">支付转化率</div>
+      <div class="value" id="kpiConv">4.82%</div>
+      <div class="delta down">▼ 0.3% 较昨日</div>
+      <div class="spark" id="sparkConv"></div>
+    </div>
+  </div>
+
+  <!-- 图表网格 -->
+  <div class="grid">
+    <!-- 仪表盘 Gauge（核心） -->
+    <div class="card col-4 tall">
+      <div class="title">核心指标达成率</div>
+      <div class="chart" id="gaugeMain"></div>
+    </div>
+
+    <!-- 仪表盘多指针 -->
+    <div class="card col-4 tall">
+      <div class="title">关键指标仪表盘</div>
+      <div class="chart" id="gaugeMulti"></div>
+    </div>
+
+    <!-- 环形占比 -->
+    <div class="card col-4 tall">
+      <div class="title">营收结构占比</div>
+      <div class="chart" id="pieRing"></div>
+    </div>
+
+    <!-- 折线趋势 -->
+    <div class="card col-8">
+      <div class="title">近 30 日营收 / 订单趋势</div>
+      <div class="chart" id="lineTrend"></div>
+    </div>
+
+    <!-- 柱状对比 -->
+    <div class="card col-4">
+      <div class="title">渠道订单对比</div>
+      <div class="chart" id="barChannel"></div>
+    </div>
+
+    <!-- 漏斗转化 -->
+    <div class="card col-4">
+      <div class="title">用户转化漏斗</div>
+      <div class="chart" id="funnelConv"></div>
+    </div>
+
+    <!-- 雷达能力 -->
+    <div class="card col-4">
+      <div class="title">运营能力雷达</div>
+      <div class="chart" id="radarCap"></div>
+    </div>
+
+    <!-- 横向柱状 TOP -->
+    <div class="card col-4">
+      <div class="title">TOP5 品类销量</div>
+      <div class="chart" id="barTop"></div>
+    </div>
+  </div>
+
+  <div class="footer">Apache ECharts 5 · 全部图表由 echarts-charts 技能配置 · Demo 数据仅供演示</div>
+
+<script>
+// ---------- 工具 ----------
+const charts = {};
+function init(id) {
+  const el = document.getElementById(id);
+  const c = echarts.init(el);
+  charts[id] = c;
+  return c;
+}
+function rand(base, spread) { return base + (Math.random() - 0.5) * 2 * spread; }
+
+const TEXT = '#8fa3bf';
+const AXIS_LINE = 'rgba(148,163,184,0.25)';
+const SPLIT = 'rgba(148,163,184,0.10)';
+const PALETTE = ['#38bdf8', '#a78bfa', '#34d399', '#fbbf24', '#f87171', '#22d3ee'];
+
+// ---------- 时钟 ----------
+function tickClock() {
+  const now = new Date();
+  const p = n => String(n).padStart(2, '0');
+  document.getElementById('clockTime').textContent =
+    `${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+  document.getElementById('clockDate').textContent =
+    `${now.getFullYear()}年${p(now.getMonth() + 1)}月${p(now.getDate())}日`;
+}
+setInterval(tickClock, 1000); tickClock();
+
+// ---------- 1. KPI 迷你 sparkline ----------
+function spark(id, color, base, spread) {
+  const c = init(id);
+  const data = Array.from({ length: 14 }, () => rand(base, spread));
+  c.setOption({
+    grid: { left: 0, right: 0, top: 4, bottom: 0 },
+    xAxis: { type: 'category', show: false, data: data.map((_, i) => i) },
+    yAxis: { type: 'value', show: false },
+    series: [{
+      type: 'line', data, smooth: true, symbol: 'none',
+      lineStyle: { width: 2, color },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: color + '55' }, { offset: 1, color: color + '00' }
+      ]) }
+    }]
+  });
+  return { c, data, base, spread };
+}
+const sparks = {
+  revenue: spark('sparkRevenue', '#38bdf8', 1200, 120),
+  orders:   spark('sparkOrders',   '#a78bfa', 23000, 1500),
+  users:    spark('sparkUsers',    '#34d399', 150, 10),
+  conv:     spark('sparkConv',     '#fbbf24', 4.8, 0.5)
+};
+
+// ---------- 2. 主仪表盘 Gauge ----------
+const gaugeMain = init('gaugeMain');
+function renderGaugeMain(val) {
+  gaugeMain.setOption({
+    series: [{
+      type: 'gauge', radius: '92%', center: ['50%', '58%'],
+      startAngle: 225, endAngle: -45, min: 0, max: 100,
+      progress: { show: true, width: 16, roundCap: true },
+      axisLine: {
+        lineStyle: { width: 16, color: [
+          [0.3, '#f87171'], [0.7, '#fbbf24'], [1, '#34d399']
+        ] }
+      },
+      splitLine: { length: 10, lineStyle: { color: 'rgba(255,255,255,0.5)', width: 1 } },
+      axisTick: { length: 6, lineStyle: { color: 'rgba(255,255,255,0.35)' } },
+      axisLabel: { distance: 18, color: TEXT, fontSize: 11 },
+      pointer: { length: '68%', width: 5, itemStyle: { color: '#e2e8f0' } },
+      anchor: { show: true, size: 18, itemStyle: { color: '#e2e8f0', borderColor: '#38bdf8', borderWidth: 3 } },
+      title: { offsetCenter: [0, '36%'], color: TEXT, fontSize: 13 },
+      detail: {
+        valueAnimation: true, offsetCenter: [0, '8%'],
+        formatter: v => v.toFixed(1) + '%', fontSize: 34, fontWeight: 700, color: '#f8fafc'
+      },
+      data: [{ value: val, name: '年度目标达成率' }]
+    }]
+  });
+}
+renderGaugeMain(76.5);
+
+// ---------- 3. 多指针仪表盘 ----------
+const gaugeMulti = init('gaugeMulti');
+function renderGaugeMulti() {
+  gaugeMulti.setOption({
+    series: [
+      { type: 'gauge', center: ['50%', '34%'], radius: '80%', startAngle: 210, endAngle: -30,
+        min: 0, max: 100, splitNumber: 5,
+        progress: { show: true, width: 10, roundCap: true },
+        axisLine: { lineStyle: { width: 10, color: [[1, 'rgba(56,189,248,0.25)']] } },
+        axisTick: { show: false }, splitLine: { length: 6, lineStyle: { color: 'rgba(255,255,255,0.3)' } },
+        axisLabel: { distance: 12, color: TEXT, fontSize: 10 },
+        pointer: { length: '62%', width: 4, itemStyle: { color: '#38bdf8' } },
+        anchor: { show: true, size: 10, itemStyle: { color: '#38bdf8' } },
+        title: { offsetCenter: [0, '88%'], color: TEXT, fontSize: 11 },
+        detail: { valueAnimation: true, offsetCenter: [0, '42%'], formatter: '{value}%', fontSize: 15, color: '#38bdf8' },
+        data: [{ value: 86, name: '服务可用性' }] },
+      { type: 'gauge', center: ['50%', '68%'], radius: '80%', startAngle: 210, endAngle: -30,
+        min: 0, max: 100, splitNumber: 5,
+        progress: { show: true, width: 10, roundCap: true },
+        axisLine: { lineStyle: { width: 10, color: [[1, 'rgba(167,139,250,0.25)']] } },
+        axisTick: { show: false }, splitLine: { length: 6, lineStyle: { color: 'rgba(255,255,255,0.3)' } },
+        axisLabel: { distance: 12, color: TEXT, fontSize: 10 },
+        pointer: { length: '62%', width: 4, itemStyle: { color: '#a78bfa' } },
+        anchor: { show: true, size: 10, itemStyle: { color: '#a78bfa' } },
+        title: { offsetCenter: [0, '88%'], color: TEXT, fontSize: 11 },
+        detail: { valueAnimation: true, offsetCenter: [0, '42%'], formatter: '{value}%', fontSize: 15, color: '#a78bfa' },
+        data: [{ value: 68, name: '库存周转率' }] },
+      { type: 'gauge', center: ['50%', '100%'], radius: '78%', startAngle: 210, endAngle: -30,
+        min: 0, max: 100, splitNumber: 5,
+        progress: { show: true, width: 10, roundCap: true },
+        axisLine: { lineStyle: { width: 10, color: [[1, 'rgba(52,211,153,0.25)']] } },
+        axisTick: { show: false }, splitLine: { length: 6, lineStyle: { color: 'rgba(255,255,255,0.3)' } },
+        axisLabel: { distance: 12, color: TEXT, fontSize: 10 },
+        pointer: { length: '62%', width: 4, itemStyle: { color: '#34d399' } },
+        anchor: { show: true, size: 10, itemStyle: { color: '#34d399' } },
+        title: { offsetCenter: [0, '86%'], color: TEXT, fontSize: 11 },
+        detail: { valueAnimation: true, offsetCenter: [0, '40%'], formatter: '{value}%', fontSize: 15, color: '#34d399' },
+        data: [{ value: 92, name: '客户满意度' }] }
+    ]
+  });
+}
+renderGaugeMulti();
+
+// ---------- 4. 环形占比 ----------
+const pieRing = init('pieRing');
+function renderPieRing() {
+  pieRing.setOption({
+    color: PALETTE,
+    tooltip: { trigger: 'item', formatter: '{b}<br/>{c} 万元（{d}%）' },
+    legend: { bottom: 0, textStyle: { color: TEXT, fontSize: 11 }, itemWidth: 12, itemHeight: 8 },
+    series: [{
+      type: 'pie', radius: ['42%', '68%'], center: ['50%', '46%'],
+      avoidLabelOverlap: true,
+      itemStyle: { borderRadius: 6, borderColor: '#0b1220', borderWidth: 2 },
+      label: { color: TEXT, fontSize: 11, formatter: '{b}\n{d}%' },
+      labelLine: { lineStyle: { color: 'rgba(148,163,184,0.4)' } },
+      emphasis: { scale: true, scaleSize: 8 },
+      data: [
+        { value: 4860, name: '线上自营' },
+        { value: 3240, name: '渠道分销' },
+        { value: 2180, name: '企业客户' },
+        { value: 1530, name: '线下门店' },
+        { value: 960,  name: '其他' }
+      ]
+    }]
+  });
+}
+renderPieRing();
+
+// ---------- 5. 折线趋势 ----------
+const lineTrend = init('lineTrend');
+const days = Array.from({ length: 30 }, (_, i) => `${i + 1}日`);
+let revData = Array.from({ length: 30 }, () => rand(1100, 260));
+let ordData = Array.from({ length: 30 }, () => rand(20000, 4200));
+function renderLineTrend() {
+  lineTrend.setOption({
+    color: ['#38bdf8', '#a78bfa'],
+    tooltip: { trigger: 'axis' },
+    legend: { top: 0, right: 0, textStyle: { color: TEXT, fontSize: 12 },
+      data: ['营收（万元）', '订单量（单）'] },
+    grid: { left: 8, right: 8, top: 36, bottom: 8, containLabel: true },
+    xAxis: {
+      type: 'category', boundaryGap: false, data: days,
+      axisLine: { lineStyle: { color: AXIS_LINE } },
+      axisLabel: { color: TEXT, fontSize: 11, interval: 4 },
+      axisTick: { show: false }
+    },
+    yAxis: [
+      { type: 'value', name: '万元', nameTextStyle: { color: TEXT },
+        axisLabel: { color: TEXT, fontSize: 11 },
+        splitLine: { lineStyle: { color: SPLIT } } },
+      { type: 'value', name: '单', nameTextStyle: { color: TEXT },
+        axisLabel: { color: TEXT, fontSize: 11 },
+        splitLine: { show: false } }
+    ],
+    series: [
+      { name: '营收（万元）', type: 'line', data: revData, smooth: true, symbol: 'circle', symbolSize: 5,
+        lineStyle: { width: 2.5 },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: 'rgba(56,189,248,0.35)' }, { offset: 1, color: 'rgba(56,189,248,0.02)' }
+        ]) },
+        markLine: { silent: true, symbol: 'none', label: { color: TEXT, fontSize: 10 },
+          lineStyle: { color: 'rgba(251,191,36,0.5)', type: 'dashed' },
+          data: [{ type: 'average', name: '均值' }] } },
+      { name: '订单量（单）', type: 'line', yAxisIndex: 1, data: ordData, smooth: true,
+        symbol: 'none', lineStyle: { width: 2 } }
+    ]
+  });
+}
+renderLineTrend();
+
+// ---------- 6. 渠道柱状 ----------
+const barChannel = init('barChannel');
+function renderBarChannel() {
+  barChannel.setOption({
+    color: PALETTE,
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    legend: { top: 0, right: 0, textStyle: { color: TEXT, fontSize: 11 }, itemWidth: 12, itemHeight: 8 },
+    grid: { left: 8, right: 8, top: 32, bottom: 8, containLabel: true },
+    xAxis: {
+      type: 'category', data: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+      axisLine: { lineStyle: { color: AXIS_LINE } },
+      axisLabel: { color: TEXT, fontSize: 11 },
+      axisTick: { show: false }
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: TEXT, fontSize: 11 },
+      splitLine: { lineStyle: { color: SPLIT } }
+    },
+    series: [
+      { name: '直营', type: 'bar', stack: 't', barWidth: 14,
+        data: [3200, 3600, 3400, 3900, 4100, 5200, 5800],
+        itemStyle: { borderRadius: [3, 3, 0, 0] } },
+      { name: '分销', type: 'bar', stack: 't',
+        data: [2100, 2400, 2200, 2600, 2700, 3100, 3300] },
+      { name: '企业', type: 'bar', stack: 't',
+        data: [1400, 1500, 1600, 1700, 1800, 1900, 2000],
+        itemStyle: { borderRadius: [3, 3, 0, 0] } }
+    ]
+  });
+}
+renderBarChannel();
+
+// ---------- 7. 漏斗 ----------
+const funnelConv = init('funnelConv');
+function renderFunnel() {
+  funnelConv.setOption({
+    color: ['#38bdf8', '#60a5fa', '#a78bfa', '#c084fc', '#f472b6'],
+    tooltip: { trigger: 'item', formatter: '{b}: {c}（{d}%）' },
+    series: [{
+      type: 'funnel', left: '6%', right: '6%', top: 8, bottom: 8,
+      sort: 'descending', gap: 3,
+      label: { show: true, position: 'inside', color: '#fff', fontSize: 12, fontWeight: 600,
+        formatter: '{b}\n{c}' },
+      labelLine: { show: false },
+      itemStyle: { borderColor: '#0b1220', borderWidth: 1, opacity: 0.92 },
+      emphasis: { label: { fontSize: 14 } },
+      data: [
+        { value: 100000, name: '曝光' },
+        { value: 46000,  name: '点击' },
+        { value: 21000,  name: '注册' },
+        { value: 9800,   name: '下单' },
+        { value: 4800,   name: '支付' }
+      ]
+    }]
+  });
+}
+renderFunnel();
+
+// ---------- 8. 雷达 ----------
+const radarCap = init('radarCap');
+function renderRadar() {
+  radarCap.setOption({
+    color: ['#38bdf8', 'rgba(167,139,250,0.85)'],
+    tooltip: {},
+    legend: { bottom: 0, textStyle: { color: TEXT, fontSize: 11 }, itemWidth: 12, itemHeight: 8 },
+    radar: {
+      indicator: [
+        { name: '获客', max: 100 }, { name: '转化', max: 100 },
+        { name: '留存', max: 100 }, { name: '复购', max: 100 },
+        { name: '服务', max: 100 }, { name: '创新', max: 100 }
+      ],
+      center: ['50%', '46%'], radius: '62%', shape: 'polygon',
+      axisName: { color: TEXT, fontSize: 11 },
+      splitLine: { lineStyle: { color: SPLIT } },
+      splitArea: { areaStyle: { color: ['rgba(56,189,248,0.03)', 'rgba(56,189,248,0.06)'] } },
+      axisLine: { lineStyle: { color: AXIS_LINE } }
+    },
+    series: [{
+      type: 'radar',
+      data: [
+        { value: [82, 74, 66, 71, 88, 63], name: '本期' },
+        { value: [70, 62, 58, 60, 75, 50], name: '上期' }
+      ],
+      areaStyle: { opacity: 0.25 },
+      lineStyle: { width: 2 },
+      symbol: 'circle', symbolSize: 4
+    }]
+  });
+}
+renderRadar();
+
+// ---------- 9. TOP5 横向柱状 ----------
+const barTop = init('barTop');
+function renderBarTop() {
+  barTop.setOption({
+    color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+      { offset: 0, color: '#0ea5e9' }, { offset: 1, color: '#38bdf8' }
+    ]),
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, formatter: '{b}<br/>{c} 件' },
+    grid: { left: 8, right: 30, top: 8, bottom: 8, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { color: TEXT, fontSize: 11 }, splitLine: { lineStyle: { color: SPLIT } } },
+    yAxis: {
+      type: 'category', data: ['数码配件', '家居日用', '美妆个护', '食品饮料', '服饰箱包'],
+      axisLine: { lineStyle: { color: AXIS_LINE } },
+      axisLabel: { color: TEXT, fontSize: 12 },
+      axisTick: { show: false }
+    },
+    series: [{
+      type: 'bar', barWidth: 12,
+      data: [8620, 7410, 6530, 5290, 4180],
+      label: { show: true, position: 'right', color: TEXT, fontSize: 11 },
+      itemStyle: { borderRadius: [0, 6, 6, 0] }
+    }]
+  });
+}
+renderBarTop();
+
+// ---------- 实时模拟刷新 ----------
+function refresh() {
+  // KPI 数值微动
+  const rev = rand(1286, 30), ord = Math.round(rand(23847, 400)),
+        usr = rand(156, 2.4), conv = rand(4.82, 0.15);
+  document.getElementById('kpiRevenue').textContent = rev.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  document.getElementById('kpiOrders').textContent = ord.toLocaleString();
+  document.getElementById('kpiUsers').textContent = usr.toFixed(1);
+  document.getElementById('kpiConv').textContent = conv.toFixed(2) + '%';
+
+  // sparkline 平移更新
+  for (const k of ['revenue', 'orders', 'users', 'conv']) {
+    const s = sparks[k];
+    s.data.push(rand(s.base, s.spread)); s.data.shift();
+    s.c.setOption({ series: [{ data: s.data }] });
+  }
+
+  // 主仪表盘微动
+  renderGaugeMain(Math.min(100, Math.max(55, rand(76.5, 4))));
+
+  // 折线数据平移
+  revData.push(rand(1100, 260)); revData.shift();
+  ordData.push(rand(20000, 4200)); ordData.shift();
+  lineTrend.setOption({ series: [{ data: revData }, { data: ordData }] });
+}
+setInterval(refresh, 3000);
+
+window.addEventListener('resize', () => Object.values(charts).forEach(c => c.resize()));
+</script>
+</body>
+</html>

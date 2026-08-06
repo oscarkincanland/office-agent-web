@@ -395,7 +395,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   );
 });
 
-// ========== 消息组件（参考 pi-web MessageView：block 分派 + 复制 + 时间戳） ==========
+// ========== 消息组件（pi-web MessageView 风格：text/thinking/toolCall 分块渲染） ==========
 function Message({ m, onToggleTool }) {
   if (m.role === "system") {
     return <div className="msg system"><div className="bubble">{m.text}</div></div>;
@@ -419,98 +419,118 @@ function Message({ m, onToggleTool }) {
       onMouseLeave={() => setHovered(false)}
     >
       <div className="avatar">{isUser ? ">" : "$"}</div>
-      <div className="bubble">
-        {/* 用户图片 */}
-        {m.images?.length > 0 && (
-          <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
-        )}
-        {/* 用户文件上下文标记 */}
-        {m.currentDoc && (
-          <div className="msg-context">当前文件: {m.currentDoc}</div>
-        )}
-        {/* 思考过程（可折叠，带耗时） */}
-        {m.thinking && <ThinkingBlock text={m.thinking} />}
-        {/* 工具调用卡片（按序排列，支持展开/折叠 + 耗时） */}
-        {m.tools?.length > 0 && (
-          <div className="tools">
-            {m.tools.map((t) => (
+      <div className="msg-main">
+        {/* 用户消息：一个气泡 */}
+        {isUser ? (
+          <div className="bubble">
+            {m.images?.length > 0 && (
+              <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
+            )}
+            {m.currentDoc && <div className="msg-context">当前文件: {m.currentDoc}</div>}
+            {m.text && <div className="msg-text">{m.text}</div>}
+          </div>
+        ) : (
+          <>
+            {/* 思考过程：独立气泡 */}
+            {m.thinking && <ThinkingBlock text={m.thinking} />}
+            {/* 每个工具调用：独立气泡卡片 */}
+            {m.tools?.map((t) => (
               <ToolCard key={t.id} tool={t} onToggle={() => onToggleTool(t.id)} />
             ))}
-          </div>
+            {/* 正文文本：独立气泡 */}
+            {m.text ? (
+              <div className="bubble markdown-bubble">
+                <MarkdownBody>{m.text}</MarkdownBody>
+              </div>
+            ) : null}
+            {/* 流式指示 */}
+            {m.status === "streaming" && !m.text && !m.thinking && !m.tools?.length && (
+              <div className="bubble"><span className="typing">_</span></div>
+            )}
+            {m.status === "error" && <div className="err-badge">出错了</div>}
+            {/* 复制按钮 */}
+            {m.text && m.status === "done" && (
+              <button
+                className={`copy-btn ${copied ? "copied" : ""}`}
+                style={{ opacity: hovered ? 1 : 0 }}
+                onClick={copyText}
+                title="复制"
+              >
+                {copied ? "✓" : "⧉"}
+              </button>
+            )}
+          </>
         )}
-        {/* 正文：assistant 用 Markdown 渲染，user 用纯文本 */}
-        {m.text ? (
-          isUser ? (
-            <div className="msg-text">{m.text}</div>
-          ) : (
-            <div className="msg-text markdown-body">
-              <MarkdownBody>{m.text}</MarkdownBody>
-            </div>
-          )
-        ) : null}
-        {/* 流式指示 */}
-        {m.status === "streaming" && !m.text && !m.thinking && !m.tools?.length && (
-          <span className="typing">_</span>
-        )}
-        {m.status === "error" && <div className="err-badge">出错了</div>}
       </div>
-      {/* 操作按钮：复制（参考 pi-web copy button，hover 显示） */}
-      {!isUser && m.text && m.status === "done" && (
-        <button
-          className={`copy-btn ${copied ? "copied" : ""}`}
-          style={{ opacity: hovered ? 1 : 0 }}
-          onClick={copyText}
-          title="复制"
-        >
-          {copied ? "✓" : "⧉"}
-        </button>
-      )}
     </div>
   );
 }
 
-// ========== 思考过程块（参考 pi-web ThinkingBlock：折叠 + 耗时） ==========
+// ========== 思考过程块（独立气泡：折叠 + 耗时） ==========
 function ThinkingBlock({ text }) {
   const [expanded, setExpanded] = useState(false);
+  const lines = text.split("\n");
+  const preview = lines.slice(0, 3).join("\n") + (lines.length > 3 ? "..." : "");
   return (
-    <div className="thinking-block" onClick={() => setExpanded(!expanded)}>
+    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={() => setExpanded(!expanded)}>
       <div className="thinking-header">
-        <span className="thinking-icon">{expanded ? "v" : ">"}</span>
-        <span className="thinking-label">思考过程</span>
-        <span className="thinking-duration">···</span>
+        <span className="thinking-icon">{expanded ? "▾" : "▸"}</span>
+        <span className="thinking-label">💭 思考</span>
+        <span className="thinking-duration">{text.length} 字</span>
       </div>
-      {expanded && <div className="thinking-text">{text}</div>}
+      <div className="thinking-text">{expanded ? text : preview}</div>
     </div>
   );
 }
 
-// ========== 工具调用卡片（参考 pi-web ToolCallBlock：命令摘要 + 耗时 + 展开/折叠） ==========
+// ========== 工具调用卡片（独立气泡，pi ToolCallBlock 风格） ==========
 function ToolCard({ tool, onToggle }) {
   const { name, input, output, done, isError, expanded, duration } = tool;
-  const inputPreview = typeof input === "string" ? input : JSON.stringify(input);
+  // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
+  let inputStr = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+  // 解析 pi 工具参数格式 { args: "..." } → 提取命令
+  try {
+    if (typeof input === "object" && input?.args) {
+      inputStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
+    }
+  } catch {}
+  const isCmd = name === "bash" || name === "officecli" || name === "find" || name === "grep" || name === "ls" || name === "cat";
+  const cmdPreview = isCmd ? inputStr : inputStr.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
 
   return (
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"}`} onClick={onToggle}>
       <div className="tool-header">
-        <span className="tool-icon">{done ? (isError ? "✕" : "✓") : "…"}</span>
+        <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
+          {done ? (isError ? "✕" : "✓") : "●"}
+        </span>
         <span className="tool-name">{name}</span>
-        {inputPreview && <span className="tool-input-preview" title={inputPreview}>{inputPreview.slice(0, 60)}</span>}
+        <span className="tool-input-preview" title={inputStr}>
+          {isCmd ? <code className="cmd-code">$ {cmdPreview}</code> : cmdPreview}
+        </span>
         {duration && <span className="tool-duration">{duration}s</span>}
-        <span className="tool-chevron">{expanded ? "▾" : "▸"}</span>
+        <span className={`tool-chevron ${expanded ? "open" : ""}`}>{expanded ? "▾" : "▸"}</span>
       </div>
       {expanded && (
         <div className="tool-detail">
-          {inputPreview && (
+          {/* 输入参数 */}
+          {inputStr && (
             <div className="tool-section">
-              <div className="tool-section-label">输入:</div>
-              <pre className="tool-code">{inputPreview}</pre>
+              <div className="tool-section-label">输入</div>
+              <pre className={`tool-code ${isCmd ? "cmd" : ""}`}>{inputStr}</pre>
             </div>
           )}
+          {/* 配对结果（按 toolCallId 配对，pi PairedResult 风格） */}
           {(output || tool.result) && (
             <div className="tool-section">
-              <div className="tool-section-label">{done ? "结果:" : "输出:"}</div>
-              <pre className="tool-code">{output || tool.result}</pre>
+              <div className="tool-section-label">{done ? "结果" : "输出"}</div>
+              <pre className={`tool-code ${isError ? "err" : ""}`}>{expanded ? (output || tool.result) : outputPreview}</pre>
+            </div>
+          )}
+          {done && !output && !tool.result && (
+            <div className="tool-section">
+              <div className="tool-section-label">结果</div>
+              <pre className="tool-code empty">(no output)</pre>
             </div>
           )}
         </div>
