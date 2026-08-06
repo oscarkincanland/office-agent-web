@@ -19,6 +19,7 @@
     "rehype-slug": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "remark-toc": "^9.0.0",
     "x-data-spreadsheet": "^1.1.9"
   },
   "devDependencies": {

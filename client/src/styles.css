@@ -806,3 +806,146 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   font-size: 10px;
 }
 .thinking-block.expanded .thinking-text { border-top: 1px solid var(--border); padding-top: 6px; }
+
+/* ===== 执行步骤 todo list ===== */
+.todo-list {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--panel2-bg);
+  margin-bottom: 2px;
+}
+.todo-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  background: var(--surface);
+}
+.todo-icon { font-family: monospace; color: var(--accent); }
+.todo-title { font-size: 11px; font-weight: 600; }
+.todo-progress {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.todo-body { padding: 4px 0; }
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 10px;
+}
+.todo-num { font-family: monospace; width: 14px; text-align: center; flex-shrink: 0; }
+.todo-item.running .todo-num { color: var(--warning); animation: pulse 1s infinite; }
+.todo-item.done .todo-num { color: var(--success); }
+.todo-item.err .todo-num { color: var(--error); }
+.todo-tool { font-weight: 600; color: var(--text); flex-shrink: 0; font-family: monospace; font-size: 10px; }
+.todo-cmd {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  font-family: monospace;
+}
+.todo-dur { font-size: 9px; color: var(--dim); flex-shrink: 0; }
+.todo-item.done { opacity: 0.65; }
+
+/* ===== 模式切换 ===== */
+.mode-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mode-btn {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 3px 8px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  cursor: pointer;
+}
+.mode-btn.active {
+  background: var(--accent);
+  color: var(--body-bg);
+}
+
+/* ===== 文件 tab 栏 ===== */
+.doc-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 8px 0;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.doc-tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  cursor: pointer;
+  max-width: 180px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.doc-tab:hover { color: var(--text); }
+.doc-tab.active {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.doc-tab-icon {
+  font-size: 9px;
+  color: var(--accent);
+  font-weight: 700;
+}
+.doc-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.doc-tab-close {
+  font-size: 11px;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+.doc-tab-close:hover { color: var(--error); background: var(--tool-error); }
+
+/* ===== 对话总结条 ===== */
+.summary-products {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+.summary-product {
+  font-size: 10px;
+  padding: 2px 7px;
+  background: var(--tool-success);
+  border: 1px solid #2a4a2a;
+  border-radius: 3px;
+  color: var(--success);
+}
+.msg.system .bubble.summary {
+  border-color: var(--success);
+  color: var(--success);
+}

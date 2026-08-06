@@ -264,8 +264,12 @@ function scanSkills() {
   const roots = [
     path.join(AGENT_DIR, "skills"),
     path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".agents", "skills"),
+    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".claude", "skills"),
     path.join(PROJECT_DIR, ".agents", "skills"),
     path.join(PROJECT_DIR, ".pi", "skills"),
+    path.join(PROJECT_DIR, ".claude", "skills"),
+    // 用户实际工作根目录的 .claude skills（F:\Claude code本地文件\.claude\skills）
+    "F:\\Claude code本地文件\\.claude\\skills",
   ];
   const out = [];
   const seen = new Set();
@@ -630,7 +634,14 @@ app.post("/api/agent/prompt", async (req, res) => {
     const changed = await waitForFlush(before);
     if (changed.length) {
       const entry = agentManager.sessions.get(client);
-      if (entry) emitChannel(entry, "file_changed", { files: changed });
+      if (entry) {
+        emitChannel(entry, "file_changed", { files: changed });
+        // 对话结束总结：产物清单
+        emitChannel(entry, "agent_summary", {
+          products: changed,
+          summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        });
+      }
     }
     res.json({ ok: true, changed });
   } catch (e) {

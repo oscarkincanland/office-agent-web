@@ -12,7 +12,9 @@ const histId = () => `h${++histSeq}`;
 export default function App() {
   const [files, setFiles] = useState([]);
   const [sessions, setSessions] = useState([]);
-  const [current, setCurrent] = useState(null); // { name, kind, url?, sheets?, grids? }
+  const [tabs, setTabs] = useState([]); // [{ name, kind, url?, sheets?, grids?, content? }]
+  const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
+  const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
   const [clientId] = useState(getClientId);
@@ -34,7 +36,8 @@ export default function App() {
   // 新建会话：清空历史消息和当前文档
   const handleNewSession = useCallback(() => {
     setHistoryMessages(null);
-    setCurrent(null);
+    setTabs([]);
+    setActiveTab(null);
     setCurrentDir("");
   }, []);
 
@@ -72,7 +75,8 @@ export default function App() {
       setCurrentWorkspace(r.workspace);
       setCurrentDir("");
       setFiles(r.files || []);
-      setCurrent(null); // 关闭当前文档
+      setTabs([]); // 关闭所有文档
+      setActiveTab(null);
     } catch (e) { alert("切换失败: " + e.message); }
   }, []);
 
@@ -85,11 +89,46 @@ export default function App() {
   const open = useCallback(async (name) => {
     setDocLoading(true);
     try {
+      // 已在 tab 中则直接激活
+      setTabs((prev) => {
+        const exists = prev.find((t) => t.name === name);
+        if (exists) {
+          setActiveTab(name);
+          setDocLoading(false);
+          return prev;
+        }
+        return prev;
+      });
       const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
-      setCurrent({ name, ...doc });
+      setTabs((prev) => {
+        const exists = prev.find((t) => t.name === name);
+        if (exists) {
+          // 更新内容并激活
+          setActiveTab(name);
+          setDocLoading(false);
+          return prev.map((t) => (t.name === name ? { ...t, ...doc } : t));
+        }
+        setActiveTab(name);
+        setDocLoading(false);
+        return [...prev, { name, ...doc }];
+      });
     } catch (e) { alert("打开失败: " + e.message); }
-    finally { setDocLoading(false); }
   }, [clientId]);
+
+  // 关闭 tab
+  const closeTab = useCallback((name) => {
+    setTabs((prev) => {
+      const idx = prev.findIndex((t) => t.name === name);
+      if (idx === -1) return prev;
+      const next = prev.filter((t) => t.name !== name);
+      if (activeTab === name) {
+        // 激活相邻 tab
+        const neighbor = next[Math.min(idx, next.length - 1)];
+        setActiveTab(neighbor ? neighbor.name : null);
+      }
+      return next;
+    });
+  }, [activeTab]);
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
@@ -100,16 +139,16 @@ export default function App() {
         .map((e) => {
           const m = e.message;
           let text = "";
-          let thinking = "";
-          const tools = [];
+          const blocks = [];
           if (typeof m.content === "string") text = m.content;
           else if (Array.isArray(m.content)) {
             for (const b of m.content) {
               if (b.type === "text") text += (text ? "\n" : "") + b.text;
-              else if (b.type === "thinking") thinking += (thinking ? "\n" : "") + b.thinking;
+              else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
               else if (b.type === "toolCall") {
                 const input = typeof b.input === "string" ? b.input : JSON.stringify(b.input, null, 2);
-                tools.push({
+                blocks.push({
+                  type: "tool",
                   id: histId(),
                   name: b.toolName || b.name || "tool",
                   input,
@@ -123,13 +162,17 @@ export default function App() {
               }
             }
           }
+          const isAssistant = m.role === "assistant";
+          // 若 assistant 有纯文本且没有 text block，追加为 text block
+          if (isAssistant && text && !blocks.some((b) => b.type === "text")) {
+            blocks.push({ type: "text", text });
+          }
           return {
             id: e.id,
-            role: m.role === "assistant" ? "assistant" : "user",
+            role: isAssistant ? "assistant" : "user",
             text,
             images: [],
-            tools,
-            thinking,
+            blocks,
             status: "done",
           };
         });
@@ -147,8 +190,8 @@ export default function App() {
 
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
-    if (current && changed.includes(current.name)) open(current.name);
-  }, [current, refreshFiles, open]);
+    if (activeTab && changed.includes(activeTab)) open(activeTab);
+  }, [activeTab, refreshFiles, open]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -193,7 +236,14 @@ export default function App() {
             <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
             <span className="topbar-badge">{models.length} 模型</span>
           </div>
-          <DocViewer doc={current} loading={docLoading} />
+          <DocViewer
+            tabs={tabs}
+            activeTab={activeTab}
+            onSwitchTab={(n) => setActiveTab(n)}
+            onCloseTab={closeTab}
+            onOpenFile={open}
+            loading={docLoading}
+          />
         </div>
       </div>
       <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
