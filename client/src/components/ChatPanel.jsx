@@ -2,6 +2,39 @@ import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperat
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 
+// 错误边界包装器
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("ChatPanel error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="chat-error-boundary">
+          <div className="error-content">
+            <div className="error-icon">⚠</div>
+            <div className="error-text">组件出错，请刷新页面</div>
+            <button className="btn" onClick={() => window.location.reload()}>
+              刷新页面
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
@@ -46,6 +79,21 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
+  // 组件挂载状态追踪，防止卸载后更新状态
+  const mountedRef = useRef(true);
+
+  // 组件卸载时标记
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // 清理定时器和动画帧
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   // 加载历史会话消息（点击历史列表时触发）
   useEffect(() => {
@@ -82,6 +130,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
 
   // 流式刷新调度：合并同一帧内的多次文本追加
   const patch = useCallback((id, fn) => {
+    if (!mountedRef.current) return;
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   }, []);
 
@@ -98,7 +147,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           const { text, thinking } = streamBufRef.current;
           if (text || thinking) {
             patch(id, (m) => {
-              const blocks = [...(m.blocks || [])];
+              let blocks = [...(m.blocks || [])];
               if (text) blocks = appendTextBlock(blocks, text);
               if (thinking) blocks = appendThinkingBlock(blocks, thinking);
               return { ...m, blocks };
@@ -145,11 +194,43 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
 
   // SSE 连接
   useEffect(() => {
-    const es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}`);
-    es.onopen = () => setConnected(true);
-    es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch {} };
-    es.onerror = () => setConnected(false);
-    return () => es.close();
+    let es = null;
+    let reconnectTimer = null;
+    
+    const connect = () => {
+      if (!mountedRef.current) return;
+      
+      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}`);
+      
+      es.onopen = () => {
+        if (mountedRef.current) setConnected(true);
+      };
+      
+      es.onmessage = (e) => {
+        if (!mountedRef.current) return;
+        try { 
+          handleEvent(JSON.parse(e.data)); 
+        } catch (err) {
+          console.error("SSE message parse error:", err);
+        }
+      };
+      
+      es.onerror = () => {
+        if (mountedRef.current) {
+          setConnected(false);
+          // 自动重连
+          es.close();
+          reconnectTimer = setTimeout(connect, 3000);
+        }
+      };
+    };
+    
+    connect();
+    
+    return () => {
+      if (es) es.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+    };
   }, [clientId]);
 
   function handleEvent(ev) {
@@ -297,6 +378,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   }, [patch]);
 
   const pushSystem = useCallback((text) => {
+    if (!mountedRef.current) return;
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done" }]);
   }, []);
 
@@ -313,6 +395,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       : "[模式: 创作] 你可以调用所有 skills 和工具生成新文件（文档/HTML/PPT等），产物保存到当前工作区。\n";
     const fullText = contextPrefix + modePrefix + text;
 
+    if (!mountedRef.current) return;
+    
     setMessages((ms) => [...ms, {
       id: newId(), role: "user", text,
       images: images.map((i) => i.dataUrl),
@@ -335,16 +419,18 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client: clientId, text: fullText, images: imgs }),
       });
+      if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
-        setBusy(false);
+        if (mountedRef.current) setBusy(false);
       }
     } catch (e) {
+      if (!mountedRef.current) return;
       patch(aid, (m) => ({ ...m, status: "error", text: "网络错误: " + e.message }));
       assistantIdRef.current = null;
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
@@ -394,95 +480,103 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const hint = currentDoc || "未打开文件";
 
   return (
-    <div className="chat">
-      <div className="chat-head">
-        <span className="chat-title">agent</span>
-        <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话">＋ 新建会话</button>
-        <div className="mode-switch" title="切换编辑模式">
-          <button
-            className={`mode-btn ${editMode === "office" ? "active" : ""}`}
-            onClick={() => setEditMode("office")}
-          >📝 Office</button>
-          <button
-            className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
-            onClick={() => setEditMode("agent")}
-          >🎨 创作</button>
+    <ErrorBoundary>
+      <div className="chat">
+        <div className="chat-head">
+          <span className="chat-title">agent</span>
+          <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话">＋ 新建会话</button>
+          <div className="mode-switch" title="切换编辑模式">
+            <button
+              className={`mode-btn ${editMode === "office" ? "active" : ""}`}
+              onClick={() => setEditMode("office")}
+            >📝 Office</button>
+            <button
+              className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
+              onClick={() => setEditMode("agent")}
+            >🎨 创作</button>
+          </div>
+          <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
+            <option value="">-- 选择模型 --</option>
+            {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
+          </select>
+          {modelMsg && <span className="model-msg">{modelMsg}</span>}
+          <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
+          <span className="doc-hint" title={hint}>{hint}</span>
         </div>
-        <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
-          <option value="">-- 选择模型 --</option>
-          {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
-        </select>
-        {modelMsg && <span className="model-msg">{modelMsg}</span>}
-        <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
-        <span className="doc-hint" title={hint}>{hint}</span>
-      </div>
 
-      <div className="chat-body" ref={bodyRef} onScroll={() => {
-        const el = bodyRef.current;
-        if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
-          userScrolledUpRef.current = true;
-        }
-      }}>
-        {messages.length === 0 && (
-          <div className="chat-empty">
-            <div>发送消息给 agent</div>
-            <div className="hint">
-              示例: 「把标题改成红色加粗」<br />
-              「在 test-data.xlsx 的 B3 填 88」<br />
-              粘贴图片可辅助说明（需选择 [V] 模型）
+        <div className="chat-body" ref={bodyRef} onScroll={() => {
+          const el = bodyRef.current;
+          if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
+            userScrolledUpRef.current = true;
+          }
+        }}>
+          {messages.length === 0 && (
+            <div className="chat-empty">
+              <div>发送消息给 agent</div>
+              <div className="hint">
+                示例: 「把标题改成红色加粗」<br />
+                「在 test-data.xlsx 的 B3 填 88」<br />
+                粘贴图片可辅助说明（需选择 [V] 模型）
+              </div>
             </div>
+          )}
+          {messages.map((m) => <Message key={m.id} m={m} onToggleTool={(toolId) => {
+            patch(m.id, (msg) => {
+              let blocks = [...(msg.blocks || [])];
+              blocks = blocks.map((b, i) => {
+                if (b.type === "tool" && (b.id === toolId || (b.id === undefined && i === toolId))) {
+                  return { ...b, expanded: !b.expanded };
+                }
+                return b;
+              });
+              return { ...msg, blocks };
+            });
+          }} />)}
+          <div ref={bottomRef} />
+        </div>
+
+        {images.length > 0 && !modelVision && (
+          <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
+        )}
+        {images.length > 0 && (
+          <div className="img-preview-row">
+            {images.map((img, i) => (
+              <div className="img-chip" key={i}>
+                <img src={img.dataUrl} alt={img.name} />
+                <button onClick={() => setImages((im) => im.filter((_, j) => j !== i))}>x</button>
+              </div>
+            ))}
           </div>
         )}
-        {messages.map((m) => <Message key={m.id} m={m} onToggleTool={(toolId) => {
-          patch(m.id, (msg) => ({
-            ...msg,
-            tools: msg.tools.map((t) => t.id === toolId ? { ...t, expanded: !t.expanded } : t),
-          }));
-        }} />)}
-        <div ref={bottomRef} />
-      </div>
-
-      {images.length > 0 && !modelVision && (
-        <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
-      )}
-      {images.length > 0 && (
-        <div className="img-preview-row">
-          {images.map((img, i) => (
-            <div className="img-chip" key={i}>
-              <img src={img.dataUrl} alt={img.name} />
-              <button onClick={() => setImages((im) => im.filter((_, j) => j !== i))}>x</button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="chat-input">
-        <textarea
-          value={input}
-          placeholder={busy ? "输入新指令可打断当前回复..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              send();
-            }
-          }}
-          onCompositionEnd={() => {}}
-          onPaste={(e) => {
-            const items = e.clipboardData?.items;
-            if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
-          }}
-          onChange={(e) => setInput(e.target.value)}
-        />
-        <div className="input-actions">
-          <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>图片</button>
-          <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-          {busy ? (
-            <button className="btn danger stop-btn" onClick={stop}>■ 停止</button>
-          ) : (
-            <button className="btn primary send-btn" onClick={send}>发送</button>
-          )}
+        <div className="chat-input">
+          <textarea
+            value={input}
+            placeholder={busy ? "输入新指令可打断当前回复..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            onCompositionEnd={() => {}}
+            onPaste={(e) => {
+              const items = e.clipboardData?.items;
+              if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
+            }}
+            onChange={(e) => setInput(e.target.value)}
+          />
+          <div className="input-actions">
+            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>图片</button>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            {busy ? (
+              <button className="btn danger stop-btn" onClick={stop}>■ 停止</button>
+            ) : (
+              <button className="btn primary send-btn" onClick={send}>发送</button>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 });
 

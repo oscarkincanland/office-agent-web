@@ -1,10 +1,44 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
+
+// 全局错误边界
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("App error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="app-error">
+          <div className="app-error-content">
+            <div className="app-error-icon">⚠</div>
+            <div className="app-error-title">应用出错</div>
+            <div className="app-error-text">{this.state.error?.message || "未知错误"}</div>
+            <button className="btn primary" onClick={() => window.location.reload()}>
+              刷新页面
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 let histSeq = 0;
 const histId = () => `h${++histSeq}`;
@@ -190,79 +224,89 @@ export default function App() {
 
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
-    if (activeTab && changed.includes(activeTab)) open(activeTab);
+    if (activeTab && changed.includes(activeTab)) {
+      // 添加延迟避免与 agent_end 竞态
+      setTimeout(() => {
+        open(activeTab);
+      }, 100);
+    }
   }, [activeTab, refreshFiles, open]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
-    refreshSessions();
+    // 添加延迟让文件变更事件先处理
+    setTimeout(() => {
+      refreshSessions();
+    }, 200);
   }, [refreshSessions]);
 
   return (
-    <div className="app">
-      {sidebarOpen && (
-        <>
-          <SessionSidebar
-            sessions={sessions}
-            files={files}
-            currentName={current?.name}
-            onOpenFile={open}
-            onRefreshFiles={refreshFiles}
-            onRefreshSessions={refreshSessions}
-            onUploaded={refreshFiles}
-            workspaces={workspaces}
-            currentWorkspace={currentWorkspace}
-            onWorkspaceChange={handleWorkspaceChange}
-            currentDir={currentDir}
-            onDirChange={handleDirChange}
-            onSelectSession={handleSelectSession}
-            onAtMention={handleAtMention}
-          />
-          <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
-        </>
-      )}
-      <div className="center-area">
-        {!sidebarOpen && (
-          <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏">
-            {"\u25B6"}
-          </button>
+    <AppErrorBoundary>
+      <div className="app">
+        {sidebarOpen && (
+          <>
+            <SessionSidebar
+              sessions={sessions}
+              files={files}
+              currentName={current?.name}
+              onOpenFile={open}
+              onRefreshFiles={refreshFiles}
+              onRefreshSessions={refreshSessions}
+              onUploaded={refreshFiles}
+              workspaces={workspaces}
+              currentWorkspace={currentWorkspace}
+              onWorkspaceChange={handleWorkspaceChange}
+              currentDir={currentDir}
+              onDirChange={handleDirChange}
+              onSelectSession={handleSelectSession}
+              onAtMention={handleAtMention}
+            />
+            <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
+          </>
         )}
-        <div className="center-content">
-          <div className="topbar">
-            {sidebarOpen && (
-              <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
-            )}
-            <span className="topbar-title">{current?.name || "Office Agent"}</span>
-            <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
-            <span className="topbar-badge">{models.length} 模型</span>
+        <div className="center-area">
+          {!sidebarOpen && (
+            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏">
+              {"\u25B6"}
+            </button>
+          )}
+          <div className="center-content">
+            <div className="topbar">
+              {sidebarOpen && (
+                <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
+              )}
+              <span className="topbar-title">{current?.name || "Office Agent"}</span>
+              <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
+              <span className="topbar-badge">{models.length} 模型</span>
+            </div>
+            <DocViewer
+              tabs={tabs}
+              activeTab={activeTab}
+              onSwitchTab={(n) => setActiveTab(n)}
+              onCloseTab={closeTab}
+              onOpenFile={open}
+              loading={docLoading}
+            />
           </div>
-          <DocViewer
-            tabs={tabs}
-            activeTab={activeTab}
-            onSwitchTab={(n) => setActiveTab(n)}
-            onCloseTab={closeTab}
-            onOpenFile={open}
-            loading={docLoading}
-          />
         </div>
+        <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
+        <ChatPanel
+          ref={chatInputRef}
+          clientId={clientId}
+          onFileChanged={handleFileChanged}
+          currentDoc={current?.name}
+          models={models}
+          defaultModel={defaultModel}
+          onAgentEnd={handleAgentEnd}
+          historyMessages={historyMessages}
+          onNewSession={handleNewSession}
+        />
+        <SkillsManager
+          open={skillsOpen}
+          onClose={() => setSkillsOpen(false)}
+          onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
+        />
       </div>
-      <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
-      <ChatPanel
-        ref={chatInputRef}
-        clientId={clientId}
-        onFileChanged={handleFileChanged}
-        currentDoc={current?.name}
-        models={models}
-        defaultModel={defaultModel}
-        onAgentEnd={handleAgentEnd}
-        historyMessages={historyMessages}
-        onNewSession={handleNewSession}
-      />
-      <SkillsManager
-        open={skillsOpen}
-        onClose={() => setSkillsOpen(false)}
-        onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
-      />
-    </div>
+    </AppErrorBoundary>
   );
 }
