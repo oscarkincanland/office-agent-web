@@ -6,6 +6,9 @@ import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
 
+let histSeq = 0;
+const histId = () => `h${++histSeq}`;
+
 export default function App() {
   const [files, setFiles] = useState([]);
   const [sessions, setSessions] = useState([]);
@@ -97,15 +100,36 @@ export default function App() {
         .map((e) => {
           const m = e.message;
           let text = "";
+          let thinking = "";
+          const tools = [];
           if (typeof m.content === "string") text = m.content;
-          else if (Array.isArray(m.content)) text = m.content.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+          else if (Array.isArray(m.content)) {
+            for (const b of m.content) {
+              if (b.type === "text") text += (text ? "\n" : "") + b.text;
+              else if (b.type === "thinking") thinking += (thinking ? "\n" : "") + b.thinking;
+              else if (b.type === "toolCall") {
+                const input = typeof b.input === "string" ? b.input : JSON.stringify(b.input, null, 2);
+                tools.push({
+                  id: histId(),
+                  name: b.toolName || b.name || "tool",
+                  input,
+                  output: "",
+                  result: "",
+                  done: true,
+                  isError: false,
+                  expanded: false,
+                  duration: null,
+                });
+              }
+            }
+          }
           return {
             id: e.id,
             role: m.role === "assistant" ? "assistant" : "user",
             text,
             images: [],
-            tools: [],
-            thinking: "",
+            tools,
+            thinking,
             status: "done",
           };
         });
