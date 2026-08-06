@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import MarkdownBody from "./MarkdownBody.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
 
 export default function DocViewer({ doc, loading }) {
@@ -88,6 +87,7 @@ export default function DocViewer({ doc, loading }) {
           </>
         )}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
+        {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
         {watchErr && <span className="badge err-badge">⚠ {watchErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
@@ -115,10 +115,18 @@ export default function DocViewer({ doc, loading }) {
           <iframe title={doc.name} src={doc.url} className="docframe" />
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
+        {doc.kind === "htmlfile" && (
+          <iframe
+            title={doc.name}
+            srcDoc={doc.content || ""}
+            className="docframe"
+            sandbox="allow-scripts allow-same-origin"
+          />
+        )}
         {doc.kind === "text" && (
           <div className="mdview">
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{doc.content || ""}</ReactMarkdown>
+              <MarkdownBody>{doc.content || ""}</MarkdownBody>
             </div>
           </div>
         )}

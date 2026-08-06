@@ -45,7 +45,7 @@ export function listWorkspace(dir) {
   if (!fs.existsSync(target)) return [];
   const items = fs.readdirSync(target, { withFileTypes: true });
   const files = items
-    .filter((e) => e.isFile() && !e.name.startsWith("~$") && /\.(docx|xlsx|pptx|md|markdown|txt)$/i.test(e.name))
+    .filter((e) => e.isFile() && !e.name.startsWith("~$") && /\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(e.name))
     .map((e) => {
       const st = fs.statSync(path.join(target, e.name));
       return { name: e.name, size: st.size, mtime: st.mtimeMs, ext: path.extname(e.name).slice(1).toLowerCase(), isDir: false };
