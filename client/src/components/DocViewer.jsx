@@ -61,6 +61,7 @@ function DocContent({ doc, loading, onRefresh }) {
   const mdContentRef = useRef(null);
   const htmlFrameRef = useRef(null);
   const [showComments, setShowComments] = useState(false);
+  const [activeComment, setActiveComment] = useState(null);
 
   if (loading && !doc.kind) {
     return (
@@ -142,6 +143,8 @@ function DocContent({ doc, loading, onRefresh }) {
               <CommentMarker 
                 comments={comments} 
                 containerRef={htmlFrameRef}
+                activeComment={activeComment}
+                setActiveComment={setActiveComment}
               />
             )}
           </div>
@@ -160,6 +163,8 @@ function DocContent({ doc, loading, onRefresh }) {
               <CommentMarker 
                 comments={comments} 
                 containerRef={htmlFrameRef}
+                activeComment={activeComment}
+                setActiveComment={setActiveComment}
               />
             )}
           </div>
@@ -176,6 +181,8 @@ function DocContent({ doc, loading, onRefresh }) {
               <CommentMarker
                 comments={comments}
                 containerRef={mdContentRef}
+                activeComment={activeComment}
+                setActiveComment={setActiveComment}
               />
             )}
           </div>

@@ -686,7 +686,7 @@ app.post("/api/agent/abort", async (req, res) => {
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, text, images, attachments } = req.body || {};
+  const { client, text, images, attachments, effort } = req.body || {};
   if (!client || !text) return res.status(400).json({ error: "client and text required" });
   const before = snapshotWorkspace();
   // 保存上传的附件到工作区（agent 可读取）
@@ -700,7 +700,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
   }
   try {
-    await agentManager.prompt(client, text, images);
+    await agentManager.prompt(client, text, images, effort);
     // officecli keeps files in a resident process — disk writes flush asynchronously.
     // Poll until the workspace snapshot stabilizes, then diff.
     const changed = await waitForFlush(before);

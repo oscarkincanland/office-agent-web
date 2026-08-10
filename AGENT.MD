@@ -32,3 +32,13 @@
 - 官方**不支持** subagent / plan mode；todo 列表已由前端"执行步骤"实现。
 - 多技能协作通过「技能集合/智能体广场」预置工作流模拟（一次 @ 多 skill + 角色指令）。
 - 新能力需求 → 优先做成 skill / 前端工作流，而非改 pi 内核。
+
+## 已知坑（v0.83）
+- 并发 prompt：agent 收尾（compaction/post-run）时 `entry.busy` 已 false 但 pi 内部仍 isStreaming，直接 prompt 会抛 "Agent is already processing" → 已加竞态重试（走 steer）。
+- 创作模式产物必须写入工作区（`office-workspace`），否则 `snapshotWorkspace` 检测不到、产物不显示。已写入 agent 上下文约束。
+- 前端组件内 hooks 不得放在 `if (!open) return null` 之后（React 规则），曾导致技能弹窗白屏。
+
+## pi 内核独立 app（调研结论，未实施）
+- pi 提供完整 SDK（`createAgentSession`/`ModelRuntime`/`setThinkingLevel`），现有 web 版已是嵌入式用法。
+- 打包方案：Electron/Tauri 壳 + 现有 server/前端，或 `bun build --compile` 单文件二进制。
+- 优势：独立进程稳定、可离线本地；成本：需维护壳层、自动更新、officecli 分发。
