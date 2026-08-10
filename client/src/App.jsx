@@ -4,6 +4,7 @@ import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
+import AgentMarket from "./components/AgentMarket.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
@@ -53,6 +54,7 @@ export default function App() {
   const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
+  const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -283,6 +285,7 @@ export default function App() {
               <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
             </button>
             <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理"><Icon name="skills" size={14} /> 技能</button>
+            <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
@@ -314,6 +317,11 @@ export default function App() {
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
           onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
+        />
+        <AgentMarket
+          open={agentsOpen}
+          onClose={() => setAgentsOpen(false)}
+          onAtMention={(text) => chatInputRef.current?.insertText(text)}
         />
       </div>
     </AppErrorBoundary>
