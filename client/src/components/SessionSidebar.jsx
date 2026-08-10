@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
+import ContextMenu from "./ContextMenu.jsx";
 
 function formatTime(iso) {
   if (!iso) return "";
@@ -98,6 +99,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
 
   const applyCustom = async () => {
     const dir = customPath.trim();
@@ -126,6 +129,62 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const handleDeleteFile = async (name) => {
     if (!confirm(`删除 ${name} ?`)) return;
     try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
+  };
+
+  // 在文件管理器中打开
+  const handleOpenInExplorer = (filePath) => {
+    // 调用后端API打开文件管理器
+    fetch("/api/open-in-explorer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: filePath })
+    }).catch(() => {
+      // 如果API不存在，复制路径到剪贴板
+      navigator.clipboard.writeText(filePath).then(() => {
+        alert("路径已复制到剪贴板: " + filePath);
+      });
+    });
+  };
+
+  // 右键菜单处理
+  const handleContextMenu = (e, file) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const filePath = currentDir ? `${currentDir}/${file.name}` : file.name;
+    
+    const menuItems = [
+      {
+        icon: "📂",
+        label: "在文件管理器中打开",
+        onClick: () => handleOpenInExplorer(filePath)
+      },
+      {
+        icon: "📋",
+        label: "复制文件名",
+        onClick: () => navigator.clipboard.writeText(file.name)
+      },
+      { separator: true },
+      {
+        icon: "@",
+        label: "@ 到对话中",
+        onClick: () => onAtMention && onAtMention(filePath, file.isDir)
+      }
+    ];
+    
+    if (!file.isDir) {
+      menuItems.push(
+        { separator: true },
+        {
+          icon: "🗑️",
+          label: "删除",
+          danger: true,
+          onClick: () => handleDeleteFile(filePath)
+        }
+      );
+    }
+    
+    setContextMenu({ x: e.clientX, y: e.clientY, items: menuItems });
   };
 
   const handleDeleteSession = async (id) => {
@@ -195,37 +254,40 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                 <span className="crumb-path">/{currentDir.split("/").pop()}</span>
               </div>
             )}
-            {files.map((f) => (
-              <div
-                key={f.name}
-                className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""}`}
-                onClick={() => {
-                  if (f.isDir) {
-                    const next = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onDirChange && onDirChange(next);
-                  } else {
-                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onOpenFile(rel);
-                  }
-                }}
-                title={f.isDir ? f.name : f.name}
-              >
-                <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? "DIR" : (EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?" )}</span>
-                <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
-                <span
-                  className="file-at"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onAtMention && onAtMention(rel, f.isDir);
+            {files.map((f) => {
+              const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
+              const isNew = newFiles.has(filePath);
+              return (
+                <div
+                  key={f.name}
+                  className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""}`}
+                  onClick={() => {
+                    if (f.isDir) {
+                      const next = currentDir ? `${currentDir}/${f.name}` : f.name;
+                      onDirChange && onDirChange(next);
+                    } else {
+                      onOpenFile(filePath);
+                    }
                   }}
-                  title="@ 到对话中作为参考"
-                >@</span>
-                {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(currentDir ? `${currentDir}/${f.name}` : f.name); }}>x</span>
-                )}
-              </div>
-            ))}
+                  onContextMenu={(e) => handleContextMenu(e, f)}
+                  title={f.isDir ? f.name : f.name}
+                >
+                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? "DIR" : (EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?" )}</span>
+                  <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
+                  <span
+                    className="file-at"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAtMention && onAtMention(filePath, f.isDir);
+                    }}
+                    title="@ 到对话中作为参考"
+                  >@</span>
+                  {!f.isDir && (
+                    <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}>x</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <div className="sidebar-foot">office-workspace</div>
         </>
@@ -278,6 +340,15 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
             }}
           />
         </>
+      )}
+      
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          items={contextMenu.items}
+          onClose={() => setContextMenu(null)}
+        />
       )}
     </div>
   );

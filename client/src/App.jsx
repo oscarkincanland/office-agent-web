@@ -300,6 +300,7 @@ export default function App() {
           onAgentEnd={handleAgentEnd}
           historyMessages={historyMessages}
           onNewSession={handleNewSession}
+          onOpenFile={open}
         />
         <SkillsManager
           open={skillsOpen}
