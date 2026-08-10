@@ -65,9 +65,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .docview {
   flex: 1;
   min-width: 200px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: #191d30;
+  overflow: hidden;
 }
 /* chat */
 .chat {
@@ -187,17 +189,25 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .mdview {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: auto !important;
   padding: 20px 32px;
   background: var(--body-bg);
   overscroll-behavior: contain;
 }
-.mdview .markdown-body { font-size: 13px; max-width: 800px; }
+
+.mdview .markdown-body { 
+  font-size: 13px; 
+  max-width: 800px;
+}
 /* 让 mdview 在 flex 容器中正确滚动 */
-.docview-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.docview-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .docview-body .docframe,
 .docview-body > .mdview,
+.docview-body > .mdview-container,
 .docview-body > .excel-wrap { flex: 1; min-height: 0; }
+
+.mdview-container { display: flex; flex-direction: column; }
+.mdview-container .mdview { flex: 1; min-height: 0; overflow-y: auto; }
 .file-del { visibility: hidden; color: var(--dim); font-size: 10px; cursor: pointer; }
 .file-at {
   visibility: hidden;
@@ -944,6 +954,16 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border: 1px solid #2a4a2a;
   border-radius: 3px;
   color: var(--success);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.summary-product.clickable:hover {
+  background: var(--accent);
+  color: var(--body-bg);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 .msg.system .bubble.summary {
   border-color: var(--success);
@@ -1117,4 +1137,302 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   color: var(--muted);
   margin-bottom: 20px;
   word-break: break-word;
+}
+
+/* ===== 批注标记面板 ===== */
+.docframe-container {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+.comment-marker-panel {
+  width: 240px;
+  min-width: 240px;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.comment-marker-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.comment-marker-icon {
+  font-size: 14px;
+}
+
+.comment-marker-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.comment-marker-item {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.comment-marker-item:hover,
+.comment-marker-item.hovered {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.comment-marker-item.active {
+  border-color: var(--warning);
+  background: var(--tool-success);
+}
+
+.comment-marker-locate {
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+
+.comment-marker-item:hover .comment-marker-locate {
+  opacity: 1;
+}
+
+.comment-marker-footer {
+  padding: 8px 12px;
+  font-size: 9px;
+  color: var(--dim);
+  text-align: center;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.comment-marker-index {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--body-bg);
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.comment-marker-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.comment-marker-author {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.comment-marker-text {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.comment-marker-path {
+  font-size: 9px;
+  color: var(--dim);
+  margin-top: 4px;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 批注气泡 */
+.comment-bubble {
+  position: absolute;
+  right: 250px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--warning);
+  color: var(--body-bg);
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 5;
+  transition: transform 0.15s ease;
+}
+
+.comment-bubble:hover {
+  transform: scale(1.2);
+}
+
+.comment-bubble.active {
+  background: var(--accent);
+}
+
+.comment-bubble-detail {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 200px;
+  padding: 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.comment-bubble-author {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.comment-bubble-text {
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.comment-bubble-date {
+  font-size: 9px;
+  color: var(--dim);
+  margin-top: 4px;
+}
+
+/* 高亮效果 */
+@keyframes comment-highlight {
+  0% { background-color: rgba(138, 190, 183, 0.3); }
+  100% { background-color: transparent; }
+}
+
+.comment-highlight {
+  animation: comment-highlight 2s ease-out;
+}
+
+/* 批注定位高亮 - 更强烈的效果 */
+@keyframes comment-highlight-pulse {
+  0% { 
+    background-color: rgba(240, 198, 116, 0.4);
+    box-shadow: 0 0 0 2px rgba(240, 198, 116, 0.6);
+  }
+  50% { 
+    background-color: rgba(240, 198, 116, 0.6);
+    box-shadow: 0 0 0 4px rgba(240, 198, 116, 0.8);
+  }
+  100% { 
+    background-color: rgba(240, 198, 116, 0.4);
+    box-shadow: 0 0 0 2px rgba(240, 198, 116, 0.6);
+  }
+}
+
+.comment-highlight-active {
+  animation: comment-highlight-pulse 0.8s ease-in-out 3;
+  outline: 2px solid var(--warning);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ===== 右键菜单 ===== */
+.context-menu {
+  position: fixed;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  min-width: 180px;
+  padding: 4px 0;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.context-menu-item:hover {
+  background: var(--selected);
+}
+
+.context-menu-item.disabled {
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+.context-menu-item.danger {
+  color: var(--error);
+}
+
+.context-menu-item.danger:hover {
+  background: var(--tool-error);
+}
+
+.context-menu-icon {
+  font-size: 12px;
+  width: 16px;
+  text-align: center;
+}
+
+.context-menu-text {
+  flex: 1;
+}
+
+.context-menu-shortcut {
+  font-size: 10px;
+  color: var(--dim);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ===== 新文件高亮 ===== */
+.file-item.new-file {
+  background: rgba(181, 189, 104, 0.15);
+  border-left: 2px solid var(--success);
+}
+
+.file-item.new-file .file-name {
+  color: var(--success);
+  font-weight: 500;
+}
+
+.file-item.new-file:hover {
+  background: rgba(181, 189, 104, 0.25);
 }

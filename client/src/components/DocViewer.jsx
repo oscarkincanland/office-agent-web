@@ -2,16 +2,32 @@ import React, { useState, useCallback, useEffect, useRef } from "react";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
+import CommentMarker from "./CommentMarker.jsx";
 
 const ICONS = { docx: "W", xlsx: "X", pptx: "P", md: "M", html: "H", htm: "H", txt: "T" };
 
 // 文件内容渲染（单个 tab 的正文）
-function DocContent({ doc, loading }) {
+function DocContent({ doc, loading, onRefresh }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
   const [comments, setComments] = useState([]);
   const [commentsOpen, setCommentsOpen] = useState(false);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+
+  // 获取批注
+  const fetchComments = useCallback(async () => {
+    if (!doc || doc.kind !== "html") return;
+    setCommentsLoading(true);
+    try {
+      const r = await fetch(`/api/doc/${encodeURIComponent(doc.name)}/comments`);
+      const d = await r.json();
+      setComments(d.comments || []);
+    } catch (e) {
+      console.error("获取批注失败:", e);
+    }
+    setCommentsLoading(false);
+  }, [doc]);
 
   useEffect(() => {
     setWatchUrl(null);
@@ -20,12 +36,9 @@ function DocContent({ doc, loading }) {
     setComments([]);
     setCommentsOpen(false);
     if (doc?.kind === "html") {
-      fetch(`/api/doc/${encodeURIComponent(doc.name)}/comments`)
-        .then((r) => r.json())
-        .then((d) => setComments(d.comments || []))
-        .catch(() => {});
+      fetchComments();
     }
-  }, [doc?.name, doc?.kind]);
+  }, [doc?.name, doc?.kind, fetchComments]);
 
   const startLive = useCallback(async () => {
     if (!doc) return;
@@ -45,6 +58,8 @@ function DocContent({ doc, loading }) {
   }, [doc]);
 
   const mdContentRef = useRef(null);
+  const htmlFrameRef = useRef(null);
+  const [showComments, setShowComments] = useState(false);
 
   if (loading && !doc.kind) {
     return (
@@ -72,11 +87,20 @@ function DocContent({ doc, loading }) {
             {watchUrl && (
               <button className="btn-sm" onClick={() => setWatchUrl(null)}>静态预览</button>
             )}
-            {comments.length > 0 && (
-              <button className={`btn-sm comment-btn ${commentsOpen ? "active" : ""}`} onClick={() => setCommentsOpen(!commentsOpen)}>
-                💬 批注 ({comments.length})
-              </button>
-            )}
+            <button 
+              className="btn-sm" 
+              onClick={fetchComments} 
+              disabled={commentsLoading}
+              title="刷新批注"
+            >
+              {commentsLoading ? "⏳" : "🔄"}
+            </button>
+            <button 
+              className={`btn-sm comment-btn ${showComments ? "active" : ""}`} 
+              onClick={() => setShowComments(!showComments)}
+            >
+              💬 批注 ({comments.length})
+            </button>
           </>
         )}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
@@ -85,7 +109,7 @@ function DocContent({ doc, loading }) {
         {watchErr && <span className="badge err-badge">⚠ {watchErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
       </div>
-      {commentsOpen && comments.length > 0 && (
+      {commentsOpen && comments.length > 0 && !showComments && (
         <div className="comments-panel">
           <div className="comments-head">文档批注</div>
           {comments.map((c, i) => (
@@ -102,16 +126,38 @@ function DocContent({ doc, loading }) {
       )}
       <div className="docview-body">
         {doc.kind === "html" && (
-          <iframe title={doc.name} src={watchUrl || doc.url} className="docframe" />
+          <div className="docframe-container">
+            <iframe 
+              ref={htmlFrameRef}
+              title={doc.name} 
+              src={watchUrl || doc.url} 
+              className="docframe" 
+            />
+            {showComments && comments.length > 0 && (
+              <CommentMarker 
+                comments={comments} 
+                containerRef={htmlFrameRef}
+              />
+            )}
+          </div>
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
         {doc.kind === "htmlfile" && (
-          <iframe
-            title={doc.name}
-            srcDoc={doc.content || ""}
-            className="docframe"
-            sandbox="allow-scripts allow-same-origin"
-          />
+          <div className="docframe-container">
+            <iframe
+              ref={htmlFrameRef}
+              title={doc.name}
+              srcDoc={doc.content || ""}
+              className="docframe"
+              sandbox="allow-scripts allow-same-origin"
+            />
+            {showComments && comments.length > 0 && (
+              <CommentMarker 
+                comments={comments} 
+                containerRef={htmlFrameRef}
+              />
+            )}
+          </div>
         )}
         {doc.kind === "text" && (
           <div className="mdview-container">

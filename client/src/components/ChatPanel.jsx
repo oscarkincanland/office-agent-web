@@ -61,7 +61,7 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession }, ref) {
+export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]);
@@ -520,7 +520,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m) => <Message key={m.id} m={m} onToggleTool={(toolId) => {
+          {messages.map((m) => <Message key={m.id} m={m} onOpenFile={onOpenFile} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -581,7 +581,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
 });
 
 // ========== 消息组件（pi-web MessageView 风格：text/thinking/toolCall 分块渲染） ==========
-function Message({ m, onToggleTool }) {
+function Message({ m, onToggleTool, onOpenFile }) {
   if (m.role === "system") {
     return (
       <div className="msg system">
@@ -590,7 +590,14 @@ function Message({ m, onToggleTool }) {
           {m.products?.length > 0 && (
             <div className="summary-products">
               {m.products.map((p) => (
-                <span key={p} className="summary-product">📄 {p}</span>
+                <span 
+                  key={p} 
+                  className="summary-product clickable"
+                  onClick={() => onOpenFile && onOpenFile(p)}
+                  title={`点击打开 ${p}`}
+                >
+                  📄 {p}
+                </span>
               ))}
             </div>
           )}

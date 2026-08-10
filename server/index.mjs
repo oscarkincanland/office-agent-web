@@ -724,6 +724,56 @@ function emitChannel(entry, type, data) {
   entry.channel.emitter.emit("event", ev);
 }
 
+// 在文件管理器中打开文件/文件夹
+app.post("/api/open-in-explorer", async (req, res) => {
+  const { path: filePath } = req.body || {};
+  if (!filePath) return res.status(400).json({ error: "path required" });
+  
+  const { exec } = await import("child_process");
+  const { statSync } = await import("fs");
+  const path = await import("path");
+  
+  const fullPath = resolvePath(filePath);
+  
+  if (!fullPath) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  
+  // Windows: 使用 explorer 打开文件夹或选中文件
+  const isWindows = process.platform === "win32";
+  let cmd;
+  
+  try {
+    if (isWindows) {
+      const stat = statSync(fullPath, { throwOnError: false });
+      if (stat && stat.isDirectory()) {
+        cmd = `explorer "${fullPath}"`;
+      } else {
+        // 选中文件 - 使用 explorer /select 命令
+        const dir = path.dirname(fullPath);
+        const file = path.basename(fullPath);
+        cmd = `cmd /c explorer /select,"${fullPath}"`;
+      }
+    } else if (process.platform === "darwin") {
+      cmd = `open "${fullPath}"`;
+    } else {
+      cmd = `xdg-open "${path.dirname(fullPath)}"`;
+    }
+    
+    exec(cmd, (err) => {
+      if (err) {
+        console.error("打开文件管理器失败:", err);
+        // 即使失败也返回成功，因为explorer可能已经打开
+        res.json({ ok: true, warning: err.message });
+      } else {
+        res.json({ ok: true });
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`office-agent-web running at http://localhost:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
