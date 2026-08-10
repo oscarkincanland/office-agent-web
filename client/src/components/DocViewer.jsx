@@ -2,6 +2,8 @@ import React, { useState, useCallback, useEffect, useRef } from "react";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
+import DocxViewer from "./DocxViewer.jsx";
+import PptxViewer from "./PptxViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
 
@@ -131,7 +133,13 @@ function DocContent({ doc, loading, onRefresh }) {
         </div>
       )}
       <div className="docview-body">
-        {doc.kind === "html" && (
+        {doc.kind === "html" && doc.ext === "docx" && (
+          <DocxViewer name={doc.name} />
+        )}
+        {doc.kind === "html" && doc.ext === "pptx" && (
+          <PptxViewer name={doc.name} />
+        )}
+        {doc.kind === "html" && doc.ext !== "docx" && doc.ext !== "pptx" && (
           <div className="docframe-container">
             <iframe 
               ref={htmlFrameRef}
