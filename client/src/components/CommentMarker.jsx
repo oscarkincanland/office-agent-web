@@ -29,15 +29,60 @@ export default function CommentMarker({ comments, containerRef }) {
     }
   }, [containerRef]);
 
+  // 在段落内高亮匹配文本（Word 式：标记具体文字）
+  const highlightTextInElement = useCallback((element, searchText) => {
+    if (!element) return null;
+    
+    // 提取可搜索关键词：去掉批注内容前缀（如"当前打开文件:"），取中间关键词
+    const keywords = (searchText || "")
+      .replace(/\[当前打开文件:?[^\]]*\]/g, " ")
+      .replace(/[^\u4e00-\u9fa5A-Za-z0-9，。、；：""''（）()【】\s]/g, " ")
+      .split(/\s+/)
+      .filter((k) => k.length >= 4);
+    
+    const kw = keywords[0] || "";
+    if (!kw) return null;
+    
+    let target = null;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      const idx = node.textContent.indexOf(kw);
+      if (idx >= 0) {
+        target = node;
+        break;
+      }
+    }
+    if (!target) return null;
+    
+    // 用 <mark> 包裹匹配文本（Word 式高亮标记）
+    const span = document.createElement("span");
+    span.className = "comment-text-mark";
+    span.textContent = kw;
+    
+    const range = document.createRange();
+    const idx = target.textContent.indexOf(kw);
+    range.setStart(target, idx);
+    range.setEnd(target, idx + kw.length);
+    range.surroundContents(span);
+    
+    return span;
+  }, []);
+
   // 高亮段落
-  const highlightElement = useCallback((element) => {
+  const highlightElement = useCallback((element, comment) => {
     if (!element) return;
     
     // 清除之前的高亮
     clearHighlight();
     
-    // 添加高亮样式
-    element.classList.add("comment-highlight-active");
+    // Word 式：先尝试段落内文本级高亮，失败则整段高亮
+    const mark = highlightTextInElement(element, comment?.text);
+    if (mark) {
+      mark.classList.add("comment-highlight-active");
+    } else {
+      element.classList.add("comment-highlight-active");
+    }
     
     // 滚动到元素位置
     element.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -47,9 +92,10 @@ export default function CommentMarker({ comments, containerRef }) {
       clearTimeout(highlightTimerRef.current);
     }
     highlightTimerRef.current = setTimeout(() => {
+      if (mark) mark.classList.remove("comment-highlight-active");
       element.classList.remove("comment-highlight-active");
-    }, 3000);
-  }, [clearHighlight]);
+    }, 4000);
+  }, [clearHighlight, highlightTextInElement]);
 
   // 根据批注的path或位置信息，找到对应的DOM元素
   const findCommentElement = useCallback((comment) => {
@@ -114,7 +160,7 @@ export default function CommentMarker({ comments, containerRef }) {
     setActiveComment(index);
     const el = findCommentElement(comment);
     if (el) {
-      highlightElement(el);
+      highlightElement(el, comment);
     }
   }, [findCommentElement, highlightElement]);
 

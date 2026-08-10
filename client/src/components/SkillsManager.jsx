@@ -76,9 +76,7 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
 
   useEffect(() => { if (open) refresh(); }, [open, refresh]);
 
-  if (!open) return null;
-
-  // 按分类聚合
+  // 按分类聚合（hooks 必须无条件执行）
   const grouped = useMemo(() => {
     const groups = {};
     for (const s of skills) {
@@ -96,6 +94,8 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
   const visibleCategories = category === "all"
     ? Object.keys(grouped)
     : [category];
+
+  if (!open) return null;
 
   const handleExport = async (skill) => {
     try {
