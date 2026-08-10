@@ -50,41 +50,70 @@ function sheetToGrid(children) {
 }
 
 async function readWorkbook(file) {
-  // 枚举 sheets：depth 1 不够则递增重试
-  let info = await get(file, "/", 1);
-  const sheetNodes = [];
-  const collect = (results) => {
-    for (const r of results || []) {
-      if (r.type === "sheet") sheetNodes.push(r);
-      if (r.children) {
-        for (const c of r.children) {
-          if (c.type === "sheet") sheetNodes.push(c);
+  // 尝试 officecli（Windows），失败则用 xlsx 包原生读取（macOS/Linux）
+  try {
+    const { get } = await import("./office.mjs");
+    // 枚举 sheets：depth 1 不够则递增重试
+    let info = await get(file, "/", 1);
+    const sheetNodes = [];
+    const collect = (results) => {
+      for (const r of results || []) {
+        if (r.type === "sheet") sheetNodes.push(r);
+        if (r.children) {
+          for (const c of r.children) {
+            if (c.type === "sheet") sheetNodes.push(c);
+          }
         }
       }
-    }
-  };
-  collect(info.json?.data?.results || []);
-  if (sheetNodes.length === 0) {
-    info = await get(file, "/", 2);
+    };
     collect(info.json?.data?.results || []);
-  }
-  if (sheetNodes.length === 0) {
-    throw new Error("无法枚举工作表（文件可能损坏或格式不支持）");
-  }
-  const sheets = [];
-  const grids = {};
-  for (const s of sheetNodes) {
-    const name = s.preview || s.path.split("/").pop();
-    if (!sheets.some((x) => x.name === name)) {
-      sheets.push({ name, path: s.path });
+    if (sheetNodes.length === 0) {
+      info = await get(file, "/", 2);
+      collect(info.json?.data?.results || []);
+    }
+    if (sheetNodes.length === 0) {
+      throw new Error("无法枚举工作表");
+    }
+    const sheets = [];
+    const grids = {};
+    for (const s of sheetNodes) {
+      const name = s.preview || s.path.split("/").pop();
+      if (!sheets.some((x) => x.name === name)) {
+        sheets.push({ name, path: s.path });
+      }
+    }
+    for (const s of sheets) {
+      const r = await get(file, s.name, 3);
+      const res = r.json?.data?.results?.[0];
+      grids[s.name] = sheetToGrid(res?.children || []);
+    }
+    return { sheets: sheets.map((s) => s.name), grids };
+  } catch (officeErr) {
+    // officecli 不可用，使用 xlsx 包原生读取
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.readFile(file);
+      const sheets = wb.SheetNames;
+      const grids = {};
+      for (const name of sheets) {
+        const ws = wb.Sheets[name];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const rows = {};
+        data.forEach((row, ri) => {
+          const cells = {};
+          row.forEach((val, ci) => {
+            const col = String.fromCharCode(65 + ci);
+            cells[`${col}${ri + 1}`] = { text: String(val) };
+          });
+          rows[ri + 1] = { cells };
+        });
+        grids[name] = { rows };
+      }
+      return { sheets, grids };
+    } catch (xlsxErr) {
+      throw new Error(`officecli: ${officeErr.message} | xlsx: ${xlsxErr.message}`);
     }
   }
-  for (const s of sheets) {
-    const r = await get(file, s.name, 3);
-    const res = r.json?.data?.results?.[0];
-    grids[s.name] = sheetToGrid(res?.children || []);
-  }
-  return { sheets: sheets.map((s) => s.name), grids };
 }
 
 // ---------- REST ----------
@@ -555,9 +584,9 @@ app.get("/api/sessions", (req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
-        // 只显示 office agent 的会话（cwd 含 .sessions 专属目录），过滤 pi TUI 等其他会话
+        // 只显示 office agent 的会话（cwd 匹配当前项目目录），过滤 pi TUI 等其他会话
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes(".sessions") && cwd.includes("office-agent-web");
+        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
