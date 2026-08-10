@@ -27,10 +27,12 @@ export default function DocxViewer({ name }) {
       try {
         const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw`);
         if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
-        const blob = await res.blob();
+        // 统一转 Uint8Array：JSZip 直接走 uint8array 分支，规避 Blob→FileReader 兼容问题
+        const buf = await res.arrayBuffer();
+        const data = new Uint8Array(buf);
         if (cancelled) return;
         host.innerHTML = "";
-        await renderAsync(blob, host, null, {
+        await renderAsync(data, host, null, {
           className: "oaw-docx",
           inWrapper: true,
           breakPages: true,

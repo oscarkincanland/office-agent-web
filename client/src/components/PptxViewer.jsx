@@ -24,10 +24,12 @@ export default function PptxViewer({ name }) {
       try {
         const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw`);
         if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
+        // 统一转 Uint8Array：pptxviewjs 的 ZLib/JSZip 直接走 uint8array 分支，规避 Blob→FileReader 兼容问题
         const buf = await res.arrayBuffer();
+        const data = new Uint8Array(buf);
         if (cancelled) return;
         const viewer = new PPTXViewJS.PPTXViewer({ canvas: canvasRef.current, renderMode: "canvas", lazyLoad: false });
-        await viewer.loadFile(buf);
+        await viewer.loadFile(data);
         viewerRef.current = viewer;
         setTotal(viewer.getSlideCount());
         setCurrent(1);
