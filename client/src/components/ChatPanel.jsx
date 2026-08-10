@@ -74,6 +74,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
   const [editMode, setEditMode] = useState("office"); // "office" | "agent"：office编辑模式 / 普通agent模式
+  const [effort, setEffort] = useState("medium"); // 推理强度 low/medium/high
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -427,7 +428,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, text: fullText, images: imgs, attachments: atts }),
+        body: JSON.stringify({ client: clientId, text: fullText, images: imgs, attachments: atts, effort }),
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
@@ -520,22 +521,6 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         )}
         <div className="chat-head">
           <span className="chat-title">agent</span>
-          <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话">＋ 新建会话</button>
-          <div className="mode-switch" title="切换编辑模式">
-            <button
-              className={`mode-btn ${editMode === "office" ? "active" : ""}`}
-              onClick={() => setEditMode("office")}
-            ><Icon name="doc" size={12} /> Office</button>
-            <button
-              className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
-              onClick={() => setEditMode("agent")}
-            ><Icon name="pen-tool" size={12} /> 创作</button>
-          </div>
-          <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
-            <option value="">-- 选择模型 --</option>
-            {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
-          </select>
-          {modelMsg && <span className="model-msg">{modelMsg}</span>}
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
@@ -625,6 +610,34 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               <button className="btn primary send-btn" onClick={send}><Icon name="send" size={12} /> 发送</button>
             )}
           </div>
+          <div className="chat-settings">
+            <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话"><Icon name="plus" size={10} /> 新建</button>
+            <div className="mode-switch" title="切换编辑模式">
+              <button
+                className={`mode-btn ${editMode === "office" ? "active" : ""}`}
+                onClick={() => setEditMode("office")}
+              ><Icon name="doc" size={11} /> Office</button>
+              <button
+                className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
+                onClick={() => setEditMode("agent")}
+              ><Icon name="pen-tool" size={11} /> 创作</button>
+            </div>
+            <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
+              <option value="">-- 模型 --</option>
+              {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
+            </select>
+            <select
+              className="effort-select"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              title="推理强度（思考深度）"
+            >
+              <option value="low">⚡ 快速</option>
+              <option value="medium">⚖ 标准</option>
+              <option value="high">🧠 深度</option>
+            </select>
+            {modelMsg && <span className="model-msg">{modelMsg}</span>}
+          </div>
         </div>
       </div>
     </ErrorBoundary>
@@ -664,6 +677,20 @@ function Message({ m, onToggleTool, onOpenFile }) {
   const toolBlocks = blocks.filter((b) => b.type === "tool");
   const hasContent = blocks.length > 0 || m.images?.length > 0;
 
+  // 从文本块解析工作计划（- [ ] / - [x] 任务列表，opencode 风格）
+  const planTasks = useMemo(() => {
+    const tasks = [];
+    for (const b of blocks) {
+      if (b.type !== "text" || !b.text) continue;
+      const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
+      let match;
+      while ((match = re.exec(b.text))) {
+        tasks.push({ text: match[2].trim(), done: match[1] !== " " });
+      }
+    }
+    return tasks;
+  }, [blocks]);
+
   const copyText = async () => {
     try {
       const allText = blocks.map((b) => b.type === "text" ? b.text : b.type === "tool" ? (b.name + " " + (b.input || "")) : "").join("\n");
@@ -694,6 +721,8 @@ function Message({ m, onToggleTool, onOpenFile }) {
           </div>
         ) : (
           <>
+            {/* 工作计划展示板（opencode 风格：任务拆解 + 打勾） */}
+            {planTasks.length > 0 && <PlanBoard tasks={planTasks} />}
             {/* 工具步骤 todo list */}
             {toolBlocks.length > 0 && <TodoList tools={toolBlocks} />}
             {/* blocks 按序渲染：思考/工具/文本各自独立气泡 */}
@@ -728,6 +757,50 @@ function Message({ m, onToggleTool, onOpenFile }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ========== 工作计划展示板（任务拆解 + 打勾，opencode 风格） ==========
+function PlanBoard({ tasks }) {
+  const [open, setOpen] = useState(true);
+  const [checked, setChecked] = useState(() => new Set(tasks.map((t, i) => (t.done ? i : -1)).filter((i) => i >= 0)));
+  const done = checked.size;
+
+  const toggle = (i) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  };
+
+  return (
+    <div className={`plan-board ${open ? "open" : ""}`}>
+      <div className="plan-head" onClick={() => setOpen(!open)}>
+        <span className="plan-icon">{open ? "▾" : "▸"}</span>
+        <span className="plan-title"><Icon name="grid" size={12} /> 工作计划</span>
+        <span className="plan-progress">{done}/{tasks.length} 完成</span>
+      </div>
+      {open && (
+        <div className="plan-body">
+          <div className="plan-bar">
+            <div className="plan-bar-fill" style={{ width: `${(done / tasks.length) * 100}%` }} />
+          </div>
+          {tasks.map((t, i) => (
+            <div
+              key={i}
+              className={`plan-item ${checked.has(i) ? "done" : ""}`}
+              onClick={() => toggle(i)}
+              title={checked.has(i) ? "点击取消完成" : "点击标记完成"}
+            >
+              <span className="plan-check">{checked.has(i) ? <Icon name="check" size={11} /> : ""}</span>
+              <span className="plan-text">{t.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

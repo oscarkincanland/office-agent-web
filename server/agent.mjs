@@ -63,6 +63,7 @@ class AgentManager extends EventEmitter {
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
+              "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
             ].join("\n"),
           },
@@ -204,11 +205,15 @@ class AgentManager extends EventEmitter {
   }
 
   /** Run a prompt. Events stream to entry.emitter; resolves on completion. */
-  async prompt(clientId, text, images = []) {
+  async prompt(clientId, text, images = [], effort) {
     const entry = await this.getOrCreate(clientId);
     const isStreaming = entry.busy;
     entry.busy = true;
     try {
+      // 应用推理强度（low/medium/high → pi thinking level）
+      if (effort) {
+        try { entry.session.setThinkingLevel(effort); } catch {}
+      }
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -231,7 +236,18 @@ class AgentManager extends EventEmitter {
         emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
         await entry.session.prompt(text, opts);
       } else {
-        await entry.session.prompt(text, opts);
+        try {
+          await entry.session.prompt(text, opts);
+        } catch (e) {
+          // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
+          // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列
+          if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
+            emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
+            await entry.session.prompt(text, { ...opts, streamingBehavior: "steer" });
+          } else {
+            throw e;
+          }
+        }
       }
     } finally {
       entry.busy = false;
