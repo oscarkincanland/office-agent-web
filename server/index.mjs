@@ -119,28 +119,45 @@ app.post("/api/files/delete", async (req, res) => {
   res.json({ ok: true });
 });
 
+// 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
+app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  const ext = path.extname(p).slice(1).toLowerCase();
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+  try {
+    res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
+    res.sendFile(p);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // open document
-app.get("/api/doc/:file", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
   if (client) {
-    try { agentManager.setCurrentFile(client, req.params.file); } catch {}
+    try { agentManager.setCurrentFile(client, fileName); } catch {}
   }
   try {
     if (ext === "xlsx") {
       const wb = await readWorkbook(p);
-      res.json({ kind: "xlsx", name: req.params.file, ...wb });
+      res.json({ kind: "xlsx", name: fileName, ...wb });
     } else if (ext === "md" || ext === "markdown" || ext === "txt") {
       const content = fs.readFileSync(p, "utf8");
-      res.json({ kind: "text", name: req.params.file, content, ext });
+      res.json({ kind: "text", name: fileName, content, ext });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
-      res.json({ kind: "htmlfile", name: req.params.file, content });
+      res.json({ kind: "htmlfile", name: fileName, content });
     } else {
-      res.json({ kind: "html", name: req.params.file, url: `/api/doc/${encodeURIComponent(req.params.file)}/html` });
+      res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -148,8 +165,9 @@ app.get("/api/doc/:file", async (req, res) => {
 });
 
 // rendered html for docx/pptx (iframe target)
-app.get("/api/doc/:file/html", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).send("not found");
   try {
     const html = await renderHtml(p);
@@ -163,14 +181,14 @@ app.get("/api/doc/:file/html", async (req, res) => {
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
 // 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
-app.get("/api/doc/:file/comments", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   try {
     if (ext === "md" || ext === "markdown" || ext === "txt") {
       // 从 agent 会话中提取与该文件相关的修改指令（模拟批注/修订记录）
-      const fileName = req.params.file;
       const comments = [];
       for (const f of listSessionFiles()) {
         try {
@@ -217,8 +235,9 @@ app.get("/api/doc/:file/comments", async (req, res) => {
   }
 });
 
-app.get("/api/doc/:file/watch", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   try {
     const entry = await startWatch(p);
@@ -229,15 +248,17 @@ app.get("/api/doc/:file/watch", async (req, res) => {
 });
 
 // 停止某文件的 watch
-app.post("/api/doc/:file/watch/stop", (req, res) => {
-  const p = resolvePath(req.params.file);
+app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (p) stopWatch(p);
   res.json({ ok: true });
 });
 
 // apply xlsx cell edits (batch)
-app.post("/api/doc/:file/cells", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const { sheet, cells } = req.body || {};
   if (!sheet || !Array.isArray(cells) || !cells.length) return res.status(400).json({ error: "bad payload" });

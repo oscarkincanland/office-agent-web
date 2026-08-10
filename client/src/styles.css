@@ -1878,3 +1878,84 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   flex-wrap: wrap;
   gap: 4px;
 }
+
+/* ===== docx-preview 渲染器 ===== */
+.oaw-docx-wrap, .oaw-pptx-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #525659;
+}
+[data-theme="light"] .oaw-docx-wrap, [data-theme="light"] .oaw-pptx-wrap { background: #e8eaed; }
+.oaw-docx-toolbar, .oaw-pptx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.oaw-docx-toolbar .btn-xs.active, .oaw-pptx-toolbar .btn-xs.active {
+  background: var(--accent);
+  color: var(--body-bg);
+  border-color: var(--accent);
+}
+.oaw-docx-hint, .oaw-pptx-hint {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--dim);
+}
+.oaw-docx-host {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px;
+  display: flex;
+  justify-content: center;
+}
+.oaw-docx-host .docx-wrapper { background: #fff; }
+.oaw-docx-loading, .oaw-pptx-loading, .oaw-docx-error, .oaw-pptx-error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 12px;
+  background: var(--panel-bg);
+  padding: 20px 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  z-index: 5;
+}
+.oaw-docx-error, .oaw-pptx-error { color: var(--error); }
+
+/* ===== pptxviewjs 渲染器 ===== */
+.oaw-pptx-host {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.oaw-pptx-host canvas {
+  max-width: 100%;
+  max-height: 100%;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+  background: #fff;
+}
+.oaw-pptx-count {
+  font-size: 11px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.oaw-pptx-jump { font-size: 10px; max-width: 100px; }
