@@ -15,6 +15,10 @@ server_err.log
 office-workspace/
 .sessions/
 
+# agent 运行时产物（OD 分析 demo 等）
+OD*Demo-*/
+od-pipeline.cjs
+
 # 环境与临时文件
 .env
 *.local
