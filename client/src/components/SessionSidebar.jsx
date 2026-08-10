@@ -1,9 +1,21 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useCallback } from "react";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
+import MemoryTab from "./MemoryTab.jsx";
 
 const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
+const PIN_KEY = "oaw_pinned_sessions";
+
+function getPinnedSet() {
+  try { return new Set(JSON.parse(localStorage.getItem(PIN_KEY) || "[]")); } catch { return new Set(); }
+}
+function togglePin(id) {
+  const s = getPinnedSet();
+  s.has(id) ? s.delete(id) : s.add(id);
+  localStorage.setItem(PIN_KEY, JSON.stringify([...s]));
+  return s;
+}
 
 function formatTime(iso) {
   if (!iso) return "";
@@ -26,70 +38,111 @@ function shortenCwd(cwd) {
   return "\u2026/" + parts.slice(-2).join("/");
 }
 
-// 相对时间（基于毫秒时间戳）
-function formatRelTime(ms) {
-  if (!ms) return "";
-  const diff = Date.now() - ms;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "刚刚";
-  if (mins < 60) return `${mins}分钟前`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}小时前`;
-  const days = Math.floor(hours / 24);
-  return `${days}天前`;
+// 日期分组（Proma groupByDate）
+function groupByDate(sessions) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterday = today - 86400000;
+  const groups = { 今天: [], 昨天: [], 更早: [] };
+  for (const s of sessions) {
+    const t = new Date(s.modified || 0).getTime();
+    if (t >= today) groups["今天"].push(s);
+    else if (t >= yesterday) groups["昨天"].push(s);
+    else groups["更早"].push(s);
+  }
+  return Object.entries(groups).filter(([, arr]) => arr.length > 0);
 }
 
-// 会话列表：按 modified 倒序，显示标签/首条消息/时间
+// 会话列表：置顶区 + 日期分组（Proma 风格）
 function SessionList({ sessions, onSelect, onDelete, onRename }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [pinned, setPinned] = useState(getPinnedSet);
+  const [search, setSearch] = useState("");
 
   const handleRename = async (id) => {
     await onRename(id, editValue);
     setEditingId(null);
   };
 
+  const handleTogglePin = (id) => {
+    const next = togglePin(id);
+    setPinned(new Set(next));
+  };
+
+  const filtered = search.trim()
+    ? sessions.filter((s) => (s.title || s.label || s.id).toLowerCase().includes(search.toLowerCase()))
+    : sessions;
+  const pinnedList = filtered.filter((s) => pinned.has(s.id));
+  const unpinned = filtered.filter((s) => !pinned.has(s.id));
+  const groups = groupByDate(unpinned);
+
+  const renderItem = (s) => (
+    <div key={s.id} className="session-item" onClick={() => onSelect(s)}>
+      <div className="session-indicator" data-status={s.running ? "running" : "idle"} />
+      <div className="session-info">
+        {editingId === s.id ? (
+          <div className="session-rename" onClick={(e) => e.stopPropagation()}>
+            <input
+              value={editValue}
+              onChange={(e) => setEditValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleRename(s.id); if (e.key === "Escape") setEditingId(null); }}
+              autoFocus
+              className="rename-input"
+            />
+            <button className="btn-xs" onClick={() => handleRename(s.id)}>确定</button>
+          </div>
+        ) : (
+          <>
+            <span className="session-label" title={s.title || s.label || s.id}>
+              {pinned.has(s.id) && <Icon name="pin" size={10} className="pin-icon" />}
+              {s.title || s.label || "(空会话) " + s.id.slice(0, 8)}
+            </span>
+            <span className="session-time">{formatTime(s.modified)}</span>
+          </>
+        )}
+      </div>
+      {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
+      <div className="session-actions" onClick={(e) => e.stopPropagation()}>
+        <button className="btn-xs" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
+          {pinned.has(s.id) ? "取消置顶" : "置顶"}
+        </button>
+        <button
+          className="btn-xs"
+          onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
+          title="重命名"
+        >重命名</button>
+        <button
+          className="btn-xs danger"
+          onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
+          title="删除"
+        >删除</button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="session-list">
+      <div className="session-search">
+        <Icon name="search" size={11} />
+        <input placeholder="搜索会话…" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
       {sessions.length === 0 && <div className="empty">暂无会话记录</div>}
-      {sessions.map((s) => (
-        <div key={s.id} className="session-item" onClick={() => onSelect(s)}>
-          <div className="session-info">
-            {editingId === s.id ? (
-              <div className="session-rename" onClick={(e) => e.stopPropagation()}>
-                <input
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") handleRename(s.id); if (e.key === "Escape") setEditingId(null); }}
-                  autoFocus
-                  className="rename-input"
-                />
-                <button className="btn-xs" onClick={() => handleRename(s.id)}>确定</button>
-              </div>
-            ) : (
-              <>
-                <span className="session-label" title={s.title || s.label || s.id}>
-                  {s.title || s.label || "(空会话) " + s.id.slice(0, 8)}
-                </span>
-                <span className="session-time">{formatTime(s.modified)}</span>
-              </>
-            )}
-          </div>
-          {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
-          <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-            <button
-              className="btn-xs"
-              onClick={() => { setEditingId(s.id); setEditValue(s.label || ""); }}
-              title="重命名"
-            >重命名</button>
-            <button
-              className="btn-xs danger"
-              onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
-              title="删除"
-            >删除</button>
-          </div>
+      {/* 置顶区 */}
+      {pinnedList.length > 0 && (
+        <div className="session-group">
+          <div className="session-group-title"><Icon name="pin" size={10} /> 置顶</div>
+          {pinnedList.map((s) => renderItem(s))}
+        </div>
+      )}
+      {/* 日期分组区 */}
+      {groups.map(([label, items]) => (
+        <div className="session-group" key={label}>
+          <div className="session-group-title">{label}</div>
+          {items.map((s) => renderItem(s))}
         </div>
       ))}
+      {filtered.length === 0 && sessions.length > 0 && <div className="empty">无匹配结果</div>}
     </div>
   );
 }
@@ -253,6 +306,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <button className={`tab-btn ${tab === "files" ? "active" : ""}`} onClick={() => setTab("files")}>文件</button>
         <button className={`tab-btn ${tab === "artifacts" ? "active" : ""}`} onClick={() => setTab("artifacts")}>产物</button>
         <button className={`tab-btn ${tab === "sessions" ? "active" : ""}`} onClick={() => setTab("sessions")}>历史</button>
+        <button className={`tab-btn ${tab === "memory" ? "active" : ""}`} onClick={() => setTab("memory")}>记忆</button>
       </div>
 
       {tab === "files" && (
@@ -370,6 +424,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           )}
         </>
       )}
+
+      {tab === "memory" && <MemoryTab />}
       
       {contextMenu && (
         <ContextMenu

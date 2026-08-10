@@ -784,6 +784,131 @@ function loadSettingsDefault() {
   }
 }
 
+// ---------- 记忆系统 API（Proma WorkspaceMemory 风格） ----------
+import { EventEmitter } from "node:events";
+const memoryEmitter = new EventEmitter();
+let memoryWatcher = null;
+
+function getMemoryDir() { return path.join(getWorkspace(), "memory"); }
+function getAgentsMd() { return path.join(getWorkspace(), "AGENTS.md"); }
+
+function ensureMemoryDir() {
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listMemoryFiles() {
+  const dir = getMemoryDir();
+  const agentsMd = getAgentsMd();
+  const files = [];
+  if (fs.existsSync(agentsMd)) {
+    const st = fs.statSync(agentsMd);
+    files.push({ name: "AGENTS.md", rel: "AGENTS.md", size: st.size, mtime: st.mtimeMs, type: "agents" });
+  }
+  if (fs.existsSync(dir)) {
+    const walk = (d, prefix = "") => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${e.name}` : e.name;
+        if (e.isFile() && /\.(md|txt)$/i.test(e.name) && !e.name.startsWith(".")) {
+          const fp = path.join(d, e.name);
+          const st = fs.statSync(fp);
+          files.push({ name: e.name, rel, size: st.size, mtime: st.mtimeMs, type: "memory" });
+        } else if (e.isDirectory() && !e.name.startsWith(".")) {
+          walk(path.join(d, e.name), rel);
+        }
+      }
+    };
+    walk(dir);
+  }
+  return files.sort((a, b) => {
+    if (a.rel === "AGENTS.md") return -1;
+    if (b.rel === "AGENTS.md") return 1;
+    if (a.rel === "MEMORY.md") return -1;
+    if (b.rel === "MEMORY.md") return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function resolveMemoryPath(rel) {
+  if (!rel || rel.includes("..")) return null;
+  if (rel === "AGENTS.md") return getAgentsMd();
+  return path.join(getMemoryDir(), rel);
+}
+
+function startMemoryWatcher() {
+  if (memoryWatcher) return;
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) return;
+  try {
+    memoryWatcher = fs.watch(dir, { recursive: false }, (eventType, filename) => {
+      if (!filename) return;
+      const filePath = path.join(dir, filename);
+      let content = null;
+      try { content = fs.readFileSync(filePath, "utf8").slice(0, 2000); } catch {}
+      memoryEmitter.emit("change", { file: filename, event: eventType, preview: content, time: Date.now() });
+    });
+    memoryWatcher.on("error", (err) => {
+      if (err.code === "EMFILE") {
+        try { memoryWatcher.close(); } catch {}
+        memoryWatcher = null;
+      }
+    });
+  } catch (err) {
+    memoryWatcher = null;
+  }
+}
+
+app.get("/api/memory", (_req, res) => {
+  try {
+    const files = listMemoryFiles();
+    res.json({ files, memoryDir: getMemoryDir() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/memory/stream", (req, res) => {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  startMemoryWatcher();
+  const onChange = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  memoryEmitter.on("change", onChange);
+  req.on("close", () => memoryEmitter.off("change", onChange));
+});
+
+app.post("/api/memory/init", (_req, res) => {
+  try {
+    const ws = getWorkspace();
+    const agentsMd = path.join(ws, "AGENTS.md");
+    const memDir = path.join(ws, "memory");
+    const memMd = path.join(memDir, "MEMORY.md");
+    if (!fs.existsSync(agentsMd)) {
+      fs.writeFileSync(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
+    }
+    fs.mkdirSync(memDir, { recursive: true });
+    if (!fs.existsSync(memMd)) {
+      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
+    }
+    startMemoryWatcher();
+    res.json({ ok: true, files: listMemoryFiles() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "not found" });
+  try { res.json({ content: fs.readFileSync(fp, "utf8"), path: req.params[0] }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp) return res.status(400).json({ error: "invalid path" });
+  try {
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, req.body?.content || "", "utf8");
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {
@@ -875,5 +1000,6 @@ app.listen(PORT, () => {
 process.on("SIGINT", async () => {
   await agentManager.disposeAll();
   stopAllWatches();
+  if (memoryWatcher) { try { memoryWatcher.close(); } catch {} }
   process.exit(0);
 });

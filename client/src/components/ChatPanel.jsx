@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
@@ -40,6 +40,16 @@ let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 
+function formatMsgTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const p = (n) => String(n).padStart(2, "0");
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return sameYear ? `${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}` : `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${hm}`;
+}
+
 // blocks 辅助：追加/合并文本块、思考块
 function appendTextBlock(blocks, text) {
   const arr = [...blocks];
@@ -58,7 +68,7 @@ function appendThinkingBlock(blocks, text) {
     last.text = (last.text || "") + text;
     return arr;
   }
-  arr.push({ type: "thinking", text });
+  arr.push({ type: "thinking", text, startTime: Date.now() });
   return arr;
 }
 
@@ -336,7 +346,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         if (aid) patch(aid, (m) => ({
           ...m,
           status: "done",
-          blocks: appendTextBlock(m.blocks || [], "\n(已中止)"),
+          stopped: true,
         }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
@@ -387,8 +397,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done" }]);
   }, []);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (overrideText) => {
+    const text = (overrideText ?? input).trim();
     if (!text && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
     const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
@@ -541,7 +551,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m) => <Message key={m.id} m={m} onOpenFile={onOpenFile} onToggleTool={(toolId) => {
+          {messages.map((m) => <Message key={m.id} m={m} model={model} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -607,7 +617,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             {busy ? (
               <button className="btn danger stop-btn" onClick={stop}><Icon name="stop" size={12} /> 停止</button>
             ) : (
-              <button className="btn primary send-btn" onClick={send}><Icon name="send" size={12} /> 发送</button>
+              <button className="btn primary send-btn" onClick={() => send()}><Icon name="send" size={12} /> 发送</button>
             )}
           </div>
           <div className="chat-settings">
@@ -644,25 +654,28 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   );
 });
 
-// ========== 消息组件（pi-web MessageView 风格：text/thinking/toolCall 分块渲染） ==========
-function Message({ m, onToggleTool, onOpenFile }) {
+// ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
+function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
   if (m.role === "system") {
     return (
-      <div className="msg system">
+      <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
         <div className="bubble">
           {m.text}
           {m.products?.length > 0 && (
-            <div className="summary-products">
-              {m.products.map((p) => (
-                <span 
-                  key={p} 
-                  className="summary-product clickable"
-                  onClick={() => onOpenFile && onOpenFile(p)}
-                  title={`点击打开 ${p}`}
-                >
-                  <Icon name="file" size={11} /> {p}
-                </span>
-              ))}
+            <div className="file-change-summary">
+              <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物</span>
+              <div className="summary-products">
+                {m.products.map((p) => (
+                  <span 
+                    key={p} 
+                    className="summary-product clickable"
+                    onClick={() => onOpenFile && onOpenFile(p)}
+                    title={`点击打开 ${p}`}
+                  >
+                    <Icon name="file" size={11} /> {p}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -670,18 +683,20 @@ function Message({ m, onToggleTool, onOpenFile }) {
     );
   }
   const isUser = m.role === "user";
-  const [hovered, setHovered] = useState(false);
-  const [copied, setCopied] = useState(false);
   const blocks = m.blocks || [];
-  // 从 blocks 提取工具步骤（用于 todo list）
-  const toolBlocks = blocks.filter((b) => b.type === "tool");
+  const streaming = m.status === "streaming";
+  // 过程分组（Proma ProcessBlockGroup）：thinking/tool 归入"执行过程"，text 为最终回复
+  const processBlocks = blocks.filter((b) => b.type === "thinking" || b.type === "tool");
+  const textBlocks = blocks.filter((b) => b.type === "text");
   const hasContent = blocks.length > 0 || m.images?.length > 0;
+  const [copied, setCopied] = useState(false);
+  const [waitSec, setWaitSec] = useState(0);
 
-  // 从文本块解析工作计划（- [ ] / - [x] 任务列表，opencode 风格）
+  // 从文本块解析任务清单（- [ ] / - [x]）
   const planTasks = useMemo(() => {
     const tasks = [];
-    for (const b of blocks) {
-      if (b.type !== "text" || !b.text) continue;
+    for (const b of textBlocks) {
+      if (!b.text) continue;
       const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
       let match;
       while ((match = re.exec(b.text))) {
@@ -689,7 +704,15 @@ function Message({ m, onToggleTool, onOpenFile }) {
       }
     }
     return tasks;
-  }, [blocks]);
+  }, [textBlocks]);
+
+  // 等待首个内容块：显示"正在思考..." + 耗时计时
+  useEffect(() => {
+    if (!streaming || hasContent) return;
+    setWaitSec(0);
+    const t = setInterval(() => setWaitSec((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [streaming, hasContent]);
 
   const copyText = async () => {
     try {
@@ -700,19 +723,24 @@ function Message({ m, onToggleTool, onOpenFile }) {
     } catch {}
   };
 
+  const actionsVisible = (hasContent || m.errorText || m.stopped) && !streaming;
+
   return (
-    <div
-      className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
+    <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`}>
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
         <Icon name={isUser ? "user" : "robot"} size={14} />
       </div>
       <div className="msg-main">
-        {/* 用户消息：一个气泡 */}
+        {/* 消息头：作者 + 时间（AI 显示模型名） */}
+        <div className="msg-header">
+          <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
+          <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
+          {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /> 生成中</span>}
+          {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
+          {!isUser && m.stopped && <span className="msg-stopped-badge">已停止生成</span>}
+        </div>
         {isUser ? (
-          <div className="bubble">
+          <div className="bubble user-bubble">
             {m.images?.length > 0 && (
               <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
             )}
@@ -721,138 +749,209 @@ function Message({ m, onToggleTool, onOpenFile }) {
           </div>
         ) : (
           <>
-            {/* 工作计划展示板（opencode 风格：任务拆解 + 打勾） */}
-            {planTasks.length > 0 && <PlanBoard tasks={planTasks} />}
-            {/* 工具步骤 todo list */}
-            {toolBlocks.length > 0 && <TodoList tools={toolBlocks} />}
-            {/* blocks 按序渲染：思考/工具/文本各自独立气泡 */}
-            {blocks.map((b, i) => {
-              if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} />;
-              if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
-              if (b.type === "text") {
-                return (
-                  <div className="bubble markdown-bubble" key={i}>
-                    <MarkdownBody>{b.text}</MarkdownBody>
-                  </div>
-                );
-              }
-              return null;
-            })}
-            {/* 流式指示 */}
-            {m.status === "streaming" && !hasContent && (
-              <div className="bubble"><span className="typing">_</span></div>
+            {/* 任务进度卡（Proma TaskProgressCard：聚合 - [x] 任务 + 进度条） */}
+            {planTasks.length > 0 && <TaskProgressCard tasks={planTasks} />}
+            {/* 执行过程分组（Proma ProcessBlockGroup：流式展开 → 结束后 3s 自动收起） */}
+            {processBlocks.length > 0 && (
+              <ProcessBlockGroup streaming={streaming}>
+                {processBlocks.map((b, i) => {
+                  if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
+                  if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
+                  return null;
+                })}
+              </ProcessBlockGroup>
             )}
+            {/* 最终回复（文本块） */}
+            {textBlocks.map((b, i) => (
+              <div className="bubble markdown-bubble" key={i}>
+                <MarkdownBody>{b.text}</MarkdownBody>
+              </div>
+            ))}
+            {/* 流式等待首块：思考中 + 耗时 */}
+            {streaming && !hasContent && (
+              <div className="bubble loading-bubble">
+                <LoadingDots label="正在思考" seconds={waitSec} />
+              </div>
+            )}
+            {/* 流式收尾：呼吸脉冲圆点 */}
+            {streaming && hasContent && <StreamingDot />}
+            {/* 已停止 / 错误标记 */}
             {m.status === "error" && <div className="err-badge">{m.errorText || "出错了"}</div>}
-            {/* 复制按钮 */}
-            {hasContent && m.status === "done" && (
-              <button
-                className={`copy-btn ${copied ? "copied" : ""}`}
-                style={{ opacity: hovered ? 1 : 0 }}
-                onClick={copyText}
-                title="复制"
-              >
-                {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
+          </>
+        )}
+        {/* 操作条：常显微透明，hover 加深（Proma MessageActions 风格） */}
+        {actionsVisible && (
+          <div className="msg-actions">
+            <button className="msg-action" onClick={copyText} title="复制">
+              {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
+              <span>{copied ? "已复制" : "复制"}</span>
+            </button>
+            {isUser && (
+              <button className="msg-action" onClick={() => onResend && onResend(m.text)} title="重新发送">
+                <Icon name="refresh" size={12} />
+                <span>重发</span>
               </button>
             )}
-          </>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-// ========== 工作计划展示板（任务拆解 + 打勾，opencode 风格） ==========
-function PlanBoard({ tasks }) {
-  const [open, setOpen] = useState(true);
-  const [checked, setChecked] = useState(() => new Set(tasks.map((t, i) => (t.done ? i : -1)).filter((i) => i >= 0)));
-  const done = checked.size;
+// ========== 流式指示器：呼吸脉冲圆点（Proma StreamingIndicator） ==========
+function StreamingDot() {
+  return <span className="streaming-dot" title="生成中" />;
+}
 
-  const toggle = (i) => {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i);
-      else next.add(i);
-      return next;
-    });
+// ========== 等待指示器：弹跳点 + 耗时（Proma MessageLoading） ==========
+function LoadingDots({ label, seconds }) {
+  return (
+    <span className="loading-dots">
+      <span className="ldot" /><span className="ldot" /><span className="ldot" />
+      <span className="loading-label">{label}…</span>
+      {seconds > 0 && <span className="loading-elapsed">{seconds}s</span>}
+    </span>
+  );
+}
+
+// ========== 思考过程块（Proma Reasoning 风格：流式自动展开 → 结束 1s 后自动折叠 + 思考耗时） ==========
+function ThinkingBlock({ text, startTime, streaming }) {
+  const [expanded, setExpanded] = useState(true);
+  // 用户手动操作后不再自动折叠
+  const manualRef = useRef(false);
+  const [duration, setDuration] = useState(null);
+
+  // 流式结束时：计算耗时，1s 后自动折叠
+  useEffect(() => {
+    if (streaming) return;
+    if (startTime) setDuration(((Date.now() - startTime) / 1000).toFixed(1));
+    const t = setTimeout(() => {
+      if (!manualRef.current) setExpanded(false);
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [streaming, startTime]);
+
+  const toggle = () => {
+    manualRef.current = true;
+    setExpanded((v) => !v);
   };
 
   return (
-    <div className={`plan-board ${open ? "open" : ""}`}>
-      <div className="plan-head" onClick={() => setOpen(!open)}>
-        <span className="plan-icon">{open ? "▾" : "▸"}</span>
-        <span className="plan-title"><Icon name="grid" size={12} /> 工作计划</span>
-        <span className="plan-progress">{done}/{tasks.length} 完成</span>
-      </div>
-      {open && (
-        <div className="plan-body">
-          <div className="plan-bar">
-            <div className="plan-bar-fill" style={{ width: `${(done / tasks.length) * 100}%` }} />
-          </div>
-          {tasks.map((t, i) => (
-            <div
-              key={i}
-              className={`plan-item ${checked.has(i) ? "done" : ""}`}
-              onClick={() => toggle(i)}
-              title={checked.has(i) ? "点击取消完成" : "点击标记完成"}
-            >
-              <span className="plan-check">{checked.has(i) ? <Icon name="check" size={11} /> : ""}</span>
-              <span className="plan-text">{t.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ========== 步骤 todo list（展示工具调用序列） ==========
-function TodoList({ tools }) {
-  const [open, setOpen] = useState(true);
-  const done = tools.filter((t) => t.done).length;
-  return (
-    <div className={`todo-list ${open ? "open" : ""}`}>
-      <div className="todo-head" onClick={() => setOpen(!open)}>
-        <span className="todo-icon">{open ? "▾" : "▸"}</span>
-        <span className="todo-title">执行步骤</span>
-        <span className="todo-progress">{done}/{tools.length}</span>
-      </div>
-      {open && (
-        <div className="todo-body">
-          {tools.map((t, i) => (
-            <div key={t.id || i} className={`todo-item ${t.done ? "done" : "running"} ${t.isError ? "err" : ""}`}>
-              <span className="todo-num">{t.done ? <Icon name="check" size={11} /> : t.isError ? <Icon name="x" size={11} /> : "●"}</span>
-              <span className="todo-tool">{t.name}</span>
-              <span className="todo-cmd">{typeof t.input === "string" ? t.input.slice(0, 40) : ""}</span>
-              {t.duration && <span className="todo-dur">{t.duration}s</span>}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ========== 思考过程块（独立气泡：折叠 + 耗时） ==========
-function ThinkingBlock({ text }) {
-  const [expanded, setExpanded] = useState(true); // 默认展开，推理过程实时可见
-  return (
-    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={() => setExpanded(!expanded)}>
+    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={toggle}>
       <div className="thinking-header">
         <span className="thinking-icon">{expanded ? "▾" : "▸"}</span>
         <span className="thinking-label"><Icon name="info" size={11} /> 思考</span>
-        <span className="thinking-duration">{text.length} 字</span>
+        {streaming && <span className="thinking-status">思考中…</span>}
+        {!streaming && duration && <span className="thinking-status">思考了 {duration}s</span>}
+        {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
       </div>
       {expanded && <div className="thinking-text">{text}</div>}
     </div>
   );
 }
 
-// ========== 工具调用卡片（独立气泡，pi ToolCallBlock 风格） ==========
+// ========== 执行过程分组（Proma ProcessBlockGroup：流式展开 → 结束 3s 自动收起） ==========
+function ProcessBlockGroup({ streaming, children }) {
+  const [open, setOpen] = useState(true);
+  const manualRef = useRef(false);
+
+  useEffect(() => {
+    if (streaming) {
+      setOpen(true);
+      return;
+    }
+    const t = setTimeout(() => {
+      if (!manualRef.current) setOpen(false);
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [streaming]);
+
+  const toolCount = React.Children.toArray(children).filter((c) => c?.props?.tool).length;
+
+  return (
+    <div className={`process-group ${open ? "open" : ""}`}>
+      <div
+        className="process-head"
+        onClick={() => {
+          manualRef.current = true;
+          setOpen((v) => !v);
+        }}
+      >
+        <span className="process-chevron">{open ? "▾" : "▸"}</span>
+        <Icon name="list" size={11} />
+        <span className="process-title">执行过程</span>
+        {streaming && <span className="process-spinner"><Icon name="loading" size={11} className="icon-loading" /></span>}
+        {toolCount > 0 && <span className="process-meta">{toolCount} 次工具调用</span>}
+        {toolCount === 0 && <span className="process-meta">思考中</span>}
+      </div>
+      {open && <div className="process-body">{children}</div>}
+    </div>
+  );
+}
+
+// ========== 任务进度卡（Proma TaskProgressCard：进度条 + 状态图标行） ==========
+function TaskProgressCard({ tasks }) {
+  const [open, setOpen] = useState(true);
+  const done = tasks.filter((t) => t.done).length;
+
+  return (
+    <div className={`task-card ${open ? "open" : ""}`}>
+      <div className="task-head" onClick={() => setOpen((v) => !v)}>
+        <span className="task-chevron">{open ? "▾" : "▸"}</span>
+        <Icon name="grid" size={11} />
+        <span className="task-title">任务进度</span>
+        <span className="task-progress">{done}/{tasks.length} 完成</span>
+      </div>
+      {open && (
+        <div className="task-body">
+          <div className="task-bar">
+            <div className="task-bar-fill" style={{ width: `${(done / tasks.length) * 100}%` }} />
+          </div>
+          {tasks.map((t, i) => (
+            <div key={i} className={`task-item ${t.done ? "done" : ""}`}>
+              <span className="task-status">{t.done ? <Icon name="check" size={11} /> : <span className="task-pending-dot" />}</span>
+              <span className="task-text">{t.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== 工具语义短语（Proma tool-phrase：完成态/流式态短语） ==========
+function toolPhrase(name, input, done) {
+  let arg = "";
+  try {
+    const obj = typeof input === "object" ? input : JSON.parse(input || "{}");
+    arg = obj.args || obj.file_path || obj.filePath || obj.path || obj.pattern || obj.query || obj.cwd || "";
+  } catch {}
+  arg = String(arg || "").trim();
+  const tail = arg ? ` ${arg.slice(0, 60)}` : "";
+  const loading = done ? "" : "正在";
+  switch (name) {
+    case "read": return `${loading}读取文件${tail}`;
+    case "write": return `${loading}写入文件${tail}`;
+    case "edit": return `${loading}编辑文件${tail}`;
+    case "bash": return `执行命令${tail}`;
+    case "officecli": return `操作 Office 文档${tail}`;
+    case "grep": return `${loading}搜索内容${tail}`;
+    case "find": case "ls": return `${loading}查看文件列表${tail}`;
+    case "glob": return `${loading}查找文件${tail}`;
+    case "webSearch": return `${loading}联网搜索${tail}`;
+    case "webFetch": return `${loading}抓取网页${tail}`;
+    case "TaskCreate": return `创建任务${tail}`;
+    case "TaskUpdate": return `更新任务${tail}`;
+    default: return `${loading}调用 ${name}${tail}`;
+  }
+}
+
+// ========== 工具调用行（Proma ToolUseBlock：状态图标 + 语义短语 + 展开详情） ==========
 function ToolCard({ tool, onToggle }) {
   const { name, input, output, done, isError, expanded, duration } = tool;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
   let inputStr = typeof input === "string" ? input : JSON.stringify(input, null, 2);
-  // 解析 pi 工具参数格式 { args: "..." } → 提取命令
   try {
     if (typeof input === "object" && input?.args) {
       inputStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
@@ -866,12 +965,10 @@ function ToolCard({ tool, onToggle }) {
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"}`} onClick={onToggle}>
       <div className="tool-header">
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
-          {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : "●"}
+          {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
-        <span className="tool-name">{name}</span>
-        <span className="tool-input-preview" title={inputStr}>
-          {isCmd ? <code className="cmd-code">$ {cmdPreview}</code> : cmdPreview}
-        </span>
+        <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
+        {isCmd && <code className="cmd-code">$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
         <span className={`tool-chevron ${expanded ? "open" : ""}`}>{expanded ? "▾" : "▸"}</span>
       </div>
