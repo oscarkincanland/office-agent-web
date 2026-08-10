@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * 批注标记组件
@@ -131,7 +132,7 @@ export default function CommentMarker({ comments, containerRef }) {
   return (
     <div className="comment-marker-panel">
       <div className="comment-marker-header">
-        <span className="comment-marker-icon">💬</span>
+        <span className="comment-marker-icon"><Icon name="comment" size={14} /></span>
         <span>批注 ({comments.length})</span>
       </div>
       <div className="comment-marker-list">
@@ -147,10 +148,10 @@ export default function CommentMarker({ comments, containerRef }) {
             <div className="comment-marker-content">
               <div className="comment-marker-author">{c.author || "匿名"}</div>
               <div className="comment-marker-text">{c.text}</div>
-              {c.path && <div className="comment-marker-path">📍 {c.path}</div>}
+              {c.path && <div className="comment-marker-path"><Icon name="locate" size={10} /> {c.path}</div>}
             </div>
             <div className="comment-marker-locate" title="定位到段落">
-              📍
+              <Icon name="pin" size={14} />
             </div>
           </div>
         ))}

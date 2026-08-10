@@ -4,6 +4,8 @@ import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
+import Icon from "./components/Icon.jsx";
+import { useTheme } from "./theme.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
 
 // 全局错误边界
@@ -60,6 +62,7 @@ export default function App() {
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
+  const { theme, toggleTheme } = useTheme();
 
   // @ 按钮：把文件/文件夹路径插入到对话输入框
   const handleAtMention = useCallback((rel, isDir) => {
@@ -275,8 +278,11 @@ export default function App() {
               {sidebarOpen && (
                 <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
               )}
-              <span className="topbar-title">{current?.name || "Office Agent"}</span>
-              <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
+            <span className="topbar-title">{current?.name || "Office Agent"}</span>
+            <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+              <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
+            </button>
+            <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理"><Icon name="skills" size={14} /> 技能</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
@@ -301,6 +307,8 @@ export default function App() {
           historyMessages={historyMessages}
           onNewSession={handleNewSession}
           onOpenFile={open}
+          sessions={sessions}
+          onSelectSession={handleSelectSession}
         />
         <SkillsManager
           open={skillsOpen}

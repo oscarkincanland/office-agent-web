@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
+import Icon from "./Icon.jsx";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -22,7 +23,7 @@ class ErrorBoundary extends React.Component {
       return (
         <div className="chat-error-boundary">
           <div className="error-content">
-            <div className="error-icon">⚠</div>
+            <div className="error-icon"><Icon name="warning" size={32} /></div>
             <div className="error-text">组件出错，请刷新页面</div>
             <button className="btn" onClick={() => window.location.reload()}>
               刷新页面
@@ -61,10 +62,11 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile }, ref) {
+export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]);
+  const [attachments, setAttachments] = useState([]); // 非图片附件
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState(false);
   const [models, setModels] = useState(modelsProp || []);
@@ -75,6 +77,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
+  const attInputRef = useRef(null);
   // streaming 累积缓冲（性能优化：避免每 token setState）
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
@@ -115,6 +118,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     streamingMsgIdRef.current = null;
     setInput("");
     setImages([]);
+    setAttachments([]);
     if (onNewSession) onNewSession();
   }, [onNewSession]);
 
@@ -348,7 +352,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           setMessages((ms) => [...ms, {
             id: newId(),
             role: "system",
-            text: `✅ ${data.summary || "本轮对话完成"}`,
+            text: `${data.summary || "本轮对话完成"}`,
             products: data.products,
             status: "done",
             summary: true,
@@ -384,8 +388,9 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
 
   const send = async () => {
     const text = input.trim();
-    if (!text && images.length === 0) return; // busy 时也允许发送 = 打断插入新指令
+    if (!text && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
     const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
+    const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
 
     // 注入当前文件上下文
     const contextPrefix = currentDoc ? `[当前打开文件: ${currentDoc}]\n` : "";
@@ -393,13 +398,17 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     const modePrefix = editMode === "office"
       ? "[模式: Office编辑] 优先用 officecli 工具对当前文档做精准文本/样式修改，不要创建新文件。\n"
       : "[模式: 创作] 你可以调用所有 skills 和工具生成新文件（文档/HTML/PPT等），产物保存到当前工作区。\n";
-    const fullText = contextPrefix + modePrefix + text;
+    const attachPrefix = attachments.length > 0
+      ? `[已上传附件: ${attachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
+      : "";
+    const fullText = contextPrefix + modePrefix + attachPrefix + text;
 
     if (!mountedRef.current) return;
     
     setMessages((ms) => [...ms, {
       id: newId(), role: "user", text,
       images: images.map((i) => i.dataUrl),
+      attachments: attachments.map((a) => a.name),
       status: "done", currentDoc,
     }]);
     const aid = newId();
@@ -412,12 +421,13 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     }]);
     setInput("");
     setImages([]);
+    setAttachments([]);
     setBusy(true);
     try {
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, text: fullText, images: imgs }),
+        body: JSON.stringify({ client: clientId, text: fullText, images: imgs, attachments: atts }),
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
@@ -446,15 +456,24 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   };
 
   const handleFiles = async (list) => {
-    const added = [];
+    const addedImgs = [];
+    const addedAtts = [];
+    const ALLOWED_EXT = /\.(docx|xlsx|pptx|md|markdown|txt|pdf|html|htm|csv|json)$/i;
     for (const f of Array.from(list).slice(0, 6)) {
-      if (!f.type.startsWith("image/")) continue;
-      try {
-        const { mediaType, data } = await fileToBase64(f);
-        added.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
-      } catch {}
+      if (f.type.startsWith("image/")) {
+        try {
+          const { mediaType, data } = await fileToBase64(f);
+          addedImgs.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
+        } catch {}
+      } else if (ALLOWED_EXT.test(f.name)) {
+        try {
+          const { mediaType, data } = await fileToBase64(f);
+          addedAtts.push({ mediaType, data, dataUrl: `data:${mediaType};base64,${data}`, name: f.name });
+        } catch {}
+      }
     }
-    if (added.length) setImages((im) => [...im, ...added]);
+    if (addedImgs.length) setImages((im) => [...im, ...addedImgs]);
+    if (addedAtts.length) setAttachments((at) => [...at, ...addedAtts]);
   };
 
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
@@ -489,11 +508,11 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             <button
               className={`mode-btn ${editMode === "office" ? "active" : ""}`}
               onClick={() => setEditMode("office")}
-            >📝 Office</button>
+            ><Icon name="doc" size={12} /> Office</button>
             <button
               className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
               onClick={() => setEditMode("agent")}
-            >🎨 创作</button>
+            ><Icon name="pen-tool" size={12} /> 创作</button>
           </div>
           <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
             <option value="">-- 选择模型 --</option>
@@ -503,6 +522,24 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
+
+        {sessions.length > 0 && (
+          <div className="chat-recent">
+            <span className="chat-recent-label"><Icon name="history" size={11} /> 最近会话</span>
+            <div className="chat-recent-list">
+              {sessions.slice(0, 5).map((s) => (
+                <span
+                  key={s.id}
+                  className="chat-recent-item"
+                  title={s.title || s.label || s.id}
+                  onClick={() => onSelectSession && onSelectSession(s)}
+                >
+                  {s.title || s.label || s.id.slice(0, 8)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="chat-body" ref={bodyRef} onScroll={() => {
           const el = bodyRef.current;
@@ -548,6 +585,19 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             ))}
           </div>
         )}
+        {attachments.length > 0 && (
+          <div className="att-preview-row">
+            {attachments.map((att, i) => (
+              <div className="att-chip" key={i} title={att.name}>
+                <Icon name="file" size={13} />
+                <span className="att-name">{att.name}</span>
+                <button className="att-remove" onClick={() => setAttachments((at) => at.filter((_, j) => j !== i))}>
+                  <Icon name="x" size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="chat-input">
           <textarea
             value={input}
@@ -566,12 +616,14 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             onChange={(e) => setInput(e.target.value)}
           />
           <div className="input-actions">
-            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>图片</button>
+            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}><Icon name="image" size={12} /> 图片</button>
+            <button className="btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}><Icon name="link" size={12} /> 附件</button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             {busy ? (
-              <button className="btn danger stop-btn" onClick={stop}>■ 停止</button>
+              <button className="btn danger stop-btn" onClick={stop}><Icon name="stop" size={12} /> 停止</button>
             ) : (
-              <button className="btn primary send-btn" onClick={send}>发送</button>
+              <button className="btn primary send-btn" onClick={send}><Icon name="send" size={12} /> 发送</button>
             )}
           </div>
         </div>
@@ -596,7 +648,7 @@ function Message({ m, onToggleTool, onOpenFile }) {
                   onClick={() => onOpenFile && onOpenFile(p)}
                   title={`点击打开 ${p}`}
                 >
-                  📄 {p}
+                  <Icon name="file" size={11} /> {p}
                 </span>
               ))}
             </div>
@@ -628,7 +680,9 @@ function Message({ m, onToggleTool, onOpenFile }) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="avatar">{isUser ? ">" : "$"}</div>
+      <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
+        <Icon name={isUser ? "user" : "robot"} size={14} />
+      </div>
       <div className="msg-main">
         {/* 用户消息：一个气泡 */}
         {isUser ? (
@@ -669,7 +723,7 @@ function Message({ m, onToggleTool, onOpenFile }) {
                 onClick={copyText}
                 title="复制"
               >
-                {copied ? "✓" : "⧉"}
+                {copied ? <Icon name="check" size={12} /> : <Icon name="copy" size={12} />}
               </button>
             )}
           </>
@@ -694,7 +748,7 @@ function TodoList({ tools }) {
         <div className="todo-body">
           {tools.map((t, i) => (
             <div key={t.id || i} className={`todo-item ${t.done ? "done" : "running"} ${t.isError ? "err" : ""}`}>
-              <span className="todo-num">{t.done ? "✓" : t.isError ? "✕" : "●"}</span>
+              <span className="todo-num">{t.done ? <Icon name="check" size={11} /> : t.isError ? <Icon name="x" size={11} /> : "●"}</span>
               <span className="todo-tool">{t.name}</span>
               <span className="todo-cmd">{typeof t.input === "string" ? t.input.slice(0, 40) : ""}</span>
               {t.duration && <span className="todo-dur">{t.duration}s</span>}
@@ -713,7 +767,7 @@ function ThinkingBlock({ text }) {
     <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={() => setExpanded(!expanded)}>
       <div className="thinking-header">
         <span className="thinking-icon">{expanded ? "▾" : "▸"}</span>
-        <span className="thinking-label">💭 思考</span>
+        <span className="thinking-label"><Icon name="info" size={11} /> 思考</span>
         <span className="thinking-duration">{text.length} 字</span>
       </div>
       {expanded && <div className="thinking-text">{text}</div>}
@@ -740,7 +794,7 @@ function ToolCard({ tool, onToggle }) {
     <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"}`} onClick={onToggle}>
       <div className="tool-header">
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
-          {done ? (isError ? "✕" : "✓") : "●"}
+          {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : "●"}
         </span>
         <span className="tool-name">{name}</span>
         <span className="tool-input-preview" title={inputStr}>

@@ -162,11 +162,47 @@ app.get("/api/doc/:file/html", async (req, res) => {
 });
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
-// 获取 docx 批注列表
+// 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
 app.get("/api/doc/:file/comments", async (req, res) => {
   const p = resolvePath(req.params.file);
   if (!p) return res.status(404).json({ error: "not found" });
+  const ext = path.extname(p).slice(1).toLowerCase();
   try {
+    if (ext === "md" || ext === "markdown" || ext === "txt") {
+      // 从 agent 会话中提取与该文件相关的修改指令（模拟批注/修订记录）
+      const fileName = req.params.file;
+      const comments = [];
+      for (const f of listSessionFiles()) {
+        try {
+          const text = fs.readFileSync(f.fullPath, "utf8");
+          if (!text.includes(fileName)) continue;
+          for (const line of text.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type === "message" && entry.message?.role === "user") {
+                const c = entry.message.content;
+                let t = "";
+                if (typeof c === "string") t = c;
+                else if (Array.isArray(c)) t = c.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+                if (t.includes(fileName)) {
+                  comments.push({
+                    path: fileName,
+                    author: "用户",
+                    text: t.slice(0, 200),
+                    date: entry.timestamp || entry.time || new Date(f.mtime).toISOString(),
+                  });
+                }
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+      // 去重 + 最新 20 条
+      const seen = new Set();
+      const unique = comments.filter((c) => { if (seen.has(c.text)) return false; seen.add(c.text); return true; });
+      return res.json({ comments: unique.slice(0, 20) });
+    }
     const r = await runOfficecli(["query", p, "comment", "--json"]);
     const results = r.json?.data?.results || [];
     const comments = results.map((c) => ({
@@ -259,6 +295,27 @@ const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // ---------- skills ----------
+// 交通规划工程师工作台：按技能用途分类
+const SKILL_CATEGORIES = [
+  { id: "traffic", label: "交通规划", keywords: ["交通", "规划", "公交", "OD", "traffic", "transport", "出行", "客流", "公路", "物流", "枢纽"] },
+  { id: "doc", label: "文档报告", keywords: ["报告", "论文", "公文", "规划报告", "work report", "撰写", "公文", "汇报", "研究报告", "论文"] },
+  { id: "chart", label: "图表可视化", keywords: ["图表", "chart", "图", "可视化", "地图", "infographic", "ECharts", "diagram", "dashboard"] },
+  { id: "image", label: "图像生成", keywords: ["图像", "image", "配图", "封面", "图片", "生成图片", "illustrat", "poster", "封面图"] },
+  { id: "media", label: "媒体内容", keywords: ["视频", "音频", "配音", "TTS", "字幕", "脚本", "slide", "PPT", "抖音", "小红书"] },
+  { id: "office", label: "Office办公", keywords: ["office", "officecli", "Excel", "Word", "PPTX", "docx", "xlsx", "表格"] },
+  { id: "dev", label: "开发工具", keywords: ["代码", "开发", "debug", "test", "git", "部署", "browser", "agent", "skill", "workflow", "playwright"] },
+  { id: "research", label: "搜索研究", keywords: ["搜索", "搜索", "文献", "research", "调研", "知识库", "论文"] },
+  { id: "other", label: "其他", keywords: [] },
+];
+
+function classifySkill(name, desc = "") {
+  const text = `${name} ${desc}`.toLowerCase();
+  for (const cat of SKILL_CATEGORIES) {
+    if (cat.keywords.some((k) => text.includes(k.toLowerCase()))) return cat.id;
+  }
+  return "other";
+}
+
 // 扫描用户所有 skills 目录（含 .pi/agent/skills、.agents/skills、项目 .agents/skills）
 function scanSkills() {
   const roots = [
@@ -297,6 +354,7 @@ function scanSkills() {
         description: desc,
         path: skillDir,
         source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent",
+        category: classifySkill(e.name, desc),
       });
     }
   }
@@ -464,7 +522,9 @@ app.post("/api/workspace/validate", (req, res) => {
 });
 
 // GET /api/sessions - 列出所有会话（解析每个 JSONL 的 header 第一行）
-app.get("/api/sessions", (_req, res) => {
+// 支持 ?file=xxx 过滤：只返回提到指定文件的会话
+app.get("/api/sessions", (req, res) => {
+  const fileFilter = String(req.query.file || "").trim();
   try {
     const files = listSessionFiles();
     const sessions = [];
@@ -478,6 +538,8 @@ app.get("/api/sessions", (_req, res) => {
         const cwd = h.cwd || "";
         const isOaw = cwd.includes(".sessions") && cwd.includes("office-agent-web");
         if (!isOaw) continue;
+        // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
+        if (fileFilter && !text.includes(fileFilter)) continue;
         // 提取第一条用户消息作为标题
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
@@ -624,9 +686,19 @@ app.post("/api/agent/abort", async (req, res) => {
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, text, images } = req.body || {};
+  const { client, text, images, attachments } = req.body || {};
   if (!client || !text) return res.status(400).json({ error: "client and text required" });
   const before = snapshotWorkspace();
+  // 保存上传的附件到工作区（agent 可读取）
+  if (Array.isArray(attachments) && attachments.length) {
+    for (const att of attachments) {
+      try {
+        const safe = safeName(att.name);
+        if (!safe) continue;
+        fs.writeFileSync(path.join(getWorkspace(), safe), Buffer.from(att.data, "base64"));
+      } catch {}
+    }
+  }
   try {
     await agentManager.prompt(client, text, images);
     // officecli keeps files in a resident process — disk writes flush asynchronously.

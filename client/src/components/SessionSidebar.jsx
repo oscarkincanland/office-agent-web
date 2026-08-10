@@ -1,6 +1,9 @@
 import React, { useRef, useState } from "react";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
+import Icon from "./Icon.jsx";
+
+const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
 
 function formatTime(iso) {
   if (!iso) return "";
@@ -91,8 +94,6 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
   );
 }
 
-const EXT_LABELS = { docx: "W", xlsx: "X", pptx: "P" };
-
 export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention }) {
   const fileRef = useRef(null);
   const [tab, setTab] = useState("files"); // "files" | "sessions"
@@ -101,6 +102,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [applying, setApplying] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
+  const [fileFilter, setFileFilter] = useState(false); // 会话按当前文档过滤
+  const [filteredSessions, setFilteredSessions] = useState(null); // 过滤后的会话列表
 
   const applyCustom = async () => {
     const dir = customPath.trim();
@@ -131,6 +134,20 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
     try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
   };
 
+  // 切换按当前文档过滤会话
+  const toggleFileFilter = async () => {
+    const next = !fileFilter;
+    setFileFilter(next);
+    if (next && currentName) {
+      try {
+        const d = await listSessions(currentName);
+        setFilteredSessions(d.sessions || []);
+      } catch { setFilteredSessions(sessions); }
+    } else {
+      setFilteredSessions(null);
+    }
+  };
+
   // 在文件管理器中打开
   const handleOpenInExplorer = (filePath) => {
     // 调用后端API打开文件管理器
@@ -155,18 +172,18 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
     
     const menuItems = [
       {
-        icon: "📂",
+        icon: "folderOpen",
         label: "在文件管理器中打开",
         onClick: () => handleOpenInExplorer(filePath)
       },
       {
-        icon: "📋",
+        icon: "copy",
         label: "复制文件名",
         onClick: () => navigator.clipboard.writeText(file.name)
       },
       { separator: true },
       {
-        icon: "@",
+        icon: "at",
         label: "@ 到对话中",
         onClick: () => onAtMention && onAtMention(filePath, file.isDir)
       }
@@ -176,7 +193,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
       menuItems.push(
         { separator: true },
         {
-          icon: "🗑️",
+          icon: "trash",
           label: "删除",
           danger: true,
           onClick: () => handleDeleteFile(filePath)
@@ -272,7 +289,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                   onContextMenu={(e) => handleContextMenu(e, f)}
                   title={f.isDir ? f.name : f.name}
                 >
-                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? "DIR" : (EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?" )}</span>
+                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? <Icon name="folder" size={12} /> : <Icon name={EXT_LABELS[f.ext] || "file"} size={12} />}</span>
                   <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
                   <span
                     className="file-at"
@@ -314,7 +331,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                   }}
                   title={f.name}
                 >
-                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{EXT_LABELS[f.ext] || f.ext?.slice(0, 2).toUpperCase() || "?"}</span>
+                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
                   <span className="file-name">{f.name}</span>
                   <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
                     {formatRelTime(f.mtime)}
@@ -330,15 +347,27 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <>
           <div className="sidebar-actions">
             <button className="btn-sm" onClick={onRefreshSessions}>刷新</button>
+            {currentName && (
+              <button
+                className={`btn-sm ${fileFilter ? "active" : ""}`}
+                onClick={toggleFileFilter}
+                title={fileFilter ? `仅显示与 ${currentName} 相关的会话` : `点击过滤出与 ${currentName} 相关的会话`}
+              >
+                <Icon name="filter" size={11} /> 当前文档
+              </button>
+            )}
           </div>
           <SessionList
-            sessions={sessions}
+            sessions={filteredSessions || sessions}
             onDelete={handleDeleteSession}
             onRename={handleRenameSession}
             onSelect={(s) => {
               if (onSelectSession) onSelectSession(s);
             }}
           />
+          {fileFilter && currentName && (
+            <div className="sidebar-foot">已过滤：仅显示与「{currentName}」相关的会话</div>
+          )}
         </>
       )}
       

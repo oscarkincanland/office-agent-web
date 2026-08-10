@@ -25,6 +25,30 @@
   --chat-max: 600px;
   --resizer-w: 5px;
 }
+
+/* ===== 亮色主题 ===== */
+[data-theme="light"] {
+  --body-bg: #f5f6fa;
+  --panel-bg: #ffffff;
+  --panel2-bg: #eef0f6;
+  --surface: #e4e7f0;
+  --text: #2d3142;
+  --muted: #5c6270;
+  --dim: #8a8fa3;
+  --accent: #2a8c82;
+  --border: #d4d8e4;
+  --selected: #dfe4ee;
+  --success: #5c7a1f;
+  --error: #c0392b;
+  --warning: #b7791f;
+  --user-bg: #e6f0ee;
+  --tool-pending: #eceef4;
+  --tool-success: #e8f0e2;
+  --tool-error: #f5e3e0;
+}
+[data-theme="light"] .docview,
+[data-theme="light"] .center-area { background: #f0f2f7; }
+[data-theme="light"] .docframe { background: #fff; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
 body {
@@ -174,7 +198,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .file-item:hover { background: var(--selected); }
 .file-item.active { background: var(--selected); font-weight: bold; }
 .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-ext { color: var(--muted); font-size: 10px; }
+.file-ext { color: var(--muted); font-size: 10px; display: flex; align-items: center; }
 .file-ext.dir { color: var(--accent); font-weight: 600; }
 .crumb-bar {
   display: flex;
@@ -684,10 +708,14 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   max-width: 85%;
 }
 .msg.user .msg-main { align-items: flex-end; }
-.markdown-bubble {
-  background: var(--surface);
-  white-space: normal;
+/* 统一气泡尺寸：text/thinking/tool 块一致 */
+.markdown-bubble,
+.thinking-block,
+.tool-card {
+  width: 100%;
+  border-radius: 6px;
 }
+.markdown-bubble { background: var(--surface); white-space: normal; }
 /* 工具卡片独立气泡 */
 .tool-card {
   border: 1px solid var(--border);
@@ -1435,4 +1463,201 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 
 .file-item.new-file:hover {
   background: rgba(181, 189, 104, 0.25);
+}
+
+/* ===== 图标通用 ===== */
+.icon {
+  display: inline-block;
+  vertical-align: -2px;
+  flex-shrink: 0;
+}
+.icon-loading {
+  animation: spin 0.8s linear infinite;
+}
+
+/* ===== 附件预览 ===== */
+.att-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+}
+.att-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 10px;
+  max-width: 180px;
+}
+.att-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.att-remove {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+}
+.att-remove:hover { color: var(--error); }
+
+/* ===== 最近会话栏 ===== */
+.chat-recent {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2-bg);
+}
+.chat-recent-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+.chat-recent-list {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.chat-recent-item {
+  flex-shrink: 0;
+  max-width: 130px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+.chat-recent-item:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ===== 主题切换 ===== */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ===== 头像 ===== */
+.avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.avatar.user-avatar {
+  background: var(--user-bg);
+  color: var(--accent);
+  border: 1px solid var(--border);
+}
+.avatar.agent-avatar {
+  background: var(--accent);
+  color: var(--body-bg);
+}
+
+/* ===== 技能广场分类 ===== */
+.modal-view-switch {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.modal-view-switch .btn-sm.active {
+  background: var(--accent);
+  color: var(--body-bg);
+  border-color: transparent;
+}
+.modal-cats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.modal-cats .btn-xs.active {
+  background: var(--accent);
+  color: var(--body-bg);
+  border-color: var(--accent);
+}
+.skill-group { margin-bottom: 10px; }
+.skill-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 6px 0 4px;
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+}
+.workflow-intro {
+  font-size: 10px;
+  color: var(--dim);
+  padding: 4px 2px 8px;
+}
+.workflow-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--panel2-bg);
+}
+.workflow-item:hover { border-color: var(--accent); }
+.workflow-info { flex: 1; min-width: 0; }
+.workflow-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.workflow-desc {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.workflow-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.workflow-skill-chip {
+  font-size: 9px;
+  padding: 1px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--accent);
+  font-family: monospace;
 }

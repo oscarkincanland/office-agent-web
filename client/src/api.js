@@ -19,7 +19,7 @@ export const listModels = () => api("/api/models");
 export const setAgentModel = (client, model) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, model }) });
 
-export const listSessions = () => api("/api/sessions");
+export const listSessions = (file) => api(`/api/sessions${file ? `?file=${encodeURIComponent(file)}` : ""}`);
 export const listWorkspaces = () => api("/api/workspaces");
 export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });

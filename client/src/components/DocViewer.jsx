@@ -3,8 +3,9 @@ import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
 import CommentMarker from "./CommentMarker.jsx";
+import Icon from "./Icon.jsx";
 
-const ICONS = { docx: "W", xlsx: "X", pptx: "P", md: "M", html: "H", htm: "H", txt: "T" };
+const ICONS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
 
 // 文件内容渲染（单个 tab 的正文）
 function DocContent({ doc, loading, onRefresh }) {
@@ -17,7 +18,7 @@ function DocContent({ doc, loading, onRefresh }) {
 
   // 获取批注
   const fetchComments = useCallback(async () => {
-    if (!doc || doc.kind !== "html") return;
+    if (!doc) return;
     setCommentsLoading(true);
     try {
       const r = await fetch(`/api/doc/${encodeURIComponent(doc.name)}/comments`);
@@ -35,7 +36,7 @@ function DocContent({ doc, loading, onRefresh }) {
     setWatchErr("");
     setComments([]);
     setCommentsOpen(false);
-    if (doc?.kind === "html") {
+    if (doc?.kind === "html" || doc?.kind === "text") {
       fetchComments();
     }
   }, [doc?.name, doc?.kind, fetchComments]);
@@ -87,26 +88,30 @@ function DocContent({ doc, loading, onRefresh }) {
             {watchUrl && (
               <button className="btn-sm" onClick={() => setWatchUrl(null)}>静态预览</button>
             )}
-            <button 
-              className="btn-sm" 
-              onClick={fetchComments} 
-              disabled={commentsLoading}
-              title="刷新批注"
-            >
-              {commentsLoading ? "⏳" : "🔄"}
-            </button>
-            <button 
-              className={`btn-sm comment-btn ${showComments ? "active" : ""}`} 
-              onClick={() => setShowComments(!showComments)}
-            >
-              💬 批注 ({comments.length})
-            </button>
           </>
         )}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
-        {watchErr && <span className="badge err-badge">⚠ {watchErr}</span>}
+        {(doc.kind === "html" || doc.kind === "text") && (
+          <>
+            <button
+              className="btn-sm"
+              onClick={fetchComments}
+              disabled={commentsLoading}
+              title="刷新批注"
+            >
+              <Icon name={commentsLoading ? "loading" : "refresh"} size={12} />
+            </button>
+            <button
+              className={`btn-sm comment-btn ${showComments ? "active" : ""}`}
+              onClick={() => setShowComments(!showComments)}
+            >
+              <Icon name="comment" size={12} /> 批注 ({comments.length})
+            </button>
+          </>
+        )}
+        {watchErr && <span className="badge err-badge"><Icon name="warning" size={11} /> {watchErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
       </div>
       {commentsOpen && comments.length > 0 && !showComments && (
@@ -167,6 +172,12 @@ function DocContent({ doc, loading, onRefresh }) {
                 <MarkdownBody withToc>{doc.content || ""}</MarkdownBody>
               </div>
             </div>
+            {showComments && comments.length > 0 && (
+              <CommentMarker
+                comments={comments}
+                containerRef={mdContentRef}
+              />
+            )}
           </div>
         )}
       </div>
@@ -188,7 +199,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
               onClick={() => onSwitchTab && onSwitchTab(t.name)}
               title={t.name}
             >
-              <span className="doc-tab-icon">{ICONS[t.ext] || (t.kind === "text" ? "M" : "?")}</span>
+              <span className="doc-tab-icon"><Icon name={ICONS[t.ext] || "file"} size={12} /></span>
               <span className="doc-tab-name">{t.name}</span>
               <span
                 className="doc-tab-close"
