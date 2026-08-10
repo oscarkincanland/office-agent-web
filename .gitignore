@@ -23,6 +23,8 @@ _tmp/
 _verify*.mjs
 _t.mjs
 _test*.mjs
+_fix_batch.json
+_review_comments*.json
 
 # pi agent 上下文（运行时生成）
 .agent-context.md
