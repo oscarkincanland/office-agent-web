@@ -501,6 +501,23 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   return (
     <ErrorBoundary>
       <div className="chat">
+        {sessions.length > 0 && (
+          <div className="chat-recent">
+            <span className="chat-recent-label"><Icon name="history" size={11} /> 最近会话</span>
+            <div className="chat-recent-list">
+              {sessions.slice(0, 5).map((s) => (
+                <span
+                  key={s.id}
+                  className="chat-recent-item"
+                  title={s.title || s.label || s.id}
+                  onClick={() => onSelectSession && onSelectSession(s)}
+                >
+                  {s.title || s.label || s.id.slice(0, 8)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="chat-head">
           <span className="chat-title">agent</span>
           <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话">＋ 新建会话</button>
@@ -522,24 +539,6 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
-
-        {sessions.length > 0 && (
-          <div className="chat-recent">
-            <span className="chat-recent-label"><Icon name="history" size={11} /> 最近会话</span>
-            <div className="chat-recent-list">
-              {sessions.slice(0, 5).map((s) => (
-                <span
-                  key={s.id}
-                  className="chat-recent-item"
-                  title={s.title || s.label || s.id}
-                  onClick={() => onSelectSession && onSelectSession(s)}
-                >
-                  {s.title || s.label || s.id.slice(0, 8)}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
 
         <div className="chat-body" ref={bodyRef} onScroll={() => {
           const el = bodyRef.current;

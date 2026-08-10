@@ -50,6 +50,29 @@
 [data-theme="light"] .center-area { background: #f0f2f7; }
 [data-theme="light"] .docframe { background: #fff; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ===== 全局滚动条（暗色主题统一风格） ===== */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
 html, body, #root { height: 100%; }
 body {
   font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
@@ -1389,6 +1412,18 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-radius: 2px;
 }
 
+/* Word 式批注文本标记（黄底高亮） */
+.comment-text-mark {
+  background: rgba(240, 198, 116, 0.45);
+  border-bottom: 2px solid var(--warning);
+  padding: 0 2px;
+  border-radius: 2px;
+  transition: background 0.3s;
+}
+.comment-text-mark.comment-highlight-active {
+  background: rgba(240, 198, 116, 0.8);
+}
+
 /* ===== 右键菜单 ===== */
 .context-menu {
   position: fixed;
@@ -1660,4 +1695,54 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-radius: 3px;
   color: var(--accent);
   font-family: monospace;
+}
+
+/* ===== 智能体广场 ===== */
+.agents-btn { margin-left: 4px; }
+.agent-market-intro {
+  font-size: 10px;
+  color: var(--dim);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.agent-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  background: var(--panel2-bg);
+  transition: border-color 0.15s;
+}
+.agent-item:hover { border-color: var(--accent); }
+.agent-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex-shrink: 0;
+}
+.agent-info { flex: 1; min-width: 0; }
+.agent-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.agent-desc {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  line-height: 1.6;
+}
+.agent-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
