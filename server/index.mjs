@@ -231,7 +231,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
   try {
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);

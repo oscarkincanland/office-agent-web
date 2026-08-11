@@ -137,6 +137,9 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
 
     g.render().then(() => {
       setTimeout(() => g.fitView(40, "both", true), 300);
+      // 让 canvas 背景透明，显示 CSS 纸面格线
+      const canvases = el.querySelectorAll("canvas");
+      canvases.forEach((c) => { c.style.background = "transparent"; });
     }).catch((e) => console.error("G6 render error:", e));
     graphRef.current = g;
     return () => { g.destroy(); graphRef.current = null; };
@@ -150,6 +153,12 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
     g.setData(buildData());
     g.render().then(() => {
       setTimeout(() => g.fitView(40, "both", true), 300);
+      // 确保 canvas 背景透明
+      const el = containerRef.current;
+      if (el) {
+        const canvases = el.querySelectorAll("canvas");
+        canvases.forEach((c) => { c.style.background = "transparent"; });
+      }
     }).catch(() => {});
   }, [data, buildData]);
 
