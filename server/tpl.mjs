@@ -89,7 +89,7 @@ function scanTemplates() {
           ext: ext.slice(1),
           size: st.size,
           mtime: st.mtimeMs,
-          type: ext === ".md" || ext === ".markdown" ? "markdown" : ext === ".html" || ext === ".htm" ? "html" : ext === ".docx" || ext === ".doc" ? "word" : ext === ".pdf" ? "pdf" : ext === ".pptx" || ext === ".ppt" ? "ppt" : "other",
+          type: ext === ".md" || ext === ".markdown" ? "markdown" : ext === ".html" || ext === ".htm" ? "html" : ext === ".docx" || ext === ".doc" ? "word" : ext === ".pdf" ? "pdf" : ext === ".pptx" || ext === ".ppt" ? "ppt" : ext === ".xlsx" || ext === ".xls" ? "xls" : "other",
         });
       }
     }
@@ -131,7 +131,11 @@ export function getTemplateContent(relPath) {
       return { type: "text", content, ext: ext.slice(1), size: st.size };
     } catch { return null; }
   }
-  // 二进制文件：返回 buffer（由前端用 /api/doc/:file/raw 渲染）
+  // 二进制文件：返回类型信息（前端用 iframe 渲染）
+  if (ext === ".docx" || ext === ".doc") return { type: "word", ext: ext.slice(1), size: st.size, relPath };
+  if (ext === ".pdf") return { type: "pdf", ext: ext.slice(1), size: st.size, relPath };
+  if (ext === ".pptx" || ext === ".ppt") return { type: "ppt", ext: ext.slice(1), size: st.size, relPath };
+  if (ext === ".xlsx" || ext === ".xls") return { type: "xls", ext: ext.slice(1), size: st.size, relPath };
   return { type: "binary", ext: ext.slice(1), size: st.size, relPath };
 }
 
