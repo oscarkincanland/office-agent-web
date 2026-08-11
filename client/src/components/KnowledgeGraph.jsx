@@ -32,7 +32,7 @@ const BATCH_SIZE = 500; // 分批渲染阈值
  * - 控制条：搜索定位节点 / 隐藏孤立节点（对齐 siyuan pruneUnref）
  * - 大数据量分批渲染（对齐 siyuan 分批策略）
  */
-export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
+export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusId }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
   const [hideIsolated, setHideIsolated] = useState(false);
@@ -76,6 +76,14 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
 
   const { nodes: allNodes, edges: allEdges } = prepared;
 
+  // 局部图谱：focusId 非空时只渲染其 1-hop 子图（对齐 siyuan 局部图）
+  const subSet = useMemo(() => {
+    if (!focusId) return null;
+    const adj = prepared.adj.get(focusId);
+    if (!adj) return null;
+    return new Set([focusId, ...adj]);
+  }, [focusId, prepared]);
+
   // 记录全量（分批渲染时用）
   useEffect(() => {
     allNodesRef.current = allNodes;
@@ -111,17 +119,19 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
     const visibleNodes = hideIsolated
       ? allNodes.filter((n) => n.data.type !== "file" || (degreeMapRef.current.get(n.id) || 0) > 0)
       : allNodes;
-    const visibleIds = new Set(visibleNodes.map((n) => n.id));
-    const visibleEdges = allEdges.filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target));
+    const localIds = subSet || null;
+    const scopeNodes = localIds ? visibleNodes.filter((n) => localIds.has(n.id)) : visibleNodes;
+    const scopeIds = new Set(scopeNodes.map((n) => n.id));
+    const scopeEdges = allEdges.filter((e) => scopeIds.has(e.source) && scopeIds.has(e.target));
 
-    const batch = visibleNodes.length > BATCH_SIZE;
-    const initialNodes = batch ? visibleNodes.slice(0, BATCH_SIZE) : visibleNodes;
+    const batch = scopeNodes.length > BATCH_SIZE;
+    const initialNodes = batch ? scopeNodes.slice(0, BATCH_SIZE) : scopeNodes;
     const initialEdgeIds = new Set();
     if (batch) {
       const ids = new Set(initialNodes.map((n) => n.id));
-      for (const e of visibleEdges) if (ids.has(e.source) && ids.has(e.target)) initialEdgeIds.add(e.id);
+      for (const e of scopeEdges) if (ids.has(e.source) && ids.has(e.target)) initialEdgeIds.add(e.id);
     }
-    const initialEdges = batch ? visibleEdges.filter((e) => initialEdgeIds.has(e.id)) : visibleEdges;
+    const initialEdges = batch ? scopeEdges.filter((e) => initialEdgeIds.has(e.id)) : scopeEdges;
 
     const g = new Graph({
       container: el,
@@ -189,11 +199,15 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
       setTimeout(() => g.fitView(40, "both", true), 300);
       const canvases = el.querySelectorAll("canvas");
       canvases.forEach((c) => { c.style.background = "transparent"; });
-      if (batch && visibleNodes.length > BATCH_SIZE) {
-        const restNodes = visibleNodes.slice(BATCH_SIZE);
+      if (batch && scopeNodes.length > BATCH_SIZE) {
+        const restNodes = scopeNodes.slice(BATCH_SIZE);
         const restIds = new Set(restNodes.map((n) => n.id));
-        const restEdges = visibleEdges.filter((e) => restIds.has(e.source) && restIds.has(e.target));
+        const restEdges = scopeEdges.filter((e) => restIds.has(e.source) && restIds.has(e.target));
         g.addData({ nodes: restNodes, edges: restEdges });
+      }
+      // 局部图谱：聚焦中心节点
+      if (focusId) {
+        try { g.focusElement(focusId, { animation: true }); } catch {}
       }
     }).catch((e) => console.error("G6 render error:", e));
 
@@ -250,7 +264,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, hideIsolated, highlightId]);
+  }, [data, hideIsolated, highlightId, focusId, subSet]);
 
   // 高亮定位（外部选中文档时）
   useEffect(() => {

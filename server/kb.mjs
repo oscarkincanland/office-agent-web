@@ -393,6 +393,7 @@ export function getDoc(relPath, rootIdx = null) {
   }
   const backlinks = [];
   const base = normBase(path.basename(target.relPath));
+  const mentionKeys = [normBase(target.doc.title), base].filter((k) => k && k.length >= 4);
   for (const f of all) {
     if (f.abs === target.abs) continue;
     const hit = f.doc.links.some((l) => normBase(path.basename(l.target)) === base);
@@ -409,6 +410,21 @@ export function getDoc(relPath, rootIdx = null) {
       backlinks.push({ relPath: f.relPath, rootIdx: f.rootIdx, title: f.doc.title, snippet });
     }
   }
+  // 提及（mention）：其他文档正文出现本标题/文件名但未建 [[链接]]（对齐 siyuan mentions）
+  const mentions = [];
+  for (const f of all) {
+    if (f.abs === target.abs) continue;
+    if (f.doc.links.some((l) => normBase(path.basename(l.target)) === base)) continue; // 已是反链
+    const lower = f.doc.content.toLowerCase();
+    if (!mentionKeys.some((k) => lower.includes(k))) continue;
+    for (const p of f.doc.content.split(/\n{2,}/)) {
+      const pl = p.toLowerCase();
+      if (mentionKeys.some((k) => pl.includes(k))) {
+        mentions.push({ relPath: f.relPath, rootIdx: f.rootIdx, title: f.doc.title, snippet: p.replace(/\s+/g, " ").trim().slice(0, 220) });
+        break;
+      }
+    }
+  }
   return {
     relPath: target.relPath,
     rootIdx: target.rootIdx,
@@ -418,6 +434,7 @@ export function getDoc(relPath, rootIdx = null) {
     content: target.doc.content,
     links,
     backlinks,
+    mentions,
   };
 }
 

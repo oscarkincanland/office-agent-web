@@ -29,6 +29,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   const [results, setResults] = useState(null);
   const [graphData, setGraphData] = useState(null);
   const [graphInc, setGraphInc] = useState(["links", "tags"]);
+  const [graphLocal, setGraphLocal] = useState(false); // 局部图谱（聚焦当前文档 1-hop）
   const [expanded, setExpanded] = useState({}); // 持久化（localStorage）
   const [backOpen, setBackOpen] = useState({}); // 反链展开上下文
   const [loading, setLoading] = useState(false);
@@ -160,6 +161,12 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
       return next;
     });
   }, [treeCache, treeRoot, rootIdx]);
+
+  // 面包屑导航：展开树到指定目录（复用 ensureVisible 祖先展开）
+  const onDirNavigate = useCallback((dirPath) => {
+    if (!dirPath) return;
+    ensureVisible(dirPath + "/x.md");
+  }, [ensureVisible]);
 
   // 选中文档滚动定位（对齐 siyuan setCurrent）
   useEffect(() => {
@@ -513,6 +520,24 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
             {!doc && !loading && <div className="kb-empty">← 从左侧选择一篇文档，或在图谱中点击节点</div>}
             {doc && !loading && (
               <div className="kb-doc-body">
+                {/* 标题栏 + 面包屑（对齐 siyuan Title + Breadcrumb） */}
+                <div className="kb-doc-titlebar">
+                  <h2 className="kb-doc-title">{doc.title}</h2>
+                  <div className="kb-doc-breadcrumb">
+                    <span className="kb-crumb" onClick={() => onDirNavigate("")} title={rootName}>{rootName}</span>
+                    {doc.relPath.split("/").slice(0, -1).map((d, i, arr) => {
+                      const dirPath = arr.slice(0, i + 1).join("/");
+                      return (
+                        <span key={dirPath}>
+                          <span className="kb-crumb-sep">/</span>
+                          <span className="kb-crumb" onClick={() => onDirNavigate(dirPath)}>{d}</span>
+                        </span>
+                      );
+                    })}
+                    <span className="kb-crumb-sep">/</span>
+                    <span className="kb-crumb-current">{doc.relPath.split("/").pop()}</span>
+                  </div>
+                </div>
                 <MarkdownBody onTagClick={(t) => { setSearchQ(t); doSearch(t); }}>{doc.content}</MarkdownBody>
               </div>
             )}
@@ -559,6 +584,28 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
                     ))}
                   </ul>
                 </div>
+                <div className="kb-right-section">
+                  <div className="kb-right-title">提及（{doc.mentions?.length || 0}）</div>
+                  {(doc.mentions?.length || 0) === 0 && <div className="kb-meta-muted">正文出现但未建链接</div>}
+                  <ul className="kb-links kb-backlinks">
+                    {(doc.mentions || []).map((m, i) => (
+                      <li key={i} className={backOpen["m" + m.relPath] ? "open" : ""}>
+                        <div className="kb-backlink-title" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.relPath}>
+                          <Icon name="file" size={11} /> {m.title}
+                        </div>
+                        {m.snippet && (
+                          <div
+                            className="kb-backlink-snippet"
+                            onClick={(e) => { e.stopPropagation(); setBackOpen((o) => ({ ...o, ["m" + m.relPath]: !o["m" + m.relPath] })); }}
+                            title={backOpen["m" + m.relPath] ? "收起" : "展开提及上下文"}
+                          >
+                            {backOpen["m" + m.relPath] ? m.snippet : (m.snippet.length > 40 ? m.snippet.slice(0, 40) + "…" : m.snippet)}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </>
             ) : (
               <div className="kb-right-empty">选择文档后显示链接</div>
@@ -577,10 +624,16 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               </label>
             ))}
             <button className="btn-sm" onClick={loadGraph} disabled={loading}>重新布局</button>
+            <button
+              className={"btn-sm" + (graphLocal && doc ? " active" : "")}
+              onClick={() => setGraphLocal((v) => !v)}
+              disabled={!doc}
+              title={graphLocal ? "退出局部图谱，显示全图" : "仅显示当前文档的直接关联（1-hop 局部图）"}
+            >{graphLocal ? "全图" : "局部图谱"}</button>
             <span className="kb-graph-meta">{graphData?.meta?.total ? `${graphData.meta.total} 篇文档` : ""}{graphData?.meta?.capped ? "（已截断）" : ""}</span>
           </div>
           {graphData ? (
-            <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
+            <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} focusId={graphLocal && doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
           ) : (
             <div className="kb-loading">图谱加载中…</div>
           )}

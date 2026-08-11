@@ -2596,6 +2596,18 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .md-tag:hover { filter: brightness(1.4); }
 
+/* 文档标题栏 + 面包屑（对齐 siyuan Title + Breadcrumb） */
+.kb-doc-titlebar { padding: 4px 0 8px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
+.kb-doc-title { font-size: 20px; margin: 0 0 4px; color: var(--text); }
+.kb-doc-breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; font-size: 11px; color: var(--dim); }
+.kb-crumb { cursor: pointer; color: var(--muted); padding: 1px 3px; border-radius: 3px; }
+.kb-crumb:hover { color: var(--accent); background: var(--selected); }
+.kb-crumb-sep { color: var(--dim); }
+.kb-crumb-current { color: var(--text); }
+
+/* 局部图谱按钮激活态 */
+.kb-graph-toolbar .btn-sm.active { background: var(--accent); color: #fff; }
+
 /* 图谱视图 */
 .kb-graph-body { flex-direction: column; }
 .kb-graph-toolbar {
