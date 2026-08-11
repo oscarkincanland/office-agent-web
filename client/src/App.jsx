@@ -132,30 +132,18 @@ export default function App() {
   const open = useCallback(async (name) => {
     setDocLoading(true);
     try {
-      // 已在 tab 中则直接激活
-      setTabs((prev) => {
-        const exists = prev.find((t) => t.name === name);
-        if (exists) {
-          setActiveTab(name);
-          setDocLoading(false);
-          return prev;
-        }
-        return prev;
-      });
       const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
+      // 单次 setTabs：避免 React 批处理导致重复 tab
       setTabs((prev) => {
         const exists = prev.find((t) => t.name === name);
         if (exists) {
-          // 更新内容并激活
-          setActiveTab(name);
-          setDocLoading(false);
           return prev.map((t) => (t.name === name ? { ...t, ...doc } : t));
         }
-        setActiveTab(name);
-        setDocLoading(false);
         return [...prev, { name, ...doc }];
       });
-    } catch (e) { alert("打开失败: " + e.message); }
+      setActiveTab(name);
+      setDocLoading(false);
+    } catch (e) { alert("打开失败: " + e.message); setDocLoading(false); }
   }, [clientId]);
 
   // 关闭 tab
