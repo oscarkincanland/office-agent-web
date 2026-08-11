@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useCallback } from "react";
 import { Graph } from "@antv/g6";
 
 const TYPE_COLORS = {
@@ -7,15 +7,23 @@ const TYPE_COLORS = {
   folder: "#6a9bc7",
 };
 
+const EDGE_COLORS = {
+  link: "#8abeb7",
+  similar: "#5a7d9c",
+  tag: "#d4a84b",
+  folder: "#4a6d8c",
+};
+
 /**
  * 知识图谱（antv G6 v5 力导向图）
- * - 节点=文档（点击回传 onSelectNode）；标签/目录节点不可打开
- * - 支持拖拽画布/缩放/拖拽节点/悬停高亮
+ * - 节点=文档/标签/目录
+ * - 边=双向链接/内容相似/标签关系/目录归属
+ * - 点击文档节点回传 onSelectNode
+ * - 自动 fitView，拖拽/缩放/悬停
  */
 export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
-  const [selected, setSelected] = useState(null);
 
   const buildData = useCallback(() => {
     const nodes = (data?.nodes || []).map((n) => ({
@@ -36,7 +44,6 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
     return { nodes, edges };
   }, [data]);
 
-  // 创建/销毁 graph
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -46,16 +53,22 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
       data: buildData(),
       node: {
         style: {
-          size: (d) => (d.data.type === "file" ? 16 : d.data.type === "tag" ? 9 : 7),
+          size: (d) => (d.data.type === "file" ? 18 : d.data.type === "tag" ? 7 : 8),
           fill: (d) => TYPE_COLORS[d.data.type] || "#8abeb7",
-          labelText: (d) => d.data.label,
+          labelText: (d) => {
+            const label = d.data.label || "";
+            return label.length > 16 ? label.slice(0, 15) + "…" : label;
+          },
           labelPlacement: "bottom",
-          labelFontSize: 10,
-          labelFill: "#d4d4d4",
-          labelMaxWidth: 160,
+          labelFontSize: (d) => (d.data.type === "file" ? 10 : 8),
+          labelFill: (d) => (d.data.type === "file" ? "#d4d4d4" : "#999"),
+          labelMaxWidth: 140,
           labelWordWrap: true,
-          lineWidth: 1.2,
-          stroke: (d) => (d.id === highlightId ? "#ffffff" : "#2a2a44"),
+          lineWidth: 1.5,
+          stroke: (d) => (d.id === highlightId ? "#ffffff" : "transparent"),
+          shadowBlur: (d) => (d.id === highlightId ? 12 : 0),
+          shadowColor: (d) => (d.id === highlightId ? "#8abeb7" : "transparent"),
+          cursor: (d) => (d.data.type === "file" ? "pointer" : "default"),
         },
         state: {
           highlight: { fill: "#b5bd68", lineWidth: 2, stroke: "#ffffff" },
@@ -63,35 +76,43 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
       },
       edge: {
         style: {
-          stroke: (d) => (d.data.type === "link" ? "#8abeb7" : d.data.type === "similar" ? "#5a7d9c" : "#33415c"),
-          lineWidth: (d) => (d.data.type === "link" ? 1.4 : d.data.type === "similar" ? 0.8 : 0.7),
-          opacity: (d) => (d.data.type === "similar" ? 0.45 : 0.8),
+          stroke: (d) => EDGE_COLORS[d.data.type] || "#33415c",
+          lineWidth: (d) => (d.data.type === "link" ? 1.6 : d.data.type === "similar" ? 0.6 : 0.8),
+          opacity: (d) => (d.data.type === "similar" ? 0.35 : 0.7),
           endArrow: false,
         },
       },
       layout: {
         type: "force",
-        linkDistance: 130,
-        nodeStrength: -320,
+        linkDistance: (d) => (d.data?.type === "similar" ? 200 : 120),
+        nodeStrength: -400,
         preventOverlap: true,
-        collideStrength: 0.9,
-        alphaDecay: 0.18,
+        collideStrength: 0.95,
+        alphaDecay: 0.12,
+        alphaMin: 0.01,
       },
-      behaviors: ["drag-canvas", "zoom-canvas", "drag-element", "hover-activate", "click-select"],
+      behaviors: ["drag-canvas", "zoom-canvas", "drag-element", "hover-activate"],
     });
     g.on("node:click", (evt) => {
       const id = evt.target?.id;
       if (!id) return;
-      setSelected(id);
       const nodeData = data?.nodes?.find((n) => n.id === id);
       onSelectNode?.(nodeData && nodeData.type === "file" ? nodeData : null);
     });
-    g.render().catch((e) => console.error("G6 render error:", e));
+    // 悬停 tooltip
+    g.on("node:pointerenter", (evt) => {
+      const el = evt.target;
+      if (el) el.attr({ lineWidth: 2, stroke: "#8abeb7" });
+    });
+    g.on("node:pointerleave", (evt) => {
+      const el = evt.target;
+      if (el && el.id !== highlightId) el.attr({ lineWidth: 1.5, stroke: "transparent" });
+    });
+    g.render().then(() => {
+      setTimeout(() => g.fitView(30, "both", true), 200);
+    }).catch((e) => console.error("G6 render error:", e));
     graphRef.current = g;
-    return () => {
-      g.destroy();
-      graphRef.current = null;
-    };
+    return () => { g.destroy(); graphRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -100,25 +121,17 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
     const g = graphRef.current;
     if (!g || !data) return;
     g.setData(buildData());
-    g.render().catch((e) => console.error("G6 re-render error:", e));
+    g.render().then(() => {
+      setTimeout(() => g.fitView(30, "both", true), 200);
+    }).catch(() => {});
   }, [data, buildData]);
 
   // 高亮定位
   useEffect(() => {
     const g = graphRef.current;
     if (!g || !highlightId) return;
-    try {
-      g.setElementState(highlightId, ["highlight"]);
-      g.focusElement(highlightId);
-    } catch {}
+    try { g.setElementState(highlightId, ["highlight"]); g.focusElement(highlightId); } catch {}
   }, [highlightId]);
-
-  // 自适应
-  useEffect(() => {
-    const g = graphRef.current;
-    if (!g) return;
-    g.fitView(20, "both", false);
-  }, [data]);
 
   return (
     <div className="kb-graph">
@@ -127,9 +140,9 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId }) {
         <span><i style={{ background: TYPE_COLORS.file }} /> 文档</span>
         <span><i style={{ background: TYPE_COLORS.tag }} /> 标签</span>
         <span><i style={{ background: TYPE_COLORS.folder }} /> 目录</span>
-        <span><i style={{ background: "#8abeb7", width: 14, height: 2, borderRadius: 1 }} /> 链接</span>
-        <span><i style={{ background: "#5a7d9c", width: 14, height: 2, borderRadius: 1 }} /> 相似</span>
-        <span className="kb-graph-hint">拖拽画布 / 滚轮缩放 / 点击节点查看</span>
+        <span><i style={{ background: EDGE_COLORS.link, width: 14, height: 2, borderRadius: 1 }} /> 链接</span>
+        <span><i style={{ background: EDGE_COLORS.similar, width: 14, height: 2, borderRadius: 1 }} /> 相似</span>
+        <span className="kb-graph-hint">拖拽画布 · 滚轮缩放 · 点击文档节点查看</span>
       </div>
     </div>
   );

@@ -53,6 +53,9 @@ App.jsx
 │   ├── KnowledgeGraph.jsx  antv G6 力导向图（节点/边/缩放/拖拽/图例）
 │   ├── MarkdownBody.jsx    文档内容预览（GFM/KaTeX/高亮，复用）
 │   └── Icon.jsx            back/cloud/backlink 等图标
+├── TemplateLibrary.jsx    模版库全屏模式（tplMode=true 时渲染）
+│   ├── MarkdownBody.jsx    模版内容预览（.md 渲染）
+│   └── Icon.jsx            文件类型图标
 ├── SessionSidebar.jsx     左栏：文件/历史标签、技能广场、智能体广场
 │   ├── FileSidebar.jsx    文件列表 + ContextMenu 右键菜单
 │   └── SkillsManager.jsx  技能管理（@调用/导入/导出）
@@ -106,6 +109,9 @@ App.jsx
 | **GET** | **/api/kb/ima/bases** | IMA 知识库列表 |
 | **GET** | **/api/kb/ima/search?q=...&kb=...** | IMA 云端搜索 |
 | **GET** | **/api/kb/ima/doc?media_id=...** | IMA 文档详情（笔记/文件原文） |
+| **GET** | **/api/templates** | 模版库列表（?category= 分类筛选） |
+| **GET** | **/api/templates/content?path=...** | 模版内容预览（md返回text，其他返回binary） |
+| **POST** | **/api/templates/refresh** | 重新扫描模版目录 |
 | POST | /api/open-in-explorer | 文件管理器定位 |
 
 > 文档路由全部为**正则路由**（`/^\/api\/doc\/([^\/]+)\/(raw|html|comments|watch|cells)$/`），修复 Express 5 中 `:file` 参数吞掉后缀导致中文文件名匹配失败的问题。
