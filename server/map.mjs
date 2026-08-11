@@ -72,7 +72,7 @@ function layerStyle(def) {
         ...base,
         type: "line",
         paint: {
-          "line-color": def.id === "highways" ? "#d62728" : "#ff7f0e",
+          "line-color": def.id === "highways" ? "#d62728" : def.id === "roads-rural" ? "#2ca02c" : "#ff7f0e",
           "line-width": def.id === "highways" ? ["interpolate", ["linear"], ["zoom"], 5, 1, 10, 2.5, 13, 4.5] : ["interpolate", ["linear"], ["zoom"], 5, 0.8, 10, 1.8, 13, 3.2],
           "line-opacity": 0.85,
         },
@@ -188,7 +188,7 @@ export function getProject(name = DEFAULT_PROJECT) {
   const layersDir = path.join(dir, "layers");
   const files = fs.existsSync(layersDir)
     ? fs.readdirSync(layersDir, { withFileTypes: true })
-        .filter((e) => e.isFile() && e.name.endsWith(".geojson"))
+        .filter((e) => e.isFile() && !e.name.startsWith("._") && !e.name.startsWith(".") && e.name.endsWith(".geojson"))
         .map((e) => {
           const st = fs.statSync(path.join(layersDir, e.name));
           return { file: e.name, id: e.name.replace(/\.geojson$/, ""), size: st.size, mtime: st.mtimeMs };
@@ -243,4 +243,83 @@ export function rebuildTiles(name = DEFAULT_PROJECT, layerIds = null) {
   const dir = ensureProject(name);
   if (!dir) return null;
   return buildProjectTiles(dir, { force: true, layerIds });
+}
+
+/** 读取图层原始 GeoJSON */
+export function getLayer(name, layerId) {
+  const dir = projectDir(name);
+  const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !safeId) return null;
+  const p = path.join(dir, "layers", `${safeId}.geojson`);
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return null; }
+}
+
+/** 删除图层：移除 geojson + 瓦片 + style 图层 + config 条目 */
+export function deleteLayer(name, layerId) {
+  const dir = projectDir(name);
+  const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!dir || !safeId) return { ok: false, error: "invalid layer" };
+  const dataPath = path.join(dir, "layers", `${safeId}.geojson`);
+  if (fs.existsSync(dataPath)) fs.rmSync(dataPath);
+  const tilesPath = path.join(dir, "tiles", safeId);
+  if (fs.existsSync(tilesPath)) fs.rmSync(tilesPath, { recursive: true });
+  // style 里移除对应图层
+  const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name));
+  const before = style.layers.length;
+  style.layers = style.layers.filter((l) => l.id !== safeId && !l.id.startsWith(`basemap-${safeId}`));
+  if (style.sources?.[safeId]) delete style.sources[safeId];
+  if (style.layers.length !== before) {
+    fs.writeFileSync(path.join(dir, "style.json"), JSON.stringify(style, null, 2));
+  }
+  // config 里移除条目
+  const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  config.layers = (config.layers || []).filter((l) => l.id !== safeId);
+  fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  return { ok: true };
+}
+
+// ---------- 外部服务 ----------
+
+/**
+ * 等时圈分析（高德地图 Web 服务 v5 isochrone）
+ * 依赖环境变量 AMAP_KEY（高德 Web 服务 Key），未配置时返回明确错误。
+ * 返回: { error: null, center, cost, polygons: [[[lng,lat],...], ...] }
+ */
+export async function isochrone({ location, mode = "driving", range = 30, rangeType = "time" }) {
+  const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
+  if (!key) {
+    return { error: "未配置高德地图 Web 服务 Key（设置环境变量 AMAP_KEY 后重启服务），暂时无法进行等时圈分析" };
+  }
+  const url = new URL("https://restapi.amap.com/v5/isochrone");
+  url.searchParams.set("key", key);
+  url.searchParams.set("location", String(location || ""));
+  url.searchParams.set("mode", String(mode || "driving"));
+  url.searchParams.set("range_type", String(rangeType || "time"));
+  url.searchParams.set("range", String(range || 30));
+  let data;
+  try {
+    const r = await fetch(url);
+    data = await r.json();
+  } catch (e) {
+    return { error: "等时圈请求失败: " + e.message };
+  }
+  if (data.status !== "1") return { error: data.info || data.infocode || "等时圈请求失败" };
+  const polygons = (data.result?.polygons || [])
+    .map((p) => normalizePoints(p.points))
+    .filter((pts) => pts && pts.length >= 3);
+  return { error: null, center: data.result.center, cost: data.result.cost, polygons };
+}
+
+/** 高德 points 可能是 [[lng,lat],...] 或 [{lng,lat},...] 或字符串 */
+function normalizePoints(points) {
+  if (typeof points === "string") {
+    try { points = JSON.parse(points); } catch { return null; }
+  }
+  if (!Array.isArray(points)) return null;
+  return points.map((p) => {
+    if (Array.isArray(p)) return [Number(p[0]), Number(p[1])];
+    if (p && typeof p === "object") return [Number(p.lng), Number(p.lat)];
+    return null;
+  }).filter(Boolean);
 }

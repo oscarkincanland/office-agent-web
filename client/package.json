@@ -10,7 +10,11 @@
   },
   "dependencies": {
     "@antv/g6": "^5.1.1",
+    "buffer": "^6.0.3",
+    "chart.js": "^4.4.9",
     "docx": "^9.7.1",
+    "maplibre-gl": "^5.6.0",
+    "shpjs": "^4.0.4",
     "docx-preview": "^0.4.0",
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",
