@@ -3963,3 +3963,106 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .lp-attr-page { font-size: 11px; color: var(--dim); }
 .lp-attr-hint { margin-left: auto; font-size: 10px; color: var(--dim); }
+
+/* ================= v0.7.6 测量/绘制/按字段渲染 ================= */
+.mp-tool-btn.active { background: var(--accent); color: #0e0e1a; }
+.mp-toolmenu {
+  position: absolute;
+  z-index: 130;
+  top: 40px;
+  min-width: 140px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.mp-toolmenu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.mp-toolmenu button:hover { background: var(--selected); }
+
+.mp-draw-hint {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+.mp-draw-val { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.mp-measure {
+  position: absolute;
+  left: 10px;
+  bottom: 36px;
+  z-index: 10;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+.mp-measure span { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+.mp-iso-check { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; margin-left: auto; }
+.mp-iso-check input { accent-color: var(--accent); cursor: pointer; }
+.mp-iso-ranges { flex: 1; width: auto; }
+
+/* 按字段渲染（样式编辑器内） */
+.lp-ed-sec { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; }
+.lp-ed-sec-title { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 7px; }
+.lp-ed-field { flex: 1; min-width: 0; }
+.lp-palettes { display: flex; gap: 4px; flex-wrap: wrap; }
+.lp-palette {
+  display: inline-flex;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px;
+  cursor: pointer;
+  background: var(--panel-bg);
+}
+.lp-palette:hover { border-color: var(--accent); }
+.lp-palette.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.lp-palette i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.lp-legend-preview {
+  margin: 6px 0;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.lp-legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.lp-legend-item i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.lp-ed-actions { margin-top: 4px; }
+.lp-ed-actions .btn-sm { padding: 3px 10px; }

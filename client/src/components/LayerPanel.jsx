@@ -17,6 +17,14 @@ const COLOR_PAINT_KEYS = {
   fill: ["fill-color", "fill-opacity", "fill-outline-color"],
 };
 
+/** 按字段渲染调色板 */
+const PALETTES = [
+  ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"],
+  ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#b07aa1", "#76b7b2", "#edc948", "#ff9da7"],
+  ["#e4572e", "#17bebb", "#ffc914", "#2e282a", "#76b041", "#8b5e34"],
+  ["#004c6d", "#346888", "#5d8ba6", "#8abeb7", "#c8e0d8"],
+];
+
 /** 从图层 paint 属性推断 SVG 图例符号 */
 function LegendSymbol({ styleType, paint, color }) {
   const c = color || "#8abeb7";
@@ -56,6 +64,8 @@ export default function LayerPanel({
   const [ctx, setCtx] = useState(null);                    // 右键菜单 {x,y,layerId}
   const [editing, setEditing] = useState(null);            // 重命名 {layerId, name}
   const [legend, setLegend] = useState({});                // {layerId: {count, fields}}
+  const [fieldData, setFieldData] = useState(null);        // {layerId, fields, numFields, props}
+  const [renderMode, setRenderMode] = useState(null);      // {layerId, mode, field, palette, classes}
   const panelRef = useRef(null);
 
   // ---- 分组：组内图层按 style.layers 顺序（视觉逆序=顶部最上层） ----
@@ -110,6 +120,20 @@ export default function LayerPanel({
 
   const ctxAction = useCallback((fn) => (...args) => { setCtx(null); fn(...args); }, []);
 
+  // ---- 按字段渲染：选中图层时加载属性字段 ----
+  useEffect(() => {
+    if (!selected) { setFieldData(null); setRenderMode(null); return undefined; }
+    let alive = true;
+    mapGetLayer(project, selected).then((g) => {
+      if (!alive || !g?.features?.length) return;
+      const props = g.features.map((f) => f.properties || {});
+      const fields = Object.keys(props[0] || {});
+      const numFields = fields.filter((f) => props.some((p) => typeof p[f] === "number"));
+      if (alive) setFieldData({ layerId: selected, fields, numFields, props });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [selected, project]);
+
   // ---- 图例数据（展开时读取 geojson 统计） ----
   const toggleLegend = useCallback(async (layerId) => {
     setExpanded((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
@@ -156,9 +180,50 @@ export default function LayerPanel({
     <div className="lp-ed-row" key={key}>
       <span className="lp-ed-label">{label}</span>
       <input type="color" className="lp-ed-color" value={normalizeHex(value)} onChange={(e) => setPaint(key, e.target.value)} />
-      <code className="lp-ed-hex">{value || ""}</code>
+      <code className="lp-ed-hex">{typeof value === "string" ? value : "表达式"}</code>
     </div>
   );
+
+  // ---- 按字段渲染：应用/恢复 ----
+  const colorKey = paintKeys.find((k) => k === "line-color" || k === "fill-color" || k === "circle-color") || null;
+  const rm = renderMode?.layerId === selected ? renderMode : null;
+  const uniqueValues = useMemo(() => {
+    if (!fieldData || !rm || rm.mode !== "categorized" || !rm.field) return [];
+    return [...new Set(fieldData.props.map((p) => String(p[rm.field] ?? "")).filter((v) => v !== ""))].slice(0, 8);
+  }, [fieldData, rm]);
+
+  const applyFieldRender = useCallback((mode, field, paletteIdx, classes = 5) => {
+    if (!colorKey || !fieldData || !selected) return;
+    const props = fieldData.props;
+    if (mode === "categorized") {
+      const uniq = [...new Set(props.map((p) => String(p[field] ?? "")).filter((v) => v !== ""))].slice(0, 8);
+      if (!uniq.length) return;
+      const expr = ["match", ["get", field]];
+      uniq.forEach((v, i) => expr.push(v, PALETTES[paletteIdx][i % PALETTES[paletteIdx].length]));
+      expr.push("#9e9e9e");
+      setPaint(colorKey, expr);
+      setRenderMode({ layerId: selected, mode, field, palette: paletteIdx, classes: uniq });
+    } else if (mode === "graduated") {
+      const nums = props.map((p) => Number(p[field])).filter((v) => Number.isFinite(v));
+      if (nums.length < 2) return;
+      const min = Math.min(...nums);
+      const max = Math.max(...nums);
+      const n = Math.max(3, Math.min(6, classes));
+      const step = (max - min) / n;
+      const colors = PALETTES[paletteIdx];
+      const expr = ["step", ["get", field], colors[0]];
+      for (let i = 1; i < n; i++) expr.push(Number((min + step * i).toFixed(4)), colors[i % colors.length]);
+      setPaint(colorKey, expr);
+      setRenderMode({ layerId: selected, mode, field, palette: paletteIdx, classes: n, min, max, step });
+    }
+  }, [colorKey, fieldData, selected, setPaint]);
+
+  const resetFieldRender = useCallback(() => {
+    if (!colorKey) return;
+    const defs = { line: "#d62728", fill: "#8abeb7", circle: "#9467bd" };
+    setPaint(colorKey, defs[selectedStyleType] || "#8abeb7");
+    setRenderMode({ layerId: selected, mode: "single", field: null, palette: 0 });
+  }, [colorKey, selected, selectedStyleType, setPaint]);
 
   return (
     <div className="lp" ref={panelRef}>
@@ -340,6 +405,95 @@ export default function LayerPanel({
                 </select>
               </div>
             )}
+            {/* 按字段渲染（分类/分级着色） */}
+            {colorKey && fieldData && fieldData.layerId === selected && (
+              <div className="lp-ed-sec">
+                <div className="lp-ed-sec-title">按字段渲染</div>
+                <div className="lp-ed-row">
+                  <span className="lp-ed-label">模式</span>
+                  <select
+                    className="lp-ed-select"
+                    value={rm?.mode || "single"}
+                    onChange={(e) => {
+                      const m = e.target.value;
+                      if (m === "single") resetFieldRender();
+                      else {
+                        const field = m === "graduated" ? (fieldData.numFields[0] || fieldData.fields[0]) : fieldData.fields[0];
+                        setRenderMode({ layerId: selected, mode: m, field, palette: 0, classes: m === "graduated" ? 5 : null });
+                      }
+                    }}
+                  >
+                    <option value="single">单一颜色</option>
+                    <option value="categorized">按字段分类</option>
+                    <option value="graduated">按数值分级</option>
+                  </select>
+                </div>
+                {rm && rm.mode !== "single" && (
+                  <>
+                    <div className="lp-ed-row">
+                      <span className="lp-ed-label">字段</span>
+                      <select
+                        className="lp-ed-select lp-ed-field"
+                        value={rm.field || ""}
+                        onChange={(e) => setRenderMode((s) => ({ ...s, field: e.target.value }))}
+                      >
+                        {rm.mode === "graduated"
+                          ? fieldData.numFields.map((f) => <option key={f} value={f}>{f}</option>)
+                          : fieldData.fields.map((f) => <option key={f} value={f}>{f}</option>)}
+                        {rm.mode === "graduated" && fieldData.numFields.length === 0 && <option value="">（无数值字段）</option>}
+                      </select>
+                    </div>
+                    <div className="lp-ed-row">
+                      <span className="lp-ed-label">调色板</span>
+                      <div className="lp-palettes">
+                        {PALETTES.map((pal, i) => (
+                          <button
+                            key={i}
+                            className={`lp-palette ${rm.palette === i ? "active" : ""}`}
+                            onClick={() => setRenderMode((s) => ({ ...s, palette: i }))}
+                            title={`调色板 ${i + 1}`}
+                          >
+                            {pal.slice(0, 6).map((c) => <i key={c} style={{ background: c }} />)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {rm.mode === "graduated" && (
+                      <div className="lp-ed-row">
+                        <span className="lp-ed-label">级数</span>
+                        <select
+                          className="lp-ed-select"
+                          value={rm.classes || 5}
+                          onChange={(e) => setRenderMode((s) => ({ ...s, classes: Number(e.target.value) }))}
+                        >
+                          {[3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 级</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {/* 图例预览 */}
+                    <div className="lp-legend-preview">
+                      {rm.mode === "categorized" && uniqueValues.map((v, i) => (
+                        <div className="lp-legend-item" key={v}>
+                          <i style={{ background: PALETTES[rm.palette][i % PALETTES[rm.palette].length] }} />
+                          <span>{v}</span>
+                        </div>
+                      ))}
+                      {rm.mode === "graduated" && rm.step && Array.from({ length: rm.classes }, (_, i) => (
+                        <div className="lp-legend-item" key={i}>
+                          <i style={{ background: PALETTES[rm.palette][i % PALETTES[rm.palette].length] }} />
+                          <span>{fmtNum(rm.min + rm.step * i)} ~ {fmtNum(rm.min + rm.step * (i + 1))}</span>
+                        </div>
+                      ))}
+                      {rm.mode === "categorized" && <div className="lp-legend-item"><i style={{ background: "#9e9e9e" }} /><span>其他</span></div>}
+                    </div>
+                    <div className="lp-ed-row lp-ed-actions">
+                      <button className="btn-sm primary" onClick={() => applyFieldRender(rm.mode, rm.field, rm.palette, rm.classes)}>应用</button>
+                      <button className="btn-sm" onClick={resetFieldRender}>恢复单一颜色</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             <div className="lp-ed-note">样式保存到 style.json，agent 与地图实时同步</div>
           </div>
         </div>
@@ -352,6 +506,10 @@ export default function LayerPanel({
 function normalizeHex(v) {
   if (typeof v !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(v)) return "#8abeb7";
   return v;
+}
+
+function fmtNum(v) {
+  return Math.abs(v) >= 10000 ? Math.round(v).toLocaleString() : Number(v.toFixed(2));
 }
 
 function styleSummary(stype, paint) {
