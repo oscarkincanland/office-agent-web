@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import MapViewer from "./MapViewer.jsx";
 import ChatPanel from "./ChatPanel.jsx";
+import LayerPanel from "./LayerPanel.jsx";
+import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapIsochrone,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapIsochrone,
 } from "../api.js";
 
 const BASEMAP_NAMES = { carto: "亮色", osm: "OSM", dark: "暗色", satellite: "卫星" };
@@ -14,7 +16,6 @@ const ISO_MODES = [
   { id: "bicycling", label: "骑行" },
   { id: "transit", label: "公交" },
 ];
-const LAYER_TYPE_NAMES = { boundary: "边界", road: "道路", point: "点" };
 
 /**
  * 地图全屏模式（GIS 项目，与知识库/模版库同款布局）
@@ -35,6 +36,8 @@ export default function MapPanel({
   const [style, setStyle] = useState(null);
   const [files, setFiles] = useState([]);
   const [msg, setMsg] = useState("");
+  const [selectedLayer, setSelectedLayer] = useState(null);
+  const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
   const [isoOpen, setIsoOpen] = useState(false);
   const [iso, setIso] = useState({ mode: "driving", range: 30, loc: null, picking: false, loading: false, err: "", info: "" });
   const mapRef = useRef(null);
@@ -71,14 +74,15 @@ export default function MapPanel({
   }, [project, flash]);
 
   // ---- 图层操作 ----
-  const toggleLayer = useCallback((layerId) => {
+  const toggleLayer = useCallback((layerId, target) => {
     if (!style) return;
     const next = {
       ...style,
       layers: style.layers.map((l) => {
         if (l.id !== layerId) return l;
-        const vis = l.layout?.visibility === "none" ? "visible" : "none";
-        return { ...l, layout: { ...(l.layout || {}), visibility: vis } };
+        const cur = l.layout?.visibility !== "none";
+        const vis = typeof target === "boolean" ? target : !cur;
+        return { ...l, layout: { ...(l.layout || {}), visibility: vis ? "visible" : "none" } };
       }),
     };
     saveStyle(next);
@@ -115,13 +119,15 @@ export default function MapPanel({
     if (!window.confirm(`删除图层「${layerId}」？（数据与瓦片一并移除）`)) return;
     try {
       await mapDeleteLayer(project, layerId);
+      if (selectedLayer === layerId) setSelectedLayer(null);
+      if (attrLayer?.layerId === layerId) setAttrLayer(null);
       await loadProject(project);
       mapRef.current?.reloadStyle();
       flash(`已删除图层 ${layerId}`);
     } catch (e) {
       flash("删除失败: " + e.message);
     }
-  }, [project, loadProject, flash]);
+  }, [project, loadProject, flash, selectedLayer, attrLayer]);
 
   const zoomToLayer = useCallback(async (layerId) => {
     try {
@@ -142,6 +148,84 @@ export default function MapPanel({
       m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, maxZoom: 13 });
     } catch { /* 忽略定位失败 */ }
   }, [project]);
+
+  // ---- QGIS 式图层管理扩展 ----
+
+  // 样式编辑器：设置单个 paint 属性（null 删除）
+  const setLayerPaint = useCallback((layerId, key, value) => {
+    if (!style) return;
+    const next = {
+      ...style,
+      layers: style.layers.map((l) => {
+        if (l.id !== layerId) return l;
+        const paint = { ...(l.paint || {}) };
+        if (value === null || value === undefined) delete paint[key];
+        else paint[key] = value;
+        return { ...l, paint };
+      }),
+    };
+    saveStyle(next);
+  }, [style, saveStyle]);
+
+  // 重命名（config.layers[].name）
+  const renameLayer = useCallback(async (layerId, name) => {
+    if (!cfg) return;
+    const next = { ...cfg, layers: (cfg.layers || []).map((l) => (l.id === layerId ? { ...l, name } : l)) };
+    setCfg(next);
+    try { await mapSaveConfig(project, next); } catch (e) { flash("重命名保存失败: " + e.message); }
+  }, [cfg, project, flash]);
+
+  // 复制图层（新 id + 瓦片重建）
+  const duplicateLayer = useCallback(async (layerId) => {
+    try {
+      const g = await mapGetLayer(project, layerId);
+      if (!g) return;
+      const newId = layerId + "_copy";
+      await mapImportLayer(project, newId, g);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      flash(`已复制图层 ${layerId} → ${newId}`);
+    } catch (e) {
+      flash("复制失败: " + e.message);
+    }
+  }, [project, loadProject, flash]);
+
+  // 拖拽排序：把 layerId 移到 targetId 的位置
+  const moveLayerTo = useCallback((layerId, targetId) => {
+    if (!style) return;
+    const ids = style.layers.map((l) => l.id);
+    const from = ids.indexOf(layerId);
+    const to = ids.indexOf(targetId);
+    if (from === -1 || to === -1 || from === to) return;
+    const layers = [...style.layers];
+    const [item] = layers.splice(from, 1);
+    const to2 = layers.findIndex((l) => l.id === targetId);
+    layers.splice(to2, 0, item);
+    saveStyle({ ...style, layers });
+  }, [style, saveStyle]);
+
+  // 打开属性表
+  const openAttribute = useCallback((layerId) => {
+    setAttrLayer({ layerId, name: cfg?.layers?.find((l) => l.id === layerId)?.name || layerId });
+  }, [cfg]);
+
+  // 属性表行定位到地图
+  const locateFeature = useCallback((row) => {
+    const m = mapRef.current?.getMap();
+    if (!m || !row?.geom) return;
+    const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+    const walk = (c) => {
+      if (typeof c[0] === "number") {
+        bbox[0] = Math.min(bbox[0], c[0]);
+        bbox[1] = Math.min(bbox[1], c[1]);
+        bbox[2] = Math.max(bbox[2], c[0]);
+        bbox[3] = Math.max(bbox[3], c[1]);
+      } else c.forEach(walk);
+    };
+    walk(row.geom.coordinates || []);
+    if (bbox[0] === Infinity) return;
+    m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, maxZoom: 15 });
+  }, []);
 
   // ---- 顶栏操作 ----
   const switchBasemap = useCallback(async (id) => {
@@ -257,25 +341,6 @@ export default function MapPanel({
     onOpenFile?.(name);
   }, [onExit, onOpenFile]);
 
-  const layerVisible = useCallback((layerId) => {
-    const l = style?.layers?.find((x) => x.id === layerId);
-    return !l || l.layout?.visibility !== "none";
-  }, [style]);
-
-  const layerOpacity = useCallback((layerId) => {
-    const l = style?.layers?.find((x) => x.id === layerId);
-    const p = l?.paint || {};
-    const key = ["line-opacity", "circle-opacity", "fill-opacity"].find((k) => p[k] !== undefined);
-    const v = key ? p[key] : null;
-    return typeof v === "number" ? v : 1;
-  }, [style]);
-
-  const layerOrder = useCallback((layerId) => {
-    if (!style) return 0;
-    const ids = style.layers.map((l) => l.id);
-    return ids.indexOf(layerId);
-  }, [style]);
-
   return (
     <div className="mp">
       {/* 顶栏：工具栏 */}
@@ -318,53 +383,29 @@ export default function MapPanel({
       </div>
 
       <div className="mp-body">
-        {/* 左栏：图层文件树 */}
+        {/* 左栏：QGIS 风格图层面板 */}
         <div className="mp-left">
           <div className="mp-left-title">
-            <Icon name="layers" size={12} /> 图层文件
+            <Icon name="layers" size={12} /> 图层
             <span className="mp-layer-count">{files.length}</span>
           </div>
-          <div className="mp-layer-list">
-            {files.length === 0 && <div className="mp-empty">暂无图层，点击地图右上角「导入」添加 GeoJSON / SHP</div>}
-            {files.map((f) => {
-              const meta = cfg?.layers?.find((l) => l.id === f.id);
-              const idx = layerOrder(f.id);
-              return (
-                <div key={f.id} className="mp-layer-row">
-                  <label className="mp-layer-eye" title={layerVisible(f.id) ? "隐藏" : "显示"}>
-                    <input
-                      type="checkbox"
-                      checked={layerVisible(f.id)}
-                      onChange={() => toggleLayer(f.id)}
-                    />
-                  </label>
-                  <div className="mp-layer-info">
-                    <div className="mp-layer-name" title={f.id}>
-                      {meta?.name || f.id}
-                      <span className="mp-layer-type">{LAYER_TYPE_NAMES[meta?.type] || meta?.type || "?"}</span>
-                    </div>
-                    <input
-                      type="range"
-                      className="mp-opacity"
-                      min="0" max="1" step="0.05"
-                      value={layerOpacity(f.id)}
-                      onChange={(e) => setOpacity(f.id, e.target.value)}
-                      title="透明度"
-                    />
-                  </div>
-                  <div className="mp-layer-ops">
-                    <button className="mp-op" title="缩放到图层" onClick={() => zoomToLayer(f.id)}><Icon name="locate" size={12} /></button>
-                    <button className="mp-op" title="上移" disabled={idx <= 0} onClick={() => moveLayer(f.id, "up")}><Icon name="chevronDown" size={12} /></button>
-                    <button className="mp-op" title="下移" disabled={idx >= (style?.layers?.length || 1) - 1} onClick={() => moveLayer(f.id, "down")}><Icon name="chevronDown" size={12} className="flip" /></button>
-                    <button className="mp-op mp-op-danger" title="删除图层" onClick={() => removeLayer(f.id)}><Icon name="trash" size={12} /></button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="mp-left-foot">
-            提示：地图右上角「导入」可上传 GeoJSON / SHP 新增图层；agent 对话可直接改图层样式与数据。
-          </div>
+          <LayerPanel
+            project={project}
+            cfg={cfg}
+            style={style}
+            files={files}
+            selected={selectedLayer}
+            onSelect={setSelectedLayer}
+            onToggleLayer={toggleLayer}
+            onSetPaint={setLayerPaint}
+            onSetOpacity={setOpacity}
+            onMoveLayerTo={moveLayerTo}
+            onRenameLayer={renameLayer}
+            onDuplicateLayer={duplicateLayer}
+            onDeleteLayer={removeLayer}
+            onZoomToLayer={zoomToLayer}
+            onOpenAttribute={openAttribute}
+          />
         </div>
 
         {/* 中栏：地图 */}
@@ -394,6 +435,17 @@ export default function MapPanel({
           />
         </div>
       </div>
+
+      {/* 属性表弹窗 */}
+      {attrLayer && (
+        <AttributeTable
+          project={project}
+          layerId={attrLayer.layerId}
+          layerName={attrLayer.layerName}
+          onClose={() => setAttrLayer(null)}
+          onLocate={locateFeature}
+        />
+      )}
 
       {/* 等时圈分析弹窗（选点模式下 backdrop 不拦截鼠标，允许点击地图） */}
       {isoOpen && (

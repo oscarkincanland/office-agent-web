@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WORKSPACE_DIR } from "./workspace.mjs";
-import { LAYER_DEFS, buildProjectTiles } from "../scripts/lib/tiler.mjs";
+import { LAYER_DEFS, GROUP_BY_TYPE, buildProjectTiles } from "../scripts/lib/tiler.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
@@ -136,6 +136,7 @@ function defaultConfig(project) {
       id: d.id,
       name: d.name,
       type: d.type,
+      group: d.group || GROUP_BY_TYPE[d.type] || "其他",
       visible: true,
       minzoom: d.minzoom,
       maxzoom: d.maxzoom,
@@ -221,7 +222,8 @@ export async function importLayer(name, layerId, geojson) {
   // 把新图层加入 config（若不存在）
   const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
   if (!config.layers.some((l) => l.id === safeId)) {
-    config.layers.push({ id: safeId, name: safeId, type: guessType(geojson), visible: true, minzoom: 5, maxzoom: 13 });
+    const type = guessType(geojson);
+    config.layers.push({ id: safeId, name: safeId, type, group: GROUP_BY_TYPE[type] || "其他", visible: true, minzoom: 5, maxzoom: 13 });
     fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
   }
   // 重建该图层瓦片（缺 def 时按通用参数）
