@@ -2553,7 +2553,12 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
     linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
     /* major grid */
     linear-gradient(rgba(255,255,255,0.07) 1px, transparent 1px) 0 0 / 120px 120px,
-    linear-gradient(90deg, rgba(255,255,255,0.07) 1px, transparent 1px) 0 0 / 120px 120px;
+    linear-gradient(90deg, rgba(255,255,255,0.07) 1px, transparent 1px) 0 0 / 120px 120px,
+    var(--body-bg, #1a1a2e);
+}
+/* G6 的 canvas 透明，让 CSS 背景透出 */
+.kb-graph-canvas canvas {
+  background: transparent !important;
 }
 .kb-graph-legend {
   position: absolute;
@@ -2813,6 +2818,12 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .tpl-title { font-weight: 700; font-size: 14px; }
 .tpl-count { font-size: 11px; color: var(--dim); margin-left: 4px; }
+.tpl-search { display: flex; align-items: center; gap: 4px; background: var(--panel2-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; margin-left: 12px; min-width: 180px; }
+.tpl-search svg { flex-shrink: 0; color: var(--dim); }
+.tpl-search-input { border: none; background: transparent; color: var(--text); font-size: 12px; outline: none; width: 100%; padding: 2px 0; }
+.tpl-search-input::placeholder { color: var(--dim); }
+.tpl-search-clear { border: none; background: none; color: var(--dim); cursor: pointer; font-size: 14px; padding: 0 2px; line-height: 1; }
+.tpl-search-clear:hover { color: var(--text); }
 .tpl-sort { display: flex; align-items: center; gap: 4px; margin-left: 12px; }
 .tpl-sort-label { font-size: 11px; color: var(--dim); }
 .tpl-sort-select { font-size: 11px; background: var(--panel2-bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; cursor: pointer; }
