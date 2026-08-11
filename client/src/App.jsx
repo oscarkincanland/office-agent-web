@@ -4,6 +4,11 @@ import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
+import AgentMarket from "./components/AgentMarket.jsx";
+import KnowledgeBase from "./components/KnowledgeBase.jsx";
+import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import Icon from "./components/Icon.jsx";
+import { useTheme } from "./theme.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
 
 // 全局错误边界
@@ -51,6 +56,9 @@ export default function App() {
   const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
+  const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
+  const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
+  const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -60,6 +68,7 @@ export default function App() {
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
+  const { theme, toggleTheme } = useTheme();
 
   // @ 按钮：把文件/文件夹路径插入到对话输入框
   const handleAtMention = useCallback((rel, isDir) => {
@@ -243,6 +252,20 @@ export default function App() {
   return (
     <AppErrorBoundary>
       <div className="app">
+        {kbMode && (
+          <KnowledgeBase
+            onExit={() => setKbMode(false)}
+            onAtMention={(text) => chatInputRef.current?.insertText(text)}
+          />
+        )}
+        {tplMode && (
+          <TemplateLibrary
+            onExit={() => setTplMode(false)}
+            onOpenFile={open}
+          />
+        )}
+        {!kbMode && !tplMode && (
+        <>
         {sidebarOpen && (
           <>
             <SessionSidebar
@@ -275,8 +298,14 @@ export default function App() {
               {sidebarOpen && (
                 <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
               )}
-              <span className="topbar-title">{current?.name || "Office Agent"}</span>
-              <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理">🧩 技能</button>
+            <span className="topbar-title">{current?.name || "Office Agent"}</span>
+            <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+              <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
+            </button>
+            <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理"><Icon name="skills" size={14} /> 技能</button>
+            <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
+            <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
+            <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
@@ -301,12 +330,21 @@ export default function App() {
           historyMessages={historyMessages}
           onNewSession={handleNewSession}
           onOpenFile={open}
+          sessions={sessions}
+          onSelectSession={handleSelectSession}
         />
         <SkillsManager
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
           onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
         />
+        <AgentMarket
+          open={agentsOpen}
+          onClose={() => setAgentsOpen(false)}
+          onAtMention={(text) => chatInputRef.current?.insertText(text)}
+        />
+        </>
+        )}
       </div>
     </AppErrorBoundary>
   );

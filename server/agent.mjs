@@ -63,6 +63,8 @@ class AgentManager extends EventEmitter {
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
+              "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
+              "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
             ].join("\n"),
           },
@@ -96,13 +98,62 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    const kbSearchTool = defineTool({
+      name: "kb_search",
+      label: "知识库搜索",
+      description:
+        "搜索本地知识库（已索引的 Markdown 文档）。返回匹配文档的路径、标题与摘要片段。当用户引用知识库内容、要求检索资料/观点/素材时使用。支持中文关键词。",
+      parameters: Type.Object({
+        query: Type.String({ description: "搜索关键词（支持中文，可多个词空格分隔）" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const kb = await import("./kb.mjs");
+        await kb.scan();
+        const results = kb.search(params.query || "", null, 8);
+        if (!results.length) return { content: [{ type: "text", text: "未找到匹配的知识库文档。" }], details: {} };
+        const lines = results.map(
+          (r) => `[${r.title}] 路径: ${r.relPath}（得分 ${r.score}）\n  摘要: ${r.snippet}`
+        );
+        return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+      },
+    });
+
+    const kbReadTool = defineTool({
+      name: "kb_read",
+      label: "知识库读取",
+      description:
+        "读取知识库中某篇文档的完整 Markdown 内容。参数 path 格式为「相对路径@根目录名」，例如「OD出行分析报告_完整版.md@柬埔寨公交项目」。当用户以 @知识库[路径@根目录名] 引用文档时，把其中的路径与根目录名填入此参数。",
+      parameters: Type.Object({
+        path: Type.String({ description: "相对路径@根目录名，如 xx.md@根目录" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const kb = await import("./kb.mjs");
+        await kb.scan();
+        const raw = String(params.path || "").trim();
+        const parts = raw.split("@").map((s) => (s || "").trim());
+        const relPath = parts[0];
+        const rootName = parts[1] || "";
+        let rootIdx = null;
+        if (rootName) {
+          const idx = kb.status().roots.findIndex((r) => r.name === rootName);
+          if (idx >= 0) rootIdx = idx;
+        }
+        const doc = kb.getDoc(relPath, rootIdx);
+        if (!doc) {
+          return { content: [{ type: "text", text: `未找到文档: ${raw}` }], details: {} };
+        }
+        const text = `# ${doc.title}\n\n标签: ${doc.tags.join(", ") || "无"}\n路径: ${relPath}\n\n${doc.content}`;
+        return { content: [{ type: "text", text: text.slice(0, 40000) }], details: {} };
+      },
+    });
+
     const sessionManager = SessionManager.create(SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [officeTool],
+      customTools: [officeTool, kbSearchTool, kbReadTool],
       tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli"],
       sessionManager,
     });
@@ -204,11 +255,15 @@ class AgentManager extends EventEmitter {
   }
 
   /** Run a prompt. Events stream to entry.emitter; resolves on completion. */
-  async prompt(clientId, text, images = []) {
+  async prompt(clientId, text, images = [], effort) {
     const entry = await this.getOrCreate(clientId);
     const isStreaming = entry.busy;
     entry.busy = true;
     try {
+      // 应用推理强度（low/medium/high → pi thinking level）
+      if (effort) {
+        try { entry.session.setThinkingLevel(effort); } catch {}
+      }
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -231,7 +286,18 @@ class AgentManager extends EventEmitter {
         emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
         await entry.session.prompt(text, opts);
       } else {
-        await entry.session.prompt(text, opts);
+        try {
+          await entry.session.prompt(text, opts);
+        } catch (e) {
+          // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
+          // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列
+          if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
+            emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
+            await entry.session.prompt(text, { ...opts, streamingBehavior: "steer" });
+          } else {
+            throw e;
+          }
+        }
       }
     } finally {
       entry.busy = false;

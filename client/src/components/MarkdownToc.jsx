@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * Markdown 目录浮窗组件
@@ -115,7 +116,7 @@ export default function MarkdownToc({ content, targetRef }) {
         onClick={() => setIsOpen(!isOpen)}
         title={isOpen ? "收起目录" : "展开目录"}
       >
-        <span className="md-toc-icon">☰</span>
+        <span className="md-toc-icon"><Icon name="list" size={14} /></span>
         {isOpen && <span className="md-toc-title">目录</span>}
       </button>
       
