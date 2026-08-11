@@ -5,6 +5,7 @@ import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
+import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
@@ -55,6 +56,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
   const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
+  const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -248,6 +250,14 @@ export default function App() {
   return (
     <AppErrorBoundary>
       <div className="app">
+        {kbMode && (
+          <KnowledgeBase
+            onExit={() => setKbMode(false)}
+            onAtMention={(text) => chatInputRef.current?.insertText(text)}
+          />
+        )}
+        {!kbMode && (
+        <>
         {sidebarOpen && (
           <>
             <SessionSidebar
@@ -286,6 +296,7 @@ export default function App() {
             </button>
             <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理"><Icon name="skills" size={14} /> 技能</button>
             <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
+            <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
@@ -323,6 +334,8 @@ export default function App() {
           onClose={() => setAgentsOpen(false)}
           onAtMention={(text) => chatInputRef.current?.insertText(text)}
         />
+        </>
+        )}
       </div>
     </AppErrorBoundary>
   );

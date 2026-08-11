@@ -1,0 +1,8 @@
+{
+  "roots": [
+    "F:\\Claude code本地文件\\_knowledge_base",
+    "F:\\Claude code本地文件\\义乌物流专题资料",
+    "F:\\Claude code本地文件\\柬埔寨公交项目"
+  ],
+  "imaSkillDir": "F:\\Claude code本地文件\\.agents\\skills\\ima-skill"
+}
