@@ -38,8 +38,11 @@ export default function MapPanel({
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
   const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
+  const [draw, setDraw] = useState(null);            // 测量/绘制 {kind, points}
+  const [measureResult, setMeasureResult] = useState(null); // {dist?, area?}
+  const [toolMenu, setToolMenu] = useState(null);    // 顶栏工具菜单 {x, y, type: "measure"|"draw"}
   const [isoOpen, setIsoOpen] = useState(false);
-  const [iso, setIso] = useState({ mode: "driving", range: 30, loc: null, picking: false, loading: false, err: "", info: "" });
+  const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "" });
   const mapRef = useRef(null);
 
   const flash = useCallback((t) => {
@@ -258,16 +261,11 @@ export default function MapPanel({
     });
   }, []);
 
-  const drawIsoPolygons = useCallback((polygons, center) => {
+  // 绘制等时圈多边形（临时图层，不写入项目；suffix 区分多档叠加）
+  const drawIsoPolygons = useCallback((polygons, center, color = "#7b1fa2", opacity = 0.25, suffix = "") => {
     const m = mapRef.current?.getMap();
-    if (!m) return;
-    // 清理上一轮结果
-    for (const id of ["iso-fill", "iso-line", "iso-center"]) {
-      if (m.getLayer(id)) m.removeLayer(id);
-    }
-    if (m.getSource("iso-temp")) m.removeSource("iso-temp");
-    if (m.getSource("iso-center-src")) m.removeSource("iso-center-src");
-    // 绘制等时圈多边形（临时图层，不写入项目）
+    if (!m || !polygons?.length) return;
+    const src = `iso-temp${suffix}`;
     const fc = {
       type: "FeatureCollection",
       features: polygons.map((pts) => ({
@@ -276,15 +274,15 @@ export default function MapPanel({
         geometry: { type: "Polygon", coordinates: [pts] },
       })),
     };
-    m.addSource("iso-temp", { type: "geojson", data: fc });
-    m.addLayer({ id: "iso-fill", type: "fill", source: "iso-temp", paint: { "fill-color": "#7b1fa2", "fill-opacity": 0.25 } });
-    m.addLayer({ id: "iso-line", type: "line", source: "iso-temp", paint: { "line-color": "#7b1fa2", "line-width": 2, "line-opacity": 0.9 } });
-    if (center) {
+    m.addSource(src, { type: "geojson", data: fc });
+    m.addLayer({ id: `iso-fill${suffix}`, type: "fill", source: src, paint: { "fill-color": color, "fill-opacity": opacity } });
+    m.addLayer({ id: `iso-line${suffix}`, type: "line", source: src, paint: { "line-color": color, "line-width": 2, "line-opacity": 0.9 } });
+    if (center && !suffix) {
       m.addSource("iso-center-src", {
         type: "geojson",
         data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: center } },
       });
-      m.addLayer({ id: "iso-center", type: "circle", source: "iso-center-src", paint: { "circle-radius": 6, "circle-color": "#7b1fa2", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+      m.addLayer({ id: "iso-center", type: "circle", source: "iso-center-src", paint: { "circle-radius": 6, "circle-color": color, "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
     }
     // 视野缩放到等时圈范围
     const bbox = [Infinity, Infinity, -Infinity, -Infinity];
@@ -300,27 +298,240 @@ export default function MapPanel({
     if (bbox[0] !== Infinity) m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 50 });
   }, []);
 
+  // 清理全部等时圈临时图层
+  const clearIsoLayers = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    const layerIds = m.getStyle().layers.map((l) => l.id).filter((id) => id.startsWith("iso-"));
+    for (const id of layerIds) { try { m.removeLayer(id); } catch {} }
+    const srcIds = Object.keys(m.getStyle().sources || {}).filter((id) => id.startsWith("iso-"));
+    for (const id of srcIds) { try { m.removeSource(id); } catch {} }
+  }, []);
+
   const runIso = useCallback(async () => {
     if (!iso.loc) {
       setIso((s) => ({ ...s, err: "请先选择中心点（点击「地图选点」或使用当前地图中心）" }));
       return;
     }
+    const ranges = iso.multi
+      ? iso.ranges.split(/[,，]/).map((x) => Number(x.trim())).filter((n) => n > 0 && n <= 180)
+      : [iso.range];
+    if (!ranges.length) {
+      setIso((s) => ({ ...s, err: "请填写有效的分钟数（1-180，逗号分隔）" }));
+      return;
+    }
     setIso((s) => ({ ...s, loading: true, err: "", info: "" }));
+    clearIsoLayers();
     try {
-      const r = await mapIsochrone({
-        name: project,
-        location: `${iso.loc[0].toFixed(6)},${iso.loc[1].toFixed(6)}`,
-        mode: iso.mode,
-        range: iso.range,
-        rangeType: "time",
+      const loc = `${iso.loc[0].toFixed(6)},${iso.loc[1].toFixed(6)}`;
+      const results = await Promise.all(ranges.map((range) =>
+        mapIsochrone({ name: project, location: loc, mode: iso.mode, range, rangeType: "time" })
+      ));
+      // 深→浅紫色渐变，多档叠加
+      const colors = ["#6a1b9a", "#9c27b0", "#ce93d8", "#e1bee7", "#f3e5f5"];
+      let allBbox = null;
+      results.forEach((r, i) => {
+        drawIsoPolygons(r.polygons, r.center, colors[i % colors.length], Math.max(0.12, 0.32 - i * 0.06), i ? `-${i}` : "");
       });
-      drawIsoPolygons(r.polygons, r.center);
-      setIso((s) => ({ ...s, info: `计算完成：${r.polygons.length} 个多边形（成本 ${r.cost ?? "?"}），已绘制到地图` }));
+      const polyCounts = results.map((r, i) => `${ranges[i]}min:${r.polygons.length}个`).join("  ");
+      setIso((s) => ({ ...s, info: `计算完成（${ranges.join("/")} 分钟）：${polyCounts}，已叠加绘制` }));
     } catch (e) {
       setIso((s) => ({ ...s, err: e.message }));
     }
     setIso((s) => ({ ...s, loading: false }));
-  }, [iso.loc, iso.mode, iso.range, project, drawIsoPolygons]);
+  }, [iso.loc, iso.mode, iso.range, iso.multi, iso.ranges, project, drawIsoPolygons, clearIsoLayers]);
+
+  // ---------- 测量 / 绘制 ----------
+  const haversineM = useCallback((a, b) => {
+    const R = 6371000;
+    const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+    const dLng = ((b[0] - a[0]) * Math.PI) / 180;
+    const la1 = (a[1] * Math.PI) / 180;
+    const la2 = (b[1] * Math.PI) / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }, []);
+
+  const pathLengthM = useCallback((pts) => {
+    let d = 0;
+    for (let i = 1; i < pts.length; i++) d += haversineM(pts[i - 1], pts[i]);
+    return d;
+  }, [haversineM]);
+
+  const polygonAreaM2 = useCallback((pts) => {
+    const n = pts.length;
+    if (n < 3) return 0;
+    const lat0 = pts.reduce((s, p) => s + p[1], 0) / n;
+    const k = Math.cos((lat0 * Math.PI) / 180);
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const [x1, y1] = pts[i];
+      const [x2, y2] = pts[(i + 1) % n];
+      sum += x1 * y2 - x2 * y1;
+    }
+    return (Math.abs(sum) / 2) * (111320 * k) ** 2;
+  }, []);
+
+  const fmtLen = (m) => (m >= 1000 ? (m / 1000).toFixed(2) + " km" : m.toFixed(0) + " m");
+  const fmtArea = (m2) => (m2 >= 1e6 ? (m2 / 1e6).toFixed(2) + " km²" : m2.toFixed(0) + " m²");
+
+  // 渲染测量/绘制临时图层
+  const renderDrawLayer = useCallback((points, kind) => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["draw-line", "draw-fill", "draw-pts"]) {
+      if (m.getLayer(id)) m.removeLayer(id);
+    }
+    if (m.getSource("draw-temp")) m.removeSource("draw-temp");
+    if (m.getSource("draw-pts-src")) m.removeSource("draw-pts-src");
+    if (!points.length) return;
+    const isPoly = kind === "measure-polygon" || kind === "draw-polygon";
+    const isMeasure = kind.startsWith("measure");
+    const color = isMeasure ? "#1f77b4" : "#2ca02c";
+    const fc = { type: "FeatureCollection", features: [] };
+    if (points.length >= (isPoly ? 3 : 2)) {
+      const coords = isPoly ? [...points, points[0]] : points;
+      fc.features.push({
+        type: "Feature",
+        properties: {},
+        geometry: { type: isPoly ? "Polygon" : "LineString", coordinates: isPoly ? [coords] : coords },
+      });
+    } else if (points.length === 1) {
+      fc.features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: points[0] } });
+    }
+    m.addSource("draw-temp", { type: "geojson", data: fc });
+    if (isPoly) m.addLayer({ id: "draw-fill", type: "fill", source: "draw-temp", paint: { "fill-color": color, "fill-opacity": 0.15 } });
+    m.addLayer({ id: "draw-line", type: "line", source: "draw-temp", paint: { "line-color": color, "line-width": 2, "line-opacity": 0.9, "line-dasharray": [2, 1.5] } });
+    m.addSource("draw-pts-src", {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: points.map((c, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: c } })),
+      },
+    });
+    m.addLayer({ id: "draw-pts", type: "circle", source: "draw-pts-src", paint: { "circle-radius": 5, "circle-color": "#ffffff", "circle-stroke-color": color, "circle-stroke-width": 2 } });
+  }, []);
+
+  const clearDrawLayers = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["draw-line", "draw-fill", "draw-pts"]) {
+      if (m.getLayer(id)) m.removeLayer(id);
+    }
+    if (m.getSource("draw-temp")) m.removeSource("draw-temp");
+    if (m.getSource("draw-pts-src")) m.removeSource("draw-pts-src");
+  }, []);
+
+  // 结束测量/绘制：measure 保留显示，draw 提交为新图层
+  const finishDraw = useCallback(async (kind, points) => {
+    if (kind.startsWith("measure")) {
+      setMeasureResult(
+        kind === "measure-polygon"
+          ? { area: polygonAreaM2(points) }
+          : { dist: pathLengthM(points) }
+      );
+      setDraw(null);
+      mapRef.current?.setDrawingMode(false);
+      return;
+    }
+    // 绘制 → 存为图层
+    const defaultName = { "draw-point": "新点", "draw-line": "新路线", "draw-polygon": "新区域" }[kind];
+    const name = window.prompt(`命名新图层（${defaultName}）`, defaultName);
+    setDraw(null);
+    mapRef.current?.setDrawingMode(false);
+    if (!name || !name.trim()) { clearDrawLayers(); return; }
+    const geometry = kind === "draw-point"
+      ? { type: "Point", coordinates: points[0] }
+      : kind === "draw-line"
+        ? { type: "LineString", coordinates: points }
+        : { type: "Polygon", coordinates: [points] };
+    const geojson = { type: "FeatureCollection", features: [{ type: "Feature", properties: { name: name.trim() }, geometry }] };
+    const layerId = "drawn-" + Date.now().toString(36);
+    try {
+      await mapImportLayer(project, layerId, geojson);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      flash(`已保存图层「${name.trim()}」（${layerId}）`);
+    } catch (e) {
+      flash("保存图层失败: " + e.message);
+    }
+    clearDrawLayers();
+  }, [project, loadProject, flash, pathLengthM, polygonAreaM2, clearDrawLayers]);
+
+  // 测量/绘制交互：点击加点、双击完成、Esc 取消
+  useEffect(() => {
+    if (!draw) return undefined;
+    const m = mapRef.current?.getMap();
+    if (!m) return undefined;
+    const onClick = (e) => {
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      setDraw((prev) => {
+        if (!prev) return prev;
+        if (prev.kind === "draw-point") {
+          finishDraw(prev.kind, [pt]);
+          return null;
+        }
+        return { ...prev, points: [...prev.points, pt] };
+      });
+    };
+    const onDblClick = (e) => {
+      e.preventDefault();
+      setDraw((prev) => {
+        if (!prev || prev.kind === "draw-point") return prev;
+        if (prev.points.length >= 2) finishDraw(prev.kind, prev.points);
+        return null;
+      });
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        clearDrawLayers();
+        setDraw(null);
+        mapRef.current?.setDrawingMode(false);
+      }
+    };
+    m.on("click", onClick);
+    m.on("dblclick", onDblClick);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      m.off("click", onClick);
+      m.off("dblclick", onDblClick);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [draw, finishDraw, clearDrawLayers]);
+
+  // 测量/绘制预览渲染
+  useEffect(() => {
+    if (draw) renderDrawLayer(draw.points, draw.kind);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draw]);
+
+  // 工具菜单点击外部关闭
+  useEffect(() => {
+    if (!toolMenu) return undefined;
+    const close = () => setToolMenu(null);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [toolMenu]);
+
+  const startTool = useCallback((type, kind) => {
+    setToolMenu(null);
+    if (draw) {
+      // 已在工具模式：切换或退出
+      if (draw.kind === kind) {
+        clearDrawLayers();
+        setDraw(null);
+        setMeasureResult(null);
+        mapRef.current?.setDrawingMode(false);
+        return;
+      }
+      setDraw({ kind, points: [] });
+      mapRef.current?.setDrawingMode(true);
+      return;
+    }
+    setMeasureResult(null);
+    setDraw({ kind, points: [] });
+    mapRef.current?.setDrawingMode(true);
+  }, [draw, clearDrawLayers]);
 
   // ---- 与 agent 同步：文件变更 / 一轮对话结束 → 刷新项目并热更新地图 ----
   const handleFileChanged = useCallback(() => {
@@ -378,6 +589,20 @@ export default function MapPanel({
         <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈分析（外部 API）">
           <Icon name="history" size={13} /> 等时圈
         </button>
+        <button
+          className={`btn-sm mp-tool-btn ${draw?.kind?.startsWith("measure") ? "active" : ""}`}
+          onClick={(e) => { e.stopPropagation(); setToolMenu({ x: e.currentTarget.offsetLeft, y: 40, type: "measure" }); }}
+          title="测量距离/面积（点击加点，双击结束）"
+        >
+          <Icon name="locate" size={13} /> 测量
+        </button>
+        <button
+          className={`btn-sm mp-tool-btn ${draw && !draw.kind.startsWith("measure") ? "active" : ""}`}
+          onClick={(e) => { e.stopPropagation(); setToolMenu({ x: e.currentTarget.offsetLeft, y: 40, type: "draw" }); }}
+          title="绘制点/线/面并保存为图层"
+        >
+          <Icon name="penTool" size={13} /> 绘制
+        </button>
         {msg && <span className="mp-msg">{msg}</span>}
         <button className="btn-sm mp-exit" onClick={onExit}><Icon name="back" size={14} /> 返回</button>
       </div>
@@ -416,6 +641,29 @@ export default function MapPanel({
             config={cfg}
             onLayerTilesChanged={() => loadProject(project)}
           />
+          {/* 测量/绘制提示条 */}
+          {draw && (
+            <div className="mp-draw-hint">
+              {draw.kind === "draw-point" ? "点击地图放置点" : "点击地图加点，双击完成"}（Esc 取消）
+              {draw.points.length > 1 && draw.kind.startsWith("measure") && (
+                <span className="mp-draw-val">
+                  {draw.kind === "measure-polygon"
+                    ? `面积 ${fmtArea(polygonAreaM2(draw.points))}`
+                    : `距离 ${fmtLen(pathLengthM(draw.points))}`}
+                </span>
+              )}
+            </div>
+          )}
+          {/* 测量结果浮层 */}
+          {measureResult && (
+            <div className="mp-measure">
+              {measureResult.dist !== undefined && <span>距离：{fmtLen(measureResult.dist)}</span>}
+              {measureResult.area !== undefined && <span>面积：{fmtArea(measureResult.area)}</span>}
+              <button className="mp-op" title="清除" onClick={() => { setMeasureResult(null); clearDrawLayers(); }}>
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 右栏：agent 对话 */}
@@ -435,6 +683,24 @@ export default function MapPanel({
           />
         </div>
       </div>
+
+      {/* 顶栏工具菜单（测量/绘制） */}
+      {toolMenu && (
+        <div className="mp-toolmenu" style={{ left: toolMenu.x, top: toolMenu.y }} onClick={(e) => e.stopPropagation()}>
+          {toolMenu.type === "measure" ? (
+            <>
+              <button onClick={() => startTool("measure", "measure-line")}><Icon name="penTool" size={12} /> 测量距离</button>
+              <button onClick={() => startTool("measure", "measure-polygon")}><Icon name="penTool" size={12} /> 测量面积</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => startTool("draw", "draw-point")}><Icon name="plus" size={12} /> 绘制点</button>
+              <button onClick={() => startTool("draw", "draw-line")}><Icon name="penTool" size={12} /> 绘制线</button>
+              <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="penTool" size={12} /> 绘制面</button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 属性表弹窗 */}
       {attrLayer && (
@@ -479,7 +745,23 @@ export default function MapPanel({
                   onChange={(e) => setIso((s) => ({ ...s, range: Number(e.target.value) || 30 }))}
                 />
                 <span className="mp-iso-unit">分钟</span>
+                <label className="mp-iso-check" title="同时计算多档时间范围并叠加显示">
+                  <input type="checkbox" checked={iso.multi} onChange={(e) => setIso((s) => ({ ...s, multi: e.target.checked }))} />
+                  多档对比
+                </label>
               </div>
+              {iso.multi && (
+                <div className="mp-iso-row">
+                  <span className="mp-iso-label">档位(分)</span>
+                  <input
+                    className="mp-iso-range mp-iso-ranges"
+                    value={iso.ranges}
+                    onChange={(e) => setIso((s) => ({ ...s, ranges: e.target.value }))}
+                    placeholder="30,60,90"
+                  />
+                  <span className="mp-iso-unit">逗号分隔</span>
+                </div>
+              )}
               <div className="mp-iso-row">
                 <span className="mp-iso-label">中心点</span>
                 <button className={`btn-sm ${iso.picking ? "active" : ""}`} onClick={startPick}>
