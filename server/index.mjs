@@ -911,26 +911,38 @@ app.post("/api/agent/prompt", async (req, res) => {
   }
   try {
     await agentManager.prompt(client, text, images, effort);
-    // officecli keeps files in a resident process — disk writes flush asynchronously.
-    // Poll until the workspace snapshot stabilizes, then diff.
-    const changed = await waitForFlush(before);
-    if (changed.length) {
-      const entry = agentManager.sessions.get(client);
-      if (entry) {
-        emitChannel(entry, "file_changed", { files: changed });
-        // 对话结束总结：产物清单
-        emitChannel(entry, "agent_summary", {
-          products: changed,
-          summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
-        });
-      }
-    }
-    res.json({ ok: true, changed });
   } catch (e) {
     const entry = agentManager.sessions.get(client);
     if (entry) emitChannel(entry, "agent_error", { message: e.message });
+    // 出错也检测产物（agent 可能已部分写入文件）
+    const changed = await waitForFlush(before);
+    if (changed.length) {
+      if (entry) {
+        emitChannel(entry, "file_changed", { files: changed });
+        emitChannel(entry, "agent_summary", {
+          products: changed,
+          summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+        });
+      }
+    }
     res.status(500).json({ error: e.message });
+    return;
   }
+  // officecli keeps files in a resident process — disk writes flush asynchronously.
+  // Poll until the workspace snapshot stabilizes, then diff.
+  const changed = await waitForFlush(before);
+  if (changed.length) {
+    const entry = agentManager.sessions.get(client);
+    if (entry) {
+      emitChannel(entry, "file_changed", { files: changed });
+      // 对话结束总结：产物清单
+      emitChannel(entry, "agent_summary", {
+        products: changed,
+        summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+      });
+    }
+  }
+  res.json({ ok: true, changed });
 });
 
 // SSE stream per client
