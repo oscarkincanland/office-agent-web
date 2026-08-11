@@ -46,6 +46,23 @@ export function getClientId() {
   return id;
 }
 
+// ---------- 知识库（本地索引 + IMA） ----------
+export const kbStatus = () => api("/api/kb/status");
+export const kbAddRoot = (path) => api("/api/kb/roots", { method: "POST", body: JSON.stringify({ path }) });
+export const kbRemoveRoot = (path) => api("/api/kb/roots", { method: "DELETE", body: JSON.stringify({ path }) });
+export const kbTree = (root) => api(`/api/kb/tree${root !== undefined ? `?root=${root}` : ""}`);
+export const kbSearch = (q, root, limit = 30) =>
+  api(`/api/kb/search?q=${encodeURIComponent(q)}${root !== undefined ? `&root=${root}` : ""}&limit=${limit}`);
+export const kbGraph = (root, include = ["links"], max = 800) =>
+  api(`/api/kb/graph?${root !== undefined ? `root=${root}&` : ""}include=${encodeURIComponent(include.join(","))}&max=${max}`);
+export const kbDoc = (path, root) =>
+  api(`/api/kb/doc?path=${encodeURIComponent(path)}${root !== undefined ? `&root=${root}` : ""}`);
+export const kbImaStatus = () => api("/api/kb/ima/status");
+export const kbImaBases = () => api("/api/kb/ima/bases");
+export const kbImaSearch = (q, kb) =>
+  api(`/api/kb/ima/search?q=${encodeURIComponent(q)}${kb ? `&kb=${encodeURIComponent(kb)}` : ""}`);
+export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURIComponent(mediaId)}`);
+
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
