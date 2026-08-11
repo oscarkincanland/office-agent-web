@@ -7,6 +7,7 @@ import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECL
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { agentManager } from "./agent.mjs";
 import * as kb from "./kb.mjs";
+import * as tpl from "./tpl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -175,6 +176,27 @@ app.get("/api/kb/ima/status", async (_req, res) => res.json(await kb.imaStatus()
 app.get("/api/kb/ima/bases", async (_req, res) => res.json(await kb.imaListBases()));
 app.get("/api/kb/ima/search", async (req, res) => res.json(await kb.imaSearch(req.query.q || "", req.query.kb || "")));
 app.get("/api/kb/ima/doc", async (req, res) => res.json(await kb.imaDoc(req.query.media_id || "")));
+
+// ---------- 模版库 ----------
+app.get("/api/templates", (req, res) => {
+  const cat = req.query.category;
+  const cats = tpl.getCategories();
+  const items = tpl.getTemplatesByCategory(cat);
+  res.json({ categories: cats, items, total: items.length });
+});
+
+app.get("/api/templates/content", (req, res) => {
+  const relPath = req.query.path || "";
+  if (!relPath) return res.status(400).json({ error: "path required" });
+  const c = tpl.getTemplateContent(relPath);
+  if (!c) return res.status(404).json({ error: "not found" });
+  res.json(c);
+});
+
+app.post("/api/templates/refresh", (_req, res) => {
+  tpl.refresh();
+  res.json({ ok: true, total: tpl.getTemplates().length });
+});
 
 app.get("/api/files", (req, res) => {
   const dir = req.query.dir || "";
@@ -365,6 +387,89 @@ app.post("/api/office", async (req, res) => {
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
   const r = await runOfficecli(args.map(String));
   res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json });
+});
+
+// docx 富文本编辑代理（供前端编辑工具栏调用）
+// body: { file, commands: [{command:"set", path:"/body/p[2]/r[1]", props:{bold:true}}, ...] }
+// file 相对工作区解析；使用 batch 一次提交多命令
+app.post("/api/doc/edit", async (req, res) => {
+  const { file, commands, open, save } = req.body || {};
+  if (!file || !Array.isArray(commands) || !commands.length) {
+    return res.status(400).json({ error: "file and commands required" });
+  }
+  const p = resolvePath(file);
+  if (!p) return res.status(404).json({ error: "file not found" });
+  try {
+    // 标准化 props：boolean 值转字符串（officecli 需要 "true"/"false"）
+    const normalized = commands.map((c) => {
+      const item = { ...c };
+      if (item.props) {
+        const props = {};
+        for (const [k, v] of Object.entries(item.props)) {
+          props[k] = typeof v === "boolean" ? String(v) : String(v);
+        }
+        item.props = props;
+      }
+      return item;
+    });
+    const r = await batch(p, normalized);
+    if (r.json?.error || (r.code !== 0 && r.json?.data?.results?.some((x) => x.error))) {
+      return res.status(500).json({ error: r.stderr || r.text || "编辑失败" });
+    }
+    res.json({ ok: true, result: r.json || r.text });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 保存前端编辑后的 docx（base64 内容直接写回文件）
+app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  const { base64 } = req.body || {};
+  if (!base64) return res.status(400).json({ error: "base64 required" });
+  try {
+    const buf = Buffer.from(base64, "base64");
+    // 校验是合法的 zip/docx（PK 头）
+    if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) {
+      return res.status(400).json({ error: "不是有效的 docx 文件" });
+    }
+    fs.writeFileSync(p, buf);
+    res.json({ ok: true, size: buf.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取 docx 标题大纲（供目录导航栏；前端优先用渲染后 DOM 提取，此接口为兜底）
+app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  try {
+    // 遍历文档段落，按样式名启发式识别标题（Heading* / 常见标题样式 / 短文本+大字号）
+    const r = await runOfficecli(["get", p, "/", "--depth", "3", "--json"]);
+    const results = r.json?.data?.results || [];
+    const outline = [];
+    const walk = (nodes) => {
+      for (const n of nodes || []) {
+        if (n.type === "p" || n.type === "paragraph") {
+          const style = String(n.style || n.format?.style || "");
+          const text = (n.text || n.preview || "").trim();
+          if (text && (style.startsWith("Heading") || /标题|Heading/.test(style))) {
+            const m = style.match(/(\d)/);
+            outline.push({ level: m ? Math.min(6, parseInt(m[1], 10)) : 1, text: text.slice(0, 120), path: n.path || "" });
+          }
+        }
+        if (n.children) walk(n.children);
+      }
+    };
+    walk(results);
+    res.json({ outline });
+  } catch (e) {
+    res.json({ outline: [] });
+  }
 });
 
 // ---------- agent ----------
