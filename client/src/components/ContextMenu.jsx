@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * 右键菜单组件
@@ -49,7 +50,7 @@ export default function ContextMenu({ x, y, items, onClose }) {
               }
             }}
           >
-            {item.icon && <span className="context-menu-icon">{item.icon}</span>}
+            {item.icon && <span className="context-menu-icon"><Icon name={item.icon} size={14} /></span>}
             <span className="context-menu-text">{item.label}</span>
             {item.shortcut && <span className="context-menu-shortcut">{item.shortcut}</span>}
           </div>

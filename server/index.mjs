@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { agentManager } from "./agent.mjs";
+import * as kb from "./kb.mjs";
+import * as tpl from "./tpl.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -50,46 +52,150 @@ function sheetToGrid(children) {
 }
 
 async function readWorkbook(file) {
-  // 枚举 sheets：depth 1 不够则递增重试
-  let info = await get(file, "/", 1);
-  const sheetNodes = [];
-  const collect = (results) => {
-    for (const r of results || []) {
-      if (r.type === "sheet") sheetNodes.push(r);
-      if (r.children) {
-        for (const c of r.children) {
-          if (c.type === "sheet") sheetNodes.push(c);
+  // 尝试 officecli（Windows），失败则用 xlsx 包原生读取（macOS/Linux）
+  try {
+    const { get } = await import("./office.mjs");
+    // 枚举 sheets：depth 1 不够则递增重试
+    let info = await get(file, "/", 1);
+    const sheetNodes = [];
+    const collect = (results) => {
+      for (const r of results || []) {
+        if (r.type === "sheet") sheetNodes.push(r);
+        if (r.children) {
+          for (const c of r.children) {
+            if (c.type === "sheet") sheetNodes.push(c);
+          }
         }
       }
-    }
-  };
-  collect(info.json?.data?.results || []);
-  if (sheetNodes.length === 0) {
-    info = await get(file, "/", 2);
+    };
     collect(info.json?.data?.results || []);
-  }
-  if (sheetNodes.length === 0) {
-    throw new Error("无法枚举工作表（文件可能损坏或格式不支持）");
-  }
-  const sheets = [];
-  const grids = {};
-  for (const s of sheetNodes) {
-    const name = s.preview || s.path.split("/").pop();
-    if (!sheets.some((x) => x.name === name)) {
-      sheets.push({ name, path: s.path });
+    if (sheetNodes.length === 0) {
+      info = await get(file, "/", 2);
+      collect(info.json?.data?.results || []);
+    }
+    if (sheetNodes.length === 0) {
+      throw new Error("无法枚举工作表");
+    }
+    const sheets = [];
+    const grids = {};
+    for (const s of sheetNodes) {
+      const name = s.preview || s.path.split("/").pop();
+      if (!sheets.some((x) => x.name === name)) {
+        sheets.push({ name, path: s.path });
+      }
+    }
+    for (const s of sheets) {
+      const r = await get(file, s.name, 3);
+      const res = r.json?.data?.results?.[0];
+      grids[s.name] = sheetToGrid(res?.children || []);
+    }
+    return { sheets: sheets.map((s) => s.name), grids };
+  } catch (officeErr) {
+    // officecli 不可用，使用 xlsx 包原生读取
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.readFile(file);
+      const sheets = wb.SheetNames;
+      const grids = {};
+      for (const name of sheets) {
+        const ws = wb.Sheets[name];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const rows = {};
+        data.forEach((row, ri) => {
+          const cells = {};
+          row.forEach((val, ci) => {
+            const col = String.fromCharCode(65 + ci);
+            cells[`${col}${ri + 1}`] = { text: String(val) };
+          });
+          rows[ri + 1] = { cells };
+        });
+        grids[name] = { rows };
+      }
+      return { sheets, grids };
+    } catch (xlsxErr) {
+      throw new Error(`officecli: ${officeErr.message} | xlsx: ${xlsxErr.message}`);
     }
   }
-  for (const s of sheets) {
-    const r = await get(file, s.name, 3);
-    const res = r.json?.data?.results?.[0];
-    grids[s.name] = sheetToGrid(res?.children || []);
-  }
-  return { sheets: sheets.map((s) => s.name), grids };
 }
 
 // ---------- REST ----------
 app.get("/api/status", (_req, res) => {
   res.json({ ok: true, officecli: path.basename(OFFICECLI) });
+});
+
+// ---------- 知识库（本地索引 + IMA 云端） ----------
+app.get("/api/kb/status", async (_req, res) => {
+  await kb.scan();
+  res.json(kb.status());
+});
+
+app.post("/api/kb/roots", async (req, res) => {
+  const r = kb.addRoot(req.body?.path);
+  if (!r.ok) return res.status(400).json(r);
+  await kb.scan(true);
+  res.json({ ok: true, roots: r.roots, fileCount: kb.status().fileCount });
+});
+
+app.delete("/api/kb/roots", async (req, res) => {
+  const r = kb.removeRoot(req.body?.path);
+  await kb.scan(true);
+  res.json(r);
+});
+
+app.get("/api/kb/tree", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  res.json({ tree: kb.getTree(isNaN(rootIdx) ? 0 : rootIdx) });
+});
+
+app.get("/api/kb/search", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  res.json({
+    results: kb.search(req.query.q || "", isNaN(rootIdx) ? null : rootIdx, parseInt(req.query.limit, 10) || 30),
+  });
+});
+
+app.get("/api/kb/graph", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  const include = (req.query.include || "links").split(",").filter(Boolean);
+  res.json(kb.getGraph({ rootIdx: isNaN(rootIdx) ? null : rootIdx, include, maxNodes: parseInt(req.query.max, 10) || 800 }));
+});
+
+app.get("/api/kb/doc", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  const doc = kb.getDoc(req.query.path || "", isNaN(rootIdx) ? null : rootIdx);
+  if (!doc) return res.status(404).json({ error: "not found" });
+  res.json(doc);
+});
+
+// IMA 云端知识库（凭证未配置时返回 configured:false）
+app.get("/api/kb/ima/status", async (_req, res) => res.json(await kb.imaStatus()));
+app.get("/api/kb/ima/bases", async (_req, res) => res.json(await kb.imaListBases()));
+app.get("/api/kb/ima/search", async (req, res) => res.json(await kb.imaSearch(req.query.q || "", req.query.kb || "")));
+app.get("/api/kb/ima/doc", async (req, res) => res.json(await kb.imaDoc(req.query.media_id || "")));
+
+// ---------- 模版库 ----------
+app.get("/api/templates", (req, res) => {
+  const cat = req.query.category;
+  const cats = tpl.getCategories();
+  const items = tpl.getTemplatesByCategory(cat);
+  res.json({ categories: cats, items, total: items.length });
+});
+
+app.get("/api/templates/content", (req, res) => {
+  const relPath = req.query.path || "";
+  if (!relPath) return res.status(400).json({ error: "path required" });
+  const c = tpl.getTemplateContent(relPath);
+  if (!c) return res.status(404).json({ error: "not found" });
+  res.json(c);
+});
+
+app.post("/api/templates/refresh", (_req, res) => {
+  tpl.refresh();
+  res.json({ ok: true, total: tpl.getTemplates().length });
 });
 
 app.get("/api/files", (req, res) => {
@@ -119,28 +225,45 @@ app.post("/api/files/delete", async (req, res) => {
   res.json({ ok: true });
 });
 
+// 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
+app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  const ext = path.extname(p).slice(1).toLowerCase();
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+  try {
+    res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
+    res.sendFile(p);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // open document
-app.get("/api/doc/:file", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
   if (client) {
-    try { agentManager.setCurrentFile(client, req.params.file); } catch {}
+    try { agentManager.setCurrentFile(client, fileName); } catch {}
   }
   try {
     if (ext === "xlsx") {
       const wb = await readWorkbook(p);
-      res.json({ kind: "xlsx", name: req.params.file, ...wb });
+      res.json({ kind: "xlsx", name: fileName, ...wb });
     } else if (ext === "md" || ext === "markdown" || ext === "txt") {
       const content = fs.readFileSync(p, "utf8");
-      res.json({ kind: "text", name: req.params.file, content, ext });
+      res.json({ kind: "text", name: fileName, content, ext });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
-      res.json({ kind: "htmlfile", name: req.params.file, content });
+      res.json({ kind: "htmlfile", name: fileName, content });
     } else {
-      res.json({ kind: "html", name: req.params.file, url: `/api/doc/${encodeURIComponent(req.params.file)}/html` });
+      res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -148,8 +271,9 @@ app.get("/api/doc/:file", async (req, res) => {
 });
 
 // rendered html for docx/pptx (iframe target)
-app.get("/api/doc/:file/html", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).send("not found");
   try {
     const html = await renderHtml(p);
@@ -162,11 +286,47 @@ app.get("/api/doc/:file/html", async (req, res) => {
 });
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
-// 获取 docx 批注列表
-app.get("/api/doc/:file/comments", async (req, res) => {
-  const p = resolvePath(req.params.file);
+// 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
+app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
+  const ext = path.extname(p).slice(1).toLowerCase();
   try {
+    if (ext === "md" || ext === "markdown" || ext === "txt") {
+      // 从 agent 会话中提取与该文件相关的修改指令（模拟批注/修订记录）
+      const comments = [];
+      for (const f of listSessionFiles()) {
+        try {
+          const text = fs.readFileSync(f.fullPath, "utf8");
+          if (!text.includes(fileName)) continue;
+          for (const line of text.split(/\r?\n/)) {
+            if (!line.trim()) continue;
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type === "message" && entry.message?.role === "user") {
+                const c = entry.message.content;
+                let t = "";
+                if (typeof c === "string") t = c;
+                else if (Array.isArray(c)) t = c.filter((b) => b.type === "text").map((b) => b.text).join(" ");
+                if (t.includes(fileName)) {
+                  comments.push({
+                    path: fileName,
+                    author: "用户",
+                    text: t.slice(0, 200),
+                    date: entry.timestamp || entry.time || new Date(f.mtime).toISOString(),
+                  });
+                }
+              }
+            } catch {}
+          }
+        } catch {}
+      }
+      // 去重 + 最新 20 条
+      const seen = new Set();
+      const unique = comments.filter((c) => { if (seen.has(c.text)) return false; seen.add(c.text); return true; });
+      return res.json({ comments: unique.slice(0, 20) });
+    }
     const r = await runOfficecli(["query", p, "comment", "--json"]);
     const results = r.json?.data?.results || [];
     const comments = results.map((c) => ({
@@ -181,8 +341,9 @@ app.get("/api/doc/:file/comments", async (req, res) => {
   }
 });
 
-app.get("/api/doc/:file/watch", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   try {
     const entry = await startWatch(p);
@@ -193,15 +354,17 @@ app.get("/api/doc/:file/watch", async (req, res) => {
 });
 
 // 停止某文件的 watch
-app.post("/api/doc/:file/watch/stop", (req, res) => {
-  const p = resolvePath(req.params.file);
+app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (p) stopWatch(p);
   res.json({ ok: true });
 });
 
 // apply xlsx cell edits (batch)
-app.post("/api/doc/:file/cells", async (req, res) => {
-  const p = resolvePath(req.params.file);
+app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const { sheet, cells } = req.body || {};
   if (!sheet || !Array.isArray(cells) || !cells.length) return res.status(400).json({ error: "bad payload" });
@@ -224,6 +387,89 @@ app.post("/api/office", async (req, res) => {
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
   const r = await runOfficecli(args.map(String));
   res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json });
+});
+
+// docx 富文本编辑代理（供前端编辑工具栏调用）
+// body: { file, commands: [{command:"set", path:"/body/p[2]/r[1]", props:{bold:true}}, ...] }
+// file 相对工作区解析；使用 batch 一次提交多命令
+app.post("/api/doc/edit", async (req, res) => {
+  const { file, commands, open, save } = req.body || {};
+  if (!file || !Array.isArray(commands) || !commands.length) {
+    return res.status(400).json({ error: "file and commands required" });
+  }
+  const p = resolvePath(file);
+  if (!p) return res.status(404).json({ error: "file not found" });
+  try {
+    // 标准化 props：boolean 值转字符串（officecli 需要 "true"/"false"）
+    const normalized = commands.map((c) => {
+      const item = { ...c };
+      if (item.props) {
+        const props = {};
+        for (const [k, v] of Object.entries(item.props)) {
+          props[k] = typeof v === "boolean" ? String(v) : String(v);
+        }
+        item.props = props;
+      }
+      return item;
+    });
+    const r = await batch(p, normalized);
+    if (r.json?.error || (r.code !== 0 && r.json?.data?.results?.some((x) => x.error))) {
+      return res.status(500).json({ error: r.stderr || r.text || "编辑失败" });
+    }
+    res.json({ ok: true, result: r.json || r.text });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 保存前端编辑后的 docx（base64 内容直接写回文件）
+app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  const { base64 } = req.body || {};
+  if (!base64) return res.status(400).json({ error: "base64 required" });
+  try {
+    const buf = Buffer.from(base64, "base64");
+    // 校验是合法的 zip/docx（PK 头）
+    if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) {
+      return res.status(400).json({ error: "不是有效的 docx 文件" });
+    }
+    fs.writeFileSync(p, buf);
+    res.json({ ok: true, size: buf.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取 docx 标题大纲（供目录导航栏；前端优先用渲染后 DOM 提取，此接口为兜底）
+app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  try {
+    // 遍历文档段落，按样式名启发式识别标题（Heading* / 常见标题样式 / 短文本+大字号）
+    const r = await runOfficecli(["get", p, "/", "--depth", "3", "--json"]);
+    const results = r.json?.data?.results || [];
+    const outline = [];
+    const walk = (nodes) => {
+      for (const n of nodes || []) {
+        if (n.type === "p" || n.type === "paragraph") {
+          const style = String(n.style || n.format?.style || "");
+          const text = (n.text || n.preview || "").trim();
+          if (text && (style.startsWith("Heading") || /标题|Heading/.test(style))) {
+            const m = style.match(/(\d)/);
+            outline.push({ level: m ? Math.min(6, parseInt(m[1], 10)) : 1, text: text.slice(0, 120), path: n.path || "" });
+          }
+        }
+        if (n.children) walk(n.children);
+      }
+    };
+    walk(results);
+    res.json({ outline });
+  } catch (e) {
+    res.json({ outline: [] });
+  }
 });
 
 // ---------- agent ----------
@@ -259,6 +505,27 @@ const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // ---------- skills ----------
+// 交通规划工程师工作台：按技能用途分类
+const SKILL_CATEGORIES = [
+  { id: "traffic", label: "交通规划", keywords: ["交通", "规划", "公交", "OD", "traffic", "transport", "出行", "客流", "公路", "物流", "枢纽"] },
+  { id: "doc", label: "文档报告", keywords: ["报告", "论文", "公文", "规划报告", "work report", "撰写", "公文", "汇报", "研究报告", "论文"] },
+  { id: "chart", label: "图表可视化", keywords: ["图表", "chart", "图", "可视化", "地图", "infographic", "ECharts", "diagram", "dashboard"] },
+  { id: "image", label: "图像生成", keywords: ["图像", "image", "配图", "封面", "图片", "生成图片", "illustrat", "poster", "封面图"] },
+  { id: "media", label: "媒体内容", keywords: ["视频", "音频", "配音", "TTS", "字幕", "脚本", "slide", "PPT", "抖音", "小红书"] },
+  { id: "office", label: "Office办公", keywords: ["office", "officecli", "Excel", "Word", "PPTX", "docx", "xlsx", "表格"] },
+  { id: "dev", label: "开发工具", keywords: ["代码", "开发", "debug", "test", "git", "部署", "browser", "agent", "skill", "workflow", "playwright"] },
+  { id: "research", label: "搜索研究", keywords: ["搜索", "搜索", "文献", "research", "调研", "知识库", "论文"] },
+  { id: "other", label: "其他", keywords: [] },
+];
+
+function classifySkill(name, desc = "") {
+  const text = `${name} ${desc}`.toLowerCase();
+  for (const cat of SKILL_CATEGORIES) {
+    if (cat.keywords.some((k) => text.includes(k.toLowerCase()))) return cat.id;
+  }
+  return "other";
+}
+
 // 扫描用户所有 skills 目录（含 .pi/agent/skills、.agents/skills、项目 .agents/skills）
 function scanSkills() {
   const roots = [
@@ -297,6 +564,7 @@ function scanSkills() {
         description: desc,
         path: skillDir,
         source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent",
+        category: classifySkill(e.name, desc),
       });
     }
   }
@@ -464,7 +732,9 @@ app.post("/api/workspace/validate", (req, res) => {
 });
 
 // GET /api/sessions - 列出所有会话（解析每个 JSONL 的 header 第一行）
-app.get("/api/sessions", (_req, res) => {
+// 支持 ?file=xxx 过滤：只返回提到指定文件的会话
+app.get("/api/sessions", (req, res) => {
+  const fileFilter = String(req.query.file || "").trim();
   try {
     const files = listSessionFiles();
     const sessions = [];
@@ -474,10 +744,12 @@ app.get("/api/sessions", (_req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
-        // 只显示 office agent 的会话（cwd 含 .sessions 专属目录），过滤 pi TUI 等其他会话
+        // 只显示 office agent 的会话（cwd 匹配当前项目目录），过滤 pi TUI 等其他会话
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes(".sessions") && cwd.includes("office-agent-web");
+        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
         if (!isOaw) continue;
+        // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
+        if (fileFilter && !text.includes(fileFilter)) continue;
         // 提取第一条用户消息作为标题
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
@@ -624,11 +896,21 @@ app.post("/api/agent/abort", async (req, res) => {
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, text, images } = req.body || {};
+  const { client, text, images, attachments, effort } = req.body || {};
   if (!client || !text) return res.status(400).json({ error: "client and text required" });
   const before = snapshotWorkspace();
+  // 保存上传的附件到工作区（agent 可读取）
+  if (Array.isArray(attachments) && attachments.length) {
+    for (const att of attachments) {
+      try {
+        const safe = safeName(att.name);
+        if (!safe) continue;
+        fs.writeFileSync(path.join(getWorkspace(), safe), Buffer.from(att.data, "base64"));
+      } catch {}
+    }
+  }
   try {
-    await agentManager.prompt(client, text, images);
+    await agentManager.prompt(client, text, images, effort);
     // officecli keeps files in a resident process — disk writes flush asynchronously.
     // Poll until the workspace snapshot stabilizes, then diff.
     const changed = await waitForFlush(before);
@@ -690,6 +972,131 @@ function loadSettingsDefault() {
     return "";
   }
 }
+
+// ---------- 记忆系统 API（Proma WorkspaceMemory 风格） ----------
+import { EventEmitter } from "node:events";
+const memoryEmitter = new EventEmitter();
+let memoryWatcher = null;
+
+function getMemoryDir() { return path.join(getWorkspace(), "memory"); }
+function getAgentsMd() { return path.join(getWorkspace(), "AGENTS.md"); }
+
+function ensureMemoryDir() {
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listMemoryFiles() {
+  const dir = getMemoryDir();
+  const agentsMd = getAgentsMd();
+  const files = [];
+  if (fs.existsSync(agentsMd)) {
+    const st = fs.statSync(agentsMd);
+    files.push({ name: "AGENTS.md", rel: "AGENTS.md", size: st.size, mtime: st.mtimeMs, type: "agents" });
+  }
+  if (fs.existsSync(dir)) {
+    const walk = (d, prefix = "") => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${e.name}` : e.name;
+        if (e.isFile() && /\.(md|txt)$/i.test(e.name) && !e.name.startsWith(".")) {
+          const fp = path.join(d, e.name);
+          const st = fs.statSync(fp);
+          files.push({ name: e.name, rel, size: st.size, mtime: st.mtimeMs, type: "memory" });
+        } else if (e.isDirectory() && !e.name.startsWith(".")) {
+          walk(path.join(d, e.name), rel);
+        }
+      }
+    };
+    walk(dir);
+  }
+  return files.sort((a, b) => {
+    if (a.rel === "AGENTS.md") return -1;
+    if (b.rel === "AGENTS.md") return 1;
+    if (a.rel === "MEMORY.md") return -1;
+    if (b.rel === "MEMORY.md") return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function resolveMemoryPath(rel) {
+  if (!rel || rel.includes("..")) return null;
+  if (rel === "AGENTS.md") return getAgentsMd();
+  return path.join(getMemoryDir(), rel);
+}
+
+function startMemoryWatcher() {
+  if (memoryWatcher) return;
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) return;
+  try {
+    memoryWatcher = fs.watch(dir, { recursive: false }, (eventType, filename) => {
+      if (!filename) return;
+      const filePath = path.join(dir, filename);
+      let content = null;
+      try { content = fs.readFileSync(filePath, "utf8").slice(0, 2000); } catch {}
+      memoryEmitter.emit("change", { file: filename, event: eventType, preview: content, time: Date.now() });
+    });
+    memoryWatcher.on("error", (err) => {
+      if (err.code === "EMFILE") {
+        try { memoryWatcher.close(); } catch {}
+        memoryWatcher = null;
+      }
+    });
+  } catch (err) {
+    memoryWatcher = null;
+  }
+}
+
+app.get("/api/memory", (_req, res) => {
+  try {
+    const files = listMemoryFiles();
+    res.json({ files, memoryDir: getMemoryDir() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/memory/stream", (req, res) => {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  startMemoryWatcher();
+  const onChange = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  memoryEmitter.on("change", onChange);
+  req.on("close", () => memoryEmitter.off("change", onChange));
+});
+
+app.post("/api/memory/init", (_req, res) => {
+  try {
+    const ws = getWorkspace();
+    const agentsMd = path.join(ws, "AGENTS.md");
+    const memDir = path.join(ws, "memory");
+    const memMd = path.join(memDir, "MEMORY.md");
+    if (!fs.existsSync(agentsMd)) {
+      fs.writeFileSync(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
+    }
+    fs.mkdirSync(memDir, { recursive: true });
+    if (!fs.existsSync(memMd)) {
+      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
+    }
+    startMemoryWatcher();
+    res.json({ ok: true, files: listMemoryFiles() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "not found" });
+  try { res.json({ content: fs.readFileSync(fp, "utf8"), path: req.params[0] }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp) return res.status(400).json({ error: "invalid path" });
+  try {
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, req.body?.content || "", "utf8");
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // ---------- static ----------
 const dist = CLIENT_DIST;
@@ -782,5 +1189,6 @@ app.listen(PORT, () => {
 process.on("SIGINT", async () => {
   await agentManager.disposeAll();
   stopAllWatches();
+  if (memoryWatcher) { try { memoryWatcher.close(); } catch {} }
   process.exit(0);
 });

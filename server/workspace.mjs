@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +12,11 @@ export const OFFICECLI = process.env.OFFICECLI_BIN
   ? process.env.OFFICECLI_BIN
   : path.join(process.env.LOCALAPPDATA || "C:\\Users\\admin\\AppData\\Local", "OfficeCLI", "officecli.exe");
 
-export const AGENT_DIR = process.env.PI_AGENT_DIR || "C:\\Users\\admin\\.pi\\agent";
+export const AGENT_DIR =
+  process.env.PI_AGENT_DIR ||
+  (process.platform === "win32"
+    ? "C:\\Users\\admin\\.pi\\agent"
+    : path.join(os.homedir(), ".pi", "agent"));
 
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
