@@ -65,6 +65,7 @@ class AgentManager extends EventEmitter {
               "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
+              "- **地图（GIS）**: 地图项目位于 `" + WORKSPACE_DIR + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
             ].join("\n"),
           },
@@ -147,13 +148,158 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    // ---- 地图（GIS）工具 ----
+    const mapReadTool = defineTool({
+      name: "map_read",
+      label: "地图读取",
+      description:
+        "读取地图项目（默认 zhejiang-map 浙江省交通地图）的配置、图层清单与当前样式。用户在地图模式下询问地图状态/图层/样式时使用。返回：项目中心/缩放/底图、图层文件列表（id/名称/类型）、样式图层（显隐/颜色/线宽/透明度）。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = params.project || map.DEFAULT_PROJECT;
+        const p = map.getProject(name);
+        if (!p) return { content: [{ type: "text", text: `项目不存在: ${name}` }], details: {} };
+        const cfgLines = `项目: ${p.config.name}\n中心: ${p.config.center} 缩放: ${p.config.zoom} 底图: ${p.config.basemap}`;
+        const files = (p.files || []).length
+          ? p.files.map((f) => `  ${f.id}（${(f.size / 1024).toFixed(1)} KB）`).join("\n")
+          : "  （无图层文件）";
+        const styleLayers = p.style.layers
+          .filter((l) => !l.id.startsWith("basemap-"))
+          .map((l) => {
+            const vis = l.layout?.visibility === "none" ? "隐藏" : "显示";
+            const paint = l.paint ? JSON.stringify(l.paint) : "";
+            return `  ${l.id} [${l.type}] ${vis} ${paint}`;
+          })
+          .join("\n") || "  （无样式图层）";
+        return {
+          content: [{
+            type: "text",
+            text: `${cfgLines}\n\n图层文件（${p.files?.length || 0}）:\n${files}\n\n样式图层:\n${styleLayers}`,
+          }],
+          details: {},
+        };
+      },
+    });
+
+    const mapEditTool = defineTool({
+      name: "map_edit",
+      label: "地图样式编辑",
+      description:
+        "修改地图项目样式（style.json），立即反映到前端地图。action 支持：\n1) setVisibility：显示/隐藏图层（layerId + visible）\n2) setPaint：修改图层绘制属性（layerId + paint，JSON 字符串，如 {\"line-color\":\"#ff0000\",\"line-width\":3,\"line-opacity\":0.8}；线图层用 line-*，点图层用 circle-*，面图层用 fill-*）\n3) move：调整图层叠放顺序（layerId + direction up/down）\n4) add：新增样式图层（layerId + type 如 fill/line/circle + paint JSON + source 可选，默认引用同名矢量源）\n修改前建议先 map_read 查看当前样式。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        action: Type.Union([
+          Type.Literal("setVisibility"),
+          Type.Literal("setPaint"),
+          Type.Literal("move"),
+          Type.Literal("add"),
+        ]),
+        layerId: Type.String({ description: "样式图层 id，如 highways / boundary-city / toll-stations" }),
+        visible: Type.Optional(Type.Boolean({ description: "setVisibility: 是否显示" })),
+        paint: Type.Optional(Type.String({ description: "setPaint/add: 绘制属性 JSON 字符串" })),
+        direction: Type.Optional(Type.String({ description: "move: up / down" })),
+        type: Type.Optional(Type.String({ description: "add: fill / line / circle" })),
+        source: Type.Optional(Type.String({ description: "add: 数据源 id，默认等于 layerId" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const name = params.project || map.DEFAULT_PROJECT;
+        const dir = map.projectDir(name);
+        if (!dir) return { content: [{ type: "text", text: "项目不存在" }], details: {} };
+        const fs = (await import("node:fs")).default;
+        const path = (await import("node:path")).default;
+        const stylePath = path.join(dir, "style.json");
+        const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
+        const layerId = String(params.layerId || "");
+        if (!layerId) return { content: [{ type: "text", text: "layerId 必填" }], details: {} };
+        let paint = null;
+        if (params.paint) {
+          try { paint = JSON.parse(params.paint); } catch { return { content: [{ type: "text", text: `paint 不是合法 JSON: ${params.paint}` }], details: {} }; }
+        }
+        if (params.action === "setVisibility") {
+          const l = style.layers.find((x) => x.id === layerId);
+          if (!l) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
+          l.layout = { ...(l.layout || {}), visibility: params.visible ? "visible" : "none" };
+        } else if (params.action === "setPaint") {
+          const l = style.layers.find((x) => x.id === layerId);
+          if (!l) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
+          l.paint = { ...(l.paint || {}), ...paint };
+        } else if (params.action === "move") {
+          const idx = style.layers.findIndex((x) => x.id === layerId);
+          if (idx === -1) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
+          const target = params.direction === "up" ? idx + 1 : idx - 1;
+          if (target < 0 || target >= style.layers.length) {
+            return { content: [{ type: "text", text: "已到边界，无法继续移动" }], details: {} };
+          }
+          const [item] = style.layers.splice(idx, 1);
+          style.layers.splice(target, 0, item);
+        } else if (params.action === "add") {
+          const src = params.source || layerId;
+          const base = { id: layerId, source: src, type: params.type || "fill", "source-layer": src };
+          const defs = { fill: { "fill-color": "#8abeb7", "fill-opacity": 0.4 }, line: { "line-color": "#8abeb7", "line-width": 2 }, circle: { "circle-radius": 5, "circle-color": "#8abeb7" } };
+          base.layout = { visibility: "visible" };
+          base.paint = paint || defs[params.type] || defs.fill;
+          style.layers.push(base);
+        }
+        fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
+        const vis = style.layers.find((x) => x.id === layerId)?.layout?.visibility;
+        return {
+          content: [{ type: "text", text: `已更新样式图层 ${layerId}（${params.action}${vis ? ", 可见性=" + vis : ""}），前端地图已实时刷新。` }],
+          details: {},
+        };
+      },
+    });
+
+    const mapImportTool = defineTool({
+      name: "map_import",
+      label: "地图数据导入",
+      description:
+        "把工作区中的 GeoJSON 文件导入为地图项目的新图层（自动生成矢量瓦片）。参数 file 为相对工作区根目录的路径，layerId 可选（默认取文件名）。导入后前端图层树会显示新图层。",
+      parameters: Type.Object({
+        file: Type.String({ description: "相对工作区的 GeoJSON 文件路径，如 maps_data/highways.geojson" }),
+        project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
+        layerId: Type.Optional(Type.String({ description: "图层 id（字母数字下划线），默认取文件名" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const { getWorkspace } = await import("./workspace.mjs");
+        const fs = (await import("node:fs")).default;
+        const path = (await import("node:path")).default;
+        const ws = getWorkspace();
+        const rel = String(params.file || "");
+        const fp = path.resolve(ws, rel);
+        if (!fp.startsWith(path.resolve(ws))) {
+          return { content: [{ type: "text", text: "file 必须在工作区内" }], details: {} };
+        }
+        if (!fs.existsSync(fp)) {
+          return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
+        }
+        let geojson;
+        try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
+          return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
+        }
+        const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
+        const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
+        const name = params.project || map.DEFAULT_PROJECT;
+        const r = await map.importLayer(name, layerId, geojson);
+        const count = geojson.features?.length || 0;
+        return {
+          content: [{ type: "text", text: `已导入图层 ${layerId}（${count} 个要素，${r.tiles?.count || 0} 个瓦片）到项目 ${name}，前端地图已实时刷新。` }],
+          details: {},
+        };
+      },
+    });
+
     const sessionManager = SessionManager.create(SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [officeTool, kbSearchTool, kbReadTool],
+      customTools: [officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool],
       tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli"],
       sessionManager,
     });

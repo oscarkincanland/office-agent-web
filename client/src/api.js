@@ -50,7 +50,8 @@ export function getClientId() {
 export const kbStatus = () => api("/api/kb/status");
 export const kbAddRoot = (path) => api("/api/kb/roots", { method: "POST", body: JSON.stringify({ path }) });
 export const kbRemoveRoot = (path) => api("/api/kb/roots", { method: "DELETE", body: JSON.stringify({ path }) });
-export const kbTree = (root) => api(`/api/kb/tree${root !== undefined ? `?root=${root}` : ""}`);
+export const kbTree = (root, dir) =>
+  api(`/api/kb/tree${root !== undefined ? `?root=${root}` : ""}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`);
 export const kbSearch = (q, root, limit = 30) =>
   api(`/api/kb/search?q=${encodeURIComponent(q)}${root !== undefined ? `&root=${root}` : ""}&limit=${limit}`);
 export const kbGraph = (root, include = ["links"], max = 800) =>
@@ -62,6 +63,24 @@ export const kbImaBases = () => api("/api/kb/ima/bases");
 export const kbImaSearch = (q, kb) =>
   api(`/api/kb/ima/search?q=${encodeURIComponent(q)}${kb ? `&kb=${encodeURIComponent(kb)}` : ""}`);
 export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURIComponent(mediaId)}`);
+
+// ---------- 地图（GIS 项目） ----------
+export const mapProjects = () => api("/api/map/projects");
+export const mapProject = (name) => api(`/api/map/project${name ? `?name=${encodeURIComponent(name)}` : ""}`);
+export const mapSaveStyle = (name, style) =>
+  api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });
+export const mapSaveConfig = (name, config) =>
+  api("/api/map/config", { method: "POST", body: JSON.stringify({ name, config }) });
+export const mapImportLayer = (name, layerId, geojson) =>
+  api("/api/map/import", { method: "POST", body: JSON.stringify({ name, layerId, geojson }) });
+export const mapRebuild = (name, layerIds) =>
+  api("/api/map/rebuild", { method: "POST", body: JSON.stringify({ name, layerIds }) });
+export const mapDeleteLayer = (name, layerId) =>
+  api("/api/map/layer/delete", { method: "POST", body: JSON.stringify({ name, layerId }) });
+export const mapGetLayer = (name, layerId) =>
+  api(`/api/map/layer?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layerId)}`);
+export const mapIsochrone = (params) =>
+  api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);

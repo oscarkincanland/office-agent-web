@@ -16,6 +16,7 @@ export const LAYER_DEFS = [
   { id: "boundary-county",  minzoom: 0, maxzoom: 11, tolerance: 0.0002, name: "区县边界", type: "boundary" },
   { id: "highways",         minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "高速公路", type: "road" },
   { id: "roads-trunk",      minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "国省道", type: "road" },
+  { id: "roads-rural",      minzoom: 7, maxzoom: 14, tolerance: 0.0001, name: "农村公路", type: "road" },
   { id: "toll-stations",    minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "收费站", type: "point" },
   { id: "junctions",        minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "枢纽", type: "point" },
 ];

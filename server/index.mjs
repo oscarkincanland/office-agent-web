@@ -8,6 +8,7 @@ import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch,
 import { agentManager } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
+import * as map from "./map.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -145,7 +146,8 @@ app.delete("/api/kb/roots", async (req, res) => {
 app.get("/api/kb/tree", async (req, res) => {
   await kb.scan();
   const rootIdx = parseInt(req.query.root, 10);
-  res.json({ tree: kb.getTree(isNaN(rootIdx) ? 0 : rootIdx) });
+  const dir = req.query.dir || "";
+  res.json(kb.getTreeLevel(isNaN(rootIdx) ? 0 : rootIdx, dir));
 });
 
 app.get("/api/kb/search", async (req, res) => {
@@ -196,6 +198,73 @@ app.get("/api/templates/content", (req, res) => {
 app.post("/api/templates/refresh", (_req, res) => {
   tpl.refresh();
   res.json({ ok: true, total: tpl.getTemplates().length });
+});
+
+// ---------- 地图（GIS 项目：浙江交通地图） ----------
+// 静态文件（style.json / 矢量瓦片 / 图层数据）
+app.use("/api/map/data", express.static(map.STATIC_ROOT));
+
+app.get("/api/map/projects", (_req, res) => {
+  res.json({ projects: map.listProjects() });
+});
+
+app.get("/api/map/project", (req, res) => {
+  const p = map.getProject(req.query.name || map.DEFAULT_PROJECT);
+  if (!p) return res.status(404).json({ error: "project not found" });
+  res.json(p);
+});
+
+app.post("/api/map/style", (req, res) => {
+  const { name, style } = req.body || {};
+  const r = map.saveStyle(name || map.DEFAULT_PROJECT, style);
+  if (!r) return res.status(400).json({ error: "invalid style" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/config", (req, res) => {
+  const { name, config } = req.body || {};
+  const r = map.saveConfig(name || map.DEFAULT_PROJECT, config);
+  if (!r) return res.status(400).json({ error: "invalid config" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/import", async (req, res) => {
+  const { name, layerId, geojson } = req.body || {};
+  if (!geojson) return res.status(400).json({ error: "geojson required" });
+  try {
+    const r = await map.importLayer(name || map.DEFAULT_PROJECT, layerId, geojson);
+    if (!r) return res.status(400).json({ error: "import failed" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/map/rebuild", (req, res) => {
+  const { name, layerIds } = req.body || {};
+  const r = map.rebuildTiles(name || map.DEFAULT_PROJECT, Array.isArray(layerIds) ? layerIds : null);
+  if (!r) return res.status(400).json({ error: "rebuild failed" });
+  res.json({ ok: true, layers: r });
+});
+
+app.post("/api/map/layer/delete", (req, res) => {
+  const { name, layerId } = req.body || {};
+  const r = map.deleteLayer(name || map.DEFAULT_PROJECT, layerId);
+  res.json(r);
+});
+
+app.get("/api/map/layer", (req, res) => {
+  const g = map.getLayer(req.query.name || map.DEFAULT_PROJECT, req.query.layer);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+app.post("/api/map/isochrone", async (req, res) => {
+  const { location, mode, range, rangeType } = req.body || {};
+  if (!location) return res.status(400).json({ error: "location required (lng,lat)" });
+  const r = await map.isochrone({ location, mode, range, rangeType });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, center: r.center, cost: r.cost, polygons: r.polygons });
 });
 
 app.get("/api/files", (req, res) => {

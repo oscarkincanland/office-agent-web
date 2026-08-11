@@ -7,6 +7,7 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import MapPanel from "./components/MapPanel.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
@@ -59,6 +60,7 @@ export default function App() {
   const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
   const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
+  const [mapMode, setMapMode] = useState(false); // 地图全屏模式
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -252,7 +254,20 @@ export default function App() {
             onOpenFile={open}
           />
         )}
-        {!kbMode && !tplMode && (
+        {mapMode && (
+          <MapPanel
+            onExit={() => setMapMode(false)}
+            onOpenFile={open}
+            clientId={clientId}
+            models={models}
+            defaultModel={defaultModel}
+            onAgentEnd={handleAgentEnd}
+            onNewSession={handleNewSession}
+            sessions={sessions}
+            onSelectSession={handleSelectSession}
+          />
+        )}
+        {!kbMode && !tplMode && !mapMode && (
         <>
         {sidebarOpen && (
           <>
@@ -294,6 +309,7 @@ export default function App() {
             <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
             <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
             <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
+            <button className="btn-sm map-btn" onClick={() => setMapMode(true)} title="地图（GIS 项目）"><Icon name="map" size={14} /> 地图</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
