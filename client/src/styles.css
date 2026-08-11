@@ -3662,3 +3662,304 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .map-viewer .maplibregl-ctrl-group button:hover { background: var(--panel2-bg); }
 .map-viewer .maplibregl-ctrl-attrib { background: rgba(0, 0, 0, 0.4); color: #ccc; font-size: 10px; }
 .map-viewer .maplibregl-ctrl-attrib a { color: #8abeb7; }
+/* ================= QGIS 风格图层面板 (LayerPanel) ================= */
+.lp { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.lp-list { flex: 1; overflow: auto; padding: 4px 0; }
+.lp-group { margin-bottom: 2px; }
+.lp-group-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel2-bg);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.lp-group-head:hover { color: var(--text); }
+.lp-caret { display: inline-flex; color: var(--dim); flex-shrink: 0; }
+.lp-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lp-group-count {
+  margin-left: auto;
+  background: var(--panel-bg);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.lp-group-body { padding: 2px 0; }
+.lp-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px 4px 16px;
+  cursor: pointer;
+  user-select: none;
+}
+.lp-row:hover { background: var(--selected); }
+.lp-row.active { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.lp-row.dragging { opacity: 0.4; }
+.lp-eye { display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.lp-eye input { accent-color: var(--accent); cursor: pointer; width: 13px; height: 13px; }
+.lp-symbol { flex-shrink: 0; width: 18px; display: inline-flex; justify-content: center; }
+.lp-row-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lp-row-type {
+  font-size: 10px;
+  color: var(--dim);
+  background: var(--panel2-bg);
+  padding: 0 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.lp-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel2-bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 12px;
+  outline: none;
+}
+.lp-caret-btn {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.lp-caret-btn:hover { color: var(--text); background: var(--panel2-bg); }
+.lp-caret-btn.open svg { transform: rotate(180deg); }
+
+/* 图例信息块 */
+.lp-legend {
+  margin: 2px 8px 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel2-bg);
+  overflow: hidden;
+}
+.lp-legend-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.lp-legend-title { font-size: 11px; font-weight: 700; flex: 1; }
+.lp-legend-body { padding: 6px 8px; font-size: 11px; color: var(--muted); }
+.lp-legend-row { margin-bottom: 3px; word-break: break-all; line-height: 1.5; }
+.lp-legend-row:last-child { margin-bottom: 0; }
+.lp-legend-loading { color: var(--dim); }
+
+/* 右键菜单 */
+.lp-ctx {
+  position: absolute;
+  z-index: 130;
+  min-width: 150px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.lp-ctx button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.lp-ctx button:hover { background: var(--selected); }
+.lp-ctx button.danger { color: var(--error); }
+.lp-ctx button.danger:hover { background: var(--selected); }
+.lp-ctx-sep { height: 1px; background: var(--border); margin: 3px 4px; }
+.lp { position: relative; }
+.lp-op {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.lp-op:hover { color: var(--text); background: var(--selected); }
+
+/* 样式编辑器 */
+.lp-editor {
+  border-top: 1px solid var(--border);
+  background: var(--panel2-bg);
+  max-height: 42%;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.lp-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--panel2-bg);
+}
+.lp-editor-title { font-size: 12px; font-weight: 700; }
+.lp-editor-id { margin-left: auto; font-size: 10px; color: var(--dim); font-family: monospace; }
+.lp-editor-body { padding: 8px 10px; }
+.lp-ed-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.lp-ed-label { font-size: 11px; color: var(--muted); width: 48px; flex-shrink: 0; }
+.lp-ed-color {
+  width: 34px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  padding: 1px;
+  cursor: pointer;
+}
+.lp-ed-hex { font-size: 10px; color: var(--dim); font-family: monospace; }
+.lp-ed-row input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+.lp-ed-val { font-size: 11px; color: var(--dim); width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.lp-ed-select {
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.lp-ed-note { font-size: 10px; color: var(--dim); margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 6px; }
+.lp-ed-hint { font-size: 11px; color: var(--dim); }
+
+/* ================= 属性表 (AttributeTable) ================= */
+.lp-attr-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lp-attr {
+  width: min(1080px, 92vw);
+  height: min(680px, 85vh);
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lp-attr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.lp-attr-title { font-size: 13px; font-weight: 700; }
+.lp-attr-count { font-size: 11px; color: var(--dim); }
+.lp-attr-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.lp-attr-search {
+  background: var(--panel2-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  width: 180px;
+  outline: none;
+}
+.lp-attr-search:focus { border-color: var(--accent); }
+.lp-attr-err, .lp-attr-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+.lp-attr-table-wrap { flex: 1; overflow: auto; }
+.lp-attr-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.lp-attr-table th {
+  position: sticky;
+  top: 0;
+  background: var(--panel2-bg);
+  color: var(--muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  z-index: 1;
+}
+.lp-attr-table th:hover { color: var(--text); }
+.lp-attr-sort { margin-left: 3px; font-size: 9px; color: var(--accent); }
+.lp-attr-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lp-attr-table tbody tr { cursor: pointer; }
+.lp-attr-table tbody tr:hover { background: var(--selected); }
+.lp-attr-table tbody tr.selected { background: var(--selected); box-shadow: inset 3px 0 0 var(--accent); }
+.lp-attr-idx { color: var(--dim); width: 44px; text-align: right !important; }
+.lp-attr-empty { text-align: center; color: var(--dim); padding: 24px 0 !important; }
+.lp-attr-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.lp-attr-page { font-size: 11px; color: var(--dim); }
+.lp-attr-hint { margin-left: auto; font-size: 10px; color: var(--dim); }
