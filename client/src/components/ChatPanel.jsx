@@ -610,42 +610,53 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             onChange={(e) => setInput(e.target.value)}
           />
           <div className="input-actions">
-            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}><Icon name="image" size={12} /> 图片</button>
-            <button className="btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}><Icon name="link" size={12} /> 附件</button>
+            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}><Icon name="image" size={14} /></button>
+            <button className="btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}><Icon name="link" size={14} /></button>
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            {busy ? (
-              <button className="btn danger stop-btn" onClick={stop}><Icon name="stop" size={12} /> 停止</button>
-            ) : (
-              <button className="btn primary send-btn" onClick={() => send()}><Icon name="send" size={12} /> 发送</button>
-            )}
+            <div style={{ marginLeft: 'auto' }}>
+              {busy ? (
+                <button className="btn danger stop-btn" onClick={stop}><Icon name="stop" size={14} /></button>
+              ) : (
+                <button className="btn primary send-btn" onClick={() => send()}><Icon name="send" size={14} /></button>
+              )}
+            </div>
           </div>
           <div className="chat-settings">
-            <button className="btn-xs new-session-btn" onClick={handleNewSession} title="新建会话"><Icon name="plus" size={10} /> 新建</button>
-            <div className="mode-switch" title="切换编辑模式">
+            <button className="btn-xs icon-btn" onClick={handleNewSession} title="新建会话">
+              <Icon name="plus" size={14} />
+            </button>
+            <div className="mode-switch" title="Office编辑 / 创作模式">
               <button
                 className={`mode-btn ${editMode === "office" ? "active" : ""}`}
                 onClick={() => setEditMode("office")}
-              ><Icon name="doc" size={11} /> Office</button>
+                title="Office模式：直接编辑文档"
+              ><Icon name="doc" size={13} /></button>
               <button
                 className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
                 onClick={() => setEditMode("agent")}
-              ><Icon name="pen-tool" size={11} /> 创作</button>
+                title="创作模式：生成新文件"
+              ><Icon name="pen-tool" size={13} /></button>
             </div>
-            <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)} title="选择模型 (V=支持图片)">
-              <option value="">-- 模型 --</option>
-              {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
-            </select>
-            <select
-              className="effort-select"
-              value={effort}
-              onChange={(e) => setEffort(e.target.value)}
-              title="推理强度（思考深度）"
-            >
-              <option value="low">⚡ 快速</option>
-              <option value="medium">⚖ 标准</option>
-              <option value="high">🧠 深度</option>
-            </select>
+            <div className="model-picker" title={model || "选择模型"}>
+              <Icon name="robot" size={13} />
+              <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)}>
+                <option value="">-- 模型 --</option>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
+              </select>
+            </div>
+            <div className="effort-picker" title={`推理强度: ${effort}`}>
+              <Icon name="info" size={13} />
+              <select
+                className="effort-select"
+                value={effort}
+                onChange={(e) => setEffort(e.target.value)}
+              >
+                <option value="low">快速</option>
+                <option value="medium">标准</option>
+                <option value="high">深度</option>
+              </select>
+            </div>
             {modelMsg && <span className="model-msg">{modelMsg}</span>}
           </div>
         </div>

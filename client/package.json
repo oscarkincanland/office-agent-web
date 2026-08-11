@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@antv/g6": "^5.1.1",
+    "docx": "^9.7.1",
     "docx-preview": "^0.4.0",
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",

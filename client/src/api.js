@@ -63,6 +63,11 @@ export const kbImaSearch = (q, kb) =>
   api(`/api/kb/ima/search?q=${encodeURIComponent(q)}${kb ? `&kb=${encodeURIComponent(kb)}` : ""}`);
 export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURIComponent(mediaId)}`);
 
+// ---------- 模版库 ----------
+export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);
+export const tplContent = (relPath) => api(`/api/templates/content?path=${encodeURIComponent(relPath)}`);
+export const tplRefresh = () => api("/api/templates/refresh", { method: "POST" });
+
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
