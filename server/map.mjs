@@ -25,7 +25,7 @@ const BASEMAPS = {
   carto: {
     name: "Carto 亮色",
     type: "raster",
-    tiles: ["https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"],
+    tiles: ["https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
     tileSize: 256,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   },
@@ -39,7 +39,7 @@ const BASEMAPS = {
   dark: {
     name: "Carto 暗色",
     type: "raster",
-    tiles: ["https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"],
+    tiles: ["https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
     tileSize: 256,
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   },
@@ -99,8 +99,8 @@ function getDefaultStyle(project) {
   for (const def of LAYER_DEFS) {
     sources[def.id] = {
       type: "vector",
-      // 相对 URL：相对 style.json 所在目录（/api/map/data/{project}/style.json）解析
-      tiles: [`tiles/${def.id}/{z}/{x}/{y}.pbf`],
+      // 绝对路径：MapLibre 不解析 sources.tiles 的相对 URL
+      tiles: [`/api/map/data/${project}/tiles/${def.id}/{z}/{x}/{y}.pbf`],
       maxzoom: def.maxzoom,
     };
   }

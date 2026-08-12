@@ -7,9 +7,11 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import MapViewer from "./components/MapViewer.jsx";
+import MapPanel from "./components/MapPanel.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
-import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
+import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, mapProject } from "./api.js";
 
 // 全局错误边界
 class AppErrorBoundary extends React.Component {
@@ -59,6 +61,10 @@ export default function App() {
   const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
   const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
+  const [mapMode, setMapMode] = useState(false); // 地图可视化模式
+  const mapRef = useRef(null); // MapViewer 命令句柄
+  const [mapProjectName, setMapProjectName] = useState("zhejiang-map");
+  const [mapConfig, setMapConfig] = useState(null); // 地图项目配置（供 MapViewer/MapPanel）
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -219,15 +225,41 @@ export default function App() {
     } catch (e) { alert("加载会话失败: " + e.message); }
   }, [open]);
 
+  // 地图模式下：agent 改动地图文件后热更新
+  const handleMapChanged = useCallback(() => {
+    setTimeout(() => {
+      mapRef.current?.reloadStyle?.();
+      refreshFiles();
+    }, 300);
+  }, [refreshFiles]);
+
+  // 进入地图模式时加载项目配置（顶栏标题/初始中心）
+  useEffect(() => {
+    if (!mapMode) return;
+    let alive = true;
+    (async () => {
+      try {
+        const d = await mapProject(mapProjectName);
+        if (alive) setMapConfig(d.config);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [mapMode, mapProjectName]);
+
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
+    if (mapMode) {
+      const mapFiles = (changed || []).some((f) => f.includes("maps") || f.endsWith(".geojson") || f === "style.json");
+      if (mapFiles) handleMapChanged();
+      return;
+    }
     if (activeTab && changed.includes(activeTab)) {
       // 添加延迟避免与 agent_end 竞态
       setTimeout(() => {
         open(activeTab);
       }, 100);
     }
-  }, [activeTab, refreshFiles, open]);
+  }, [activeTab, refreshFiles, open, mapMode, handleMapChanged]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -252,7 +284,52 @@ export default function App() {
             onOpenFile={open}
           />
         )}
-        {!kbMode && !tplMode && (
+        {mapMode && (
+          <div className="app map-mode-root">
+            <MapPanel
+              project={mapProjectName}
+              mapRef={mapRef}
+              onFilesChanged={() => {}}
+            />
+            <Resizer side="left" min={200} max={430} cssVar="--map-sidebar-w" />
+            <div className="map-center">
+              <div className="topbar">
+                <button className="btn-sm" onClick={() => setMapMode(false)} title="返回办公模式">
+                  <Icon name="back" size={14} />
+                </button>
+                <span className="topbar-title">地图可视化 · {mapConfig?.name || "浙江省交通地图"}</span>
+                <button className="btn-sm" onClick={() => setMapMode(false)} title="返回办公模式">退出地图</button>
+                <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+                  <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
+                </button>
+                <span className="topbar-badge">MapLibre GL</span>
+              </div>
+              <MapViewer
+                ref={mapRef}
+                project={mapProjectName}
+                config={mapConfig}
+                onConfigChange={setMapConfig}
+                onLayerTilesChanged={() => {}}
+              />
+            </div>
+            <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
+            <ChatPanel
+              ref={chatInputRef}
+              clientId={clientId}
+              onFileChanged={handleFileChanged}
+              currentDoc={`地图:${mapProjectName}`}
+              models={models}
+              defaultModel={defaultModel}
+              onAgentEnd={handleAgentEnd}
+              historyMessages={historyMessages}
+              onNewSession={handleNewSession}
+              onOpenFile={open}
+              sessions={sessions}
+              onSelectSession={handleSelectSession}
+            />
+          </div>
+        )}
+        {!kbMode && !tplMode && !mapMode && (
         <>
         {sidebarOpen && (
           <>
@@ -294,6 +371,7 @@ export default function App() {
             <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
             <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
             <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
+            <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图可视化（MapLibre）"><Icon name="map" size={14} /> 地图</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer

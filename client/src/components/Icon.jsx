@@ -60,6 +60,10 @@ const PATHS = {
   backlink: (<><path d="M17 7h-2a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" /><path d="M7 17h2a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H7" /></>),
   penTool: (<><path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="M2 2l7.586 7.586" /><circle cx="11" cy="11" r="2" /></>),
   filter: (<path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />),
+  map: (<><path d="M1 6v16l7-4 8 4 7-4V2l-7 4-8-4z" /><path d="M8 2v16" /><path d="M16 6v16" /></>),
+  layer: (<><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></>),
+  tool: (<><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></>),
+  globe: (<><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" /></>),
 };
 
 export default function Icon({ name, size = 16, className = "", strokeWidth = 2 }) {

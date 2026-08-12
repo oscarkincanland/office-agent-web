@@ -65,6 +65,7 @@ class AgentManager extends EventEmitter {
               "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
+              "- **地图项目（maps）**: 地图可视化项目位于 `" + WORKSPACE_DIR + "\\maps\\zhejiang-map\\`。结构：`map.config.json`（项目配置）、`style.json`（MapLibre 样式，改这里可改地图样式）、`layers/*.geojson`（图层数据）、`tiles/`（矢量瓦片，由脚本生成，勿手改）。用户在地图页面与您对话时，改图操作 = 修改 `style.json`（图层颜色/线宽/显隐）或 `layers/*.geojson`（数据），文件保存后浏览器会自动热更新。若改了图层数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
             ].join("\n"),
           },
