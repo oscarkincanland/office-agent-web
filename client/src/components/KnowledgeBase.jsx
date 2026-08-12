@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import Icon from "./Icon.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import KnowledgeGraph from "./KnowledgeGraph.jsx";
+import MindMap from "./MindMap.jsx";
 import {
   kbStatus, kbAddRoot, kbRemoveRoot, kbTree, kbSearch, kbGraph, kbDoc,
   kbImaStatus, kbImaBases, kbImaSearch, kbImaDoc,
@@ -409,6 +410,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
         <div className="kb-view-toggle">
           <button className={"btn-sm" + (view === "browse" ? " active" : "")} onClick={() => setView("browse")}>浏览</button>
           <button className={"btn-sm" + (view === "graph" ? " active" : "")} onClick={() => setView("graph")}>思维图谱</button>
+          <button className={"btn-sm" + (view === "mind" ? " active" : "")} onClick={() => setView("mind")}>脑图</button>
         </div>
         <button className={"btn-sm kb-ima-btn" + (imaOpen ? " active" : "")}
           onClick={() => { setImaOpen((v) => !v); if (!imaOpen && !imaBases.length) loadImaBases(); }}
@@ -612,6 +614,14 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
             )}
           </div>
         </div>
+      ) : view === "mind" ? (
+        <MindMap
+          roots={roots}
+          onSelectDoc={(relPath, idx) => openDoc(relPath, idx)}
+          highlightPath={currentDoc?.relPath}
+          rootIdx={rootIdx}
+          doc={currentDoc}
+        />
       ) : (
         <div className="kb-body kb-graph-body">
           <div className="kb-graph-toolbar">
