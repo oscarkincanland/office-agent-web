@@ -427,8 +427,8 @@ export default function App() {
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onSelectSession={handleSelectSession}
-              onSessionChange={handleSessionChange}
               onAtMention={handleAtMention}
+              onNewSession={handleNewSession}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>
