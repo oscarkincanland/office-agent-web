@@ -282,6 +282,54 @@ export function getTree(rootIdx) {
 }
 
 /**
+ * 懒加载：返回指定目录的直接子级（dir 为空 = 根级）
+ * dir 行带 subCount（直接子项数），file 行带 linkCount（引用数徽标）
+ */
+export function getTreeLevel(rootIdx, dirPath = "") {
+  const items = [...fileCache.values()].filter((f) => f.rootIdx === rootIdx);
+  const prefix = dirPath ? dirPath + "/" : "";
+  const dirMap = new Map(); // name -> { name, path, subCount }
+  const files = [];
+  for (const f of items) {
+    if (!f.relPath.startsWith(prefix)) continue;
+    const rest = f.relPath.slice(prefix.length);
+    const parts = rest.split("/");
+    if (parts.length === 1) {
+      files.push({
+        type: "file",
+        name: parts[0],
+        relPath: f.relPath,
+        title: f.doc.title,
+        tags: f.doc.tags.slice(0, 8),
+        linkCount: f.doc.links.length,
+        mtime: f.mtimeMs,
+      });
+    } else {
+      const dirName = parts[0];
+      if (!dirMap.has(dirName)) {
+        dirMap.set(dirName, { type: "dir", name: dirName, path: prefix + dirName, subCount: 0 });
+      }
+      dirMap.get(dirName).subCount++;
+    }
+  }
+  // 目录的直接子项数 = 子目录数（自身占位 1）+ 直接文件数
+  for (const d of dirMap.values()) {
+    const childPrefix = d.path + "/";
+    let subFiles = 0;
+    for (const f of items) {
+      if (f.relPath.startsWith(childPrefix)) {
+        const rest = f.relPath.slice(childPrefix.length);
+        if (!rest.includes("/")) subFiles++;
+      }
+    }
+    d.subCount = subFiles + [...dirMap.values()].filter((x) => x.path.startsWith(childPrefix) && x.path !== d.path).length;
+  }
+  const dirs = [...dirMap.values()].sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  files.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+  return { dirs, files };
+}
+
+/**
  * 全文搜索（中文友好：子串匹配 + 加权打分）
  * 权重：标题 10 / 标签 6 / 标题行 4 / 正文 1（出现次数封顶 10）
  */
@@ -345,10 +393,37 @@ export function getDoc(relPath, rootIdx = null) {
   }
   const backlinks = [];
   const base = normBase(path.basename(target.relPath));
+  const mentionKeys = [normBase(target.doc.title), base].filter((k) => k && k.length >= 4);
   for (const f of all) {
     if (f.abs === target.abs) continue;
     const hit = f.doc.links.some((l) => normBase(path.basename(l.target)) === base);
-    if (hit) backlinks.push({ relPath: f.relPath, rootIdx: f.rootIdx, title: f.doc.title });
+    if (hit) {
+      // 引用上下文：源文档中 [[目标]] 所在段落（供反链面板展开预览，大小写不敏感）
+      let snippet = "";
+      for (const p of f.doc.content.split(/\n{2,}/)) {
+        const lower = p.toLowerCase();
+        if (lower.includes(`[[${base}]]`) || lower.includes(`[[${base}|`)) {
+          snippet = p.replace(/\s+/g, " ").trim().slice(0, 220);
+          break;
+        }
+      }
+      backlinks.push({ relPath: f.relPath, rootIdx: f.rootIdx, title: f.doc.title, snippet });
+    }
+  }
+  // 提及（mention）：其他文档正文出现本标题/文件名但未建 [[链接]]（对齐 siyuan mentions）
+  const mentions = [];
+  for (const f of all) {
+    if (f.abs === target.abs) continue;
+    if (f.doc.links.some((l) => normBase(path.basename(l.target)) === base)) continue; // 已是反链
+    const lower = f.doc.content.toLowerCase();
+    if (!mentionKeys.some((k) => lower.includes(k))) continue;
+    for (const p of f.doc.content.split(/\n{2,}/)) {
+      const pl = p.toLowerCase();
+      if (mentionKeys.some((k) => pl.includes(k))) {
+        mentions.push({ relPath: f.relPath, rootIdx: f.rootIdx, title: f.doc.title, snippet: p.replace(/\s+/g, " ").trim().slice(0, 220) });
+        break;
+      }
+    }
   }
   return {
     relPath: target.relPath,
@@ -359,6 +434,7 @@ export function getDoc(relPath, rootIdx = null) {
     content: target.doc.content,
     links,
     backlinks,
+    mentions,
   };
 }
 
@@ -390,16 +466,16 @@ function computeSimilarEdges(rootIdx, all) {
       // 遍历小的集合
       const [small, large] = sa.size <= sb.size ? [sa, sb] : [sb, sa];
       for (const x of small) if (large.has(x)) common++;
-      if (common >= 8) {
+      if (common >= 12) {
         const overlap = common / inter;
-        if (overlap >= 0.16) {
+        if (overlap >= 0.25) {
           edges.push({ a, b, w: overlap });
         }
       }
     }
   }
   edges.sort((x, y) => y.w - x.w);
-  const capped = edges.slice(0, Math.max(60, all.length * 3));
+  const capped = edges.slice(0, Math.min(Math.max(all.length * 2, 40), 120));
   const res = capped.map((e) => ({ source: e.a, target: e.b, type: "similar" }));
   simCache.set(key, res);
   return res;
@@ -423,7 +499,8 @@ export function getGraph({ rootIdx = null, include = ["links"], maxNodes = 800 }
   for (const f of all) {
     const id = nodeId(f);
     nodeMap.set(id, f);
-    nodes.push({ id, label: f.doc.title, size: 14, type: "file", relPath: f.relPath, rootIdx: f.rootIdx, tags: f.doc.tags.slice(0, 5) });
+    const idx = f.relPath.indexOf("/");
+    nodes.push({ id, label: f.doc.title, size: 14, type: "file", relPath: f.relPath, rootIdx: f.rootIdx, tags: f.doc.tags.slice(0, 5), group: idx === -1 ? "root" : f.relPath.slice(0, idx) });
   }
 
   const edgeKey = (a, b, t) => `${a}|${b}|${t}`;
