@@ -11,6 +11,7 @@ import MapViewer from "./components/MapViewer.jsx";
 import MapPanel from "./components/MapPanel.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
+import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, mapProject } from "./api.js";
 
 // 全局错误边界
@@ -72,7 +73,10 @@ export default function App() {
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
+  const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
+  const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
+  const sessionsRef = useRef([]);
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const { theme, toggleTheme } = useTheme();
 
@@ -88,6 +92,7 @@ export default function App() {
     setTabs([]);
     setActiveTab(null);
     setCurrentDir("");
+    setCurrentSessionId(null);
   }, []);
 
   const refreshFiles = useCallback(async (dir) => {
@@ -169,6 +174,7 @@ export default function App() {
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
+    setCurrentSessionId(session.id);
     try {
       const d = await getSession(session.id);
       const msgs = (d.entries || [])
@@ -268,6 +274,67 @@ export default function App() {
       refreshSessions();
     }, 200);
   }, [refreshSessions]);
+
+  // ===== 界面状态固化（localStorage）=====
+  const [uiRestored, setUiRestored] = useState(false); // 恢复是否完成（完成后才允许保存）
+  const restoredSessionRef = useRef(false); // 会话恢复只执行一次
+
+  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 模式/侧栏/子目录
+  useEffect(() => {
+    if (uiRestored) return;
+    if (!currentWorkspace) return; // 等待工作区列表就绪
+    const saved = loadUIState();
+    if (!saved) { setUiRestored(true); return; }
+    (async () => {
+      try {
+        if (saved.workspace && saved.workspace !== currentWorkspace) {
+          await switchWorkspace(saved.workspace);
+        }
+      } catch {}
+      for (const t of saved.tabs || []) {
+        if (!t?.name) continue;
+        try { await open(t.name); } catch {}
+      }
+      if (saved.activeTab) setActiveTab(saved.activeTab);
+      if (saved.currentDir) {
+        setCurrentDir(saved.currentDir);
+        refreshFiles(saved.currentDir);
+      }
+      if (saved.mapMode) setMapMode(true);
+      else if (saved.kbMode) setKbMode(true);
+      else if (saved.tplMode) setTplMode(true);
+      setSidebarOpen(saved.sidebarOpen !== false);
+      setUiRestored(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWorkspace]);
+
+  // 恢复最后会话（sessions 就绪后执行一次）
+  useEffect(() => {
+    sessionsRef.current = sessions;
+    if (!uiRestored || restoredSessionRef.current) return;
+    restoredSessionRef.current = true;
+    const saved = loadUIState();
+    if (!saved?.lastSessionId) return;
+    const sess = sessions.find((x) => x.id === saved.lastSessionId);
+    if (sess) handleSelectSession(sess);
+  }, [sessions, uiRestored, handleSelectSession]);
+
+  // 保存：界面状态变化时写入 localStorage
+  useEffect(() => {
+    if (!uiRestored) return;
+    saveUIState({
+      tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
+      activeTab,
+      kbMode,
+      tplMode,
+      mapMode,
+      workspace: currentWorkspace,
+      currentDir,
+      sidebarOpen,
+      lastSessionId: currentSessionId,
+    });
+  }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
   return (
     <AppErrorBoundary>
