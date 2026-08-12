@@ -135,10 +135,17 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
     // Markdown / 文本
     if (preview.type === "markdown" || preview.type === "text") {
       if (preview.ext === "html") {
+        // HTML 模板：iframe 直接渲染首页效果（相对资源走 /api/templates/file）
+        const fileUrl = `/api/templates/file/${encodeURIComponent(preview.relPath)}`;
         return (
-          <div className="tpl-preview-body">
-            <div className="tpl-html-note">HTML 模版（源码预览）</div>
-            <pre className="tpl-preview-pre">{preview.content}</pre>
+          <div className="tpl-preview-body tpl-docx-preview">
+            <div className="tpl-html-note">HTML 模版（已渲染首页 · <a href={fileUrl} target="_blank" rel="noreferrer">新窗口打开 ↗</a>）</div>
+            <iframe
+              className="tpl-preview-iframe"
+              src={fileUrl}
+              title={preview.title}
+              sandbox="allow-scripts allow-same-origin"
+            />
           </div>
         );
       }

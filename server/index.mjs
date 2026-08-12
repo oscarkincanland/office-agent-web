@@ -200,6 +200,26 @@ app.post("/api/templates/refresh", (_req, res) => {
   res.json({ ok: true, total: tpl.getTemplates().length });
 });
 
+// 模板文件流（HTML 首页 iframe 渲染；相对资源基于 templates/ 解析）
+app.get(/^\/api\/templates\/file\/(.+)$/, (req, res) => {
+  const raw = decodeURIComponent(req.params[0]);
+  // 兼容绝对路径 relPath（tpl 扫描结果）：截取 templates/ 之后的部分
+  const marker = "templates/";
+  const idx = raw.indexOf(marker);
+  const relPath = idx >= 0 ? raw.slice(idx) : raw;
+  if (!relPath || relPath.includes("..") || relPath.startsWith("/")) {
+    return res.status(400).json({ error: "invalid path" });
+  }
+  const abs = path.join(PROJECT_DIR, relPath);
+  if (!abs.startsWith(path.join(PROJECT_DIR, "templates")) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".json": "application/json" }[ext] || "application/octet-stream";
+  res.setHeader("Content-Type", mime);
+  res.sendFile(abs);
+});
+
 // 模板文件下载路由
 const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
 app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
