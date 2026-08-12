@@ -383,7 +383,17 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .msg.user { flex-direction: row-reverse; }
 .avatar { width: 28px; height: 28px; border-radius: 4px; background: var(--surface); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; color: var(--muted); }
 .bubble { max-width: 85%; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
-.msg.user .bubble { background: var(--user-bg); }
+/* 用户消息：高对比强调（边框 + 加粗文本），突出"我的任务" */
+.msg.user .bubble {
+  background: var(--user-bg);
+  border-color: var(--accent);
+  border-left: 3px solid var(--accent);
+}
+.msg.user .bubble .msg-text {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 13px;
+}
 .msg-text { font-size: 13px; }
 .msg-images { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
 .msg-images img { max-width: 140px; max-height: 100px; border-radius: 3px; }
@@ -550,7 +560,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   width: 100%;
   min-width: 0;
 }
-/* 最终回复文本：无气泡边框，宽度与事件流条目一致 */
+/* 最终回复文本：无气泡边框，宽度与事件流条目一致；agent 回复文字弱化（muted） */
 .flow-markdown {
   width: 100%;
   min-width: 0;
@@ -559,6 +569,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   background: transparent;
   border: none;
   padding: 0;
+  color: var(--muted);
+  font-size: 12.5px;
 }
 /* thinking/tool 卡片在独立条目流中撑满宽度 */
 .msg-blocks .thinking-block,
@@ -1674,10 +1686,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   font-size: 11px;
   color: var(--text);
   line-height: 1.5;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .comment-marker-path {

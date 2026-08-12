@@ -1,6 +1,6 @@
 {
   "name": "office-agent-web",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "private": true,
   "description": "Web-based Office document editor with pi agent integration",
   "type": "module",
