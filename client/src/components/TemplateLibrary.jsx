@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Icon from "./Icon.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
+import DocxViewer from "./DocxViewer.jsx";
 import { tplList, tplContent } from "../api.js";
 
 /**
@@ -120,17 +121,37 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
       );
     }
 
-    // Word / PDF / PPT / Excel - iframe 渲染
-    if (preview.type === "word" || preview.ext === "docx" || preview.ext === "doc" ||
-        preview.type === "pdf" || preview.ext === "pdf" ||
-        preview.type === "ppt" || preview.ext === "pptx" || preview.ext === "ppt" ||
-        preview.type === "xls" || preview.ext === "xlsx" || preview.ext === "xls") {
-      // 用 relPath 作为 key，确保切换文件时 iframe 重新加载
+    // Word - 用 DocxViewer 渲染
+    if (preview.type === "word" || preview.ext === "docx" || preview.ext === "doc") {
+      return (
+        <div className="tpl-preview-body tpl-docx-preview">
+          <DocxViewer name={preview.relPath} />
+        </div>
+      );
+    }
+
+    // PDF - 用 pdf.js 或 embed 渲染
+    if (preview.type === "pdf" || preview.ext === "pdf") {
       return (
         <div className="tpl-preview-body tpl-docx-preview">
           <iframe
             key={preview.relPath}
-            src={`/api/doc/${encodeURIComponent(preview.relPath)}/raw`}
+            src={`/api/templates/files/${encodeURIComponent(preview.relPath)}`}
+            className="tpl-preview-iframe"
+            title={preview.title}
+          />
+        </div>
+      );
+    }
+
+    // PPT / Excel - iframe 渲染
+    if (preview.type === "ppt" || preview.ext === "pptx" || preview.ext === "ppt" ||
+        preview.type === "xls" || preview.ext === "xlsx" || preview.ext === "xls") {
+      return (
+        <div className="tpl-preview-body tpl-docx-preview">
+          <iframe
+            key={preview.relPath}
+            src={`/api/templates/files/${encodeURIComponent(preview.relPath)}`}
             className="tpl-preview-iframe"
             title={preview.title}
           />
