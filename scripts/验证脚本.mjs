@@ -23,7 +23,7 @@ function runSync(cmd, opts = {}) {
 
 // ---------- 1. Server 语法检查 ----------
 section("Server 语法检查 (node --check)");
-const serverFiles = fs.readdirSync(path.join(ROOT, "server")).filter((f) => f.endsWith(".mjs"));
+const serverFiles = fs.readdirSync(path.join(ROOT, "server")).filter((f) => f.endsWith(".mjs") && !f.startsWith("._"));
 for (const f of serverFiles) {
   try {
     runSync(`node --check server/${f}`);

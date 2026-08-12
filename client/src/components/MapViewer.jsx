@@ -21,6 +21,7 @@ const MapViewer = forwardRef(function MapViewer(
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const styleHashRef = useRef("");
+  const popupEnabledRef = useRef(true); // 绘制/测量模式下禁用属性弹窗
   const [loaded, setLoaded] = useState(false);
   const [basemap, setBasemap] = useState(config?.basemap || "carto");
   const [cursor, setCursor] = useState({ lng: null, lat: null, zoom: null });
@@ -62,6 +63,7 @@ const MapViewer = forwardRef(function MapViewer(
     const popup = new Popup({ closeButton: true, closeOnClick: false, maxWidth: "300px" });
     const onClick = (e) => {
       if (drawModeRef.current) return; // 绘制/选点模式：不弹要素
+      if (!popupEnabledRef.current) return; // 绘制/测量模式下不弹属性窗
       const feats = map.queryRenderedFeatures(e.point, {});
       const pick = feats.find(
         (f) => f.layer && !f.layer.id.startsWith("basemap") && f.properties && Object.keys(f.properties).length
@@ -143,6 +145,12 @@ const MapViewer = forwardRef(function MapViewer(
         }
       }
       setBasemap(id);
+    },
+    /** 绘制/测量模式：开关属性弹窗与光标 */
+    setDrawingMode: (on) => {
+      popupEnabledRef.current = !on;
+      const map = mapRef.current;
+      if (map) map.getCanvas().style.cursor = on ? "crosshair" : "";
     },
     setLayerVisibility: (id, visible) => {
       const map = mapRef.current;

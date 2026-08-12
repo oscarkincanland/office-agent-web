@@ -12,13 +12,17 @@ import vtpbf from "vt-pbf";
 
 /** 内置图层切片参数 */
 export const LAYER_DEFS = [
-  { id: "boundary-city",    minzoom: 0, maxzoom: 9,  tolerance: 0.0002, name: "地市边界", type: "boundary" },
-  { id: "boundary-county",  minzoom: 0, maxzoom: 11, tolerance: 0.0002, name: "区县边界", type: "boundary" },
-  { id: "highways",         minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "高速公路", type: "road" },
-  { id: "roads-trunk",      minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "国省道", type: "road" },
-  { id: "toll-stations",    minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "收费站", type: "point" },
-  { id: "junctions",        minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "枢纽", type: "point" },
+  { id: "boundary-city",    minzoom: 0, maxzoom: 9,  tolerance: 0.0002, name: "地市边界", type: "boundary", group: "基础地理" },
+  { id: "boundary-county",  minzoom: 0, maxzoom: 11, tolerance: 0.0002, name: "区县边界", type: "boundary", group: "基础地理" },
+  { id: "highways",         minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "高速公路", type: "road", group: "路网" },
+  { id: "roads-trunk",      minzoom: 5, maxzoom: 13, tolerance: 0.0001, name: "国省道", type: "road", group: "路网" },
+  { id: "roads-rural",      minzoom: 7, maxzoom: 14, tolerance: 0.0001, name: "农村公路", type: "road", group: "路网" },
+  { id: "toll-stations",    minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "收费站", type: "point", group: "设施点" },
+  { id: "junctions",        minzoom: 5, maxzoom: 14, tolerance: 0.00001, name: "枢纽", type: "point", group: "设施点" },
 ];
+
+/** 按类型推断分组（导入图层时使用） */
+export const GROUP_BY_TYPE = { boundary: "基础地理", road: "路网", point: "设施点" };
 
 function recursiveSize(dir) {
   let total = 0;
