@@ -541,6 +541,60 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 
 /* ===== markdown 渲染（assistant 消息） ===== */
+
+/* 独立条目流（pi-web BlockView 模型）：思考/工具/文本按原始顺序垂直排列，宽度统一 */
+.msg-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+/* 最终回复文本：无气泡边框，宽度与事件流条目一致 */
+.flow-markdown {
+  width: 100%;
+  min-width: 0;
+}
+.flow-markdown .markdown-body {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+/* thinking/tool 卡片在独立条目流中撑满宽度 */
+.msg-blocks .thinking-block,
+.msg-blocks .tool-card {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 0;
+}
+/* pi-web 风格：thinking 灰色卡片、tool 绿色边框卡片 */
+.msg-blocks .thinking-block {
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  border-left: none;
+  padding: 0;
+  overflow: hidden;
+}
+.msg-blocks .thinking-block .thinking-header {
+  padding: 6px 10px;
+  margin: 0;
+}
+.msg-blocks .thinking-block .thinking-text {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+  max-height: 240px;
+}
+.msg-blocks .tool-card {
+  border-radius: 7px;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+.msg-blocks .tool-card.error { border-color: rgba(248, 113, 113, 0.5); }
+.msg-blocks .tool-card.pending { border-color: rgba(100, 116, 139, 0.5); }
+.msg-blocks .tool-header { padding: 6px 10px; }
+.msg-blocks .tool-detail { padding: 6px 10px; }
+
+/* ===== markdown 渲染（assistant 消息） ===== */
 .markdown-body {
   font-size: 13px;
   line-height: 1.8;
@@ -902,14 +956,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .msg-main > .msg-header { margin-bottom: 2px; }
 .msg.user .msg-main { align-items: flex-end; }
-/* 统一气泡尺寸：text/thinking/tool 块一致 */
-.markdown-bubble,
-.thinking-block,
-.tool-card {
-  width: 100%;
-  border-radius: 6px;
-}
-.markdown-bubble { background: var(--surface); white-space: normal; }
 /* 工具卡片独立气泡 */
 .tool-card {
   border: 1px solid var(--border);
@@ -1027,36 +1073,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   font-size: 10px;
 }
 .thinking-block.expanded .thinking-text { border-top: 1px solid var(--border); padding-top: 6px; }
-
-/* ===== 执行过程分组（Proma ProcessBlockGroup） ===== */
-.process-group {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--panel2-bg);
-  margin-bottom: 2px;
-}
-.process-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  cursor: pointer;
-  background: var(--surface);
-  user-select: none;
-}
-.process-chevron { font-family: monospace; color: var(--accent); font-size: 10px; }
-.process-title { font-size: 11px; font-weight: 600; }
-.process-spinner { display: flex; color: var(--warning); }
-.process-meta {
-  margin-left: auto;
-  font-size: 10px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.process-body { padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
-.process-body .thinking-block,
-.process-body .tool-card { margin-bottom: 0; }
 
 /* ===== 任务进度卡（Proma TaskProgressCard） ===== */
 .task-card {
@@ -3229,14 +3245,14 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 @keyframes mp-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .map-btn.active { border-color: var(--accent); color: var(--accent); background: var(--selected); }
 
-/* ===== 会话消息目录栏（ChatTimeline，悬停展开） ===== */
-.chat-body { position: relative; }
+/* ===== 会话消息目录栏（ChatTimeline，悬停展开，固定于聊天面板左侧） ===== */
+.chat { position: relative; }
 .chat-timeline {
   position: absolute;
-  top: 8px;
+  top: 64px; /* chat-head 下方，不随消息滚动 */
   left: 4px;
   width: 22px;
-  z-index: 30;
+  z-index: 40;
   transition: width 0.15s ease;
 }
 .chat-timeline.hover { width: 210px; }
