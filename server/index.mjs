@@ -212,6 +212,63 @@ app.post("/api/templates/generate-notice", async (req, res) => {
   }
 });
 
+// ---------- 文档 ↔ 知识库联动 ----------
+// docx → md 入知识库（工作区注册为 kb 根）
+app.post("/api/kb/ingest", async (req, res) => {
+  try {
+    const r = await kb.ingestDocx(req.body?.name);
+    if (!r.ok) return res.status(400).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// kb 文档 → docx 写工作区
+app.post("/api/kb/export-docx", async (req, res) => {
+  try {
+    const rootIdx = parseInt(req.body?.rootIdx, 10);
+    const r = await kb.exportDocx(req.body?.relPath, isNaN(rootIdx) ? null : rootIdx);
+    if (!r.ok) return res.status(400).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ---------- HTML 标注持久化 ----------
+const ANNO_DIR = path.join(WORKSPACE_DIR, ".annotations");
+function annotationsPath(fileName) {
+  const safe = path.basename(String(fileName || ""));
+  if (!safe || safe.includes("..")) return null;
+  return path.join(ANNO_DIR, safe + ".json");
+}
+
+app.get(/^\/api\/doc\/([^\/]+)\/annotations$/, (_req, res) => {
+  const fileName = decodeURIComponent(_req.params[0]);
+  const p = annotationsPath(fileName);
+  if (!p || !fs.existsSync(p)) return res.json({ annotations: [] });
+  try {
+    res.json({ annotations: JSON.parse(fs.readFileSync(p, "utf8")) });
+  } catch {
+    res.json({ annotations: [] });
+  }
+});
+
+app.post(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = annotationsPath(fileName);
+  if (!p) return res.status(400).json({ error: "invalid name" });
+  try {
+    fs.mkdirSync(ANNO_DIR, { recursive: true });
+    const list = Array.isArray(req.body?.annotations) ? req.body.annotations : [];
+    fs.writeFileSync(p, JSON.stringify(list, null, 2), "utf8");
+    res.json({ ok: true, count: list.length });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // 模板文件流（HTML 首页 iframe 渲染；相对资源基于 templates/ 解析）
 app.get(/^\/api\/templates\/file\/(.+)$/, (req, res) => {
   const raw = decodeURIComponent(req.params[0]);

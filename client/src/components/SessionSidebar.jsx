@@ -286,6 +286,23 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
     });
   };
 
+  // 存入知识库：docx → 服务端转 md 并注册为 kb 根
+  const handleIngestToKB = async (name) => {
+    if (!confirm(`将「${name}」存入知识库（自动转换为 Markdown 并注册为知识库根）？`)) return;
+    try {
+      const r = await fetch("/api/kb/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
+      alert(`已存入知识库：${data.mdName || name}`);
+    } catch (err) {
+      alert("存入失败: " + err.message);
+    }
+  };
+
   // 右键菜单处理
   const handleContextMenu = (e, file) => {
     e.preventDefault();
@@ -310,8 +327,15 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
       }
     ];
     if (!file.isDir) {
+      menuItems.push({ separator: true });
+      if (file.ext === "docx") {
+        menuItems.push({
+          icon: "book",
+          label: "存入知识库",
+          onClick: () => handleIngestToKB(file.name)
+        });
+      }
       menuItems.push(
-        { separator: true },
         {
           icon: "trash",
           label: "删除",
