@@ -1179,6 +1179,33 @@ app.post("/api/map/project/:name/rebuild-tiles", (req, res) => {
   }
 });
 
+// 获取图层 GeoJSON（属性表/要素定位）
+app.get("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const g = mapSvc.getLayer(req.params.name, req.params.layerId);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+// 删除图层（数据 + 瓦片 + style + config）
+app.delete("/api/map/project/:name/layer/:layerId", (req, res) => {
+  try {
+    const r = mapSvc.deleteLayer(req.params.name, req.params.layerId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 等时圈分析（高德 Web 服务，需 AMAP_KEY）
+app.post("/api/map/project/:name/isochrone", async (req, res) => {
+  try {
+    const r = await mapSvc.isochrone(req.body || {});
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {

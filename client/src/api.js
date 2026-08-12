@@ -79,6 +79,12 @@ export const mapImportLayer = (name, layerId, geojson) =>
   api(`/api/map/project/${encodeURIComponent(name)}/import`, { method: "POST", body: JSON.stringify({ layerId, geojson }) });
 export const mapRebuildTiles = (name) =>
   api(`/api/map/project/${encodeURIComponent(name)}/rebuild-tiles`, { method: "POST" });
+export const mapGetLayer = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`);
+export const mapDeleteLayer = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "DELETE" });
+export const mapIsochrone = (name, params) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/isochrone`, { method: "POST", body: JSON.stringify(params) });
 
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
