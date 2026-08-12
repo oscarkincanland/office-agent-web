@@ -30,6 +30,7 @@ const CATEGORIES = [
   { id: "kuangjia",  name: "研究框架", icon: "🏗️", dirs: ["衢州多式联运项目", "柬埔寨公交项目"], exts: [".md"] },
   { id: "tubiao",    name: "图表/地图", icon: "📊", dirs: ["交通规划工作台/模板/图表模板", "交通规划工作台/模板/HTML模板", ".claude/skills/traffic-charts-template", ".claude/skills/traffic-map-template"], exts: [".md", ".html", ".js"] },
   { id: "htmlppt",   name: "HTML PPT（OpenDesign）", icon: "📽️", dirs: [path.join(PROJECT_DIR, "templates/opendesign")], exts: [".html"], depth: 5, folderTitle: true, skipDirs: ["assets", "themes", "animations", "fonts", "scripts", "docs", "references", "examples"] },
+  { id: "sucaiku",   name: "规划素材库", icon: "📚", dirs: [path.join(PROJECT_DIR, "templates/traffic-material")], exts: [".md"] },
 ];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".obsidian", "dist", "build"]);
