@@ -26,6 +26,34 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
   const [sortBy, setSortBy] = useState("type");
   const [search, setSearch] = useState("");
   const previewSeq = useRef(0); // 竞态保护
+  const [leftW, setLeftW] = useState(200);   // 左栏分类宽度（可拖拽）
+  const [rightW, setRightW] = useState(440); // 右栏预览宽度（可拖拽）
+  const paneDragRef = useRef(null);
+
+  // 左右栏宽度拖拽
+  const startPaneDrag = (e, side) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = side === "left" ? leftW : rightW;
+    paneDragRef.current = { side, startX, startW };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const delta = ev.clientX - paneDragRef.current.startX;
+      const next = Math.min(side === "left" ? 320 : 720, Math.max(side === "left" ? 140 : 260, paneDragRef.current.startW + (paneDragRef.current.side === "left" ? delta : -delta)));
+      if (paneDragRef.current.side === "left") setLeftW(next);
+      else setRightW(next);
+    };
+    const onUp = () => {
+      paneDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
 
   useEffect(() => {
     (async () => {
@@ -208,7 +236,7 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
 
       <div className="tpl-body">
         {/* 左栏：分类 */}
-        <div className="tpl-left">
+        <div className="tpl-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="tpl-cat-title">分类</div>
           <div className={"tpl-cat-item" + (activeCategory === "all" ? " active" : "")} onClick={() => setActiveCategory("all")}>
             <span className="tpl-cat-icon">📁</span>
@@ -226,6 +254,7 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
             );
           })}
         </div>
+        <div className="tpl-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整分类栏宽度" />
 
         {/* 中栏：模板网格/列表 */}
         <div className="tpl-center">
@@ -259,10 +288,11 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
             </div>
           )}
         </div>
+        <div className="tpl-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整预览宽度" />
 
         {/* 右栏：预览 */}
         {preview && (
-          <div className="tpl-preview">
+          <div className="tpl-preview" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
             <div className="tpl-preview-head">
               <div className="tpl-preview-title">{preview.title}</div>
               <div className="tpl-preview-meta">

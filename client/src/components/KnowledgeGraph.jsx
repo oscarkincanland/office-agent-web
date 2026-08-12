@@ -36,6 +36,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   const containerRef = useRef(null);
   const graphRef = useRef(null);
   const [hideIsolated, setHideIsolated] = useState(false);
+  const [density, setDensity] = useState(1); // 布局密度（0.6 紧凑 ~ 1.8 舒展）
   const [query, setQuery] = useState("");
   const adjMapRef = useRef(new Map());
   const degreeMapRef = useRef(new Map());
@@ -194,12 +195,12 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       },
       layout: {
         type: "force",
-        linkDistance: (d) => (d.data?.type === "similar" ? 330 : 220),
-        nodeStrength: -1200,
-        edgeStrength: (d) => (d.data?.type === "similar" ? 0.06 : 0.25),
+        linkDistance: (d) => (d.data?.type === "similar" ? 330 : 220) * density,
+        nodeStrength: -1200 * density,
+        edgeStrength: (d) => (d.data?.type === "similar" ? 0.06 : 0.25) / density,
         preventOverlap: true,
         collide: true,
-        collideRadius: (d) => (nodeSize(d) || 16) + 24,
+        collideRadius: (d) => ((nodeSize(d) || 16) + 24) * density,
         collideStrength: 1.6,
         alpha: 0.5,
         alphaDecay: 0.06,
@@ -289,7 +290,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, hideIsolated, highlightId, focusId, subSet]);
+  }, [data, hideIsolated, highlightId, focusId, subSet, density]);
 
   // 高亮定位（外部选中文档时）
   useEffect(() => {
@@ -328,6 +329,16 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点
         </label>
+        <span className="kb-density" title="调整节点间距">
+          <span className="kb-density-label">间距</span>
+          <input
+            type="range"
+            min="0.6" max="1.8" step="0.1"
+            value={density}
+            onChange={(e) => setDensity(Number(e.target.value))}
+          />
+          <span className="kb-density-val">{density.toFixed(1)}×</span>
+        </span>
       </div>
       <div className="kb-graph" ref={containerRef} />
     </div>
