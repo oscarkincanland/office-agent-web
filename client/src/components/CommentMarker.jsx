@@ -135,11 +135,11 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
         (doc.body || container).appendChild(badge);
       }
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      // 定时清理
-      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = setTimeout(() => el.classList.remove("comment-highlight-active"), 5000);
-      if (badgeTimerRef.current) clearTimeout(badgeTimerRef.current);
-      badgeTimerRef.current = setTimeout(clearVisuals, 5000);
+      // 定时清理（高亮保持 20 秒，避免闪烁即失）
+      clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => el.classList.remove("comment-highlight-active"), 20000);
+      clearTimeout(badgeTimerRef.current);
+      badgeTimerRef.current = setTimeout(clearVisuals, 20000);
     }
   }, [containerRef, findCommentElement, clearVisuals, setActiveComment]);
 
