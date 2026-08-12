@@ -1,13 +1,14 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Icon from "./Icon.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
+import DocxViewer from "./DocxViewer.jsx";
 import { tplList, tplContent } from "../api.js";
 
 /**
  * 模版库全屏模式（交通规划产出文件模板）
  *
  * 左栏：分类列表
- * 中栏：模板卡片网格/列表（支持按类型排序）
+ * 中栏：模板卡片网格/列表（支持搜索+排序）
  * 右栏：模板预览（Markdown/HTML/Word/Excel/PDF/PPT 渲染）
  */
 
@@ -19,10 +20,12 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
   const [templates, setTemplates] = useState([]);
   const [activeCategory, setActiveCategory] = useState("all");
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState(null); // {title, relPath, type, content, ext, size}
+  const [preview, setPreview] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [viewMode, setViewMode] = useState("grid"); // grid | list
-  const [sortBy, setSortBy] = useState("type"); // type | name | size
+  const [viewMode, setViewMode] = useState("grid");
+  const [sortBy, setSortBy] = useState("type");
+  const [search, setSearch] = useState("");
+  const previewSeq = useRef(0); // 竞态保护
 
   useEffect(() => {
     (async () => {
@@ -36,9 +39,14 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
     })();
   }, []);
 
-  // 排序 + 过滤
+  // 排序 + 过滤 + 搜索
   const filtered = useMemo(() => {
     let list = activeCategory === "all" ? templates : templates.filter((t) => t.category === activeCategory);
+    // 搜索
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      list = list.filter((t) => t.title.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.ext.toLowerCase().includes(q));
+    }
     // 排序
     list = [...list].sort((a, b) => {
       if (sortBy === "type") {
@@ -52,15 +60,18 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
       return 0;
     });
     return list;
-  }, [templates, activeCategory, sortBy]);
+  }, [templates, activeCategory, sortBy, search]);
 
   const openPreview = useCallback(async (tpl) => {
+    const seq = ++previewSeq.current; // 每次点击递增
     setPreviewLoading(true);
-    setPreview(tpl); // 先显示标题
+    setPreview(tpl); // 先显示标题信息
     try {
       const c = await tplContent(tpl.relPath);
+      if (seq !== previewSeq.current) return; // 已过期，丢弃
       setPreview({ ...tpl, ...c });
     } catch (e) {
+      if (seq !== previewSeq.current) return;
       setPreview({ ...tpl, type: "error", content: "加载失败: " + e.message });
     }
     setPreviewLoading(false);
@@ -110,26 +121,22 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
       );
     }
 
-    // Word 文档
+    // Word - 用 DocxViewer 渲染
     if (preview.type === "word" || preview.ext === "docx" || preview.ext === "doc") {
       return (
         <div className="tpl-preview-body tpl-docx-preview">
-          <iframe
-            src={`/api/doc/${encodeURIComponent(preview.relPath)}/html`}
-            className="tpl-preview-iframe"
-            title={preview.title}
-            sandbox="allow-same-origin"
-          />
+          <DocxViewer name={preview.relPath} />
         </div>
       );
     }
 
-    // PDF
+    // PDF - 用 pdf.js 或 embed 渲染
     if (preview.type === "pdf" || preview.ext === "pdf") {
       return (
-        <div className="tpl-preview-body tpl-pdf-preview">
+        <div className="tpl-preview-body tpl-docx-preview">
           <iframe
-            src={`/api/doc/${encodeURIComponent(preview.relPath)}/raw`}
+            key={preview.relPath}
+            src={`/api/templates/files/${encodeURIComponent(preview.relPath)}`}
             className="tpl-preview-iframe"
             title={preview.title}
           />
@@ -137,29 +144,16 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
       );
     }
 
-    // PPT
-    if (preview.type === "ppt" || preview.ext === "pptx" || preview.ext === "ppt") {
+    // PPT / Excel - iframe 渲染
+    if (preview.type === "ppt" || preview.ext === "pptx" || preview.ext === "ppt" ||
+        preview.type === "xls" || preview.ext === "xlsx" || preview.ext === "xls") {
       return (
-        <div className="tpl-preview-body tpl-pptx-preview">
+        <div className="tpl-preview-body tpl-docx-preview">
           <iframe
-            src={`/api/doc/${encodeURIComponent(preview.relPath)}/html`}
+            key={preview.relPath}
+            src={`/api/templates/files/${encodeURIComponent(preview.relPath)}`}
             className="tpl-preview-iframe"
             title={preview.title}
-            sandbox="allow-same-origin"
-          />
-        </div>
-      );
-    }
-
-    // Excel - 用 officecli 渲染预览
-    if (preview.type === "xls" || preview.ext === "xlsx" || preview.ext === "xls") {
-      return (
-        <div className="tpl-preview-body tpl-xlsx-preview">
-          <iframe
-            src={`/api/doc/${encodeURIComponent(preview.relPath)}/html`}
-            className="tpl-preview-iframe"
-            title={preview.title}
-            sandbox="allow-same-origin"
           />
         </div>
       );
@@ -187,6 +181,17 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
         <button className="btn-sm" onClick={onExit}><Icon name="back" size={14} /> 返回</button>
         <span className="tpl-title">📋 模版库</span>
         <span className="tpl-count">{filtered.length} 个模版</span>
+        <div className="tpl-search">
+          <Icon name="search" size={12} />
+          <input
+            type="text"
+            className="tpl-search-input"
+            placeholder="搜索模板名称…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && <button className="tpl-search-clear" onClick={() => setSearch("")}>×</button>}
+        </div>
         <div className="tpl-sort">
           <label className="tpl-sort-label">排序：</label>
           <select className="tpl-sort-select" value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
@@ -225,7 +230,7 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
         {/* 中栏：模板网格/列表 */}
         <div className="tpl-center">
           {loading && <div className="tpl-loading">加载中…</div>}
-          {!loading && filtered.length === 0 && <div className="tpl-empty">该分类暂无模版</div>}
+          {!loading && filtered.length === 0 && <div className="tpl-empty">{search ? "无匹配结果" : "该分类暂无模版"}</div>}
           {viewMode === "grid" ? (
             <div className="tpl-grid">
               {filtered.map((t) => (

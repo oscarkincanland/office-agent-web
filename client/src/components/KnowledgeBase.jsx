@@ -20,14 +20,18 @@ import {
 export default function KnowledgeBase({ onExit, onAtMention }) {
   const [roots, setRoots] = useState([]);
   const [rootIdx, setRootIdx] = useState(0);
-  const [tree, setTree] = useState([]);
+  const [treeRoot, setTreeRoot] = useState(null); // 根级 {dirs, files}（懒加载）
+  const [treeCache, setTreeCache] = useState({}); // dirPath -> {dirs, files}
+  const [treeSort, setTreeSort] = useState("name"); // name | mtime
   const [view, setView] = useState("browse"); // browse | graph
   const [searchQ, setSearchQ] = useState("");
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState(null);
   const [graphData, setGraphData] = useState(null);
-  const [graphInc, setGraphInc] = useState(["links", "similar"]);
-  const [expanded, setExpanded] = useState({});
+  const [graphInc, setGraphInc] = useState(["links", "tags"]);
+  const [graphLocal, setGraphLocal] = useState(false); // 局部图谱（聚焦当前文档 1-hop）
+  const [expanded, setExpanded] = useState({}); // 持久化（localStorage）
+  const [backOpen, setBackOpen] = useState({}); // 反链展开上下文
   const [loading, setLoading] = useState(false);
 
   // Obsidian tabs: {relPath, rootIdx, title}
@@ -67,31 +71,120 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     })();
   }, []);
 
-  // 切换根目录 → 加载树
+  // 切换根目录 → 懒加载根级 + 恢复展开状态（seq 防快速切换竞态）
+  const loadSeqRef = useRef(0);
   const loadRoot = useCallback(async (idx) => {
+    const seq = ++loadSeqRef.current;
     setRootIdx(idx);
     setResults(null);
     setTabs([]);
     setActiveTab(null);
     setDocCache({});
+    setTreeRoot(null);
+    setTreeCache({});
+    setExpanded({});
     try {
       const t = await kbTree(idx);
-      setTree(t.tree || []);
+      if (seq !== loadSeqRef.current) return; // 已有更新的切换
+      setTreeRoot(t);
+      // 恢复展开状态（localStorage 持久化）
+      try {
+        const saved = JSON.parse(localStorage.getItem(`oaw_kb_expand_${idx}`) || "[]");
+        if (Array.isArray(saved) && saved.length > 0) {
+          const exp = {};
+          for (const d of saved) exp[d] = true;
+          setExpanded(exp);
+          // 重新懒加载已展开目录的子级
+          const c = {};
+          await Promise.all(saved.map(async (d) => {
+            try { c[d] = await kbTree(idx, d); } catch {}
+          }));
+          if (seq !== loadSeqRef.current) return;
+          setTreeCache(c);
+        }
+      } catch {}
     } catch {}
   }, []);
 
+  // 首次加载根 0（仅一次，避免 loadRoot 清空 treeRoot 时反复触发）
+  const initRef = useRef(false);
   useEffect(() => {
-    if (roots.length > 0 && tree.length === 0) loadRoot(0);
-  }, [roots, tree, loadRoot]);
+    if (roots.length > 0 && !initRef.current) {
+      initRef.current = true;
+      loadRoot(0);
+    }
+  }, [roots, loadRoot]);
+
+  // 懒加载指定目录子级
+  const loadLevel = useCallback(async (dirPath) => {
+    try {
+      const lvl = await kbTree(rootIdx, dirPath || "");
+      setTreeCache((prev) => ({ ...prev, [dirPath || ""]: lvl }));
+    } catch {}
+  }, [rootIdx]);
+
+  // 展开/收起目录（展开时懒加载，状态持久化）
+  const toggleDir = useCallback((dirPath) => {
+    const isOpen = !!expanded[dirPath];
+    setExpanded((prev) => {
+      const next = { ...prev, [dirPath]: !isOpen };
+      try {
+        localStorage.setItem(`oaw_kb_expand_${rootIdx}`, JSON.stringify(Object.keys(next).filter((k) => next[k])));
+      } catch {}
+      return next;
+    });
+    if (!isOpen) loadLevel(dirPath);
+  }, [expanded, rootIdx, loadLevel]);
+
+  // 打开文档时自动展开祖先链（对齐 siyuan selectItem）
+  const ensureVisible = useCallback(async (relPath) => {
+    const parts = relPath.split("/");
+    const dirs = parts.slice(0, -1);
+    if (dirs.length === 0) return;
+    const toOpen = {};
+    const c = {};
+    let cur = "";
+    for (const d of dirs) {
+      const next = cur ? `${cur}/${d}` : d;
+      try {
+        if (!(cur ? treeCache[cur] : treeRoot)) c[cur || ""] = await kbTree(rootIdx, cur || "");
+      } catch {}
+      toOpen[next] = true;
+      cur = next;
+    }
+    if (Object.keys(c).length > 0) setTreeCache((prev) => ({ ...prev, ...c }));
+    setExpanded((prev) => {
+      const next = { ...prev, ...toOpen };
+      try {
+        localStorage.setItem(`oaw_kb_expand_${rootIdx}`, JSON.stringify(Object.keys(next).filter((k) => next[k])));
+      } catch {}
+      return next;
+    });
+  }, [treeCache, treeRoot, rootIdx]);
+
+  // 面包屑导航：展开树到指定目录（复用 ensureVisible 祖先展开）
+  const onDirNavigate = useCallback((dirPath) => {
+    if (!dirPath) return;
+    ensureVisible(dirPath + "/x.md");
+  }, [ensureVisible]);
+
+  // 选中文档滚动定位（对齐 siyuan setCurrent）
+  useEffect(() => {
+    if (!activeTab) return;
+    const el = document.querySelector(".kb-tree-row.active");
+    el?.scrollIntoView?.({ block: "center" });
+  }, [activeTab]);
 
   // 打开文档（Obsidian tab 逻辑）
   const openDoc = useCallback(async (relPath, idx = rootIdx) => {
     const tabKey = relPath;
-    // 已在缓存中 → 直接切 tab
+    // 已在缓存中 → 直接切 tab（并确保树中可见）
     if (docCache[tabKey]) {
       setActiveTab(tabKey);
+      ensureVisible(relPath);
       return;
     }
+    ensureVisible(relPath);
     setLoading(true);
     try {
       const d = await kbDoc(relPath, idx);
@@ -104,7 +197,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
       setActiveTab(tabKey);
     } catch (e) { console.error(e); }
     setLoading(false);
-  }, [rootIdx, docCache]);
+  }, [rootIdx, docCache, ensureVisible]);
 
   // 关闭 tab
   const closeTab = useCallback((relPath) => {
@@ -147,10 +240,16 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     if (view === "graph" && !graphData) loadGraph();
   }, [view, graphData, loadGraph]);
 
-  // 图谱节点点击 → 打开 tab
+  // 图谱节点点击 → 文件打开 tab；tag 节点 → 搜索（对齐 siyuan 点击标签全局搜索）
   const handleGraphSelect = useCallback((node) => {
-    if (node?.relPath) openDoc(node.relPath, node.rootIdx);
-  }, [openDoc]);
+    if (!node) return;
+    if (node.type === "tag") {
+      const t = String(node.label || "").replace(/^#/, "");
+      if (t) doSearch(t);
+      return;
+    }
+    if (node.relPath) openDoc(node.relPath, node.rootIdx);
+  }, [openDoc, doSearch]);
 
   // @ 到对话：退出 kbMode → 延迟插入文本到 ChatPanel
   const handleAtMention = useCallback(() => {
@@ -158,7 +257,14 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     const marker = `@知识库[${currentDoc.relPath}@${rootName}]`;
     onExit?.(); // 退出知识库模式，回到办公模式（ChatPanel 挂载）
     setTimeout(() => onAtMention?.(marker), 120); // 等 ChatPanel 挂载后插入
-  }, [currentDoc, rootName, onAtMention, onExit]);
+  }, [currentDoc, rootName, onExit, onAtMention]);
+
+  // 文件树行 @ 到对话（对齐 siyuan 右键操作）
+  const onAtMentionFromDoc = useCallback((relPath) => {
+    const marker = `@知识库[${relPath}@${rootName}]`;
+    onExit?.();
+    setTimeout(() => onAtMention?.(marker), 120);
+  }, [rootName, onExit, onAtMention]);
 
   // 根目录管理
   const handleAddRoot = useCallback(async () => {
@@ -226,35 +332,54 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     window.addEventListener("mouseup", onUp);
   }, []);
 
-  // 渲染目录树
-  const renderTree = (nodes, depth = 0) => (
-    <ul className="kb-tree" style={{ paddingLeft: depth * 12 }}>
-      {nodes.map((n) =>
-        n.type === "dir" ? (
-          <li key={"d" + n.name + depth} className="kb-tree-item kb-tree-dir">
-            <div className="kb-tree-row" onClick={() => setExpanded((e) => ({ ...e, [n.name]: !e[n.name] }))}>
-              <span className="kb-tree-caret">{expanded[n.name] ? "▾" : "▸"}</span>
+  // 渲染目录树（懒加载：按 treeCache/treeRoot 分层渲染）
+  const sortLevel = useCallback((lvl) => {
+    const dirs = [...(lvl?.dirs || [])].sort((a, b) => a.name.localeCompare(b.name, "zh"));
+    const files = [...(lvl?.files || [])];
+    if (treeSort === "mtime") files.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+    else files.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+    return { dirs, files };
+  }, [treeSort]);
+
+  const renderLevel = (dirPath) => {
+    const lvl = dirPath ? treeCache[dirPath] : treeRoot;
+    if (!lvl) return null;
+    const { dirs, files } = sortLevel(lvl);
+    return (
+      <ul className="kb-tree" style={{ paddingLeft: dirPath ? 12 : 0 }}>
+        {dirs.map((d) => (
+          <li key={"d" + d.path} className="kb-tree-item kb-tree-dir">
+            <div className="kb-tree-row" onClick={() => toggleDir(d.path)} title={d.name}>
+              <span className="kb-tree-caret">{expanded[d.path] ? "▾" : "▸"}</span>
               <Icon name="folder" size={12} />
-              <span className="kb-tree-label">{n.name}</span>
+              <span className="kb-tree-label">{d.name}</span>
+              {d.subCount > 0 && <span className="kb-tree-count" title={`${d.subCount} 个子项`}>{d.subCount}</span>}
             </div>
-            {expanded[n.name] && renderTree(n.children || [], depth + 1)}
+            {expanded[d.path] && renderLevel(d.path)}
           </li>
-        ) : (
-          <li key={"f" + n.name + depth} className="kb-tree-item">
+        ))}
+        {files.map((f) => (
+          <li key={"f" + f.relPath} className="kb-tree-item">
             <div
-              className={"kb-tree-row" + (activeTab === n.relPath ? " active" : "")}
-              onClick={() => openDoc(n.relPath)}
-              title={n.relPath}
+              className={"kb-tree-row" + (activeTab === f.relPath ? " active" : "")}
+              onClick={() => openDoc(f.relPath)}
+              title={f.relPath}
             >
               <span className="kb-tree-caret" />
               <Icon name="md" size={12} />
-              <span className="kb-tree-label">{n.name}</span>
+              <span className="kb-tree-label">{f.name}</span>
+              {f.linkCount > 0 && <span className="kb-tree-count" title={`${f.linkCount} 条引用`}>{f.linkCount}</span>}
+              <span
+                className="kb-tree-at"
+                onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(f.relPath); }}
+                title="@ 到对话"
+              >@</span>
             </div>
           </li>
-        )
-      )}
-    </ul>
-  );
+        ))}
+      </ul>
+    );
+  };
 
   const doc = currentDoc;
 
@@ -335,15 +460,23 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
                       <li key={i} onClick={() => openDoc(r.relPath)} className={activeTab === r.relPath ? "active" : ""}>
                         <div className="kb-result-title">{r.title}</div>
                         <div className="kb-result-snippet">{r.snippet}</div>
-                        {r.tags.length > 0 && <div className="kb-result-tags">{r.tags.map((t) => <span key={t} className="tag">#{t}</span>)}</div>}
+                        {r.tags.length > 0 && <div className="kb-result-tags">{r.tags.map((t) => <span key={t} className="tag kb-tag-click" onClick={(e) => { e.stopPropagation(); doSearch(t); }}>#{t}</span>)}</div>}
                       </li>
                     ))}
                   </ul>
                 </>
               ) : (
                 <>
-                  <div className="kb-left-title">{rootName}{tree.length ? "" : "（空目录）"}</div>
-                  <div className="kb-tree-wrap">{renderTree(tree)}</div>
+                  <div className="kb-left-title">
+                    {rootName}{treeRoot ? "" : "（空目录）"}
+                    <span className="kb-tree-sort" title="排序">
+                      <select value={treeSort} onChange={(e) => setTreeSort(e.target.value)} onClick={(e) => e.stopPropagation()}>
+                        <option value="name">按名称</option>
+                        <option value="mtime">按修改时间</option>
+                      </select>
+                    </span>
+                  </div>
+                  <div className="kb-tree-wrap">{renderLevel("")}</div>
                 </>
               )}
             </div>
@@ -356,7 +489,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
                   <div className="kb-right-section">
                     <div className="kb-right-title">📄 {doc.title}</div>
                     <div className="kb-meta-path">{doc.rootIdx !== undefined ? roots[doc.rootIdx]?.name + " / " : ""}{doc.relPath}</div>
-                    {doc.tags.length > 0 && <div className="kb-doc-tags">{doc.tags.map((t) => <span key={t} className="tag">#{t}</span>)}</div>}
+                    {doc.tags.length > 0 && <div className="kb-doc-tags">{doc.tags.map((t) => <span key={t} className="tag kb-tag-click" onClick={() => { setSearchQ(t); doSearch(t); }}>#{t}</span>)}</div>}
                   </div>
                   <div className="kb-right-section">
                     <div className="kb-right-title">标题结构</div>
@@ -387,7 +520,25 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
             {!doc && !loading && <div className="kb-empty">← 从左侧选择一篇文档，或在图谱中点击节点</div>}
             {doc && !loading && (
               <div className="kb-doc-body">
-                <MarkdownBody>{doc.content}</MarkdownBody>
+                {/* 标题栏 + 面包屑（对齐 siyuan Title + Breadcrumb） */}
+                <div className="kb-doc-titlebar">
+                  <h2 className="kb-doc-title">{doc.title}</h2>
+                  <div className="kb-doc-breadcrumb">
+                    <span className="kb-crumb" onClick={() => onDirNavigate("")} title={rootName}>{rootName}</span>
+                    {doc.relPath.split("/").slice(0, -1).map((d, i, arr) => {
+                      const dirPath = arr.slice(0, i + 1).join("/");
+                      return (
+                        <span key={dirPath}>
+                          <span className="kb-crumb-sep">/</span>
+                          <span className="kb-crumb" onClick={() => onDirNavigate(dirPath)}>{d}</span>
+                        </span>
+                      );
+                    })}
+                    <span className="kb-crumb-sep">/</span>
+                    <span className="kb-crumb-current">{doc.relPath.split("/").pop()}</span>
+                  </div>
+                </div>
+                <MarkdownBody onTagClick={(t) => { setSearchQ(t); doSearch(t); }}>{doc.content}</MarkdownBody>
               </div>
             )}
           </div>
@@ -414,10 +565,43 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
                 <div className="kb-right-section">
                   <div className="kb-right-title">反向链接（{doc.backlinks.length}）</div>
                   {doc.backlinks.length === 0 && <div className="kb-meta-muted">暂无引用</div>}
-                  <ul className="kb-links">
+                  <ul className="kb-links kb-backlinks">
                     {doc.backlinks.map((b, i) => (
-                      <li key={i} onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.relPath}>
-                        <Icon name="backlink" size={11} /> {b.title}
+                      <li key={i} className={backOpen[b.relPath] ? "open" : ""}>
+                        <div className="kb-backlink-title" onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.relPath}>
+                          <Icon name="backlink" size={11} /> {b.title}
+                        </div>
+                        {b.snippet && (
+                          <div
+                            className="kb-backlink-snippet"
+                            onClick={(e) => { e.stopPropagation(); setBackOpen((o) => ({ ...o, [b.relPath]: !o[b.relPath] })); }}
+                            title={backOpen[b.relPath] ? "收起" : "展开引用上下文"}
+                          >
+                            {backOpen[b.relPath] ? b.snippet : (b.snippet.length > 40 ? b.snippet.slice(0, 40) + "…" : b.snippet)}
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="kb-right-section">
+                  <div className="kb-right-title">提及（{doc.mentions?.length || 0}）</div>
+                  {(doc.mentions?.length || 0) === 0 && <div className="kb-meta-muted">正文出现但未建链接</div>}
+                  <ul className="kb-links kb-backlinks">
+                    {(doc.mentions || []).map((m, i) => (
+                      <li key={i} className={backOpen["m" + m.relPath] ? "open" : ""}>
+                        <div className="kb-backlink-title" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.relPath}>
+                          <Icon name="file" size={11} /> {m.title}
+                        </div>
+                        {m.snippet && (
+                          <div
+                            className="kb-backlink-snippet"
+                            onClick={(e) => { e.stopPropagation(); setBackOpen((o) => ({ ...o, ["m" + m.relPath]: !o["m" + m.relPath] })); }}
+                            title={backOpen["m" + m.relPath] ? "收起" : "展开提及上下文"}
+                          >
+                            {backOpen["m" + m.relPath] ? m.snippet : (m.snippet.length > 40 ? m.snippet.slice(0, 40) + "…" : m.snippet)}
+                          </div>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -440,10 +624,16 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               </label>
             ))}
             <button className="btn-sm" onClick={loadGraph} disabled={loading}>重新布局</button>
+            <button
+              className={"btn-sm" + (graphLocal && doc ? " active" : "")}
+              onClick={() => setGraphLocal((v) => !v)}
+              disabled={!doc}
+              title={graphLocal ? "退出局部图谱，显示全图" : "仅显示当前文档的直接关联（1-hop 局部图）"}
+            >{graphLocal ? "全图" : "局部图谱"}</button>
             <span className="kb-graph-meta">{graphData?.meta?.total ? `${graphData.meta.total} 篇文档` : ""}{graphData?.meta?.capped ? "（已截断）" : ""}</span>
           </div>
           {graphData ? (
-            <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
+            <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} focusId={graphLocal && doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
           ) : (
             <div className="kb-loading">图谱加载中…</div>
           )}

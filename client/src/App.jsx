@@ -7,9 +7,12 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import MapViewer from "./components/MapViewer.jsx";
+import MapPanel from "./components/MapPanel.jsx";
 import Icon from "./components/Icon.jsx";
 import { useTheme } from "./theme.jsx";
-import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
+import { loadUIState, saveUIState } from "./persist-ui.js";
+import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, mapProject } from "./api.js";
 
 // 全局错误边界
 class AppErrorBoundary extends React.Component {
@@ -59,6 +62,10 @@ export default function App() {
   const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
   const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
+  const [mapMode, setMapMode] = useState(false); // 地图可视化模式
+  const mapRef = useRef(null); // MapViewer 命令句柄
+  const [mapProjectName, setMapProjectName] = useState("zhejiang-map");
+  const [mapConfig, setMapConfig] = useState(null); // 地图项目配置（供 MapViewer/MapPanel）
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -66,7 +73,10 @@ export default function App() {
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
+  const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
+  const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
+  const sessionsRef = useRef([]);
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const { theme, toggleTheme } = useTheme();
 
@@ -82,6 +92,7 @@ export default function App() {
     setTabs([]);
     setActiveTab(null);
     setCurrentDir("");
+    setCurrentSessionId(null);
   }, []);
 
   const refreshFiles = useCallback(async (dir) => {
@@ -163,6 +174,7 @@ export default function App() {
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
+    setCurrentSessionId(session.id);
     try {
       const d = await getSession(session.id);
       const msgs = (d.entries || [])
@@ -219,15 +231,41 @@ export default function App() {
     } catch (e) { alert("加载会话失败: " + e.message); }
   }, [open]);
 
+  // 地图模式下：agent 改动地图文件后热更新
+  const handleMapChanged = useCallback(() => {
+    setTimeout(() => {
+      mapRef.current?.reloadStyle?.();
+      refreshFiles();
+    }, 300);
+  }, [refreshFiles]);
+
+  // 进入地图模式时加载项目配置（顶栏标题/初始中心）
+  useEffect(() => {
+    if (!mapMode) return;
+    let alive = true;
+    (async () => {
+      try {
+        const d = await mapProject(mapProjectName);
+        if (alive) setMapConfig(d.config);
+      } catch {}
+    })();
+    return () => { alive = false; };
+  }, [mapMode, mapProjectName]);
+
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
+    if (mapMode) {
+      const mapFiles = (changed || []).some((f) => f.includes("maps") || f.endsWith(".geojson") || f === "style.json");
+      if (mapFiles) handleMapChanged();
+      return;
+    }
     if (activeTab && changed.includes(activeTab)) {
       // 添加延迟避免与 agent_end 竞态
       setTimeout(() => {
         open(activeTab);
       }, 100);
     }
-  }, [activeTab, refreshFiles, open]);
+  }, [activeTab, refreshFiles, open, mapMode, handleMapChanged]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -236,6 +274,67 @@ export default function App() {
       refreshSessions();
     }, 200);
   }, [refreshSessions]);
+
+  // ===== 界面状态固化（localStorage）=====
+  const [uiRestored, setUiRestored] = useState(false); // 恢复是否完成（完成后才允许保存）
+  const restoredSessionRef = useRef(false); // 会话恢复只执行一次
+
+  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 模式/侧栏/子目录
+  useEffect(() => {
+    if (uiRestored) return;
+    if (!currentWorkspace) return; // 等待工作区列表就绪
+    const saved = loadUIState();
+    if (!saved) { setUiRestored(true); return; }
+    (async () => {
+      try {
+        if (saved.workspace && saved.workspace !== currentWorkspace) {
+          await switchWorkspace(saved.workspace);
+        }
+      } catch {}
+      for (const t of saved.tabs || []) {
+        if (!t?.name) continue;
+        try { await open(t.name); } catch {}
+      }
+      if (saved.activeTab) setActiveTab(saved.activeTab);
+      if (saved.currentDir) {
+        setCurrentDir(saved.currentDir);
+        refreshFiles(saved.currentDir);
+      }
+      if (saved.mapMode) setMapMode(true);
+      else if (saved.kbMode) setKbMode(true);
+      else if (saved.tplMode) setTplMode(true);
+      setSidebarOpen(saved.sidebarOpen !== false);
+      setUiRestored(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWorkspace]);
+
+  // 恢复最后会话（sessions 就绪后执行一次）
+  useEffect(() => {
+    sessionsRef.current = sessions;
+    if (!uiRestored || restoredSessionRef.current) return;
+    restoredSessionRef.current = true;
+    const saved = loadUIState();
+    if (!saved?.lastSessionId) return;
+    const sess = sessions.find((x) => x.id === saved.lastSessionId);
+    if (sess) handleSelectSession(sess);
+  }, [sessions, uiRestored, handleSelectSession]);
+
+  // 保存：界面状态变化时写入 localStorage
+  useEffect(() => {
+    if (!uiRestored) return;
+    saveUIState({
+      tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
+      activeTab,
+      kbMode,
+      tplMode,
+      mapMode,
+      workspace: currentWorkspace,
+      currentDir,
+      sidebarOpen,
+      lastSessionId: currentSessionId,
+    });
+  }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
   return (
     <AppErrorBoundary>
@@ -252,7 +351,52 @@ export default function App() {
             onOpenFile={open}
           />
         )}
-        {!kbMode && !tplMode && (
+        {mapMode && (
+          <div className="app map-mode-root">
+            <MapPanel
+              project={mapProjectName}
+              mapRef={mapRef}
+              onFilesChanged={() => {}}
+            />
+            <Resizer side="left" min={200} max={430} cssVar="--map-sidebar-w" />
+            <div className="map-center">
+              <div className="topbar">
+                <button className="btn-sm" onClick={() => setMapMode(false)} title="返回办公模式">
+                  <Icon name="back" size={14} />
+                </button>
+                <span className="topbar-title">地图可视化 · {mapConfig?.name || "浙江省交通地图"}</span>
+                <button className="btn-sm" onClick={() => setMapMode(false)} title="返回办公模式">退出地图</button>
+                <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+                  <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
+                </button>
+                <span className="topbar-badge">MapLibre GL</span>
+              </div>
+              <MapViewer
+                ref={mapRef}
+                project={mapProjectName}
+                config={mapConfig}
+                onConfigChange={setMapConfig}
+                onLayerTilesChanged={() => {}}
+              />
+            </div>
+            <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
+            <ChatPanel
+              ref={chatInputRef}
+              clientId={clientId}
+              onFileChanged={handleFileChanged}
+              currentDoc={`地图:${mapProjectName}`}
+              models={models}
+              defaultModel={defaultModel}
+              onAgentEnd={handleAgentEnd}
+              historyMessages={historyMessages}
+              onNewSession={handleNewSession}
+              onOpenFile={open}
+              sessions={sessions}
+              onSelectSession={handleSelectSession}
+            />
+          </div>
+        )}
+        {!kbMode && !tplMode && !mapMode && (
         <>
         {sidebarOpen && (
           <>
@@ -294,6 +438,7 @@ export default function App() {
             <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
             <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
             <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
+            <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图可视化（MapLibre）"><Icon name="map" size={14} /> 地图</button>
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer

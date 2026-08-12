@@ -198,6 +198,20 @@ app.post("/api/templates/refresh", (_req, res) => {
   res.json({ ok: true, total: tpl.getTemplates().length });
 });
 
+// 模板文件下载路由
+const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
+app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
+  const relPath = req.params[0]; // 正则捕获组
+  if (!relPath || relPath.includes("..") || relPath.startsWith("/") || /^[A-Z]:/i.test(relPath)) {
+    return res.status(400).json({ error: "invalid path" });
+  }
+  const abs = path.join(TPL_ROOT, relPath);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  res.sendFile(abs);
+});
+
 app.get("/api/files", (req, res) => {
   const dir = req.query.dir || "";
   // 只允许相对路径，防止越界
@@ -231,7 +245,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
   try {
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
@@ -1110,6 +1124,88 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---------- 地图项目（MapLibre 可视化） ----------
+import * as mapSvc from "./map.mjs";
+
+// 静态资源：/api/map/data/{project}/style.json|tiles/...|layers/...
+app.use("/api/map/data", express.static(mapSvc.STATIC_ROOT, { fallthrough: true, maxAge: 0 }));
+
+// 项目列表
+app.get("/api/map/projects", (_req, res) => {
+  res.json({ projects: mapSvc.listProjects() });
+});
+
+// 项目详情（config + style + 图层文件清单）
+app.get("/api/map/project/:name", (req, res) => {
+  const p = mapSvc.getProject(req.params.name);
+  if (!p) return res.status(404).json({ error: "project not found" });
+  res.json(p);
+});
+
+// 保存样式（agent/前端可写回 style.json）
+app.post("/api/map/project/:name/style", (req, res) => {
+  const ok = mapSvc.saveStyle(req.params.name, req.body?.style);
+  if (!ok) return res.status(400).json({ error: "invalid style" });
+  res.json({ ok: true });
+});
+
+// 保存配置（图层显隐/顺序/中心点）
+app.post("/api/map/project/:name/config", (req, res) => {
+  const ok = mapSvc.saveConfig(req.params.name, req.body?.config);
+  if (!ok) return res.status(400).json({ error: "invalid config" });
+  res.json({ ok: true });
+});
+
+// 导入矢量图层（body: { layerId, geojson }）→ 存 layers/ + 重建瓦片
+app.post("/api/map/project/:name/import", async (req, res) => {
+  const { layerId, geojson } = req.body || {};
+  if (!layerId || !geojson) return res.status(400).json({ error: "layerId and geojson required" });
+  try {
+    const r = await mapSvc.importLayer(req.params.name, layerId, geojson);
+    if (!r) return res.status(400).json({ error: "import failed" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 重建全部瓦片
+app.post("/api/map/project/:name/rebuild-tiles", (req, res) => {
+  try {
+    const r = mapSvc.rebuildTiles(req.params.name);
+    res.json({ ok: true, results: r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取图层 GeoJSON（属性表/要素定位）
+app.get("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const g = mapSvc.getLayer(req.params.name, req.params.layerId);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+// 删除图层（数据 + 瓦片 + style + config）
+app.delete("/api/map/project/:name/layer/:layerId", (req, res) => {
+  try {
+    const r = mapSvc.deleteLayer(req.params.name, req.params.layerId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 等时圈分析（高德 Web 服务，需 AMAP_KEY）
+app.post("/api/map/project/:name/isochrone", async (req, res) => {
+  try {
+    const r = await mapSvc.isochrone(req.body || {});
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {
@@ -1118,8 +1214,30 @@ if (fs.existsSync(path.join(dist, "index.html"))) {
 }
 
 // ---------- helpers for file change detection ----------
+function walkSnapshot(dir, root) {
+  const out = [];
+  let items = [];
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of items) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      out.push(...walkSnapshot(p, root));
+    } else {
+      try {
+        const st = fs.statSync(p);
+        out.push(`${path.relative(root, p)}|${st.mtimeMs}|${st.size}`);
+      } catch {}
+    }
+  }
+  return out;
+}
 function snapshotWorkspace() {
-  return listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
+  const top = listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
+  // 地图项目位于工作区子目录，递归快照以便检测 layers/tiles/style 变化
+  const mapRoot = path.join(WORKSPACE_DIR, "maps");
+  const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, WORKSPACE_DIR) : [];
+  return [...top, ...maps];
 }
 function diffWorkspace(before, after) {
   const b = new Set(before);

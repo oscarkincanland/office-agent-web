@@ -68,6 +68,24 @@ export const tplList = (category) => api(`/api/templates${category ? `?category=
 export const tplContent = (relPath) => api(`/api/templates/content?path=${encodeURIComponent(relPath)}`);
 export const tplRefresh = () => api("/api/templates/refresh", { method: "POST" });
 
+// ---------- 地图（MapLibre 可视化） ----------
+export const mapProjects = () => api("/api/map/projects");
+export const mapProject = (name) => api(`/api/map/project/${encodeURIComponent(name)}`);
+export const mapSaveStyle = (name, style) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/style`, { method: "POST", body: JSON.stringify({ style }) });
+export const mapSaveConfig = (name, config) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/config`, { method: "POST", body: JSON.stringify({ config }) });
+export const mapImportLayer = (name, layerId, geojson) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/import`, { method: "POST", body: JSON.stringify({ layerId, geojson }) });
+export const mapRebuildTiles = (name) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/rebuild-tiles`, { method: "POST" });
+export const mapGetLayer = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`);
+export const mapDeleteLayer = (name, layerId) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "DELETE" });
+export const mapIsochrone = (name, params) =>
+  api(`/api/map/project/${encodeURIComponent(name)}/isochrone`, { method: "POST", body: JSON.stringify(params) });
+
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
