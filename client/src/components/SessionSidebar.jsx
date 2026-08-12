@@ -32,6 +32,12 @@ function formatTime(iso) {
   return `${days}天前`;
 }
 
+// 产物面板：接收毫秒时间戳
+function formatRelTime(ms) {
+  if (!ms) return "";
+  return formatTime(new Date(ms).toISOString());
+}
+
 function shortenCwd(cwd) {
   if (!cwd) return "";
   const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
