@@ -565,9 +565,9 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             });
           }} />)}
           <div ref={bottomRef} />
-          {/* 会话消息目录栏：悬停展开，点击定位到消息 */}
-          <ChatTimeline messages={messages} containerRef={bodyRef} />
         </div>
+        {/* 会话消息目录栏：固定于聊天面板左侧（不随消息滚动），悬停展开 */}
+        <ChatTimeline messages={messages} containerRef={bodyRef} />
 
         {images.length > 0 && !modelVision && (
           <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
@@ -718,9 +718,6 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
   const streaming = m.status === "streaming";
   // 相邻同角色消息精简头部（连续 AI 回复/连续用户消息不再重复显示作者与时间）
   const hideHeader = prevRole === m.role;
-  // 过程分组（Proma ProcessBlockGroup）：thinking/tool 归入"执行过程"，text 为最终回复
-  const processBlocks = blocks.filter((b) => b.type === "thinking" || b.type === "tool");
-  const textBlocks = blocks.filter((b) => b.type === "text");
   const hasContent = blocks.length > 0 || m.images?.length > 0;
   const [copied, setCopied] = useState(false);
   const [waitSec, setWaitSec] = useState(0);
@@ -728,7 +725,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
   // 从文本块解析任务清单（- [ ] / - [x]）
   const planTasks = useMemo(() => {
     const tasks = [];
-    for (const b of textBlocks) {
+    for (const b of blocks) {
       if (!b.text) continue;
       const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
       let match;
@@ -737,7 +734,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
       }
     }
     return tasks;
-  }, [textBlocks]);
+  }, [blocks]);
 
   // 等待首个内容块：显示"正在思考..." + 耗时计时
   useEffect(() => {
@@ -786,22 +783,19 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
           <>
             {/* 任务进度卡（Proma TaskProgressCard：聚合 - [x] 任务 + 进度条） */}
             {planTasks.length > 0 && <TaskProgressCard tasks={planTasks} />}
-            {/* 执行过程分组（Proma ProcessBlockGroup：流式展开 → 结束后 3s 自动收起） */}
-            {processBlocks.length > 0 && (
-              <ProcessBlockGroup streaming={streaming}>
-                {processBlocks.map((b, i) => {
-                  if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
-                  if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
-                  return null;
-                })}
-              </ProcessBlockGroup>
-            )}
-            {/* 最终回复（文本块） */}
-            {textBlocks.map((b, i) => (
-              <div className="bubble markdown-bubble" key={i}>
-                <SafeMarkdown text={b.text} />
-              </div>
-            ))}
+            {/* 独立条目流（pi-web BlockView 模型）：思考/工具调用/文本按原始顺序各自成条目，不包裹分组框 */}
+            <div className="msg-blocks">
+              {blocks.map((b, i) => {
+                if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
+                if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
+                if (b.type === "text") return (
+                  <div className="flow-markdown" key={i}>
+                    <SafeMarkdown text={b.text} />
+                  </div>
+                );
+                return null;
+              })}
+            </div>
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
               <div className="bubble loading-bubble">
@@ -871,45 +865,6 @@ function ThinkingBlock({ text, startTime, streaming }) {
         {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
       </div>
       {expanded && <div className="thinking-text">{text}</div>}
-    </div>
-  );
-}
-
-// ========== 执行过程分组（Proma ProcessBlockGroup：流式展开 → 结束 3s 自动收起） ==========
-function ProcessBlockGroup({ streaming, children }) {
-  const [open, setOpen] = useState(true);
-  const manualRef = useRef(false);
-
-  useEffect(() => {
-    if (streaming) {
-      setOpen(true);
-      return;
-    }
-    const t = setTimeout(() => {
-      if (!manualRef.current) setOpen(false);
-    }, 3000);
-    return () => clearTimeout(t);
-  }, [streaming]);
-
-  const toolCount = React.Children.toArray(children).filter((c) => c?.props?.tool).length;
-
-  return (
-    <div className={`process-group ${open ? "open" : ""}`}>
-      <div
-        className="process-head"
-        onClick={() => {
-          manualRef.current = true;
-          setOpen((v) => !v);
-        }}
-      >
-        <span className="process-chevron">{open ? "▾" : "▸"}</span>
-        <Icon name="list" size={11} />
-        <span className="process-title">执行过程</span>
-        {streaming && <span className="process-spinner"><Icon name="loading" size={11} className="icon-loading" /></span>}
-        {toolCount > 0 && <span className="process-meta">{toolCount} 次工具调用</span>}
-        {toolCount === 0 && <span className="process-meta">思考中</span>}
-      </div>
-      {open && <div className="process-body">{children}</div>}
     </div>
   );
 }
