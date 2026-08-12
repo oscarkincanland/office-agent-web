@@ -5,11 +5,13 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { agentManager } from "./agent.mjs";
+import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
+import * as map from "./map.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -120,7 +122,7 @@ async function readWorkbook(file) {
 
 // ---------- REST ----------
 app.get("/api/status", (_req, res) => {
-  res.json({ ok: true, officecli: path.basename(OFFICECLI) });
+  res.json({ ok: true, officecli: path.basename(OFFICECLI), version: pkg.version });
 });
 
 // ---------- 知识库（本地索引 + IMA 云端） ----------
@@ -145,7 +147,8 @@ app.delete("/api/kb/roots", async (req, res) => {
 app.get("/api/kb/tree", async (req, res) => {
   await kb.scan();
   const rootIdx = parseInt(req.query.root, 10);
-  res.json({ tree: kb.getTree(isNaN(rootIdx) ? 0 : rootIdx) });
+  const dir = req.query.dir || "";
+  res.json(kb.getTreeLevel(isNaN(rootIdx) ? 0 : rootIdx, dir));
 });
 
 app.get("/api/kb/search", async (req, res) => {
@@ -198,6 +201,37 @@ app.post("/api/templates/refresh", (_req, res) => {
   res.json({ ok: true, total: tpl.getTemplates().length });
 });
 
+// 红头会议通知生成（docx 库生成 → 写工作区）
+app.post("/api/templates/generate-notice", async (req, res) => {
+  try {
+    const { generateNotice } = await import("./notice.mjs");
+    const r = await generateNotice(req.body || {});
+    res.json({ ok: true, name: r.name });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// 模板文件流（HTML 首页 iframe 渲染；相对资源基于 templates/ 解析）
+app.get(/^\/api\/templates\/file\/(.+)$/, (req, res) => {
+  const raw = decodeURIComponent(req.params[0]);
+  // 兼容绝对路径 relPath（tpl 扫描结果）：截取 templates/ 之后的部分
+  const marker = "templates/";
+  const idx = raw.indexOf(marker);
+  const relPath = idx >= 0 ? raw.slice(idx) : raw;
+  if (!relPath || relPath.includes("..") || relPath.startsWith("/")) {
+    return res.status(400).json({ error: "invalid path" });
+  }
+  const abs = path.join(PROJECT_DIR, relPath);
+  if (!abs.startsWith(path.join(PROJECT_DIR, "templates")) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".json": "application/json" }[ext] || "application/octet-stream";
+  res.setHeader("Content-Type", mime);
+  res.sendFile(abs);
+});
+
 // 模板文件下载路由
 const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
 app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
@@ -210,6 +244,73 @@ app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
     return res.status(404).json({ error: "file not found" });
   }
   res.sendFile(abs);
+});
+
+// ---------- 地图（GIS 项目：浙江交通地图） ----------
+// 静态文件（style.json / 矢量瓦片 / 图层数据）
+app.use("/api/map/data", express.static(map.STATIC_ROOT));
+
+app.get("/api/map/projects", (_req, res) => {
+  res.json({ projects: map.listProjects() });
+});
+
+app.get("/api/map/project", (req, res) => {
+  const p = map.getProject(req.query.name || map.DEFAULT_PROJECT);
+  if (!p) return res.status(404).json({ error: "project not found" });
+  res.json(p);
+});
+
+app.post("/api/map/style", (req, res) => {
+  const { name, style } = req.body || {};
+  const r = map.saveStyle(name || map.DEFAULT_PROJECT, style);
+  if (!r) return res.status(400).json({ error: "invalid style" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/config", (req, res) => {
+  const { name, config } = req.body || {};
+  const r = map.saveConfig(name || map.DEFAULT_PROJECT, config);
+  if (!r) return res.status(400).json({ error: "invalid config" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/import", async (req, res) => {
+  const { name, layerId, geojson } = req.body || {};
+  if (!geojson) return res.status(400).json({ error: "geojson required" });
+  try {
+    const r = await map.importLayer(name || map.DEFAULT_PROJECT, layerId, geojson);
+    if (!r) return res.status(400).json({ error: "import failed" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/map/rebuild", (req, res) => {
+  const { name, layerIds } = req.body || {};
+  const r = map.rebuildTiles(name || map.DEFAULT_PROJECT, Array.isArray(layerIds) ? layerIds : null);
+  if (!r) return res.status(400).json({ error: "rebuild failed" });
+  res.json({ ok: true, layers: r });
+});
+
+app.post("/api/map/layer/delete", (req, res) => {
+  const { name, layerId } = req.body || {};
+  const r = map.deleteLayer(name || map.DEFAULT_PROJECT, layerId);
+  res.json(r);
+});
+
+app.get("/api/map/layer", (req, res) => {
+  const g = map.getLayer(req.query.name || map.DEFAULT_PROJECT, req.query.layer);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+app.post("/api/map/isochrone", async (req, res) => {
+  const { location, mode, range, rangeType } = req.body || {};
+  if (!location) return res.status(400).json({ error: "location required (lng,lat)" });
+  const r = await map.isochrone({ location, mode, range, rangeType });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, center: r.center, cost: r.cost, polygons: r.polygons });
 });
 
 app.get("/api/files", (req, res) => {
@@ -511,6 +612,37 @@ app.post("/api/agent/model", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---------- agent API Key（模型登录/密钥配置，auth.json） ----------
+function maskKey(key) {
+  const k = String(key || "");
+  return k.length <= 8 ? "****" : k.slice(0, 3) + "****" + k.slice(-4);
+}
+
+app.get("/api/agent/auth", (_req, res) => {
+  const auth = listAuth();
+  res.json({
+    providers: Object.fromEntries(
+      Object.entries(auth).map(([p, v]) => [p, { type: v.type, masked: maskKey(v.key), set: true }])
+    ),
+  });
+});
+
+app.post("/api/agent/auth", async (req, res) => {
+  const { provider, key } = req.body || {};
+  if (!provider || !key) return res.status(400).json({ error: "provider and key required" });
+  try {
+    res.json(await setApiKey(provider, key));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/agent/auth/remove", async (req, res) => {
+  const { provider } = req.body || {};
+  if (!provider) return res.status(400).json({ error: "provider required" });
+  res.json(await removeApiKey(provider));
 });
 
 // ---------- sessions ----------

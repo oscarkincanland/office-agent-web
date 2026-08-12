@@ -120,7 +120,8 @@ class AgentManager extends EventEmitter {
               "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
-              "- **地图项目（maps）**: 地图可视化项目位于 `" + WORKSPACE_DIR + "\\maps\\zhejiang-map\\`。结构：`map.config.json`（项目配置）、`style.json`（MapLibre 样式，改这里可改地图样式）、`layers/*.geojson`（图层数据）、`tiles/`（矢量瓦片，由脚本生成，勿手改）。用户在地图页面与您对话时，改图操作 = 修改 `style.json`（图层颜色/线宽/显隐）或 `layers/*.geojson`（数据），文件保存后浏览器会自动热更新。若改了图层数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图（GIS）**: 地图项目位于 `" + WORKSPACE_DIR + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到工作区 `" + WORKSPACE_DIR + "`。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 工作区记忆（AGENTS.md + memory/）——每次对话前读取，保持简短
@@ -214,7 +215,7 @@ class AgentManager extends EventEmitter {
       },
     });
 
-    // ---- 地图工具（map_read / map_edit / map_import，移植自 v0.7.5） ----
+    // ---- 地图（GIS）工具 ----
     const mapReadTool = defineTool({
       name: "map_read",
       label: "地图读取",
@@ -613,6 +614,41 @@ class AgentManager extends EventEmitter {
 }
 
 /** Minimal arg parser: splits on whitespace, supports double-quoted segments. */
+// ===== API Key 管理（auth.json，pi 原生格式） =====
+function authFilePath() {
+  return path.join(AGENT_DIR, "auth.json");
+}
+
+/** 读取全部 provider key（掩码展示用） */
+export function listAuth() {
+  try {
+    return JSON.parse(fs.readFileSync(authFilePath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** 保存/更新 provider 的 API Key（写 auth.json + 运行时注入） */
+export async function setApiKey(provider, key) {
+  const auth = listAuth();
+  auth[provider] = { type: "api_key", key: String(key).trim() };
+  fs.mkdirSync(AGENT_DIR, { recursive: true });
+  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  try {
+    const mr = await agentManager.modelRuntime();
+    await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
+  } catch { /* 运行时注入失败不阻断保存 */ }
+  return { ok: true, providers: Object.keys(auth) };
+}
+
+/** 删除 provider 的 API Key */
+export async function removeApiKey(provider) {
+  const auth = listAuth();
+  if (auth[provider]) delete auth[provider];
+  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  return { ok: true, providers: Object.keys(auth) };
+}
+
 function emitChannelSafe(entry, type, data) {
   try {
     const id = ++entry.channel.seq;

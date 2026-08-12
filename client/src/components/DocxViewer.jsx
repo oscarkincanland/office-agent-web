@@ -45,14 +45,37 @@ export default function DocxViewer({ name }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [showComments, setShowComments] = useState(false);
-  const [showChanges, setShowChanges] = useState(false);
+  const [showComments, setShowComments] = useState(true);
+  const [showChanges, setShowChanges] = useState(true); // 修订模式默认开启
   const [renderKey, setRenderKey] = useState(0);
   const [mode, setMode] = useState("preview"); // "preview" | "edit"
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [outline, setOutline] = useState([]);
+  const [outlineW, setOutlineW] = useState(220); // 目录宽度（可拖拽）
+  const outlineDragRef = useRef(null);
+
+  // 目录宽度拖拽（可缩放导航栏）
+  const startOutlineDrag = (e) => {
+    e.preventDefault();
+    outlineDragRef.current = { startX: e.clientX, startW: outlineW };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const next = Math.min(380, Math.max(160, outlineDragRef.current.startW + (ev.clientX - outlineDragRef.current.startX)));
+      setOutlineW(next);
+    };
+    const onUp = () => {
+      outlineDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   const [dirty, setDirty] = useState(false);
   const [comments, setComments] = useState([]);
   const [activeComment, setActiveComment] = useState(null);
@@ -75,9 +98,9 @@ export default function DocxViewer({ name }) {
         inWrapper: true,
         breakPages: true,
         ignoreLastRenderedPageBreak: true,
-        renderComments: true, // 强制启用批注
-        renderChanges: true, // 强制启用修订
-        useBase64URL: true,
+        renderComments: showComments, // 批注显示跟随工具栏开关
+        renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
+        useBase64URL: false,          // 图片用 Blob URL（useBase64URL 的 FileReader 异步链路在部分文档下 src 落空）
       });
       buildOutline(host);
       setDirty(false);
@@ -105,17 +128,17 @@ export default function DocxViewer({ name }) {
   // 提取标题大纲（从渲染 DOM：Heading 类 + 加粗大字号段落启发式）
   const buildOutline = (host) => {
     const items = [];
-    // 1) 标准 Heading 类 / h1-h6
-    const headingEls = host.querySelectorAll("section.oaw-docx [class*=Heading], section.oaw-docx h1, section.oaw-docx h2, section.oaw-docx h3, section.oaw-docx h4, section.oaw-docx h5, section.oaw-docx h6");
+    // 1) 标准 Heading 类 / h1-h6（docx-preview 实际生成 oaw-docx_heading1 小写类名）
+    const headingEls = host.querySelectorAll("section.oaw-docx [class*=heading], section.oaw-docx h1, section.oaw-docx h2, section.oaw-docx h3, section.oaw-docx h4, section.oaw-docx h5, section.oaw-docx h6");
     headingEls.forEach((el) => {
       const cls = el.className || "";
       let level = 3;
-      if (/Heading1/.test(cls) || el.tagName === "H1") level = 1;
-      else if (/Heading2/.test(cls) || el.tagName === "H2") level = 2;
-      else if (/Heading3/.test(cls) || el.tagName === "H3") level = 3;
-      else if (/Heading4/.test(cls) || el.tagName === "H4") level = 4;
-      else if (/Heading5/.test(cls) || el.tagName === "H5") level = 5;
-      else if (/Heading6/.test(cls) || el.tagName === "H6") level = 6;
+      if (/heading1/i.test(cls) || el.tagName === "H1") level = 1;
+      else if (/heading2/i.test(cls) || el.tagName === "H2") level = 2;
+      else if (/heading3/i.test(cls) || el.tagName === "H3") level = 3;
+      else if (/heading4/i.test(cls) || el.tagName === "H4") level = 4;
+      else if (/heading5/i.test(cls) || el.tagName === "H5") level = 5;
+      else if (/heading6/i.test(cls) || el.tagName === "H6") level = 6;
       const text = el.textContent.trim();
       if (text) items.push({ level, text: text.slice(0, 100), el });
     });
@@ -456,7 +479,7 @@ export default function DocxViewer({ name }) {
 
       <div className="oaw-docx-body">
         {outlineOpen && outline.length > 0 && (
-          <div className="oaw-docx-outline">
+          <div className="oaw-docx-outline" style={{ width: outlineW, minWidth: outlineW, maxWidth: outlineW }}>
             <div className="oaw-docx-outline-head">
               <span><Icon name="list" size={11} /> 目录</span>
               <button className="btn-xs" onClick={() => setOutlineOpen(false)}>×</button>
@@ -474,6 +497,7 @@ export default function DocxViewer({ name }) {
                 </div>
               ))}
             </div>
+            <div className="oaw-docx-outline-resizer" onMouseDown={startOutlineDrag} title="拖动调整目录宽度" />
           </div>
         )}
         <div className="oaw-docx-host" ref={hostRef} />
