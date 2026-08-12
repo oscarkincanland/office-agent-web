@@ -200,8 +200,8 @@ app.post("/api/templates/refresh", (_req, res) => {
 
 // 模板文件下载路由
 const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
-app.get("/api/templates/files/*", (req, res) => {
-  const relPath = req.params[0]; // Express 5 通配符参数
+app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
+  const relPath = req.params[0]; // 正则捕获组
   if (!relPath || relPath.includes("..") || relPath.startsWith("/") || /^[A-Z]:/i.test(relPath)) {
     return res.status(400).json({ error: "invalid path" });
   }
