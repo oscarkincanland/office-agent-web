@@ -745,6 +745,20 @@ app.post("/api/workspace/validate", (req, res) => {
   }
 });
 
+// 清洗会话标题：去掉前端注入的前缀标记（[当前打开文件]/[模式]/[已上传附件]），按句子智能截断
+function cleanSessionTitle(raw) {
+  let t = String(raw || "").trim();
+  t = t.replace(/^\[当前打开文件:[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[模式:\s*[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[已上传附件:[^\]]*\]\s*/g, "");
+  t = t.replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  if (t.length <= 50) return t;
+  // 按句子边界截断
+  const m = t.match(/^.{0,48}[。！？.!?]/);
+  if (m) return m[0];
+  return t.slice(0, 50) + "…";
+}
+
 // GET /api/sessions - 列出所有会话（解析每个 JSONL 的 header 第一行）
 // 支持 ?file=xxx 过滤：只返回提到指定文件的会话
 app.get("/api/sessions", (req, res) => {
@@ -764,7 +778,7 @@ app.get("/api/sessions", (req, res) => {
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
-        // 提取第一条用户消息作为标题
+        // 提取第一条用户消息作为标题（清洗前端注入前缀）
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
           if (!line.trim()) continue;
@@ -772,15 +786,18 @@ app.get("/api/sessions", (req, res) => {
             const entry = JSON.parse(line);
             if (entry.type === "message" && entry.message?.role === "user") {
               const c = entry.message.content;
-              if (typeof c === "string") title = c.trim();
+              let raw = "";
+              if (typeof c === "string") raw = c.trim();
               else if (Array.isArray(c)) {
-                title = c.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+                raw = c.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
               }
-              if (title) break;
+              const cleaned = cleanSessionTitle(raw);
+              if (cleaned) { title = cleaned; break; }
             }
           } catch {}
         }
-        if (title.length > 50) title = title.slice(0, 50) + "…";
+        // 若首条用户消息清洗后为空（纯前缀/空），退回 label 或会话 id 前段
+        if (!title) title = h.label || "";
         sessions.push({
           id: h.id || h.sessionId || path.basename(f.fileName, ".jsonl"),
           cwd: h.cwd || "",
