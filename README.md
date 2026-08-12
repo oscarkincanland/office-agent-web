@@ -1,6 +1,8 @@
-# Office Agent Web
+# Open Plan（规聚）
 
-基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端 Office 文档编辑 + AI Agent 协作工具。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 项目。
+基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端规划工作台 + AI Agent 协作工具（Office 文档编辑、知识库、地图可视化、脑图）。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 项目。
+
+**规聚**：规划 + 聚集——为交通规划工程师提供"规划成果 + 知识汇聚 + 智能协作"的一体化工作台。
 
 ## 功能
 
