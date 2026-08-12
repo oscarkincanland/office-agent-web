@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, u
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
+import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
@@ -537,7 +538,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           </div>
         )}
         <div className="chat-head">
-          <span className="chat-title">agent</span>
+          <span className="chat-title"><Logo size={16} /> Open Plan</span>
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
