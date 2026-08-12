@@ -678,7 +678,7 @@ function findSessionFile(id) {
       const firstLine = text.split(/\r?\n/)[0];
       if (!firstLine) continue;
       const h = JSON.parse(firstLine);
-      if (h && h.sessionId === id) return f;
+      if (h && (h.id === id || h.sessionId === id)) return f;
     } catch {}
   }
   return null;
@@ -758,9 +758,9 @@ app.get("/api/sessions", (req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
-        // 只显示 office agent 的会话（cwd 匹配当前项目目录），过滤 pi TUI 等其他会话
+        // 只显示 office agent 的会话（cwd 匹配项目相关目录或 pi 会话存储目录），过滤 pi TUI 等其他会话
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
+        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR) || cwd === SESSIONS_DIR;
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
@@ -782,7 +782,7 @@ app.get("/api/sessions", (req, res) => {
         }
         if (title.length > 50) title = title.slice(0, 50) + "…";
         sessions.push({
-          id: h.sessionId || path.basename(f.fileName, ".jsonl"),
+          id: h.id || h.sessionId || path.basename(f.fileName, ".jsonl"),
           cwd: h.cwd || "",
           created: h.created || "",
           modified: f.mtime,
@@ -956,7 +956,9 @@ app.post("/api/agent/prompt", async (req, res) => {
       });
     }
   }
-  res.json({ ok: true, changed });
+  // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
+  const entry = agentManager.sessions.get(client);
+  res.json({ ok: true, changed, sessionId: entry?.session?.sessionId || null });
 });
 
 // SSE stream per client
