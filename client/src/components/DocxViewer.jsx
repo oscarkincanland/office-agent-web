@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { renderAsync } from "docx-preview";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from "docx";
 import Icon from "./Icon.jsx";
+import CommentMarker from "./CommentMarker.jsx";
 
 /**
  * Word 文档查看器（增强版）
@@ -54,6 +55,7 @@ export default function DocxViewer({ name }) {
   const [outline, setOutline] = useState([]);
   const [dirty, setDirty] = useState(false);
   const [comments, setComments] = useState([]);
+  const [activeComment, setActiveComment] = useState(null);
   const [zoom, setZoom] = useState(100); // 缩放比例
 
   // 渲染 docx
@@ -476,19 +478,12 @@ export default function DocxViewer({ name }) {
         )}
         <div className="oaw-docx-host" ref={hostRef} />
         {showComments && comments.length > 0 && (
-          <div className="oaw-docx-comments">
-            <div className="oaw-docx-comments-head">
-              <span><Icon name="comment" size={11} /> 批注 ({comments.length})</span>
-            </div>
-            <div className="oaw-docx-comments-list">
-              {comments.map((c, i) => (
-                <div key={i} className="oaw-docx-comment-item" onClick={() => handleCommentClick(c, i)}>
-                  <div className="oaw-docx-comment-author">{c.author || "匿名"}</div>
-                  <div className="oaw-docx-comment-text">{c.text}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <CommentMarker
+            comments={comments}
+            containerRef={hostRef}
+            activeComment={activeComment}
+            setActiveComment={setActiveComment}
+          />
         )}
       </div>
     </div>
