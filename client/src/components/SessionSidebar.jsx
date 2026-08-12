@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback } from "react";
+import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
@@ -223,7 +224,34 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
       await uploadFile(f.name, data);
       onUploaded();
     } catch (err) { alert("上传失败: " + err.message); }
-    finally { e.target.value = ""; }
+    e.target.value = "";
+  };
+
+  // 新建空白 Word 文档（docx 库生成 → 上传工作区 → 刷新列表）
+  const [creatingWord, setCreatingWord] = useState(false);
+  const handleNewWord = async () => {
+    if (creatingWord) return;
+    setCreatingWord(true);
+    try {
+      // 含一个空段落，保证各版本 Word/WPS 正常打开
+      const doc = new Document({ sections: [{ children: [new Paragraph("")] }] });
+      const blob = await Packer.toBlob(doc);
+      // blob → base64（绕开 FileReader，分块避免栈溢出）
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      const data = btoa(bin);
+      // 文件名查重：新建文档.docx / 新建文档 2.docx …
+      const names = new Set(files.map((f) => f.name));
+      let name = "新建文档.docx";
+      let i = 2;
+      while (names.has(name)) name = `新建文档 ${i++}.docx`;
+      await uploadFile(name, data);
+      onUploaded();
+    } catch (err) { alert("新建失败: " + err.message); }
+    setCreatingWord(false);
   };
 
   const handleDeleteFile = async (name) => {
@@ -385,6 +413,9 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <span className="section-count">{files.length}</span>
         <button className="btn-xs section-refresh" onClick={onRefreshFiles} title="刷新文件">
           <Icon name="refresh" size={11} />
+        </button>
+        <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
+          <Icon name="plus" size={11} />
         </button>
         <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
           <Icon name="upload" size={11} />
