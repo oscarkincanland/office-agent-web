@@ -10,6 +10,7 @@ import TemplateLibrary from "./components/TemplateLibrary.jsx";
 import MapViewer from "./components/MapViewer.jsx";
 import MapPanel from "./components/MapPanel.jsx";
 import Icon from "./components/Icon.jsx";
+import Logo from "./components/Logo.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, mapProject } from "./api.js";
@@ -444,7 +445,10 @@ export default function App() {
               {sidebarOpen && (
                 <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
               )}
-            <span className="topbar-title">{current?.name || "Office Agent"}</span>
+            <span className="topbar-title">
+              <Logo size={18} /> <span className="brand-name">Open Plan</span>
+              {current?.name && <span className="topbar-file"> · {current.name}</span>}
+            </span>
             <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
               <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
             </button>

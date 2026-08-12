@@ -1331,7 +1331,7 @@ app.post("/api/open-in-explorer", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`office-agent-web running at http://localhost:${PORT}`);
+  console.log(`Open Plan（规聚）running at http://localhost:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
 });
 
