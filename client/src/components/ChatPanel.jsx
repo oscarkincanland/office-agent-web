@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, u
 import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
+import ChatTimeline from "./ChatTimeline.jsx";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -551,7 +552,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m) => <Message key={m.id} m={m} model={model} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -564,6 +565,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             });
           }} />)}
           <div ref={bottomRef} />
+          {/* 会话消息目录栏：悬停展开，点击定位到消息 */}
+          <ChatTimeline messages={messages} containerRef={bodyRef} />
         </div>
 
         {images.length > 0 && !modelVision && (
@@ -665,8 +668,25 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   );
 });
 
+// ========== 超大消息保护：>100KB 转点击展开，避免 markdown 渲染卡死 ==========
+const MAX_MARKDOWN_CHARS = 100000;
+
+function SafeMarkdown({ text }) {
+  const [showRaw, setShowRaw] = useState(false);
+  if (!text) return null;
+  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody>{text}</MarkdownBody>;
+  if (!showRaw) {
+    return (
+      <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
+        ⚠ 内容过长（{(text.length / 1024).toFixed(0)} KB），点击查看全文
+      </button>
+    );
+  }
+  return <pre className="large-msg-raw">{text}</pre>;
+}
+
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
+function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
@@ -696,6 +716,8 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
   const isUser = m.role === "user";
   const blocks = m.blocks || [];
   const streaming = m.status === "streaming";
+  // 相邻同角色消息精简头部（连续 AI 回复/连续用户消息不再重复显示作者与时间）
+  const hideHeader = prevRole === m.role;
   // 过程分组（Proma ProcessBlockGroup）：thinking/tool 归入"执行过程"，text 为最终回复
   const processBlocks = blocks.filter((b) => b.type === "thinking" || b.type === "tool");
   const textBlocks = blocks.filter((b) => b.type === "text");
@@ -737,12 +759,13 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
   const actionsVisible = (hasContent || m.errorText || m.stopped) && !streaming;
 
   return (
-    <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`}>
+    <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
         <Icon name={isUser ? "user" : "robot"} size={14} />
       </div>
       <div className="msg-main">
-        {/* 消息头：作者 + 时间（AI 显示模型名） */}
+        {/* 消息头：作者 + 时间（相邻同角色消息省略，减少重复气泡头部） */}
+        {!hideHeader && (
         <div className="msg-header">
           <span className="msg-author">{isUser ? "You" : (model || "Agent")}</span>
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
@@ -750,6 +773,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
           {!isUser && m.stopped && <span className="msg-stopped-badge">已停止生成</span>}
         </div>
+        )}
         {isUser ? (
           <div className="bubble user-bubble">
             {m.images?.length > 0 && (
@@ -775,7 +799,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend }) {
             {/* 最终回复（文本块） */}
             {textBlocks.map((b, i) => (
               <div className="bubble markdown-bubble" key={i}>
-                <MarkdownBody>{b.text}</MarkdownBody>
+                <SafeMarkdown text={b.text} />
               </div>
             ))}
             {/* 流式等待首块：思考中 + 耗时 */}
@@ -826,30 +850,19 @@ function LoadingDots({ label, seconds }) {
   );
 }
 
-// ========== 思考过程块（Proma Reasoning 风格：流式自动展开 → 结束 1s 后自动折叠 + 思考耗时） ==========
+// ========== 思考过程块（Proma Reasoning 风格：默认折叠成一行，点击展开） ==========
 function ThinkingBlock({ text, startTime, streaming }) {
-  const [expanded, setExpanded] = useState(true);
-  // 用户手动操作后不再自动折叠
-  const manualRef = useRef(false);
+  const [expanded, setExpanded] = useState(false);
   const [duration, setDuration] = useState(null);
 
-  // 流式结束时：计算耗时，1s 后自动折叠
+  // 流式结束时：计算耗时
   useEffect(() => {
     if (streaming) return;
     if (startTime) setDuration(((Date.now() - startTime) / 1000).toFixed(1));
-    const t = setTimeout(() => {
-      if (!manualRef.current) setExpanded(false);
-    }, 1000);
-    return () => clearTimeout(t);
   }, [streaming, startTime]);
 
-  const toggle = () => {
-    manualRef.current = true;
-    setExpanded((v) => !v);
-  };
-
   return (
-    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={toggle}>
+    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={() => setExpanded((v) => !v)}>
       <div className="thinking-header">
         <span className="thinking-icon">{expanded ? "▾" : "▸"}</span>
         <span className="thinking-label"><Icon name="info" size={11} /> 思考</span>
@@ -962,7 +975,8 @@ function toolPhrase(name, input, done) {
 function ToolCard({ tool, onToggle }) {
   const { name, input, output, done, isError, expanded, duration } = tool;
   // 命令预览：bash/officecli 等命令行工具显示 $ 前缀
-  let inputStr = typeof input === "string" ? input : JSON.stringify(input, null, 2);
+  // 注意：JSON.stringify(undefined) 返回 undefined，历史会话中 tool.input 可能缺失
+  let inputStr = typeof input === "string" ? input : (input != null ? JSON.stringify(input, null, 2) : "");
   try {
     if (typeof input === "object" && input?.args) {
       inputStr = typeof input.args === "string" ? input.args : JSON.stringify(input.args);
