@@ -13,6 +13,61 @@ import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI } from "./workspace.mj
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
+/** 读取工作区记忆（AGENTS.md + memory/*.md 合并，限长）——每次对话前注入 agent 上下文 */
+function readMemoryContext() {
+  const parts = [];
+  try {
+    const agentsMd = path.join(WORKSPACE_DIR, "AGENTS.md");
+    if (fs.existsSync(agentsMd)) {
+      const c = fs.readFileSync(agentsMd, "utf8").trim();
+      if (c) parts.push("## 工作区准则 (AGENTS.md)\n" + c.slice(0, 1500));
+    }
+    const memDir = path.join(WORKSPACE_DIR, "memory");
+    if (fs.existsSync(memDir)) {
+      for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
+        try {
+          const c = fs.readFileSync(path.join(memDir, f), "utf8").trim();
+          if (c) parts.push(`## 记忆：${f}\n${c.slice(0, 1500)}`);
+        } catch {}
+      }
+    }
+  } catch {}
+  return parts.join("\n\n").slice(0, 4000);
+}
+
+/** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制） */
+function writeMemorySection(section, content) {
+  const memDir = path.join(WORKSPACE_DIR, "memory");
+  fs.mkdirSync(memDir, { recursive: true });
+  const memFile = path.join(memDir, "MEMORY.md");
+  const maxLen = 1200;
+  const body = String(content || "").trim().slice(0, maxLen);
+  const title = `## ${section}`;
+  let text = "";
+  try {
+    if (fs.existsSync(memFile)) text = fs.readFileSync(memFile, "utf8");
+  } catch {}
+  // 按 ## section 分组：移除旧的同名 section（含标题行 + 后续内容到下一个 ##）
+  const lines = text.split(/\r?\n/);
+  const out = [];
+  let inTarget = false;
+  for (const line of lines) {
+    if (/^##\s/.test(line)) {
+      inTarget = line.trim().replace(/^##\s+/, "") === section;
+      if (!inTarget) out.push(line);
+      continue;
+    }
+    if (!inTarget) out.push(line);
+  }
+  const rest = out.join("\n").trim();
+  const block = `${title}\n${body}`;
+  text = rest ? `${rest}\n\n${block}\n` : `${block}\n`;
+  // 总长控制（约 6000 字符，超出截断最旧部分）
+  if (text.length > 6000) text = text.slice(-6000);
+  fs.writeFileSync(memFile, text, "utf8");
+  return { ok: true, section, file: "memory/MEMORY.md" };
+}
+
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 class AgentManager extends EventEmitter {
   constructor() {
@@ -67,6 +122,17 @@ class AgentManager extends EventEmitter {
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图项目（maps）**: 地图可视化项目位于 `" + WORKSPACE_DIR + "\\maps\\zhejiang-map\\`。结构：`map.config.json`（项目配置）、`style.json`（MapLibre 样式，改这里可改地图样式）、`layers/*.geojson`（图层数据）、`tiles/`（矢量瓦片，由脚本生成，勿手改）。用户在地图页面与您对话时，改图操作 = 修改 `style.json`（图层颜色/线宽/显隐）或 `layers/*.geojson`（数据），文件保存后浏览器会自动热更新。若改了图层数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
+              "",
+              // 工作区记忆（AGENTS.md + memory/）——每次对话前读取，保持简短
+              (() => {
+                const memCtx = readMemoryContext();
+                if (!memCtx) return "";
+                return (
+                  "## 工作区记忆（每次任务开始前阅读；沉淀新经验请用 memory_update 工具，勿直接写文件）\n" +
+                  "记忆文件位于工作区 `" + WORKSPACE_DIR + "\\memory\\MEMORY.md`，读取可用 read 工具；写入务必用 memory_update（自动按 section 管理）。\n" +
+                  memCtx
+                );
+              })(),
             ].join("\n"),
           },
         ],
@@ -293,13 +359,36 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    // ---- 记忆工具（agent 完成任务后自主沉淀经验/偏好） ----
+    const memoryUpdateTool = defineTool({
+      name: "memory_update",
+      label: "记忆更新",
+      description:
+        "把本次任务中值得长期记住的信息写入工作区记忆（memory/MEMORY.md），供后续任务读取。仅在确有价值时调用（如：用户偏好、项目约定、反复出现的坑、本次学会的关键流程），不要为琐碎细节调用。section 取值：项目信息（项目背景/术语/约定）/ 用户偏好（写作风格/格式习惯/命名规范）/ 经验教训（踩坑记录/有效做法）。每条控制在 100 字以内，简明扼要。",
+      parameters: Type.Object({
+        section: Type.Union([
+          Type.Literal("项目信息"),
+          Type.Literal("用户偏好"),
+          Type.Literal("经验教训"),
+        ]),
+        content: Type.String({ description: "要记住的内容（≤100 字）" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const r = writeMemorySection(params.section, params.content);
+        return {
+          content: [{ type: "text", text: `已更新记忆（${params.section}），后续任务会自动读取。${r.ok ? "" : "写入失败"}` }],
+          details: { ...r },
+        };
+      },
+    });
+
     const sessionManager = SessionManager.create(SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool],
+      customTools: [officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
       tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli"],
       sessionManager,
     });
@@ -406,6 +495,8 @@ class AgentManager extends EventEmitter {
     const isStreaming = entry.busy;
     entry.busy = true;
     try {
+      // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
+      try { await entry.loader.reload(); } catch {}
       // 应用推理强度（low/medium/high → pi thinking level）
       if (effort) {
         try { entry.session.setThinkingLevel(effort); } catch {}
