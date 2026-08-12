@@ -112,7 +112,7 @@ class AgentManager extends EventEmitter {
           {
             path: "F:\\Claude code本地文件\\office-agent-web\\.agent-context.md",
             content: [
-              "# Office Agent Workspace",
+              "# Open Plan（规聚）Workspace",
               "",
               "- Office files live in the current workspace folder (default: `" + WORKSPACE_DIR + "`).",
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
@@ -561,7 +561,7 @@ class AgentManager extends EventEmitter {
     // 更新 agent 上下文文件（动态注入当前工作文件）
     try {
       const ctx = [
-        "# Office Agent Workspace",
+        "# Open Plan（规聚）Workspace",
         "",
         "- Office files live in `" + WORKSPACE_DIR + "` (or the current workspace).",
         "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the workspace folder. NEVER try to run `officecli` via the bash tool.",

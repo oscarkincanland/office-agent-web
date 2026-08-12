@@ -1,8 +1,8 @@
 {
-  "name": "office-agent-web",
-  "version": "0.8.11",
+  "name": "open-plan",
+  "version": "0.8.12",
   "private": true,
-  "description": "Web-based Office document editor with pi agent integration",
+  "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
   "scripts": {
     "start": "node server/index.mjs",

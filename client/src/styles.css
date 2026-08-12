@@ -3965,3 +3965,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .ct-pop-item:hover { background: var(--selected); }
 .ct-pop-item.active { background: var(--selected); color: var(--accent); }
 .ct-pop-desc { display: block; font-size: 10px; color: var(--dim); margin-top: 1px; }
+
+/* ===== 品牌（Open Plan 规聚） ===== */
+.brand-name { font-weight: 700; }
+.topbar-title { display: inline-flex; align-items: center; gap: 6px; }
+.topbar-file { color: var(--muted); font-weight: 400; font-size: 12px; }
+.chat-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; }
