@@ -3,6 +3,7 @@ import { fileToBase64, listModels, setAgentModel } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
+import { loadSettings } from "./SettingsPanel.jsx";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -568,8 +569,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           }} />)}
           <div ref={bottomRef} />
         </div>
-        {/* 会话消息目录栏：固定于聊天面板左侧（不随消息滚动），悬停展开 */}
-        <ChatTimeline messages={messages} containerRef={bodyRef} />
+        {/* 会话消息目录栏：固定于聊天面板左侧（不随消息滚动），悬停展开；可在设置中关闭 */}
+        {loadSettings().showTimeline !== false && <ChatTimeline messages={messages} containerRef={bodyRef} />}
 
         {images.length > 0 && !modelVision && (
           <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
@@ -848,7 +849,7 @@ function LoadingDots({ label, seconds }) {
 
 // ========== 思考过程块（Proma Reasoning 风格：默认折叠成一行，点击展开） ==========
 function ThinkingBlock({ text, startTime, streaming }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(() => loadSettings().thinkingDefaultOpen);
   const [duration, setDuration] = useState(null);
 
   // 流式结束时：计算耗时

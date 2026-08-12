@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import Icon from "./Icon.jsx";
+import { loadSettings } from "./SettingsPanel.jsx";
 
 /**
  * 批注组件（Word 风格）
@@ -135,11 +136,12 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
         (doc.body || container).appendChild(badge);
       }
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      // 定时清理（高亮保持 20 秒，避免闪烁即失）
+      // 高亮保持时长（设置面板可调，默认 20 秒）
+      const ms = loadSettings().commentHighlightMs || 20000;
       clearTimeout(highlightTimerRef.current);
-      highlightTimerRef.current = setTimeout(() => el.classList.remove("comment-highlight-active"), 20000);
+      highlightTimerRef.current = setTimeout(() => el.classList.remove("comment-highlight-active"), ms);
       clearTimeout(badgeTimerRef.current);
-      badgeTimerRef.current = setTimeout(clearVisuals, 20000);
+      badgeTimerRef.current = setTimeout(clearVisuals, ms);
     }
   }, [containerRef, findCommentElement, clearVisuals, setActiveComment]);
 
