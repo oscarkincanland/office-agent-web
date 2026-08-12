@@ -3883,3 +3883,85 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 
 /* 消息字体大小（设置面板控制） */
 .msg { font-size: var(--msg-font-size, 13px); }
+
+/* ===== 输入区单行工具栏（v0.8.9，pi-web 风格） ===== */
+.chat-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.chat-input-row textarea { flex: 1; }
+.input-send { display: flex; align-items: center; padding-bottom: 2px; }
+.chat-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 2px 0;
+  border-top: 1px dashed var(--border);
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.ct-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  position: relative;
+}
+.ct-btn:hover { background: var(--selected); color: var(--text); }
+.ct-btn.active { background: var(--selected); color: var(--accent); border-color: var(--accent); }
+.ct-model-dot {
+  position: absolute;
+  bottom: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.ct-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+
+/* 浮层 */
+.ct-popwrap { position: relative; }
+.ct-pop {
+  position: absolute;
+  bottom: 34px;
+  left: 0;
+  z-index: 60;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.ct-pop-search {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--panel2-bg);
+  color: var(--text);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  outline: none;
+}
+.ct-pop-list { max-height: 300px; overflow-y: auto; }
+.ct-pop-item {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ct-pop-item:hover { background: var(--selected); }
+.ct-pop-item.active { background: var(--selected); color: var(--accent); }
+.ct-pop-desc { display: block; font-size: 10px; color: var(--dim); margin-top: 1px; }
