@@ -73,7 +73,7 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession }, ref) {
+export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [images, setImages] = useState([]);
@@ -443,6 +443,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
+      // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
+      if (d.sessionId) onSessionChange?.(d.sessionId);
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
