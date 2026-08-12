@@ -160,6 +160,32 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
+  const [sessionsH, setSessionsH] = useState(null); // 历史区高度（null=默认30%），可拖拽
+  const splitDragRef = useRef(null);
+
+  // 历史/文件 上下分割拖拽
+  const startSplitDrag = (e) => {
+    e.preventDefault();
+    const section = e.currentTarget.closest(".sessions-section");
+    const startY = e.clientY;
+    const startH = section ? section.getBoundingClientRect().height : 300;
+    splitDragRef.current = { startY, startH };
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const next = Math.min(window.innerHeight * 0.6, Math.max(80, splitDragRef.current.startH + (ev.clientY - splitDragRef.current.startY)));
+      setSessionsH(next);
+    };
+    const onUp = () => {
+      splitDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   const [sessionsOpen, setSessionsOpen] = useState(() => {
     try { return localStorage.getItem("oaw_sidebar_sessions_open") !== "0"; } catch { return true; }
   });
@@ -337,7 +363,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         )}
       </div>
       {sessionsOpen && (
-        <div className="sidebar-section sessions-section">
+        <div className="sidebar-section sessions-section" style={sessionsH ? { height: sessionsH, maxHeight: sessionsH } : undefined}>
           <SessionList
             sessions={filteredSessions || sessions}
             onDelete={handleDeleteSession}
@@ -349,6 +375,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           )}
         </div>
       )}
+      {/* 历史/文件 垂直分割手柄（会话区展开时可用） */}
+      {sessionsOpen && <div className="sidebar-split-handle" onMouseDown={startSplitDrag} title="拖动调整历史/文件高度" />}
 
       {/* 文件树 */}
       <div className="sidebar-section-head">

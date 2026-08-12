@@ -41,6 +41,34 @@ export default function MapPanel({
   const [draw, setDraw] = useState(null);            // 测量/绘制 {kind, points}
   const [measureResult, setMeasureResult] = useState(null); // {dist?, area?}
   const [toolMenu, setToolMenu] = useState(null);    // 顶栏工具菜单 {x, y, type: "measure"|"draw"}
+  const [leftW, setLeftW] = useState(260);           // 左栏宽度（可拖拽）
+  const [rightW, setRightW] = useState(360);         // 右栏宽度（可拖拽）
+  const paneDragRef = useRef(null);
+
+  // 左右栏宽度拖拽（side: left|right）
+  const startPaneDrag = useCallback((e, side) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = side === "left" ? leftW : rightW;
+    paneDragRef.current = { side, startX, startW };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const delta = ev.clientX - paneDragRef.current.startX;
+      const next = Math.min(480, Math.max(180, paneDragRef.current.startW + (paneDragRef.current.side === "left" ? delta : -delta)));
+      if (paneDragRef.current.side === "left") setLeftW(next);
+      else setRightW(next);
+    };
+    const onUp = () => {
+      paneDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [leftW, rightW]);
   const [isoOpen, setIsoOpen] = useState(false);
   const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "" });
   const mapRef = useRef(null);
@@ -609,7 +637,7 @@ export default function MapPanel({
 
       <div className="mp-body">
         {/* 左栏：QGIS 风格图层面板 */}
-        <div className="mp-left">
+        <div className="mp-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="mp-left-title">
             <Icon name="layers" size={12} /> 图层
             <span className="mp-layer-count">{files.length}</span>
@@ -632,6 +660,7 @@ export default function MapPanel({
             onOpenAttribute={openAttribute}
           />
         </div>
+        <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
 
         {/* 中栏：地图 */}
         <div className="mp-center">
@@ -667,7 +696,7 @@ export default function MapPanel({
         </div>
 
         {/* 右栏：agent 对话 */}
-        <div className="mp-right">
+        <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
             clientId={clientId}
             onFileChanged={handleFileChanged}
@@ -682,6 +711,7 @@ export default function MapPanel({
             onSelectSession={onSelectSession}
           />
         </div>
+        <div className="mp-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整右栏宽度" />
       </div>
 
       {/* 顶栏工具菜单（测量/绘制） */}
