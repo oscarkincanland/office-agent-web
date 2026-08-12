@@ -111,19 +111,19 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
       </div>
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="btn-xs" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
-          {pinned.has(s.id) ? "取消置顶" : "置顶"}
+        <button className="btn-icon" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
+          <Icon name="pin" size={12} className={pinned.has(s.id) ? "pinned" : ""} />
         </button>
         <button
-          className="btn-xs"
+          className="btn-icon"
           onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
           title="重命名"
-        >重命名</button>
+        ><Icon name="penTool" size={12} /></button>
         <button
-          className="btn-xs danger"
+          className="btn-icon danger"
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
           title="删除"
-        >删除</button>
+        ><Icon name="trash" size={12} /></button>
       </div>
     </div>
   );
@@ -157,6 +157,9 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
 export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
+  const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
+  const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
+  const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
   const [sessionsOpen, setSessionsOpen] = useState(() => {
     try { return localStorage.getItem("oaw_sidebar_sessions_open") !== "0"; } catch { return true; }
   });
@@ -368,8 +371,19 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
             <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
         )}
+        <div className="file-search">
+          <Icon name="search" size={11} />
+          <input
+            placeholder="搜索文件…"
+            value={fileQ}
+            onChange={(e) => setFileQ(e.target.value)}
+          />
+          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除">×</button>}
+        </div>
         <div className="file-list">
-          {files.map((f) => {
+          {files
+            .filter((f) => !fileQ.trim() || f.name.toLowerCase().includes(fileQ.trim().toLowerCase()))
+            .map((f) => {
             const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
             const isNew = newFiles.has(filePath);
             return (
@@ -407,47 +421,78 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <div className="sidebar-foot">office-workspace</div>
       </div>
 
-      {/* 底部：产物 / 记忆 / 设置 */}
+      {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">
-        <button className={`bt-btn ${bottomTab === "artifacts" ? "active" : ""}`} onClick={() => setBottomTab("artifacts")} title="产物（agent 生成的文件）">
+        <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => setModal(modal === "artifacts" ? null : "artifacts")} title="产物（agent 生成的文件）">
           <Icon name="file" size={13} /> 产物
         </button>
-        <button className={`bt-btn ${bottomTab === "memory" ? "active" : ""}`} onClick={() => setBottomTab("memory")} title="记忆（AGENTS.md + memory/）">
-          <Icon name="book" size={13} /> 记忆
-        </button>
-        <button className={`bt-btn ${bottomTab === "settings" ? "active" : ""}`} onClick={() => setBottomTab("settings")} title="设置">
+        <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => setModal(modal === "settings" ? null : "settings")} title="设置（含记忆）">
           <Icon name="gear" size={13} /> 设置
         </button>
       </div>
-      <div className="sidebar-bottom-content">
-        {bottomTab === "artifacts" && (
-          <div className="file-list">
-            {files.length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
-            {[...files]
-              .filter((f) => !f.isDir)
-              .sort((a, b) => b.mtime - a.mtime)
-              .map((f) => (
-                <div
-                  key={f.name}
-                  className={`file-item ${f.name === currentName ? "active" : ""}`}
-                  onClick={() => {
-                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onOpenFile(rel);
-                  }}
-                  title={f.name}
-                >
-                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
-                  <span className="file-name">{f.name}</span>
-                  <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
-                    {formatTime(new Date(f.mtime).toISOString())}
-                  </span>
-                </div>
-              ))}
-          </div>
-        )}
-        {bottomTab === "memory" && <MemoryTab />}
-        {bottomTab === "settings" && <SettingsPanel />}
+      <div className="sidebar-bottom-hint">
+        产物与设置点击后弹窗显示
       </div>
+
+      {/* 产物弹窗 */}
+      {modal === "artifacts" && (
+        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+          <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-head">
+              <Icon name="file" size={13} />
+              <span className="sb-modal-title">产物（{files.filter((f) => !f.isDir).length}）</span>
+              <span className="sb-modal-sub">agent 生成的文档按时间倒序</span>
+              <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="sb-modal-body">
+              {files.filter((f) => !f.isDir).length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
+              <div className="file-list">
+                {[...files]
+                  .filter((f) => !f.isDir)
+                  .sort((a, b) => b.mtime - a.mtime)
+                  .map((f) => (
+                    <div
+                      key={f.name}
+                      className={`file-item ${f.name === currentName ? "active" : ""}`}
+                      onClick={() => {
+                        const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
+                        onOpenFile(rel);
+                        setModal(null);
+                      }}
+                      title={f.name}
+                    >
+                      <span className="file-ext"><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
+                      <span className="file-name">{f.name}</span>
+                      <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
+                        {formatTime(new Date(f.mtime).toISOString())}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 设置弹窗（含记忆） */}
+      {modal === "settings" && (
+        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+          <div className="sb-modal sb-modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-head">
+              <Icon name="gear" size={13} />
+              <span className="sb-modal-title">设置</span>
+              <div className="sb-subtabs">
+                <button className={`sb-subtab ${modalTab === "settings" ? "active" : ""}`} onClick={() => setModalTab("settings")}>设置</button>
+                <button className={`sb-subtab ${modalTab === "memory" ? "active" : ""}`} onClick={() => setModalTab("memory")} title="工作区记忆（AGENTS.md + memory/）">记忆</button>
+              </div>
+              <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="sb-modal-body">
+              {modalTab === "settings" ? <SettingsPanel /> : <MemoryTab />}
+            </div>
+          </div>
+        </div>
+      )}
 
       {contextMenu && (
         <ContextMenu

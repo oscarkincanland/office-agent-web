@@ -2675,15 +2675,21 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   flex: 1;
   min-height: 0;
   position: relative;
-  /* Obsidian 风格纸面背景：细格线 */
+  /* 方格纸背景：细格线 + 主格线（暗色用白透明线，亮色用灰蓝线） */
   background:
-    /* minor grid */
-    linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
-    linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px) 0 0 / 24px 24px,
-    /* major grid */
-    linear-gradient(rgba(255,255,255,0.07) 1px, transparent 1px) 0 0 / 120px 120px,
-    linear-gradient(90deg, rgba(255,255,255,0.07) 1px, transparent 1px) 0 0 / 120px 120px,
+    linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(rgba(255,255,255,0.09) 1px, transparent 1px) 0 0 / 120px 120px,
+    linear-gradient(90deg, rgba(255,255,255,0.09) 1px, transparent 1px) 0 0 / 120px 120px,
     var(--body-bg, #1a1a2e);
+}
+[data-theme="light"] .kb-graph {
+  background:
+    linear-gradient(rgba(70, 84, 120, 0.09) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, rgba(70, 84, 120, 0.09) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(rgba(70, 84, 120, 0.16) 1px, transparent 1px) 0 0 / 120px 120px,
+    linear-gradient(90deg, rgba(70, 84, 120, 0.16) 1px, transparent 1px) 0 0 / 120px 120px,
+    #f7f8fb;
 }
 /* G6 的 canvas 透明，让 CSS 背景透出 */
 .kb-graph-canvas canvas {
@@ -4372,3 +4378,164 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .lp-legend-item i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
 .lp-ed-actions { margin-top: 4px; }
 .lp-ed-actions .btn-sm { padding: 3px 10px; }
+
+/* ================= v0.8.13 皮肤（data-skin） ================= */
+/* 皮肤只覆盖强调色与辅助色，随暗/亮主题自动适配 */
+:root[data-skin="ocean"] { --accent: #5b9bd5; --success: #6fbf73; }
+:root[data-skin="ocean"][data-theme="light"] { --accent: #2e7db8; }
+:root[data-skin="forest"] { --accent: #7cb342; --success: #aed581; }
+:root[data-skin="forest"][data-theme="light"] { --accent: #558b2f; }
+:root[data-skin="sunset"] { --accent: #e69138; --success: #f0a868; }
+:root[data-skin="sunset"][data-theme="light"] { --accent: #c96a1e; }
+:root[data-skin="violet"] { --accent: #b39ddb; --success: #ce93d8; }
+:root[data-skin="violet"][data-theme="light"] { --accent: #7e57c2; }
+
+/* ================= v0.8.13 侧栏弹窗/搜索/会话布局 ================= */
+.sidebar-bottom-hint {
+  padding: 4px 10px 6px;
+  font-size: 9px;
+  color: var(--dim);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+.sb-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 60px;
+}
+.sb-modal {
+  width: 480px;
+  max-width: 92vw;
+  max-height: 70vh;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sb-modal-wide { width: 640px; }
+.sb-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sb-modal-title { font-size: 13px; font-weight: 700; }
+.sb-modal-sub { font-size: 10px; color: var(--dim); }
+.sb-modal-head .mp-op { margin-left: auto; }
+.sb-modal-body { flex: 1; overflow: auto; padding: 8px 12px; min-height: 200px; }
+.sb-modal-body .file-item { padding: 6px 8px; }
+.sb-subtabs { display: flex; gap: 3px; margin-left: 12px; }
+.sb-subtab {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.sb-subtab:hover { color: var(--text); background: var(--selected); }
+.sb-subtab.active { background: var(--accent); color: #0e0e1a; font-weight: 600; }
+
+/* 文件搜索框 */
+.file-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 4px 8px;
+  padding: 4px 8px;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.file-search svg { color: var(--dim); flex-shrink: 0; }
+.file-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  outline: none;
+}
+.file-search input::placeholder { color: var(--dim); }
+.file-search-clear {
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.file-search-clear:hover { color: var(--text); }
+
+/* 会话操作图标按钮 */
+.session-actions { opacity: 0; display: flex; gap: 2px; flex-shrink: 0; }
+.session-item:hover .session-actions { opacity: 1; }
+.btn-icon {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 3px;
+  display: inline-flex;
+  align-items: center;
+}
+.btn-icon:hover { color: var(--text); background: var(--panel2-bg); }
+.btn-icon.danger:hover { color: var(--error); }
+.btn-icon .pinned { color: var(--accent); fill: var(--accent); }
+.session-list { overflow-x: hidden; }
+.sessions-section .session-list { overflow-x: hidden; }
+
+/* 设置面板新增样式 */
+.sp-skins { flex-wrap: wrap; }
+.sp-skin { display: inline-flex; align-items: center; gap: 5px; }
+.skin-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+.skin-default { background: #8abeb7; }
+.skin-ocean { background: #5b9bd5; }
+.skin-forest { background: #7cb342; }
+.skin-sunset { background: #e69138; }
+.skin-violet { background: #b39ddb; }
+.sp-select, .sp-input {
+  background: var(--panel2-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.sp-input { flex: 1; min-width: 140px; }
+.sp-auth { display: flex; gap: 6px; align-items: center; flex: 1; flex-wrap: wrap; }
+.sp-auth-msg { font-size: 11px; color: var(--success); }
+.sp-auth-list { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.sp-auth-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  color: var(--muted);
+}
+.sp-auth-item code { color: var(--accent); font-size: 10px; }
