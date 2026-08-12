@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
+const PROJECT_DIR = path.resolve(__dirname, ".."); // 项目根（templates/ 在其下）
 
 // ── 模版分类定义 ──
 const CATEGORIES = [
@@ -28,13 +29,14 @@ const CATEGORIES = [
   { id: "diaoyan",   name: "调研问卷", icon: "❓", dirs: ["义乌物流项目/04_调研执行/docs/superpowers/specs", "义乌物流专题资料"], exts: [".md", ".docx", ".doc"] },
   { id: "kuangjia",  name: "研究框架", icon: "🏗️", dirs: ["衢州多式联运项目", "柬埔寨公交项目"], exts: [".md"] },
   { id: "tubiao",    name: "图表/地图", icon: "📊", dirs: ["交通规划工作台/模板/图表模板", "交通规划工作台/模板/HTML模板", ".claude/skills/traffic-charts-template", ".claude/skills/traffic-map-template"], exts: [".md", ".html", ".js"] },
+  { id: "htmlppt",   name: "HTML PPT（OpenDesign）", icon: "📽️", dirs: [path.join(PROJECT_DIR, "templates/opendesign")], exts: [".html"], depth: 5, folderTitle: true, skipDirs: ["assets", "themes", "animations", "fonts", "scripts", "docs", "references", "examples"] },
 ];
 
 const SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".obsidian", "dist", "build"]);
 
 let _cache = null;
 
-function walkDir(dir, baseRel, out, maxDepth = 3, depth = 0) {
+function walkDir(dir, baseRel, out, maxDepth = 3, depth = 0, skipDirs = []) {
   if (depth > maxDepth) return;
   let entries;
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -43,16 +45,23 @@ function walkDir(dir, baseRel, out, maxDepth = 3, depth = 0) {
     const abs = path.join(dir, e.name);
     const rel = baseRel ? `${baseRel}/${e.name}` : e.name;
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name)) continue;
-      walkDir(abs, rel, out, maxDepth, depth + 1);
+      if (SKIP_DIRS.has(e.name) || skipDirs.includes(e.name)) continue;
+      walkDir(abs, rel, out, maxDepth, depth + 1, skipDirs);
     } else if (e.isFile()) {
       out.push({ abs, rel, name: e.name });
     }
   }
 }
 
-function parseTitle(absPath, name) {
+function parseTitle(absPath, name, folderTitle = false) {
   const ext = path.extname(name).toLowerCase();
+  if (folderTitle) {
+    // HTML 模板：用模板目录名 + 文件名作为标题（如 html-ppt-zhangzara-studio / example.html）
+    const dirName = path.basename(path.dirname(absPath));
+    const base = name.replace(/\.[^.]+$/, "");
+    if (base === "index" || base === "example") return dirName.replace(/^html-ppt-?/i, "");
+    return `${dirName.replace(/^html-ppt-?/i, "")} / ${base}`;
+  }
   if (ext === ".md" || ext === ".markdown") {
     try {
       const content = fs.readFileSync(absPath, "utf8").slice(0, 2000);
@@ -72,10 +81,10 @@ function scanTemplates() {
   const templates = [];
   for (const cat of CATEGORIES) {
     for (const dir of cat.dirs) {
-      const absDir = path.join(ROOT, dir);
+      const absDir = path.isAbsolute(dir) ? dir : path.join(ROOT, dir);
       if (!fs.existsSync(absDir)) continue;
       const files = [];
-      walkDir(absDir, dir, files, 2);
+      walkDir(absDir, dir, files, cat.depth ?? 2, 0, cat.skipDirs ?? []);
       for (const f of files) {
         const ext = path.extname(f.name).toLowerCase();
         if (!cat.exts.includes(ext)) continue;
@@ -85,7 +94,7 @@ function scanTemplates() {
           category: cat.id,
           name: f.name,
           relPath: f.rel,
-          title: parseTitle(f.abs, f.name),
+          title: parseTitle(f.abs, f.name, cat.folderTitle),
           ext: ext.slice(1),
           size: st.size,
           mtime: st.mtimeMs,
@@ -121,7 +130,7 @@ export function getTemplatesByCategory(categoryId) {
 }
 
 export function getTemplateContent(relPath) {
-  const absPath = path.join(ROOT, relPath);
+  const absPath = path.isAbsolute(relPath) ? relPath : path.join(ROOT, relPath);
   if (!fs.existsSync(absPath)) return null;
   const ext = path.extname(absPath).toLowerCase();
   const st = fs.statSync(absPath);

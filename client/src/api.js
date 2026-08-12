@@ -15,6 +15,12 @@ export const openDoc = (name) => api(`/api/doc/${encodeURIComponent(name)}`);
 export const saveCells = (name, sheet, cells) =>
   api(`/api/doc/${encodeURIComponent(name)}/cells`, { method: "POST", body: JSON.stringify({ sheet, cells }) });
 
+export const agentAuth = () => api("/api/agent/auth");
+export const agentAuthSave = (provider, key) =>
+  api("/api/agent/auth", { method: "POST", body: JSON.stringify({ provider, key }) });
+export const agentAuthRemove = (provider) =>
+  api("/api/agent/auth/remove", { method: "POST", body: JSON.stringify({ provider }) });
+
 export const listModels = () => api("/api/models");
 export const setAgentModel = (client, model) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, model }) });
@@ -50,7 +56,8 @@ export function getClientId() {
 export const kbStatus = () => api("/api/kb/status");
 export const kbAddRoot = (path) => api("/api/kb/roots", { method: "POST", body: JSON.stringify({ path }) });
 export const kbRemoveRoot = (path) => api("/api/kb/roots", { method: "DELETE", body: JSON.stringify({ path }) });
-export const kbTree = (root) => api(`/api/kb/tree${root !== undefined ? `?root=${root}` : ""}`);
+export const kbTree = (root, dir) =>
+  api(`/api/kb/tree${root !== undefined ? `?root=${root}` : ""}${dir ? `&dir=${encodeURIComponent(dir)}` : ""}`);
 export const kbSearch = (q, root, limit = 30) =>
   api(`/api/kb/search?q=${encodeURIComponent(q)}${root !== undefined ? `&root=${root}` : ""}&limit=${limit}`);
 export const kbGraph = (root, include = ["links"], max = 800) =>
@@ -63,28 +70,28 @@ export const kbImaSearch = (q, kb) =>
   api(`/api/kb/ima/search?q=${encodeURIComponent(q)}${kb ? `&kb=${encodeURIComponent(kb)}` : ""}`);
 export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURIComponent(mediaId)}`);
 
+// ---------- 地图（GIS 项目） ----------
+export const mapProjects = () => api("/api/map/projects");
+export const mapProject = (name) => api(`/api/map/project${name ? `?name=${encodeURIComponent(name)}` : ""}`);
+export const mapSaveStyle = (name, style) =>
+  api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });
+export const mapSaveConfig = (name, config) =>
+  api("/api/map/config", { method: "POST", body: JSON.stringify({ name, config }) });
+export const mapImportLayer = (name, layerId, geojson) =>
+  api("/api/map/import", { method: "POST", body: JSON.stringify({ name, layerId, geojson }) });
+export const mapRebuild = (name, layerIds) =>
+  api("/api/map/rebuild", { method: "POST", body: JSON.stringify({ name, layerIds }) });
+export const mapDeleteLayer = (name, layerId) =>
+  api("/api/map/layer/delete", { method: "POST", body: JSON.stringify({ name, layerId }) });
+export const mapGetLayer = (name, layerId) =>
+  api(`/api/map/layer?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layerId)}`);
+export const mapIsochrone = (params) =>
+  api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
+
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);
 export const tplContent = (relPath) => api(`/api/templates/content?path=${encodeURIComponent(relPath)}`);
 export const tplRefresh = () => api("/api/templates/refresh", { method: "POST" });
-
-// ---------- 地图（MapLibre 可视化） ----------
-export const mapProjects = () => api("/api/map/projects");
-export const mapProject = (name) => api(`/api/map/project/${encodeURIComponent(name)}`);
-export const mapSaveStyle = (name, style) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/style`, { method: "POST", body: JSON.stringify({ style }) });
-export const mapSaveConfig = (name, config) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/config`, { method: "POST", body: JSON.stringify({ config }) });
-export const mapImportLayer = (name, layerId, geojson) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/import`, { method: "POST", body: JSON.stringify({ layerId, geojson }) });
-export const mapRebuildTiles = (name) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/rebuild-tiles`, { method: "POST" });
-export const mapGetLayer = (name, layerId) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`);
-export const mapDeleteLayer = (name, layerId) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/layer/${encodeURIComponent(layerId)}`, { method: "DELETE" });
-export const mapIsochrone = (name, params) =>
-  api(`/api/map/project/${encodeURIComponent(name)}/isochrone`, { method: "POST", body: JSON.stringify(params) });
 
 export function fileToBase64(file) {
   return new Promise((resolve, reject) => {

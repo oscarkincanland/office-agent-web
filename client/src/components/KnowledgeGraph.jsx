@@ -36,6 +36,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   const containerRef = useRef(null);
   const graphRef = useRef(null);
   const [hideIsolated, setHideIsolated] = useState(false);
+  const [density, setDensity] = useState(1); // 布局密度（0.6 紧凑 ~ 1.8 舒展）
   const [query, setQuery] = useState("");
   const adjMapRef = useRef(new Map());
   const degreeMapRef = useRef(new Map());
@@ -92,6 +93,12 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     degreeMapRef.current = prepared.deg;
   }, [allNodes, allEdges, prepared]);
 
+  // 主题色（渲染时读取 CSS 变量，跟随暗/亮主题）
+  const cs = typeof document !== "undefined" ? getComputedStyle(document.documentElement) : null;
+  const themeTextColor = cs?.getPropertyValue("--text").trim() || "#d4d4d4";
+  const themeMutedColor = cs?.getPropertyValue("--muted").trim() || "#a0a0b0";
+  const themeAccentColor = cs?.getPropertyValue("--accent").trim() || "#8abeb7";
+
   const nodeSize = useCallback((d) => {
     const t = d.data.type;
     if (t === "tag") return 7;
@@ -136,7 +143,15 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const g = new Graph({
       container: el,
       autoResize: true,
-      data: { nodes: initialNodes, edges: initialEdges },
+      data: {
+        // 初始随机分散（force 布局以此为起点，避免全部堆在中心）
+        nodes: initialNodes.map((n) => ({
+          ...n,
+          x: (Math.random() - 0.5) * 900,
+          y: (Math.random() - 0.5) * 900,
+        })),
+        edges: initialEdges,
+      },
       node: {
         style: {
           size: nodeSize,
@@ -144,18 +159,22 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           labelText,
           labelPlacement: "bottom",
           labelFontSize: (d) => (d.data.type === "file" ? 11 : 9),
-          labelFill: (d) => (d.data.type === "file" ? "#c8c8d0" : "#8a8a9a"),
+          labelFill: (d) => (d.data.type === "file" ? themeTextColor : themeMutedColor),
           labelMaxWidth: 160,
           labelWordWrap: true,
           lineWidth: 1.5,
-          stroke: (d) => (d.id === highlightId ? "#ffffff" : "rgba(255,255,255,0.08)"),
+          stroke: (d) => (d.id === highlightId ? themeTextColor : "rgba(255,255,255,0.08)"),
           cursor: (d) => (d.data.type === "file" || d.data.type === "tag" ? "pointer" : "default"),
+        },
+        animation: {
+          update: { duration: 400, easing: "ease-out" },
+          enter: { duration: 300, easing: "ease-out" },
         },
         state: {
           dim: { opacity: 0.12 },
-          neighbor: { lineWidth: 2, stroke: "#ffffff" },
-          hover: { shadowBlur: 12, shadowColor: "rgba(138,190,183,0.35)" },
-          focus: { lineWidth: 2.5, stroke: "#ffffff", shadowBlur: 16, shadowColor: "#8abeb7" },
+          neighbor: { lineWidth: 2, stroke: themeTextColor },
+          hover: { shadowBlur: 12, shadowColor: themeAccentColor },
+          focus: { lineWidth: 2.5, stroke: themeTextColor, shadowBlur: 16, shadowColor: themeAccentColor },
         },
       },
       edge: {
@@ -165,6 +184,10 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           opacity: (d) => (d.data.type === "similar" ? 0.25 : 0.55),
           endArrow: false,
         },
+        animation: {
+          update: { duration: 400, easing: "ease-out" },
+          enter: { duration: 300, easing: "ease-out" },
+        },
         state: {
           "dim-edge": { opacity: 0.04 },
           near: { opacity: 0.95 },
@@ -172,15 +195,18 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       },
       layout: {
         type: "force",
-        linkDistance: (d) => (d.data?.type === "similar" ? 260 : 170),
-        nodeStrength: -800,
-        edgeStrength: (d) => (d.data?.type === "similar" ? 0.08 : 0.3),
+        linkDistance: (d) => (d.data?.type === "similar" ? 330 : 220) * density,
+        nodeStrength: -1200 * density,
+        edgeStrength: (d) => (d.data?.type === "similar" ? 0.06 : 0.25) / density,
         preventOverlap: true,
-        collideStrength: 1.2,
-        alphaDecay: 0.08,
-        alphaMin: 0.005,
-        maxSpeed: 200,
-        damping: 0.8,
+        collide: true,
+        collideRadius: (d) => ((nodeSize(d) || 16) + 24) * density,
+        collideStrength: 1.6,
+        alpha: 0.5,
+        alphaDecay: 0.06,
+        alphaMin: 0.004,
+        maxSpeed: 300,
+        damping: 0.7,
       },
       behaviors: [
         "drag-canvas",
@@ -264,7 +290,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, hideIsolated, highlightId, focusId, subSet]);
+  }, [data, hideIsolated, highlightId, focusId, subSet, density]);
 
   // 高亮定位（外部选中文档时）
   useEffect(() => {
@@ -303,6 +329,16 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点
         </label>
+        <span className="kb-density" title="调整节点间距">
+          <span className="kb-density-label">间距</span>
+          <input
+            type="range"
+            min="0.6" max="1.8" step="0.1"
+            value={density}
+            onChange={(e) => setDensity(Number(e.target.value))}
+          />
+          <span className="kb-density-val">{density.toFixed(1)}×</span>
+        </span>
       </div>
       <div className="kb-graph" ref={containerRef} />
     </div>

@@ -42,6 +42,34 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
 
   // 左栏分割比例（文件树 / 信息区）
   const [leftSplit, setLeftSplit] = useState(0.65); // 65% 给树，35% 给信息
+  const [leftW, setLeftW] = useState(260);  // 左栏宽度（可拖拽）
+  const [rightW, setRightW] = useState(240); // 右栏宽度（可拖拽）
+  const paneDragRef = useRef(null);
+
+  // 左右栏宽度拖拽
+  const startPaneDrag = (e, side) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = side === "left" ? leftW : rightW;
+    paneDragRef.current = { side, startX, startW };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const delta = ev.clientX - paneDragRef.current.startX;
+      const next = Math.min(420, Math.max(180, paneDragRef.current.startW + (paneDragRef.current.side === "left" ? delta : -delta)));
+      if (paneDragRef.current.side === "left") setLeftW(next);
+      else setRightW(next);
+    };
+    const onUp = () => {
+      paneDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   const leftRef = useRef(null);
   const splitDragRef = useRef(null);
 
@@ -451,7 +479,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
       {view === "browse" ? (
         <div className="kb-body">
           {/* ── 左栏：上=文件树/搜索，下=信息 ── */}
-          <div className="kb-left" ref={leftRef}>
+          <div className="kb-left" ref={leftRef} style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
             {/* 上：树 / 搜索结果 */}
             <div className="kb-left-top" style={{ flex: `0 0 ${leftSplit * 100}%` }}>
               {results ? (
@@ -544,8 +572,9 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               </div>
             )}
           </div>
+          <div className="kb-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
           {/* ── 右栏：链接 + @ 到对话 ── */}
-          <div className="kb-right">
+          <div className="kb-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
             {doc ? (
               <>
                 <div className="kb-right-section">
@@ -613,6 +642,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               <div className="kb-right-empty">选择文档后显示链接</div>
             )}
           </div>
+          <div className="kb-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整右栏宽度" />
         </div>
       ) : view === "mind" ? (
         <MindMap

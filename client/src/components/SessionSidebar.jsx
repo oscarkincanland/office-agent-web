@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback } from "react";
+import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
@@ -30,6 +31,12 @@ function formatTime(iso) {
   if (hours < 24) return `${hours}小时前`;
   const days = Math.floor(hours / 24);
   return `${days}天前`;
+}
+
+// 产物面板：接收毫秒时间戳
+function formatRelTime(ms) {
+  if (!ms) return "";
+  return formatTime(new Date(ms).toISOString());
 }
 
 function shortenCwd(cwd) {
@@ -105,19 +112,19 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
       </div>
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="btn-xs" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
-          {pinned.has(s.id) ? "取消置顶" : "置顶"}
+        <button className="btn-icon" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
+          <Icon name="pin" size={12} className={pinned.has(s.id) ? "pinned" : ""} />
         </button>
         <button
-          className="btn-xs"
+          className="btn-icon"
           onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
           title="重命名"
-        >重命名</button>
+        ><Icon name="penTool" size={12} /></button>
         <button
-          className="btn-xs danger"
+          className="btn-icon danger"
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
           title="删除"
-        >删除</button>
+        ><Icon name="trash" size={12} /></button>
       </div>
     </div>
   );
@@ -151,6 +158,35 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
 export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
+  const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
+  const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
+  const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
+  const [sessionsH, setSessionsH] = useState(null); // 历史区高度（null=默认30%），可拖拽
+  const splitDragRef = useRef(null);
+
+  // 历史/文件 上下分割拖拽
+  const startSplitDrag = (e) => {
+    e.preventDefault();
+    const section = e.currentTarget.closest(".sessions-section");
+    const startY = e.clientY;
+    const startH = section ? section.getBoundingClientRect().height : 300;
+    splitDragRef.current = { startY, startH };
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    const onMove = (ev) => {
+      const next = Math.min(window.innerHeight * 0.6, Math.max(80, splitDragRef.current.startH + (ev.clientY - splitDragRef.current.startY)));
+      setSessionsH(next);
+    };
+    const onUp = () => {
+      splitDragRef.current = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
   const [sessionsOpen, setSessionsOpen] = useState(() => {
     try { return localStorage.getItem("oaw_sidebar_sessions_open") !== "0"; } catch { return true; }
   });
@@ -188,7 +224,34 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
       await uploadFile(f.name, data);
       onUploaded();
     } catch (err) { alert("上传失败: " + err.message); }
-    finally { e.target.value = ""; }
+    e.target.value = "";
+  };
+
+  // 新建空白 Word 文档（docx 库生成 → 上传工作区 → 刷新列表）
+  const [creatingWord, setCreatingWord] = useState(false);
+  const handleNewWord = async () => {
+    if (creatingWord) return;
+    setCreatingWord(true);
+    try {
+      // 含一个空段落，保证各版本 Word/WPS 正常打开
+      const doc = new Document({ sections: [{ children: [new Paragraph("")] }] });
+      const blob = await Packer.toBlob(doc);
+      // blob → base64（绕开 FileReader，分块避免栈溢出）
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      }
+      const data = btoa(bin);
+      // 文件名查重：新建文档.docx / 新建文档 2.docx …
+      const names = new Set(files.map((f) => f.name));
+      let name = "新建文档.docx";
+      let i = 2;
+      while (names.has(name)) name = `新建文档 ${i++}.docx`;
+      await uploadFile(name, data);
+      onUploaded();
+    } catch (err) { alert("新建失败: " + err.message); }
+    setCreatingWord(false);
   };
 
   const handleDeleteFile = async (name) => {
@@ -328,7 +391,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         )}
       </div>
       {sessionsOpen && (
-        <div className="sidebar-section sessions-section">
+        <div className="sidebar-section sessions-section" style={sessionsH ? { height: sessionsH, maxHeight: sessionsH } : undefined}>
           <SessionList
             sessions={filteredSessions || sessions}
             onDelete={handleDeleteSession}
@@ -340,6 +403,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           )}
         </div>
       )}
+      {/* 历史/文件 垂直分割手柄（会话区展开时可用） */}
+      {sessionsOpen && <div className="sidebar-split-handle" onMouseDown={startSplitDrag} title="拖动调整历史/文件高度" />}
 
       {/* 文件树 */}
       <div className="sidebar-section-head">
@@ -348,6 +413,9 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <span className="section-count">{files.length}</span>
         <button className="btn-xs section-refresh" onClick={onRefreshFiles} title="刷新文件">
           <Icon name="refresh" size={11} />
+        </button>
+        <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
+          <Icon name="plus" size={11} />
         </button>
         <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
           <Icon name="upload" size={11} />
@@ -362,8 +430,19 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
             <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
         )}
+        <div className="file-search">
+          <Icon name="search" size={11} />
+          <input
+            placeholder="搜索文件…"
+            value={fileQ}
+            onChange={(e) => setFileQ(e.target.value)}
+          />
+          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除">×</button>}
+        </div>
         <div className="file-list">
-          {files.map((f) => {
+          {files
+            .filter((f) => !fileQ.trim() || f.name.toLowerCase().includes(fileQ.trim().toLowerCase()))
+            .map((f) => {
             const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
             const isNew = newFiles.has(filePath);
             return (
@@ -401,47 +480,78 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <div className="sidebar-foot">office-workspace</div>
       </div>
 
-      {/* 底部：产物 / 记忆 / 设置 */}
+      {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">
-        <button className={`bt-btn ${bottomTab === "artifacts" ? "active" : ""}`} onClick={() => setBottomTab("artifacts")} title="产物（agent 生成的文件）">
+        <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => setModal(modal === "artifacts" ? null : "artifacts")} title="产物（agent 生成的文件）">
           <Icon name="file" size={13} /> 产物
         </button>
-        <button className={`bt-btn ${bottomTab === "memory" ? "active" : ""}`} onClick={() => setBottomTab("memory")} title="记忆（AGENTS.md + memory/）">
-          <Icon name="book" size={13} /> 记忆
-        </button>
-        <button className={`bt-btn ${bottomTab === "settings" ? "active" : ""}`} onClick={() => setBottomTab("settings")} title="设置">
+        <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => setModal(modal === "settings" ? null : "settings")} title="设置（含记忆）">
           <Icon name="gear" size={13} /> 设置
         </button>
       </div>
-      <div className="sidebar-bottom-content">
-        {bottomTab === "artifacts" && (
-          <div className="file-list">
-            {files.length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
-            {[...files]
-              .filter((f) => !f.isDir)
-              .sort((a, b) => b.mtime - a.mtime)
-              .map((f) => (
-                <div
-                  key={f.name}
-                  className={`file-item ${f.name === currentName ? "active" : ""}`}
-                  onClick={() => {
-                    const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onOpenFile(rel);
-                  }}
-                  title={f.name}
-                >
-                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
-                  <span className="file-name">{f.name}</span>
-                  <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
-                    {formatTime(new Date(f.mtime).toISOString())}
-                  </span>
-                </div>
-              ))}
-          </div>
-        )}
-        {bottomTab === "memory" && <MemoryTab />}
-        {bottomTab === "settings" && <SettingsPanel />}
+      <div className="sidebar-bottom-hint">
+        产物与设置点击后弹窗显示
       </div>
+
+      {/* 产物弹窗 */}
+      {modal === "artifacts" && (
+        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+          <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-head">
+              <Icon name="file" size={13} />
+              <span className="sb-modal-title">产物（{files.filter((f) => !f.isDir).length}）</span>
+              <span className="sb-modal-sub">agent 生成的文档按时间倒序</span>
+              <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="sb-modal-body">
+              {files.filter((f) => !f.isDir).length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
+              <div className="file-list">
+                {[...files]
+                  .filter((f) => !f.isDir)
+                  .sort((a, b) => b.mtime - a.mtime)
+                  .map((f) => (
+                    <div
+                      key={f.name}
+                      className={`file-item ${f.name === currentName ? "active" : ""}`}
+                      onClick={() => {
+                        const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
+                        onOpenFile(rel);
+                        setModal(null);
+                      }}
+                      title={f.name}
+                    >
+                      <span className="file-ext"><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
+                      <span className="file-name">{f.name}</span>
+                      <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
+                        {formatTime(new Date(f.mtime).toISOString())}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 设置弹窗（含记忆） */}
+      {modal === "settings" && (
+        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+          <div className="sb-modal sb-modal-wide" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-head">
+              <Icon name="gear" size={13} />
+              <span className="sb-modal-title">设置</span>
+              <div className="sb-subtabs">
+                <button className={`sb-subtab ${modalTab === "settings" ? "active" : ""}`} onClick={() => setModalTab("settings")}>设置</button>
+                <button className={`sb-subtab ${modalTab === "memory" ? "active" : ""}`} onClick={() => setModalTab("memory")} title="工作区记忆（AGENTS.md + memory/）">记忆</button>
+              </div>
+              <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="sb-modal-body">
+              {modalTab === "settings" ? <SettingsPanel /> : <MemoryTab />}
+            </div>
+          </div>
+        </div>
+      )}
 
       {contextMenu && (
         <ContextMenu
