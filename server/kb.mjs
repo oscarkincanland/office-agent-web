@@ -676,3 +676,76 @@ export async function imaDoc(mediaId) {
 
 // 启动时预扫描（静默失败）
 scan().catch(() => {});
+
+// ---------- 文档 ↔ 知识库联动 ----------
+
+/**
+ * 将工作区 docx 摄取为 Markdown 并入知识库索引
+ * @param {string} name 工作区中的 docx 文件名
+ * @returns {Promise<{ok: boolean, mdName?: string, error?: string}>}
+ */
+export async function ingestDocx(name) {
+  const { getWorkspace } = await import("./workspace.mjs");
+  const ws = getWorkspace();
+  const abs = path.join(ws, String(name || ""));
+  if (!fs.existsSync(abs) || !/\.docx$/i.test(abs)) return { ok: false, error: "文件不存在或不是 docx" };
+  const JSZip = (await import("jszip")).default;
+  const zip = await JSZip.loadAsync(fs.readFileSync(abs));
+  const xml = await zip.file("word/document.xml")?.async("string");
+  if (!xml) return { ok: false, error: "docx 缺少 document.xml" };
+
+  // 提取段落（保留 Heading 样式层级）
+  const md = [];
+  for (const m of xml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)) {
+    const pxml = m[0];
+    const text = [...pxml.matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((t) => t[1]).join("").trim();
+    if (!text) continue;
+    const style = pxml.match(/w:pStyle w:val="([^"]+)"/)?.[1] || "";
+    const lvl = /^heading\s*([1-6])$/i.exec(style)?.[1] || (/^\d+$/.test(style) && +style <= 6 ? style : null);
+    md.push(lvl ? `${"#".repeat(+lvl)} ${text}` : text);
+  }
+  const mdName = String(name).replace(/\.docx$/i, "") + ".md";
+  fs.writeFileSync(path.join(ws, mdName), md.join("\n\n") + "\n", "utf8");
+  // 工作区注册为知识库根（幂等），重扫
+  addRoot(ws);
+  await scan(true);
+  return { ok: true, mdName };
+}
+
+/**
+ * 将知识库 Markdown 文档导出为 docx 写入工作区（标题层级 + 段落）
+ * @param {string} relPath 知识库文档相对路径
+ * @param {number} [rootIdx] 根目录索引
+ * @returns {Promise<{ok: boolean, name?: string, error?: string}>}
+ */
+export async function exportDocx(relPath, rootIdx = null) {
+  const target = getDoc(relPath, rootIdx);
+  if (!target) return { ok: false, error: "文档不存在" };
+  const { getWorkspace } = await import("./workspace.mjs");
+  const docx = await import("docx");
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel } = docx;
+
+  const children = [];
+  for (const line of String(target.content || "").split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) { children.push(new Paragraph("")); continue; }
+    const h = /^(#{1,6})\s+(.+)$/.exec(t);
+    if (h) {
+      const lvl = +h[1].length;
+      children.push(new Paragraph({ heading: lvl === 1 ? HeadingLevel.HEADING_1 : lvl === 2 ? HeadingLevel.HEADING_2 : lvl === 3 ? HeadingLevel.HEADING_3 : HeadingLevel.HEADING_4, children: [new TextRun({ text: h[2], bold: true, size: 32 - lvl * 2 })] }));
+    } else {
+      children.push(new Paragraph({ children: [new TextRun({ text: t, size: 24 })] }));
+    }
+  }
+  const doc = new Document({ sections: [{ children }] });
+  const buf = await Packer.toBuffer(doc);
+
+  const ws = getWorkspace();
+  const base = (target.title || path.basename(relPath).replace(/\.md$/i, "")).replace(/[\\/:*?"<>|]/g, "_");
+  const existing = fs.existsSync(ws) ? fs.readdirSync(ws) : [];
+  let name = `${base}.docx`;
+  let i = 2;
+  while (existing.includes(name)) name = `${base} ${i++}.docx`;
+  fs.writeFileSync(path.join(ws, name), buf);
+  return { ok: true, name };
+}
