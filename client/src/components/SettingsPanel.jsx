@@ -56,6 +56,7 @@ export default function SettingsPanel({ onReset }) {
   const [authKey, setAuthKey] = useState("");
   const [authMsg, setAuthMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [version, setVersion] = useState("");
 
   // 消息字体大小 → CSS 变量（.msg 生效）
   useEffect(() => {
@@ -68,6 +69,7 @@ export default function SettingsPanel({ onReset }) {
       try {
         const r = await fetch("/api/status").then((x) => x.json());
         setIntegration(r);
+        if (r.version) setVersion("v" + r.version);
       } catch {}
     })();
     // 已配置的 API Key（掩码）
@@ -238,7 +240,7 @@ export default function SettingsPanel({ onReset }) {
       <div className="sp-section">
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>
         <button className="sp-danger" onClick={resetAll}>重置界面状态与设置</button>
-        <div className="sp-note">版本 v0.8.13</div>
+        <div className="sp-note">版本 {version || "v0.8.16"}</div>
       </div>
     </div>
   );
