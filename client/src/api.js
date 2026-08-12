@@ -15,6 +15,12 @@ export const openDoc = (name) => api(`/api/doc/${encodeURIComponent(name)}`);
 export const saveCells = (name, sheet, cells) =>
   api(`/api/doc/${encodeURIComponent(name)}/cells`, { method: "POST", body: JSON.stringify({ sheet, cells }) });
 
+export const agentAuth = () => api("/api/agent/auth");
+export const agentAuthSave = (provider, key) =>
+  api("/api/agent/auth", { method: "POST", body: JSON.stringify({ provider, key }) });
+export const agentAuthRemove = (provider) =>
+  api("/api/agent/auth/remove", { method: "POST", body: JSON.stringify({ provider }) });
+
 export const listModels = () => api("/api/models");
 export const setAgentModel = (client, model) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, model }) });

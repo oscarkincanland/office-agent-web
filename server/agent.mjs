@@ -613,6 +613,41 @@ class AgentManager extends EventEmitter {
 }
 
 /** Minimal arg parser: splits on whitespace, supports double-quoted segments. */
+// ===== API Key 管理（auth.json，pi 原生格式） =====
+function authFilePath() {
+  return path.join(AGENT_DIR, "auth.json");
+}
+
+/** 读取全部 provider key（掩码展示用） */
+export function listAuth() {
+  try {
+    return JSON.parse(fs.readFileSync(authFilePath(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** 保存/更新 provider 的 API Key（写 auth.json + 运行时注入） */
+export async function setApiKey(provider, key) {
+  const auth = listAuth();
+  auth[provider] = { type: "api_key", key: String(key).trim() };
+  fs.mkdirSync(AGENT_DIR, { recursive: true });
+  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  try {
+    const mr = await agentManager.modelRuntime();
+    await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
+  } catch { /* 运行时注入失败不阻断保存 */ }
+  return { ok: true, providers: Object.keys(auth) };
+}
+
+/** 删除 provider 的 API Key */
+export async function removeApiKey(provider) {
+  const auth = listAuth();
+  if (auth[provider]) delete auth[provider];
+  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  return { ok: true, providers: Object.keys(auth) };
+}
+
 function emitChannelSafe(entry, type, data) {
   try {
     const id = ++entry.channel.seq;

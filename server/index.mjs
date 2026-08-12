@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { agentManager } from "./agent.mjs";
+import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -580,6 +580,37 @@ app.post("/api/agent/model", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---------- agent API Key（模型登录/密钥配置，auth.json） ----------
+function maskKey(key) {
+  const k = String(key || "");
+  return k.length <= 8 ? "****" : k.slice(0, 3) + "****" + k.slice(-4);
+}
+
+app.get("/api/agent/auth", (_req, res) => {
+  const auth = listAuth();
+  res.json({
+    providers: Object.fromEntries(
+      Object.entries(auth).map(([p, v]) => [p, { type: v.type, masked: maskKey(v.key), set: true }])
+    ),
+  });
+});
+
+app.post("/api/agent/auth", async (req, res) => {
+  const { provider, key } = req.body || {};
+  if (!provider || !key) return res.status(400).json({ error: "provider and key required" });
+  try {
+    res.json(await setApiKey(provider, key));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/agent/auth/remove", async (req, res) => {
+  const { provider } = req.body || {};
+  if (!provider) return res.status(400).json({ error: "provider required" });
+  res.json(await removeApiKey(provider));
 });
 
 // ---------- sessions ----------
