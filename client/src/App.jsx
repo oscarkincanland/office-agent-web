@@ -7,7 +7,7 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
-import MapPanel from "./components/MapPanel.jsx";
+import CommandPalette from "./components/CommandPalette.jsx";
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import { useTheme } from "./theme.jsx";
@@ -63,6 +63,7 @@ export default function App() {
   const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
   const [mapMode, setMapMode] = useState(false); // 地图全屏模式（三栏：图层树+地图+对话）
+  const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
   const [clientId] = useState(getClientId);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -119,6 +120,18 @@ export default function App() {
       } catch {}
     })();
   }, [refreshFiles, refreshSessions]);
+
+  // 全局 Ctrl/Cmd+K 切换命令面板
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // 切换工作区
   const handleWorkspaceChange = useCallback(async (dir) => {
@@ -403,6 +416,7 @@ export default function App() {
               onCloseTab={closeTab}
               onOpenFile={open}
               loading={docLoading}
+              onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
             />
           </div>
         </div>
@@ -434,6 +448,15 @@ export default function App() {
         />
         </>
         )}
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          onOpenFile={open}
+          onKb={() => setKbMode(true)}
+          onTpl={() => setTplMode(true)}
+          onMap={() => setMapMode(true)}
+          onSession={handleSelectSession}
+        />
       </div>
     </AppErrorBoundary>
   );
