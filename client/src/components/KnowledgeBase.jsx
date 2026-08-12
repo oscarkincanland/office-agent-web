@@ -34,6 +34,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   const [expanded, setExpanded] = useState({}); // 持久化（localStorage）
   const [backOpen, setBackOpen] = useState({}); // 反链展开上下文
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false); // 导出 Word 按钮的 loading
 
   // Obsidian tabs: {relPath, rootIdx, title}
   const [tabs, setTabs] = useState([]);
@@ -288,6 +289,26 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     setTimeout(() => onAtMention?.(marker), 120); // 等 ChatPanel 挂载后插入
   }, [currentDoc, rootName, onExit, onAtMention]);
 
+
+  // 导出当前文档为 Word（服务端从 md 生成 docx，写入工作区）
+  const handleExportDocx = useCallback(async () => {
+    if (!currentDoc || exporting) return;
+    setExporting(true);
+    try {
+      const r = await fetch("/api/kb/export-docx", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ relPath: currentDoc.relPath, rootIdx: currentDoc.rootIdx })
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
+      alert(`已导出：${data.name}（保存到工作区）`);
+    } catch (err) {
+      alert("导出失败: " + err.message);
+    } finally {
+      setExporting(false);
+    }
+  }, [currentDoc, exporting]);
   // 文件树行 @ 到对话（对齐 siyuan 右键操作）
   const onAtMentionFromDoc = useCallback((relPath) => {
     const marker = `@知识库[${relPath}@${rootName}]`;
@@ -531,7 +552,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               ) : (
                 <div className="kb-right-empty">选择文档后显示信息</div>
               )}
-            </div>
+                </div>
           </div>
           {/* ── 中栏：tab 栏 + 预览 ── */}
           <div className="kb-center">
@@ -552,7 +573,17 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               <div className="kb-doc-body">
                 {/* 标题栏 + 面包屑（对齐 siyuan Title + Breadcrumb） */}
                 <div className="kb-doc-titlebar">
-                  <h2 className="kb-doc-title">{doc.title}</h2>
+                  <div className="kb-doc-titlebar-head">
+                    <h2 className="kb-doc-title">{doc.title}</h2>
+                    <button
+                      className="btn-sm kb-export-btn"
+                      onClick={handleExportDocx}
+                      disabled={exporting}
+                      title="导出为 Word 文档（保存到工作区）"
+                    >
+                      <Icon name="download" size={12} /> {exporting ? "导出中…" : "导出 Word"}
+                    </button>
+                  </div>
                   <div className="kb-doc-breadcrumb">
                     <span className="kb-crumb" onClick={() => onDirNavigate("")} title={rootName}>{rootName}</span>
                     {doc.relPath.split("/").slice(0, -1).map((d, i, arr) => {
