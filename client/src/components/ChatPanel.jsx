@@ -87,6 +87,9 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const [modelMsg, setModelMsg] = useState("");
   const [editMode, setEditMode] = useState("office"); // "office" | "agent"：office编辑模式 / 普通agent模式
   const [effort, setEffort] = useState("medium"); // 推理强度 low/medium/high
+  const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
+  const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
+  const [modelQ, setModelQ] = useState(""); // 模型搜索
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -599,70 +602,115 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           </div>
         )}
         <div className="chat-input">
-          <textarea
-            value={input}
-            placeholder={busy ? "输入新指令可打断当前回复..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            onCompositionEnd={() => {}}
-            onPaste={(e) => {
-              const items = e.clipboardData?.items;
-              if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
-            }}
-            onChange={(e) => setInput(e.target.value)}
-          />
-          <div className="input-actions">
-            <button className="btn" title="上传图片" onClick={() => fileInputRef.current?.click()}><Icon name="image" size={14} /></button>
-            <button className="btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}><Icon name="link" size={14} /></button>
-            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <div style={{ marginLeft: 'auto' }}>
+          <div className="chat-input-row">
+            <textarea
+              value={input}
+              placeholder={busy ? "输入新指令可打断当前回复..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              onCompositionEnd={() => {}}
+              onPaste={(e) => {
+                const items = e.clipboardData?.items;
+                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
+              }}
+              onChange={(e) => setInput(e.target.value)}
+            />
+            <div className="input-send">
               {busy ? (
-                <button className="btn danger stop-btn" onClick={stop}><Icon name="stop" size={14} /></button>
+                <button className="btn danger stop-btn" onClick={stop} title="停止生成"><Icon name="stop" size={14} /></button>
               ) : (
-                <button className="btn primary send-btn" onClick={() => send()}><Icon name="send" size={14} /></button>
+                <button className="btn primary send-btn" onClick={() => send()} title="发送 (Enter)"><Icon name="send" size={14} /></button>
               )}
             </div>
           </div>
-          <div className="chat-settings">
-            <button className="btn-xs icon-btn" onClick={handleNewSession} title="新建会话">
-              <Icon name="plus" size={14} />
+          {/* 单行工具栏（pi-web 风格）：图片/附件 | 模式 | 模型/思考图标 | 新建会话 */}
+          <div className="chat-toolbar">
+            <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
+            <button className="ct-btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>
+              <Icon name="image" size={14} />
             </button>
-            <div className="mode-switch" title="Office编辑 / 创作模式">
+            <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
+              <Icon name="link" size={14} />
+            </button>
+            <span className="ct-sep" />
+            <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
               <button
                 className={`mode-btn ${editMode === "office" ? "active" : ""}`}
                 onClick={() => setEditMode("office")}
-                title="Office模式：直接编辑文档"
+                title="办公模式：直接编辑文档"
               ><Icon name="doc" size={13} /></button>
               <button
                 className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
                 onClick={() => setEditMode("agent")}
-                title="创作模式：生成新文件"
+                title="开发模式：生成新文件"
               ><Icon name="pen-tool" size={13} /></button>
             </div>
-            <div className="model-picker" title={model || "选择模型"}>
-              <Icon name="robot" size={13} />
-              <select className="model-select" value={model} onChange={(e) => changeModel(e.target.value)}>
-                <option value="">-- 模型 --</option>
-                {models.map((m) => <option key={m.id} value={m.id}>{m.vision ? "[V] " : ""}{m.id}</option>)}
-              </select>
+            <span className="ct-sep" />
+            {/* 模型选择：图标 + 浮层 */}
+            <div className="ct-popwrap">
+              <button className={`ct-btn ${modelOpen ? "active" : ""}`} onClick={() => { setModelOpen((v) => !v); setEffortOpen(false); }} title={model ? `模型: ${model}` : "选择模型"}>
+                <Icon name="robot" size={14} />
+                {model && <span className="ct-model-dot" title={model} />}
+              </button>
+              {modelOpen && (
+                <div className="ct-pop model-pop">
+                  <input
+                    className="ct-pop-search"
+                    placeholder="搜索模型…"
+                    value={modelQ}
+                    onChange={(e) => setModelQ(e.target.value)}
+                    autoFocus
+                  />
+                  <div className="ct-pop-list">
+                    {models
+                      .filter((m) => !modelQ || m.id.toLowerCase().includes(modelQ.toLowerCase()))
+                      .map((m) => (
+                        <div
+                          key={m.id}
+                          className={`ct-pop-item ${model === m.id ? "active" : ""}`}
+                          onClick={() => { changeModel(m.id); setModelOpen(false); }}
+                          title={m.id}
+                        >
+                          {m.vision ? "[V] " : ""}{m.id}
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="effort-picker" title={`推理强度: ${effort}`}>
-              <Icon name="info" size={13} />
-              <select
-                className="effort-select"
-                value={effort}
-                onChange={(e) => setEffort(e.target.value)}
-              >
-                <option value="low">快速</option>
-                <option value="medium">标准</option>
-                <option value="high">深度</option>
-              </select>
+            {/* 思考程度：图标 + 浮层 */}
+            <div className="ct-popwrap">
+              <button className={`ct-btn ${effortOpen ? "active" : ""}`} onClick={() => { setEffortOpen((v) => !v); setModelOpen(false); }} title={`推理强度: ${effort === "low" ? "快速" : effort === "high" ? "深度" : "标准"}`}>
+                <Icon name="info" size={14} />
+              </button>
+              {effortOpen && (
+                <div className="ct-pop effort-pop">
+                  {[
+                    { id: "low", label: "快速", desc: "响应快，适合简单任务" },
+                    { id: "medium", label: "标准", desc: "平衡速度与质量" },
+                    { id: "high", label: "深度", desc: "深入推理，适合复杂任务" },
+                  ].map((e) => (
+                    <div
+                      key={e.id}
+                      className={`ct-pop-item ${effort === e.id ? "active" : ""}`}
+                      onClick={() => { setEffort(e.id); setEffortOpen(false); }}
+                    >
+                      <b>{e.label}</b>
+                      <span className="ct-pop-desc">{e.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
+            <span style={{ flex: 1 }} />
+            <button className="ct-btn" onClick={handleNewSession} title="新建会话">
+              <Icon name="plus" size={14} />
+            </button>
             {modelMsg && <span className="model-msg">{modelMsg}</span>}
           </div>
         </div>
