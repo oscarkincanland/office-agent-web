@@ -93,6 +93,7 @@ export default function App() {
     setActiveTab(null);
     setCurrentDir("");
     setCurrentSessionId(null);
+    lastSessionIdRef.current = null;
   }, []);
 
   const refreshFiles = useCallback(async (dir) => {
@@ -275,9 +276,19 @@ export default function App() {
     }, 200);
   }, [refreshSessions]);
 
+  // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
+  const handleSessionChange = useCallback((id) => {
+    if (id) setCurrentSessionId(id);
+  }, []);
+
   // ===== 界面状态固化（localStorage）=====
   const [uiRestored, setUiRestored] = useState(false); // 恢复是否完成（完成后才允许保存）
   const restoredSessionRef = useRef(false); // 会话恢复只执行一次
+  // 上次会话 id 缓存：刷新后会话恢复前，保存逻辑不覆盖 lastSessionId（避免恢复竞态）
+  const lastSessionIdRef = useRef(null);
+  useEffect(() => {
+    lastSessionIdRef.current = loadUIState()?.lastSessionId || null;
+  }, []);
 
   // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 模式/侧栏/子目录
   useEffect(() => {
@@ -323,6 +334,7 @@ export default function App() {
   // 保存：界面状态变化时写入 localStorage
   useEffect(() => {
     if (!uiRestored) return;
+    if (currentSessionId) lastSessionIdRef.current = currentSessionId;
     saveUIState({
       tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
       activeTab,
@@ -332,7 +344,7 @@ export default function App() {
       workspace: currentWorkspace,
       currentDir,
       sidebarOpen,
-      lastSessionId: currentSessionId,
+      lastSessionId: currentSessionId ?? lastSessionIdRef.current,
     });
   }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
@@ -393,6 +405,7 @@ export default function App() {
               onOpenFile={open}
               sessions={sessions}
               onSelectSession={handleSelectSession}
+              onSessionChange={handleSessionChange}
             />
           </div>
         )}
@@ -414,6 +427,7 @@ export default function App() {
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onSelectSession={handleSelectSession}
+              onSessionChange={handleSessionChange}
               onAtMention={handleAtMention}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
@@ -465,6 +479,7 @@ export default function App() {
           onOpenFile={open}
           sessions={sessions}
           onSelectSession={handleSelectSession}
+              onSessionChange={handleSessionChange}
         />
         <SkillsManager
           open={skillsOpen}
