@@ -11,6 +11,7 @@ import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -121,7 +122,7 @@ async function readWorkbook(file) {
 
 // ---------- REST ----------
 app.get("/api/status", (_req, res) => {
-  res.json({ ok: true, officecli: path.basename(OFFICECLI) });
+  res.json({ ok: true, officecli: path.basename(OFFICECLI), version: pkg.version });
 });
 
 // ---------- 知识库（本地索引 + IMA 云端） ----------
