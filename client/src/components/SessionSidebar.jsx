@@ -3,6 +3,7 @@ import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, lis
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
+import SettingsPanel from "./SettingsPanel.jsx";
 
 const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
 const PIN_KEY = "oaw_pinned_sessions";
@@ -147,9 +148,17 @@ function SessionList({ sessions, onSelect, onDelete, onRename }) {
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession }) {
   const fileRef = useRef(null);
-  const [tab, setTab] = useState("files"); // "files" | "sessions"
+  const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
+  const [sessionsOpen, setSessionsOpen] = useState(() => {
+    try { return localStorage.getItem("oaw_sidebar_sessions_open") !== "0"; } catch { return true; }
+  });
+  const toggleSessions = () => {
+    const next = !sessionsOpen;
+    setSessionsOpen(next);
+    try { localStorage.setItem("oaw_sidebar_sessions_open", next ? "1" : "0"); } catch {}
+  };
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
@@ -203,13 +212,11 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
 
   // 在文件管理器中打开
   const handleOpenInExplorer = (filePath) => {
-    // 调用后端API打开文件管理器
     fetch("/api/open-in-explorer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: filePath })
     }).catch(() => {
-      // 如果API不存在，复制路径到剪贴板
       navigator.clipboard.writeText(filePath).then(() => {
         alert("路径已复制到剪贴板: " + filePath);
       });
@@ -220,9 +227,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const handleContextMenu = (e, file) => {
     e.preventDefault();
     e.stopPropagation();
-    
     const filePath = currentDir ? `${currentDir}/${file.name}` : file.name;
-    
     const menuItems = [
       {
         icon: "folderOpen",
@@ -241,7 +246,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         onClick: () => onAtMention && onAtMention(filePath, file.isDir)
       }
     ];
-    
     if (!file.isDir) {
       menuItems.push(
         { separator: true },
@@ -253,7 +257,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         }
       );
     }
-    
     setContextMenu({ x: e.clientX, y: e.clientY, items: menuItems });
   };
 
@@ -267,6 +270,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
 
   return (
     <div className="sidebar">
+      {/* 顶部：工作区选择器 + 新建会话 */}
       <div className="workspace-selector">
         <span className="ws-label">工作区</span>
         <select
@@ -287,6 +291,9 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           ))}
           <option value="__custom__">📂 自定义路径...</option>
         </select>
+        <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
+          <Icon name="plus" size={13} />
+        </button>
       </div>
       {customMode && (
         <div className="workspace-custom">
@@ -302,76 +309,114 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           </button>
         </div>
       )}
-      <div className="sidebar-tabs">
-        <button className={`tab-btn ${tab === "files" ? "active" : ""}`} onClick={() => setTab("files")}>文件</button>
-        <button className={`tab-btn ${tab === "artifacts" ? "active" : ""}`} onClick={() => setTab("artifacts")}>产物</button>
-        <button className={`tab-btn ${tab === "sessions" ? "active" : ""}`} onClick={() => setTab("sessions")}>历史</button>
-        <button className={`tab-btn ${tab === "memory" ? "active" : ""}`} onClick={() => setTab("memory")}>记忆</button>
-      </div>
 
-      {tab === "files" && (
-        <>
-          <div className="sidebar-actions">
-            <button className="btn-sm" onClick={onRefreshFiles}>刷新</button>
-            <button className="btn-sm" onClick={() => fileRef.current?.click()}>上传</button>
-            <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx" hidden onChange={handleUpload} />
-          </div>
-          <div className="file-list">
-            {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
-            {/* 面包屑：返回上级 */}
-            {currentDir && (
-              <div className="crumb-bar">
-                <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">← 根目录</button>
-                <span className="crumb-path">/{currentDir.split("/").pop()}</span>
-              </div>
-            )}
-            {files.map((f) => {
-              const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
-              const isNew = newFiles.has(filePath);
-              return (
-                <div
-                  key={f.name}
-                  className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""}`}
-                  onClick={() => {
-                    if (f.isDir) {
-                      const next = currentDir ? `${currentDir}/${f.name}` : f.name;
-                      onDirChange && onDirChange(next);
-                    } else {
-                      onOpenFile(filePath);
-                    }
-                  }}
-                  onContextMenu={(e) => handleContextMenu(e, f)}
-                  title={f.isDir ? f.name : f.name}
-                >
-                  <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? <Icon name="folder" size={12} /> : <Icon name={EXT_LABELS[f.ext] || "file"} size={12} />}</span>
-                  <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
-                  <span
-                    className="file-at"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onAtMention && onAtMention(filePath, f.isDir);
-                    }}
-                    title="@ 到对话中作为参考"
-                  >@</span>
-                  {!f.isDir && (
-                    <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}>x</span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div className="sidebar-foot">office-workspace</div>
-        </>
+      {/* 会话历史（折叠区） */}
+      <div className="sidebar-section-head" onClick={toggleSessions}>
+        <span className="section-chevron">{sessionsOpen ? "▾" : "▸"}</span>
+        <Icon name="history" size={12} />
+        <span className="section-name">历史</span>
+        <span className="section-count">{sessions.length}</span>
+        <button className="btn-xs section-refresh" onClick={(e) => { e.stopPropagation(); onRefreshSessions(); }} title="刷新会话">
+          <Icon name="refresh" size={11} />
+        </button>
+        {currentName && (
+          <button
+            className={`btn-xs section-filter ${fileFilter ? "active" : ""}`}
+            onClick={(e) => { e.stopPropagation(); toggleFileFilter(); }}
+            title="按当前文档过滤"
+          ><Icon name="filter" size={11} /></button>
+        )}
+      </div>
+      {sessionsOpen && (
+        <div className="sidebar-section sessions-section">
+          <SessionList
+            sessions={filteredSessions || sessions}
+            onDelete={handleDeleteSession}
+            onRename={handleRenameSession}
+            onSelect={(s) => { if (onSelectSession) onSelectSession(s); }}
+          />
+          {fileFilter && currentName && (
+            <div className="sidebar-foot">已过滤：仅显示与「{currentName}」相关的会话</div>
+          )}
+        </div>
       )}
 
-      {tab === "artifacts" && (
-        <>
-          <div className="sidebar-actions">
-            <button className="btn-sm" onClick={onRefreshFiles}>刷新</button>
+      {/* 文件树 */}
+      <div className="sidebar-section-head">
+        <Icon name="folder" size={12} />
+        <span className="section-name">文件</span>
+        <span className="section-count">{files.length}</span>
+        <button className="btn-xs section-refresh" onClick={onRefreshFiles} title="刷新文件">
+          <Icon name="refresh" size={11} />
+        </button>
+        <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
+          <Icon name="upload" size={11} />
+        </button>
+        <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx" hidden onChange={handleUpload} />
+      </div>
+      <div className="sidebar-section files-section">
+        {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
+        {currentDir && (
+          <div className="crumb-bar">
+            <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">← 根目录</button>
+            <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
+        )}
+        <div className="file-list">
+          {files.map((f) => {
+            const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
+            const isNew = newFiles.has(filePath);
+            return (
+              <div
+                key={f.name}
+                className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""}`}
+                onClick={() => {
+                  if (f.isDir) {
+                    const next = currentDir ? `${currentDir}/${f.name}` : f.name;
+                    onDirChange && onDirChange(next);
+                  } else {
+                    onOpenFile(filePath);
+                  }
+                }}
+                onContextMenu={(e) => handleContextMenu(e, f)}
+                title={f.name}
+              >
+                <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? <Icon name="folder" size={12} /> : <Icon name={EXT_LABELS[f.ext] || "file"} size={12} />}</span>
+                <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
+                <span
+                  className="file-at"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onAtMention && onAtMention(filePath, f.isDir);
+                  }}
+                  title="@ 到对话中作为参考"
+                >@</span>
+                {!f.isDir && (
+                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}>x</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="sidebar-foot">office-workspace</div>
+      </div>
+
+      {/* 底部：产物 / 记忆 / 设置 */}
+      <div className="sidebar-bottom-tabs">
+        <button className={`bt-btn ${bottomTab === "artifacts" ? "active" : ""}`} onClick={() => setBottomTab("artifacts")} title="产物（agent 生成的文件）">
+          <Icon name="file" size={13} /> 产物
+        </button>
+        <button className={`bt-btn ${bottomTab === "memory" ? "active" : ""}`} onClick={() => setBottomTab("memory")} title="记忆（AGENTS.md + memory/）">
+          <Icon name="book" size={13} /> 记忆
+        </button>
+        <button className={`bt-btn ${bottomTab === "settings" ? "active" : ""}`} onClick={() => setBottomTab("settings")} title="设置">
+          <Icon name="gear" size={13} /> 设置
+        </button>
+      </div>
+      <div className="sidebar-bottom-content">
+        {bottomTab === "artifacts" && (
           <div className="file-list">
-            {files.length === 0 && <div className="empty">暂无文件，agent 生成的文档会显示在这里</div>}
-            {/* 按修改时间倒序展示（产物优先） */}
+            {files.length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
             {[...files]
               .filter((f) => !f.isDir)
               .sort((a, b) => b.mtime - a.mtime)
@@ -388,45 +433,16 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                   <span className={`file-ext ${f.isDir ? "dir" : ""}`}><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
                   <span className="file-name">{f.name}</span>
                   <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
-                    {formatRelTime(f.mtime)}
+                    {formatTime(new Date(f.mtime).toISOString())}
                   </span>
                 </div>
               ))}
           </div>
-          <div className="sidebar-foot">产物保存目录: {currentDir || "工作区根目录"}</div>
-        </>
-      )}
+        )}
+        {bottomTab === "memory" && <MemoryTab />}
+        {bottomTab === "settings" && <SettingsPanel />}
+      </div>
 
-      {tab === "sessions" && (
-        <>
-          <div className="sidebar-actions">
-            <button className="btn-sm" onClick={onRefreshSessions}>刷新</button>
-            {currentName && (
-              <button
-                className={`btn-sm ${fileFilter ? "active" : ""}`}
-                onClick={toggleFileFilter}
-                title={fileFilter ? `仅显示与 ${currentName} 相关的会话` : `点击过滤出与 ${currentName} 相关的会话`}
-              >
-                <Icon name="filter" size={11} /> 当前文档
-              </button>
-            )}
-          </div>
-          <SessionList
-            sessions={filteredSessions || sessions}
-            onDelete={handleDeleteSession}
-            onRename={handleRenameSession}
-            onSelect={(s) => {
-              if (onSelectSession) onSelectSession(s);
-            }}
-          />
-          {fileFilter && currentName && (
-            <div className="sidebar-foot">已过滤：仅显示与「{currentName}」相关的会话</div>
-          )}
-        </>
-      )}
-
-      {tab === "memory" && <MemoryTab />}
-      
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
