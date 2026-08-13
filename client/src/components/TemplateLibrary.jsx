@@ -15,7 +15,7 @@ import { tplList, tplContent } from "../api.js";
 // 文件类型排序权重
 const TYPE_ORDER = { markdown: 0, html: 1, word: 2, pdf: 3, ppt: 4, xls: 5, other: 9 };
 
-export default function TemplateLibrary({ onExit, onOpenFile }) {
+export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
   const [categories, setCategories] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeCategory, setActiveCategory] = useState("all");
@@ -359,6 +359,11 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
             <div className="tpl-grid">
               {filtered.map((t) => (
                 <div key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
+                  <button
+                    className="tpl-at-btn"
+                    title="把模板 @到对话中作为参考"
+                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t); }}
+                  >@</button>
                   <div className="tpl-card-icon"><Icon name={extIcon(t.ext)} size={32} /></div>
                   <div className="tpl-card-title">{t.title}</div>
                   <div className="tpl-card-meta">
@@ -378,6 +383,11 @@ export default function TemplateLibrary({ onExit, onOpenFile }) {
                   <span className="tpl-list-ext">{t.ext.toUpperCase()}</span>
                   <span className="tpl-list-size">{formatSize(t.size)}</span>
                   <span className="tpl-list-cat">{categories.find((c) => c.id === t.category)?.icon}</span>
+                  <button
+                    className="tpl-at-btn"
+                    title="把模板 @到对话中作为参考"
+                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t); }}
+                  >@</button>
                 </div>
               ))}
             </div>

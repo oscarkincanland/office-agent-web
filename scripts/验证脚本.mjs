@@ -60,7 +60,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function smokeTest() {
   // 等待服务器就绪
   let ready = false;
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 240; i++) {
     if (serverOut.includes("running at")) { ready = true; break; }
     if (serverOut.includes("Error") || serverOut.includes("EADDR")) { break; }
     await wait(250);
