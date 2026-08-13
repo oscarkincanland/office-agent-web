@@ -281,14 +281,24 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     if (node.relPath) openDoc(node.relPath, node.rootIdx);
   }, [openDoc, doSearch]);
 
-  // @ 到对话：退出 kbMode → 延迟插入文本到 ChatPanel
+  // @ 到对话：累积标记（不立即退出，支持一次 @ 多个），返回时统一插入
+  const [atMarks, setAtMarks] = useState([]);
+  const addMark = useCallback((marker) => {
+    setAtMarks((m) => [...m, marker]);
+  }, []);
   const handleAtMention = useCallback(() => {
     if (!currentDoc) return;
-    const marker = `@知识库[${currentDoc.relPath}@${rootName}]`;
-    onExit?.(); // 退出知识库模式，回到办公模式（ChatPanel 挂载）
-    setTimeout(() => onAtMention?.(marker), 120); // 等 ChatPanel 挂载后插入
-  }, [currentDoc, rootName, onExit, onAtMention]);
+    addMark(`@知识库[${currentDoc.relPath}@${rootName}]`);
+  }, [currentDoc, rootName, addMark]);
 
+  // 文件树行 @ 到对话（文件/文件夹均可，文件夹 @ 目录）
+  const onAtMentionFromDoc = useCallback((relPath, isDir) => {
+    if (isDir) {
+      addMark(`@知识库目录[${relPath}@${rootName}]`);
+    } else {
+      addMark(`@知识库[${relPath}@${rootName}]`);
+    }
+  }, [rootName, addMark]);
 
   // 导出当前文档为 Word（服务端从 md 生成 docx，写入工作区）
   const handleExportDocx = useCallback(async () => {
@@ -309,12 +319,6 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
       setExporting(false);
     }
   }, [currentDoc, exporting]);
-  // 文件树行 @ 到对话（对齐 siyuan 右键操作）
-  const onAtMentionFromDoc = useCallback((relPath) => {
-    const marker = `@知识库[${relPath}@${rootName}]`;
-    onExit?.();
-    setTimeout(() => onAtMention?.(marker), 120);
-  }, [rootName, onExit, onAtMention]);
 
   // 根目录管理
   const handleAddRoot = useCallback(async () => {
@@ -404,6 +408,11 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               <Icon name="folder" size={12} />
               <span className="kb-tree-label">{d.name}</span>
               {d.subCount > 0 && <span className="kb-tree-count" title={`${d.subCount} 个子项`}>{d.subCount}</span>}
+              <span
+                className="kb-tree-at"
+                onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(d.path, true); }}
+                title="@ 该文件夹到对话（agent 读取目录下所有文档）"
+              >@</span>
             </div>
             {expanded[d.path] && renderLevel(d.path)}
           </li>
@@ -421,7 +430,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               {f.linkCount > 0 && <span className="kb-tree-count" title={`${f.linkCount} 条引用`}>{f.linkCount}</span>}
               <span
                 className="kb-tree-at"
-                onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(f.relPath); }}
+                onClick={(e) => { e.stopPropagation(); onAtMentionFromDoc(f.relPath, false); }}
                 title="@ 到对话"
               >@</span>
             </div>
@@ -437,8 +446,8 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     <div className="kb">
       {/* 顶栏 */}
       <div className="kb-topbar">
-        <button className="btn-sm" onClick={onExit} title="返回办公模式">
-          <Icon name="back" size={14} /> 返回
+        <button className="btn-sm" onClick={() => onExit?.(atMarks)} title="返回办公模式（@选中的内容将插入对话）">
+          <Icon name="back" size={12} /> 返回{atMarks.length > 0 ? ` · @${atMarks.length}项` : ""}
         </button>
         <span className="kb-title">📚 知识库</span>
         <select className="kb-root-select" value={rootIdx} onChange={(e) => loadRoot(parseInt(e.target.value, 10))}>

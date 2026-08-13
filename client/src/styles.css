@@ -5093,3 +5093,38 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .ask-input:focus { border-color: var(--accent); }
 .ask-submit { flex-shrink: 0; }
 .ask-answer { color: var(--success); font-size: 11px; }
+
+/* ===== 对话栏历史抽屉（chat-hist，可折叠） ===== */
+.chat-hist {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2-bg);
+}
+.chat-hist-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+  user-select: none;
+}
+.chat-hist-head:hover { color: var(--text); }
+.chat-hist-chevron { font-family: monospace; color: var(--dim); font-size: 10px; }
+.chat-hist-title { flex-shrink: 0; }
+.chat-hist-count {
+  background: var(--panel-bg);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.chat-hist-refresh { margin-left: auto; }
+.chat-hist-list {
+  max-height: 38vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.chat-hist-list .session-list { padding: 2px 0; }
