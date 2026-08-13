@@ -346,23 +346,30 @@ export default function App() {
       <div className="app">
         {kbMode && (
           <KnowledgeBase
-            onExit={() => setKbMode(false)}
+            onExit={(marks) => {
+              setKbMode(false);
+              if (marks?.length) {
+                setTimeout(() => {
+                  for (const m of marks) chatInputRef.current?.insertText(m + " ");
+                }, 120);
+              }
+            }}
             onAtMention={(text) => chatInputRef.current?.insertText(text)}
           />
         )}
         {tplMode && (
           <TemplateLibrary
-            onExit={() => setTplMode(false)}
-            onOpenFile={open}
-            onAtMention={(t, isDir) => {
-              // @模板[文件名] 或 @模板目录[相对目录] 标记插入对话
-              const relDir = String(t.relPath || "").replace(/\\/g, "/").split("/").slice(0, -1).join("/");
-              const marker = isDir && relDir
-                ? `@模板目录[${relDir}]`
-                : `@模板[${t.name}]`;
+            onExit={(marks) => {
+              // 返回时统一把累积的 @标记 插入对话（支持一次多个）
               setTplMode(false);
-              setTimeout(() => chatInputRef.current?.insertText(marker), 120);
+              if (marks?.length) {
+                setTimeout(() => {
+                  for (const m of marks) chatInputRef.current?.insertText(m + " ");
+                }, 120);
+              }
             }}
+            onOpenFile={open}
+            onAtMention={() => {}}
           />
         )}
         {mapMode && (
@@ -376,6 +383,8 @@ export default function App() {
             onNewSession={handleNewSession}
             sessions={sessions}
             onSelectSession={handleSelectSession}
+            onSessionChange={handleSessionChange}
+            onRefreshSessions={refreshSessions}
           />
         )}
         {!kbMode && !tplMode && !mapMode && (
@@ -453,6 +462,7 @@ export default function App() {
           sessions={sessions}
           onSelectSession={handleSelectSession}
               onSessionChange={handleSessionChange}
+              onRefreshSessions={refreshSessions}
         />
         <SkillsManager
           open={skillsOpen}
