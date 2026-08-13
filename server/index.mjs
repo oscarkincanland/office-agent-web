@@ -938,6 +938,7 @@ app.post("/api/workspace/validate", (req, res) => {
 function cleanSessionTitle(raw) {
   let t = String(raw || "").trim();
   t = t.replace(/^\[当前打开文件:[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[当前工作文件:[^\]]*\]\s*/g, "");
   t = t.replace(/^\[模式:\s*[^\]]*\]\s*/g, "");
   t = t.replace(/^\[已上传附件:[^\]]*\]\s*/g, "");
   t = t.replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
@@ -946,6 +947,14 @@ function cleanSessionTitle(raw) {
   const m = t.match(/^.{0,48}[。！？.!?]/);
   if (m) return m[0];
   return t.slice(0, 50) + "…";
+}
+
+// 判断消息是否为前端注入的系统提示（模式说明/上下文标记），此类消息不适合做会话标题
+const SYSTEM_HINTS = ["[当前工作文件:", "[当前打开文件:", "[模式:", "[当前文档:", "优先用 officecli 工具对当前文档做精准文本"];
+function isSystemHintMessage(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return true;
+  return SYSTEM_HINTS.some((h) => t.startsWith(h) || t.includes(h));
 }
 
 // GET /api/sessions - 列出所有会话（解析每个 JSONL 的 header 第一行）
@@ -967,7 +976,7 @@ app.get("/api/sessions", (req, res) => {
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
-        // 提取第一条用户消息作为标题（清洗前端注入前缀）
+        // 提取第一条「真实」用户消息作为标题（跳过前端注入的模式提示/上下文标记）
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
           if (!line.trim()) continue;
@@ -980,6 +989,7 @@ app.get("/api/sessions", (req, res) => {
               else if (Array.isArray(c)) {
                 raw = c.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
               }
+              if (isSystemHintMessage(raw)) continue; // 系统注入提示，跳过
               const cleaned = cleanSessionTitle(raw);
               if (cleaned) { title = cleaned; break; }
             }
@@ -1113,6 +1123,16 @@ app.post("/api/agent/abort", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
+app.post("/api/agent/answer", (req, res) => {
+  const { client, answer } = req.body || {};
+  if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
+  const done = agentManager.askPending(client);
+  if (!done) return res.status(404).json({ error: "no pending question" });
+  done(String(answer).slice(0, 2000));
+  res.json({ ok: true });
 });
 
 app.post("/api/agent/prompt", async (req, res) => {

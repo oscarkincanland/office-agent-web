@@ -354,9 +354,12 @@ export default function App() {
           <TemplateLibrary
             onExit={() => setTplMode(false)}
             onOpenFile={open}
-            onAtMention={(t) => {
-              // @模板[文件名] 标记插入对话，agent 识别后 find+read 对应模板
-              const marker = `@模板[${t.name}]`;
+            onAtMention={(t, isDir) => {
+              // @模板[文件名] 或 @模板目录[相对目录] 标记插入对话
+              const relDir = String(t.relPath || "").replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+              const marker = isDir && relDir
+                ? `@模板目录[${relDir}]`
+                : `@模板[${t.name}]`;
               setTplMode(false);
               setTimeout(() => chatInputRef.current?.insertText(marker), 120);
             }}

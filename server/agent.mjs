@@ -74,6 +74,14 @@ class AgentManager extends EventEmitter {
     super();
     this.sessions = new Map(); // clientId -> { session, emitter, busy, loader, modelRuntime }
     this.modelRuntimePromise = null;
+    this.pendingAsks = new Map(); // clientId -> resolve(回答)（ask_user 工具阻塞等待）
+  }
+
+  /** 读取并清除待回答的问题（返回 resolve 函数） */
+  askPending(clientId) {
+    const ask = this.pendingAsks.get(clientId);
+    if (ask) this.pendingAsks.delete(clientId);
+    return ask;
   }
 
   modelRuntime() {
@@ -121,7 +129,8 @@ class AgentManager extends EventEmitter {
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `" + WORKSPACE_DIR + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
-              "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到工作区 `" + WORKSPACE_DIR + "`。",
+              "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
+              "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到工作区 `" + WORKSPACE_DIR + "`。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到工作区 `" + WORKSPACE_DIR + "`。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到工作区 `" + WORKSPACE_DIR + "`。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
@@ -385,16 +394,50 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    // ---- 询问用户（ask_user）：任务要求不明确时主动提问，等待用户回答后继续 ----
+    const askUserTool = defineTool({
+      name: "ask_user",
+      label: "询问用户",
+      description:
+        "当用户要求不明确、任务关键信息缺失（文档类型/格式/篇幅/受众/数据来源/风格/范围等）时调用，向用户提出具体问题并等待回答，避免盲目猜测。每次只问一个最关键的、阻塞后续工作的问题，可提供快捷选项。用户回答后继续执行。",
+      parameters: Type.Object({
+        question: Type.String({ description: "向用户提出的问题（具体、聚焦、一次一个）" }),
+        options: Type.Optional(Type.Array(Type.String({ description: "2-4 个快捷选项（用户可一键选择）" }))),
+      }),
+      execute: async (_toolCallId, params) => {
+        // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
+        return await new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            this.pendingAsks.delete(clientId);
+            resolve({
+              content: [{ type: "text", text: "(用户未在 5 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)" }],
+            });
+          }, 300000);
+          const done = (answer) => {
+            clearTimeout(timer);
+            resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
+          };
+          this.pendingAsks.set(clientId, done);
+          emitChannelSafe(entry, "ask_user", { question: params.question, options: params.options || [] });
+        });
+      },
+    });
+
     const sessionManager = SessionManager.create(SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli"],
+      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"],
       sessionManager,
     });
+    // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
+    // 否则 kb_search/map_read/ask_user 等对模型不可见）
+    try {
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"])]);
+    } catch {}
 
     const emitter = new EventEmitter();
     // event channel with history for SSE replay
