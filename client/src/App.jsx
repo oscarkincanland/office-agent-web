@@ -7,6 +7,7 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import MapPanel from "./components/MapPanel.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
@@ -288,6 +289,8 @@ export default function App() {
       } catch {}
       for (const t of saved.tabs || []) {
         if (!t?.name) continue;
+        // 防御：过滤非法/脏文件名（历史遗留的 URL 编码或正则片段），避免打开失败
+        if (!/^[^\\/:*?"<>|\[\]]{1,300}$/.test(t.name)) continue;
         try { await open(t.name); } catch {}
       }
       if (saved.activeTab) setActiveTab(saved.activeTab);
@@ -345,6 +348,12 @@ export default function App() {
           <TemplateLibrary
             onExit={() => setTplMode(false)}
             onOpenFile={open}
+            onAtMention={(t) => {
+              // @模板[文件名] 标记插入对话，agent 识别后 find+read 对应模板
+              const marker = `@模板[${t.name}]`;
+              setTplMode(false);
+              setTimeout(() => chatInputRef.current?.insertText(marker), 120);
+            }}
           />
         )}
         {mapMode && (
