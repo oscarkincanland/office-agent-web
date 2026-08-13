@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.8.19",
+  "version": "0.8.20",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
