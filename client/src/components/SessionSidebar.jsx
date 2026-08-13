@@ -451,6 +451,9 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         {currentDir && (
           <div className="crumb-bar">
             <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">← 根目录</button>
+            {currentDir.includes("/") && (
+              <button className="btn-xs" onClick={() => onDirChange && onDirChange(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">↑ 上一级</button>
+            )}
             <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
         )}
@@ -501,7 +504,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
             );
           })}
         </div>
-        <div className="sidebar-foot">office-workspace</div>
       </div>
 
       {/* 底部：产物 / 设置（弹窗） */}
@@ -512,9 +514,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => setModal(modal === "settings" ? null : "settings")} title="设置（含记忆）">
           <Icon name="gear" size={13} /> 设置
         </button>
-      </div>
-      <div className="sidebar-bottom-hint">
-        产物与设置点击后弹窗显示
       </div>
 
       {/* 产物弹窗 */}

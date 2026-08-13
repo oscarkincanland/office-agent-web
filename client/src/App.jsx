@@ -139,6 +139,12 @@ export default function App() {
     try {
       const r = await switchWorkspace(dir);
       setCurrentWorkspace(r.workspace);
+      // 新工作区加入下拉列表（自定义路径切换后也能在下拉中看到）
+      setWorkspaces((prev) => {
+        if (prev.some((w) => w.path === r.workspace)) return prev;
+        const name = String(r.workspace).split(/[\\/]/).filter(Boolean).pop() || r.workspace;
+        return [...prev, { path: r.workspace, name }];
+      });
       setCurrentDir("");
       setFiles(r.files || []);
       setTabs([]); // 关闭所有文档
