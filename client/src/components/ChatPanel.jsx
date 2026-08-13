@@ -310,7 +310,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           return { ...m, blocks };
         });
         break;
-      // 工具调用结束：标记完成
+      // 工具结束：标记完成
       case "tool_end":
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
@@ -323,6 +323,22 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           }
           return { ...m, blocks };
         });
+        break;
+      // agent 主动提问（ask_user 工具）：追加问题卡片，用户回答后 agent 继续
+      case "ask_user":
+        if (aid) {
+          if (streamBufRef.current) flushNow(aid);
+          patch(aid, (m) => ({
+            ...m,
+            blocks: [...(m.blocks || []), {
+              type: "ask",
+              id: newId(),
+              question: data.question || "",
+              options: data.options || [],
+              answer: "",
+            }],
+          }));
+        }
         break;
       // 消息开始/结束
       case "message_start":
@@ -559,7 +575,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -738,7 +754,7 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole }) {
+function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole, clientId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
@@ -840,6 +856,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
               {blocks.map((b, i) => {
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
                 if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
+                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
                     <SafeMarkdown text={b.text} />
@@ -917,6 +934,64 @@ function ThinkingBlock({ text, startTime, streaming }) {
         {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
       </div>
       {expanded && <div className="thinking-text">{text}</div>}
+    </div>
+  );
+}
+
+// ========== 主动提问卡片（ask_user：agent 遇不明确处询问用户） ==========
+function AskBlock({ block, clientId }) {
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const submit = async (text) => {
+    const answer = (text || "").trim();
+    if (!answer || sending) return;
+    setSending(true);
+    try {
+      await fetch("/api/agent/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, answer }),
+      });
+      block.answer = answer;
+      setInput("");
+    } catch {}
+    setSending(false);
+  };
+
+  return (
+    <div className={`ask-block ${block.answer ? "answered" : ""}`}>
+      <div className="ask-head">
+        <Icon name="comment" size={12} />
+        <span className="ask-title">需要你确认</span>
+        {block.answer && <span className="ask-status">✓ 已回答</span>}
+      </div>
+      <div className="ask-question">{block.question}</div>
+      {block.answer ? (
+        <div className="ask-answer">你的回答：{block.answer}</div>
+      ) : (
+        <>
+          {block.options?.length > 0 && (
+            <div className="ask-options">
+              {block.options.map((opt, i) => (
+                <button key={i} className="ask-opt" onClick={() => submit(opt)}>{opt}</button>
+              ))}
+            </div>
+          )}
+          <div className="ask-input-row">
+            <input
+              className="ask-input"
+              placeholder="输入你的回答…"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submit(input); }}
+            />
+            <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
+              {sending ? "…" : "发送"}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

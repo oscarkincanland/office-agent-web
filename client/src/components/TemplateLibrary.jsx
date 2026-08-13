@@ -362,8 +362,13 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                   <button
                     className="tpl-at-btn"
                     title="把模板 @到对话中作为参考"
-                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t); }}
+                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t, false); }}
                   >@</button>
+                  <button
+                    className="tpl-at-btn tpl-at-dir"
+                    title="@整个模板目录（agent 读取该目录下所有文件）"
+                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t, true); }}
+                  >@📁</button>
                   <div className="tpl-card-icon"><Icon name={extIcon(t.ext)} size={32} /></div>
                   <div className="tpl-card-title">{t.title}</div>
                   <div className="tpl-card-meta">
