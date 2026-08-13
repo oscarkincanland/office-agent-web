@@ -5053,3 +5053,43 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   color: var(--text, #d4d4d4);
 }
 .cmd-foot span { display: inline-flex; align-items: center; gap: 4px; }
+/* ===== 主动提问卡片（ask_user） ===== */
+.ask-block {
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  background: rgba(240, 198, 116, 0.08);
+  padding: 10px 12px;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.ask-block.answered { border-color: var(--success); background: rgba(181, 189, 104, 0.08); }
+.ask-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.ask-title { font-weight: 700; color: var(--warning); }
+.ask-status { margin-left: auto; color: var(--success); font-size: 11px; }
+.ask-question { color: var(--text); line-height: 1.6; margin-bottom: 8px; }
+.ask-options { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ask-opt {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+.ask-opt:hover { border-color: var(--accent); color: var(--accent); }
+.ask-input-row { display: flex; gap: 6px; }
+.ask-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.ask-input:focus { border-color: var(--accent); }
+.ask-submit { flex-shrink: 0; }
+.ask-answer { color: var(--success); font-size: 11px; }

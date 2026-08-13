@@ -89,6 +89,9 @@ function scanTemplates() {
       for (const f of files) {
         const ext = path.extname(f.name).toLowerCase();
         if (!cat.exts.includes(ext)) continue;
+        // HTML PPT（OpenDesign）分类：只收录 example.html（每个模板的唯一可预览入口），
+        // 排除集合页/子页面/占位 html，避免"假模板"出现在列表
+        if (cat.id === "htmlppt" && f.name !== "example.html") continue;
         const st = fs.statSync(f.abs);
         templates.push({
           id: `${cat.id}/${f.rel}`,
