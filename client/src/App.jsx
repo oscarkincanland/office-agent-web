@@ -7,6 +7,7 @@ import SkillsManager from "./components/SkillsManager.jsx";
 import AgentMarket from "./components/AgentMarket.jsx";
 import KnowledgeBase from "./components/KnowledgeBase.jsx";
 import TemplateLibrary from "./components/TemplateLibrary.jsx";
+import MapPanel from "./components/MapPanel.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
