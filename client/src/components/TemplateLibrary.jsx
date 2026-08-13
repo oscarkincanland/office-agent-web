@@ -16,6 +16,7 @@ import { tplList, tplContent } from "../api.js";
 const TYPE_ORDER = { markdown: 0, html: 1, word: 2, pdf: 3, ppt: 4, xls: 5, other: 9 };
 
 export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
+  const [atMarks, setAtMarks] = useState([]); // 多次 @ 累积的标记（返回时统一传给对话）
   const [categories, setCategories] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeCategory, setActiveCategory] = useState("all");
@@ -258,9 +259,15 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
     <div className="tpl">
       {/* 顶栏 */}
       <div className="tpl-topbar">
-        <button className="btn-sm" onClick={onExit}><Icon name="back" size={14} /> 返回</button>
+        <button className="btn-sm" onClick={() => onExit?.(atMarks)}><Icon name="back" size={14} /> 返回</button>
         <span className="tpl-title">📋 模版库</span>
         <span className="tpl-count">{filtered.length} 个模版</span>
+        {atMarks.length > 0 && (
+          <span className="tpl-at-badge" title="已选模板，返回后插入对话">
+            @已选 {atMarks.length} 项
+            <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setAtMarks([]); }}>清除</button>
+          </span>
+        )}
         <div className="tpl-search">
           <Icon name="search" size={12} />
           <input
@@ -359,16 +366,6 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
             <div className="tpl-grid">
               {filtered.map((t) => (
                 <div key={t.id} className={"tpl-card" + (preview?.relPath === t.relPath ? " active" : "")} onClick={() => openPreview(t)}>
-                  <button
-                    className="tpl-at-btn"
-                    title="把模板 @到对话中作为参考"
-                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t, false); }}
-                  >@</button>
-                  <button
-                    className="tpl-at-btn tpl-at-dir"
-                    title="@整个模板目录（agent 读取该目录下所有文件）"
-                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t, true); }}
-                  >@📁</button>
                   <div className="tpl-card-icon"><Icon name={extIcon(t.ext)} size={32} /></div>
                   <div className="tpl-card-title">{t.title}</div>
                   <div className="tpl-card-meta">
@@ -388,11 +385,6 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                   <span className="tpl-list-ext">{t.ext.toUpperCase()}</span>
                   <span className="tpl-list-size">{formatSize(t.size)}</span>
                   <span className="tpl-list-cat">{categories.find((c) => c.id === t.category)?.icon}</span>
-                  <button
-                    className="tpl-at-btn"
-                    title="把模板 @到对话中作为参考"
-                    onClick={(e) => { e.stopPropagation(); onAtMention && onAtMention(t); }}
-                  >@</button>
                 </div>
               ))}
             </div>
@@ -410,6 +402,21 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                 <span>{formatSize(preview.size || 0)}</span>
                 <span>{categories.find((c) => c.id === preview.category)?.name}</span>
               </div>
+              <button
+                className="btn-sm tpl-preview-at"
+                title="把该模板 @到对话（可继续 @多个，返回时统一插入）"
+                onClick={() => setAtMarks((m) => [...m, `@模板[${preview.name}]`])}
+              >@ 模板</button>
+              {preview.relPath?.includes("/") && (
+                <button
+                  className="btn-sm tpl-preview-at-dir"
+                  title="@整个模板目录"
+                  onClick={() => {
+                    const relDir = String(preview.relPath).split("/").slice(0, -1).join("/");
+                    setAtMarks((m) => [...m, `@模板目录[${relDir}]`]);
+                  }}
+                >@📁 目录</button>
+              )}
               <button className="btn-sm" onClick={closePreview}><Icon name="close" size={14} /></button>
             </div>
             {renderPreview()}

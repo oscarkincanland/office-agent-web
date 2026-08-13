@@ -29,6 +29,7 @@ const ISO_MODES = [
 export default function MapPanel({
   onExit, onOpenFile,
   clientId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
+  onSessionChange, onRefreshSessions,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -709,6 +710,8 @@ export default function MapPanel({
             onOpenFile={handleOpenFile}
             sessions={sessions}
             onSelectSession={onSelectSession}
+            onSessionChange={onSessionChange}
+            onRefreshSessions={onRefreshSessions}
           />
         </div>
         <div className="mp-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整右栏宽度" />

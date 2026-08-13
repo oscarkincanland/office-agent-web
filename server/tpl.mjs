@@ -92,12 +92,16 @@ function scanTemplates() {
         // HTML PPT（OpenDesign）分类：只收录 example.html（每个模板的唯一可预览入口），
         // 排除集合页/子页面/占位 html，避免"假模板"出现在列表
         if (cat.id === "htmlppt" && f.name !== "example.html") continue;
+        // 归一化 relPath：绝对路径 → 相对项目根 + 正斜杠（前端 URL 传递与文件路由解析需要）
+        let rel = f.rel;
+        if (path.isAbsolute(rel)) rel = path.relative(PROJECT_DIR, rel);
+        rel = rel.split(path.sep).join("/");
         const st = fs.statSync(f.abs);
         templates.push({
-          id: `${cat.id}/${f.rel}`,
+          id: `${cat.id}/${rel}`,
           category: cat.id,
           name: f.name,
-          relPath: f.rel,
+          relPath: rel,
           title: parseTitle(f.abs, f.name, cat.folderTitle),
           ext: ext.slice(1),
           size: st.size,
@@ -134,7 +138,15 @@ export function getTemplatesByCategory(categoryId) {
 }
 
 export function getTemplateContent(relPath) {
-  const absPath = path.isAbsolute(relPath) ? relPath : path.join(ROOT, relPath);
+  // 模板可能相对工作目录（ROOT，_报告模板 等）或项目根（PROJECT_DIR，templates/），双根尝试
+  let absPath;
+  if (path.isAbsolute(relPath)) {
+    absPath = relPath;
+  } else {
+    const c1 = path.join(ROOT, relPath);
+    const c2 = path.join(PROJECT_DIR, relPath);
+    absPath = fs.existsSync(c1) ? c1 : fs.existsSync(c2) ? c2 : c1;
+  }
   if (!fs.existsSync(absPath)) return null;
   const ext = path.extname(absPath).toLowerCase();
   const st = fs.statSync(absPath);

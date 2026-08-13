@@ -61,8 +61,8 @@ function groupByDate(sessions) {
   return Object.entries(groups).filter(([, arr]) => arr.length > 0);
 }
 
-// 会话列表：置顶区 + 日期分组（Proma 风格）
-function SessionList({ sessions, onSelect, onDelete, onRename }) {
+// 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
+export function SessionList({ sessions, onSelect, onDelete, onRename }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
@@ -161,47 +161,11 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
-  const [sessionsH, setSessionsH] = useState(null); // 历史区高度（null=默认30%），可拖拽
-  const splitDragRef = useRef(null);
-
-  // 历史/文件 上下分割拖拽
-  const startSplitDrag = (e) => {
-    e.preventDefault();
-    const section = e.currentTarget.closest(".sessions-section");
-    const startY = e.clientY;
-    const startH = section ? section.getBoundingClientRect().height : 300;
-    splitDragRef.current = { startY, startH };
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    const onMove = (ev) => {
-      const next = Math.min(window.innerHeight * 0.6, Math.max(80, splitDragRef.current.startH + (ev.clientY - splitDragRef.current.startY)));
-      setSessionsH(next);
-    };
-    const onUp = () => {
-      splitDragRef.current = null;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
-  const [sessionsOpen, setSessionsOpen] = useState(() => {
-    try { return localStorage.getItem("oaw_sidebar_sessions_open") !== "0"; } catch { return true; }
-  });
-  const toggleSessions = () => {
-    const next = !sessionsOpen;
-    setSessionsOpen(next);
-    try { localStorage.setItem("oaw_sidebar_sessions_open", next ? "1" : "0"); } catch {}
-  };
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
-  const [fileFilter, setFileFilter] = useState(false); // 会话按当前文档过滤
-  const [filteredSessions, setFilteredSessions] = useState(null); // 过滤后的会话列表
 
   const applyCustom = async () => {
     const dir = customPath.trim();
@@ -257,20 +221,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const handleDeleteFile = async (name) => {
     if (!confirm(`删除 ${name} ?`)) return;
     try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
-  };
-
-  // 切换按当前文档过滤会话
-  const toggleFileFilter = async () => {
-    const next = !fileFilter;
-    setFileFilter(next);
-    if (next && currentName) {
-      try {
-        const d = await listSessions(currentName);
-        setFilteredSessions(d.sessions || []);
-      } catch { setFilteredSessions(sessions); }
-    } else {
-      setFilteredSessions(null);
-    }
   };
 
   // 在文件管理器中打开
@@ -347,14 +297,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
     setContextMenu({ x: e.clientX, y: e.clientY, items: menuItems });
   };
 
-  const handleDeleteSession = async (id) => {
-    try { await deleteSession(id); onRefreshSessions(); } catch (err) { alert("删除失败: " + err.message); }
-  };
-
-  const handleRenameSession = async (id, label) => {
-    try { await renameSession(id, label); onRefreshSessions(); } catch (err) { alert("重命名失败: " + err.message); }
-  };
-
   return (
     <div className="sidebar">
       {/* 顶部：工作区选择器 + 新建会话 */}
@@ -396,39 +338,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           </button>
         </div>
       )}
-
-      {/* 会话历史（折叠区） */}
-      <div className="sidebar-section-head" onClick={toggleSessions}>
-        <span className="section-chevron">{sessionsOpen ? "▾" : "▸"}</span>
-        <Icon name="history" size={12} />
-        <span className="section-name">历史</span>
-        <span className="section-count">{sessions.length}</span>
-        <button className="btn-xs section-refresh" onClick={(e) => { e.stopPropagation(); onRefreshSessions(); }} title="刷新会话">
-          <Icon name="refresh" size={11} />
-        </button>
-        {currentName && (
-          <button
-            className={`btn-xs section-filter ${fileFilter ? "active" : ""}`}
-            onClick={(e) => { e.stopPropagation(); toggleFileFilter(); }}
-            title="按当前文档过滤"
-          ><Icon name="filter" size={11} /></button>
-        )}
-      </div>
-      {sessionsOpen && (
-        <div className="sidebar-section sessions-section" style={sessionsH ? { height: sessionsH, maxHeight: sessionsH } : undefined}>
-          <SessionList
-            sessions={filteredSessions || sessions}
-            onDelete={handleDeleteSession}
-            onRename={handleRenameSession}
-            onSelect={(s) => { if (onSelectSession) onSelectSession(s); }}
-          />
-          {fileFilter && currentName && (
-            <div className="sidebar-foot">已过滤：仅显示与「{currentName}」相关的会话</div>
-          )}
-        </div>
-      )}
-      {/* 历史/文件 垂直分割手柄（会话区展开时可用） */}
-      {sessionsOpen && <div className="sidebar-split-handle" onMouseDown={startSplitDrag} title="拖动调整历史/文件高度" />}
 
       {/* 文件树 */}
       <div className="sidebar-section-head">

@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
+import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
 // 错误边界包装器
@@ -75,9 +76,10 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
   const [busy, setBusy] = useState(false);
@@ -536,23 +538,30 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   return (
     <ErrorBoundary>
       <div className="chat">
-        {sessions.length > 0 && (
-          <div className="chat-recent">
-            <span className="chat-recent-label"><Icon name="history" size={11} /> 最近会话</span>
-            <div className="chat-recent-list">
-              {sessions.slice(0, 5).map((s) => (
-                <span
-                  key={s.id}
-                  className="chat-recent-item"
-                  title={s.title || s.label || s.id}
-                  onClick={() => onSelectSession && onSelectSession(s)}
-                >
-                  {s.title || s.label || s.id.slice(0, 8)}
-                </span>
-              ))}
-            </div>
+        {/* 会话历史抽屉（对话栏一侧，可折叠隐藏） */}
+        <div className={`chat-hist ${histOpen ? "open" : ""}`}>
+          <div className="chat-hist-head" onClick={() => setHistOpen((v) => !v)}>
+            <span className="chat-hist-chevron">{histOpen ? "▾" : "▸"}</span>
+            <Icon name="history" size={12} />
+            <span className="chat-hist-title">历史</span>
+            <span className="chat-hist-count">{sessions.length}</span>
+            <button
+              className="btn-xs chat-hist-refresh"
+              onClick={(e) => { e.stopPropagation(); onRefreshSessions(); }}
+              title="刷新会话"
+            ><Icon name="refresh" size={11} /></button>
           </div>
-        )}
+          {histOpen && (
+            <div className="chat-hist-list">
+              <SessionList
+                sessions={sessions}
+                onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
+                onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
+                onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
+              />
+            </div>
+          )}
+        </div>
         <div className="chat-head">
           <span className="chat-title"><Logo size={16} /> Open Plan</span>
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
