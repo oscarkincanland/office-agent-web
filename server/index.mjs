@@ -279,8 +279,11 @@ app.get(/^\/api\/templates\/file\/(.+)$/, (req, res) => {
   if (!relPath || relPath.includes("..") || relPath.startsWith("/")) {
     return res.status(400).json({ error: "invalid path" });
   }
-  const abs = path.join(PROJECT_DIR, relPath);
-  if (!abs.startsWith(path.join(PROJECT_DIR, "templates")) || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+  // 模板可能位于项目根 templates/ 或工作目录（_报告模板 等），双根尝试
+  const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件（工作目录）
+  const candidates = [path.join(PROJECT_DIR, relPath), path.join(TPL_ROOT, relPath)];
+  const abs = candidates.find((p) => p.startsWith(path.join(PROJECT_DIR, "templates")) || p.startsWith(path.join(TPL_ROOT, "_")));
+  if (!abs || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
     return res.status(404).json({ error: "file not found" });
   }
   const ext = path.extname(abs).toLowerCase();
