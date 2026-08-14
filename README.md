@@ -1,139 +1,132 @@
 # Open Plan（规聚）
 
-基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端规划工作台 + AI Agent 协作工具（Office 文档编辑、知识库、地图可视化、脑图）。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 项目。
+> 规划 + 聚集 —— 面向交通规划工程师的 AI 一体化工作台
 
-**规聚**：规划 + 聚集——为交通规划工程师提供"规划成果 + 知识汇聚 + 智能协作"的一体化工作台。
+基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端规划工作台 + AI Agent 协作工具：Office 文档编辑、知识库、地图可视化、脑图、模板库一站式协同。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 与 [siyuan](https://github.com/siyuan-note/siyuan) 项目。
 
-## 功能
+**规聚释义**：`规` = 规划（文档成果、规划报告、地图与图表），`聚` = 聚集（知识汇聚、文档反链、引用关系图谱）——为交通规划工程师提供"规划成果 + 知识汇聚 + 智能协作"的一体化工作台。
 
-- **文档查看**：左侧显示 Word/PPT 客户端渲染（docx-preview/pptxjs）、Excel 可编辑表格（x-spreadsheet）
-- **Agent 对话**：右侧 Pi Agent 聊天面板，支持所有 pi 能力（skills、插件、工具、图片输入）
-- **文件管理**：上传、删除、打开 Office 文件（.docx/.xlsx/.pptx）
-- **模型切换**：90+ 模型可选，支持视觉模型图片理解
-- **实时更新**：Agent 修改文件后自动检测变更并刷新视图
-- **会话历史**：日期分组（今天/昨天/更早）、置顶、搜索
-- **记忆系统**：工作区 AGENTS.md + memory/ 目录，支持实时变更监控
-- **跨平台**：Windows（officecli）+ macOS/Linux（xlsx 原生读取 + docx-preview 客户端渲染）
+## 功能全景
 
-## 快速开始
+### 📄 文档办公
+- **Office 文档**：Word/PPT 客户端高保真渲染（docx-preview/pptxjs），批注/修订显示，批注点击**精确定位到段落**（黄底高亮 + 编号徽标）
+- **Excel**：多 sheet 查看、单元格编辑
+- **Markdown/HTML**：GFM 表格、KaTeX 公式、代码高亮、目录浮窗
+- **文档编辑**：Word 工具栏（字体/颜色/高亮/表格/目录导航）、新建空白 Word 文档
+- **文件管理**：上传/下载/删除/右键菜单、文件搜索、子目录导航（返回上一级）
 
-### 前置条件
+### 🤖 AI Agent 协作
+- **对话流**（pi-web BlockView 模型）：思考/工具调用/最终文本独立条目，无分组框；最终回复无边框与事件流宽度一致
+- **会话消息目录栏**：左侧 hover 展开消息时间线，点击定位
+- **主动询问（ask_user）**：agent 遇到任务不明确时弹窗提问（快捷选项 + 输入框），回答后继续，不再猜测
+- **ask 卡片 / 任务进度卡**：agent 回复中的 `- [ ]` 任务自动解析为可勾选进度条
+- **90+ 模型**：图标化模型选择浮层（搜索 + [V] 视觉标记）、思考强度三档
+- **办公/开发双模式**：办公模式用 officecli 精准改文档；开发模式调用全部 skills 生成新文件
 
-- **Node.js** >= 22
-- **Pi agent** 已配置（`~/.pi/agent/settings.json` 中配置好模型和 API Key）
-- **officecli**（可选，Windows 专用）：`powershell -c "irm https://d.officecli.ai/install.ps1 | iex"`
+### 📚 知识库（Obsidian/siyuan 风格）
+- **三视图**：浏览 / 思维图谱 / 脑图
+- **文件树**：懒加载、目录可折叠、@ 到对话（文件与文件夹均可，支持一次 @ 多个）
+- **知识图谱**：G6 力导向，分组调色、hover 聚焦、节点大小 ∝ 引用度、缩放隐藏标签、局部图谱（1-hop）、边类型过滤（双向链接/内容相似/标签/目录）、隐藏孤立节点
+- **脑图**：大纲 ↔ 树状脑图双向联动 + 右侧文档预览
+- **全文搜索**：加权索引（标题×10/标签×6/正文×1）、IMA 云端知识库集成
+- **双向链接与反链**、`@知识库[路径@根目录]` 引用分析链路、kb_search/kb_read agent 工具
 
-### 安装与启动
+### 🗺️ 地图可视化（GIS）
+- **MapLibre GL + 矢量瓦片**：浙江省交通基础图层（11 地市 + 90 区县边界、高速 28,526 段、国省道 19,546 段、收费站 404、枢纽 769）
+- **QGIS 风格图层面板**：分组、拖拽排序、符号缩略图、右键菜单（属性表/缩放/重命名/复制/删除）、样式编辑器
+- **属性表**：字段/搜索/排序/分页/CSV 导出、地图定位
+- **测量/绘制**：距离/面积/标绘点；**等时圈分析**（高德 Web 服务）
+- **数据导入**：.geojson/.json/.shp（浏览器解析）、agent 对话改图热更新
+- **Agent 地图工具**：map_read/map_edit/map_import（读状态/改样式/导图层）
 
-```bash
-# 安装依赖
-npm install
+### 📋 模板库
+- **318 个模板**：公文版面/工作汇报/研究报告/规划报告/行业研究/论文/会议通知/调研问卷/研究框架/图表地图/**OpenDesign HTML PPT（106 个）**/规划素材库（14 份交通规划详版模板）
+- **模板预览**：md 渲染 / HTML iframe 首页渲染 / Word/PDF/PPT
+- **@ 到对话**：预览面板「@ 模板」/「@📁 目录」，多次 @ 累积后统一插入；红头会议通知生成器（GB/T9704 版式）
 
-# 安装前端依赖并构建
-cd client && npm install && npm run build && cd ..
+### 🧠 记忆与智能
+- **工作区记忆**：AGENTS.md + memory/ 每次对话前注入 agent 上下文；memory_update 工具按 section 沉淀（项目信息/用户偏好/经验教训）
+- **界面状态固化**：刷新/重开浏览器恢复到上次界面（文档 tabs/模式/工作区/最后会话）
+- **会话历史**：对话栏可折叠抽屉、标题智能清洗（跳过系统提示）、置顶/搜索/重命名/删除、LLM 摘要命名（规划中）
 
-# 启动服务器
-npm start
-# → http://localhost:3001
-```
+### 🎨 体验
+- 明暗主题、消息字体大小、批注高亮时长、思考块默认展开等**设置面板**可调
+- 品牌 Logo（规聚：网格 = 规划 + 汇聚节点 = 聚集）、加载占位防白屏
 
-### 开发模式
+## 技术栈
 
-```bash
-# 终端1：启动后端
-npm start
-
-# 终端2：启动前端开发服务器（热更新）
-cd client && npm run dev
-# → http://localhost:5173（自动代理 /api 到后端）
-```
+| 层 | 技术 |
+|---|---|
+| 前端 | React 18 + Vite 5、docx-preview/pptxjs、x-spreadsheet、MapLibre GL、antv G6 v5、react-markdown + KaTeX |
+| 后端 | Node.js + Express 5 + Pi Agent SDK、geojson-vt 矢量瓦片、officecli（Windows 文档引擎） |
+| 数据 | JSONL 会话存储、本地知识库索引（kb.mjs）、地图项目（style.json + 瓦片 + GeoJSON） |
+| AI | Pi SDK（90+ 模型）、自定义工具（officecli/kb/map/ask_user/memory_update） |
 
 ## 架构
 
 ```
 浏览器 (React)
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│ 文件列表      │  │ 文档查看/编辑 │  │ Agent 对话    │  │ 记忆系统      │
-│ (左侧栏)     │  │ (客户端渲染)  │  │ (SSE 流式)   │  │ (AGENTS.md)  │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │ REST            │ REST            │ SSE/POST        │ REST/SSE
-┌──────┴─────────────────┴─────────────────┴─────────────────┴─────────┐
-│                    Node.js Express (localhost:3001)                   │
-├──────────────────────────────────────────────────────────────────────┤
-│  /api/files       文件管理                                           │
-│  /api/doc/:f      文档打开 (客户端渲染/Excel数据)                    │
-│  /api/models      模型列表                                           │
-│  /api/agent       Pi Agent SDK 会话 (SSE 流式)                      │
-│  /api/sessions    会话历史管理                                       │
-│  /api/memory      工作区记忆 (CRUD + SSE 变更流)                    │
-└─────────────────────┬─────────────────────┬──────────────────────────┘
-                      │                     │
-              officecli (可选)         Pi SDK (in-process)
+┌──────────────┬──────────────┬──────────────┐
+│ 左侧栏        │ 文档/知识库/  │ 对话栏        │
+│ 文件树        │ 地图/模板库   │ 历史抽屉      │
+│ 产物/设置     │ 三栏布局      │ ask 卡片      │
+└──────┬───────┴──────┬───────┴──────┬───────┘
+       │ REST         │ REST/SSE     │ SSE/POST
+┌──────┴──────────────┴──────────────┴─────────┐
+│   Node.js Express (localhost:3001)           │
+│   /api/files|doc|agent|sessions|kb|map|tpl   │
+│   /api/memory|templates|workspace            │
+├──────────────────────────────────────────────┤
+│   officecli（文档）  Pi SDK（agent）          │
+│   MapLibre 瓦片      kb.mjs（知识库索引）     │
+└──────────────────────────────────────────────┘
 ```
 
-### 关键文件
+## 快速开始
 
-| 文件 | 说明 |
-|------|------|
-| `server/index.mjs` | Express 主服务，REST API + SSE + 记忆系统 |
-| `server/agent.mjs` | Pi SDK 会话管理，自定义 officecli 工具 |
-| `server/office.mjs` | officecli CLI 封装 |
-| `server/workspace.mjs` | 工作区文件管理 + AGENT_DIR 自动检测 |
-| `client/src/components/ChatPanel.jsx` | Agent 聊天面板（Proma 风格消息流） |
-| `client/src/components/SessionSidebar.jsx` | 会话历史（日期分组 + 置顶 + 搜索） |
-| `client/src/components/MemoryTab.jsx` | 记忆系统 UI（文件列表 + 预览/编辑） |
-| `client/src/components/DocViewer.jsx` | 文档查看器（DocxViewer/PptxViewer/ExcelGrid） |
-| `office-workspace/` | 受管 Office 文件目录 |
+### 前置条件
+- **Node.js** >= 22
+- **Pi agent** 已配置（`~/.pi/agent/settings.json`：模型 + API Key）
+- **officecli**（Windows 文档编辑）：`powershell -c "irm https://d.officecli.ai/install.ps1 | iex"`
 
-## 对话流设计（参考 Proma）
+### 安装与启动
+```bash
+npm install
+cd client && npm install && npm run build && cd ..
+npm start        # → http://localhost:3001
+```
 
-- **消息样式**：用户淡色气泡 + AI 无气泡长文 markdown
-- **流式渲染**：呼吸脉冲圆点指示器 + 思考自动折叠（结束后 1s）+ 思考耗时
-- **执行过程分组**：工具调用自动归组，流式展开 → 结束后 3s 自动收起
-- **工具语义短语**：显示"读取文件"/"执行命令"等语义描述，替代原始参数
-- **任务进度卡**：从 markdown 任务列表解析，显示进度条 + 状态图标
-- **操作条常显**：复制/重发按钮微透明，hover 加深
+### 开发模式
+```bash
+npm start                    # 终端 1：后端
+cd client && npm run dev     # 终端 2：前端热更新（5173 代理 /api）
+```
 
-## 使用方式
+### 验证
+```bash
+npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
+```
 
-1. 打开 http://localhost:3001
-2. 左侧点击文件打开，或上传新文件
-3. 右侧 Agent 面板输入指令，例如：
-   - "把 test-report.docx 标题改成红色加粗"
-   - "在 test-data.xlsx 的 B3 填 88"
-   - "给我创建一份季度报告 PPT"
-4. 附带图片可辅助说明（需选择 🖼️ 视觉模型）
+## 版本历史
 
-## 配置
+当前版本 **v0.8.22**，36 个版本迭代（v0.1.0 → v0.8.22），详见 [变更日志.md](变更日志.md)。
 
-### 环境变量
-
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `PORT` | 服务器端口 | 3001 |
-| `OFFICECLI_BIN` | officecli 路径（可选） | 自动检测 |
-| `PI_AGENT_DIR` | pi agent 配置目录 | `~/.pi/agent` |
-
-### Pi Skills
-
-Agent 自动加载 pi agent 配置目录下的所有 skills，包括：
-- `officecli`：Office 文档操作
-- `docx` / `xlsx` / `pptx`：专业格式技能
-- `baoyu-*`：创意设计技能
-- 其他已安装的 skills
-
-## 技术栈
-
-- **后端**：Node.js + Express 5 + Pi SDK
-- **前端**：React 18 + Vite 5 + x-data-spreadsheet + docx-preview + pptxjs
-- **文档引擎**：officecli（Windows）+ xlsx 包（macOS/Linux）+ docx-preview/pptxjs（客户端渲染）
-- **AI 引擎**：Pi Agent SDK（支持 90+ 模型切换）
+关键里程碑：
+- **v0.5.0** Office Viewer 集成（批注/修订渲染）
+- **v0.6.0** 知识库全屏模式 + 知识图谱 + 模版库
+- **v0.8.0** 地图可视化模式（MapLibre + 矢量瓦片）
+- **v0.8.4** 合并 0.7.5 分支：QGIS 图层面板/属性表/测量绘制/等时圈/siyuan 图谱
+- **v0.8.5** 脑图视图（大纲↔脑图联动）
+- **v0.8.12** 品牌重塑 Open Plan（规聚）+ Logo
+- **v0.8.21** ask_user 主动询问 + 全部自定义工具激活修复
+- **v0.8.22** 模板库/知识库 @ 重构 + HTML 预览修复 + 历史栏移到对话侧
 
 ## 分支说明
 
 | 分支 | 说明 |
-|------|------|
-| `develop` | 主开发分支（最新功能） |
-| `feature/knowledge-base` | 原始版本 |
-| `feature/frontend-design-optimization` | 前端设计优化（Proma 风格） |
-| `feature/frontend-polish-v2` | 字体放大 + 会话修复 + Office 兼容 |
+|---|---|
+| `main` | 稳定分支，每次合并打 tag（v0.8.x） |
+| `develop` | 主开发分支 |
+| `feature/*` | 功能分支（每轮独立） |
+
+版本管理遵循[版本管理计划.md](版本管理计划.md)：语义化版本 + 轻量 trunk-based + `npm run verify` 门禁。
