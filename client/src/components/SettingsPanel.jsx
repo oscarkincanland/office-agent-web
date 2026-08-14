@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, mapSettings, mapSettingsSave } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -57,6 +57,11 @@ export default function SettingsPanel({ onReset }) {
   const [authMsg, setAuthMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [version, setVersion] = useState("");
+  // 底图服务 Key（服务端不回传明文，仅状态）
+  const [basemapKeys, setBasemapKeys] = useState({ tianditu: "", maptiler: "" });
+  const [basemapStatus, setBasemapStatus] = useState({ tianditu: false, maptiler: false });
+  const [basemapMsg, setBasemapMsg] = useState("");
+  const [basemapSaving, setBasemapSaving] = useState(false);
 
   // 消息字体大小 → CSS 变量（.msg 生效）
   useEffect(() => {
@@ -74,7 +79,32 @@ export default function SettingsPanel({ onReset }) {
     })();
     // 已配置的 API Key（掩码）
     agentAuth().then((r) => setProviders(r.providers || {})).catch(() => {});
+    // 底图服务 Key 状态
+    mapSettings()
+      .then((r) => {
+        const b = r?.basemaps || {};
+        setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey });
+      })
+      .catch(() => {});
   }, []);
+
+  const saveBasemaps = async () => {
+    setBasemapSaving(true);
+    try {
+      const r = await mapSettingsSave({
+        tiandituKey: basemapKeys.tianditu.trim(),
+        maptilerKey: basemapKeys.maptiler.trim(),
+      });
+      const b = r?.basemaps || {};
+      setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey });
+      setBasemapKeys({ tianditu: "", maptiler: "" });
+      setBasemapMsg("已保存 ✓ 底图列表已更新，地图需刷新样式（切一次底图或重进地图）");
+    } catch (e) {
+      setBasemapMsg("保存失败: " + e.message);
+    }
+    setBasemapSaving(false);
+    setTimeout(() => setBasemapMsg(""), 4000);
+  };
 
   const saveAuth = async () => {
     const key = authKey.trim();
@@ -216,6 +246,47 @@ export default function SettingsPanel({ onReset }) {
           </div>
         )}
         <div className="sp-note">保存后写入 agent 配置 auth.json 并注入运行时，支持 Anthropic/OpenAI/Gemini 等 pi 支持的 provider。</div>
+      </div>
+
+      <div className="sp-section">
+        <div className="sp-section-title"><Icon name="map" size={12} /> 底图服务</div>
+        <div className="sp-row">
+          <span className="sp-label">天地图 Key</span>
+          <input
+            className="sp-input"
+            type="password"
+            placeholder="天地图 tk（https://console.tianditu.gov.cn 申请）"
+            value={basemapKeys.tianditu}
+            onChange={(e) => setBasemapKeys((s) => ({ ...s, tianditu: e.target.value }))}
+          />
+          <span className={`sp-badge ${basemapStatus.tianditu ? "ok" : "warn"}`}>
+            {basemapStatus.tianditu ? "已配置" : "未配置"}
+          </span>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">MapTiler Key</span>
+          <input
+            className="sp-input"
+            type="password"
+            placeholder="MapTiler key（https://cloud.maptiler.com 申请）"
+            value={basemapKeys.maptiler}
+            onChange={(e) => setBasemapKeys((s) => ({ ...s, maptiler: e.target.value }))}
+          />
+          <span className={`sp-badge ${basemapStatus.maptiler ? "ok" : "warn"}`}>
+            {basemapStatus.maptiler ? "已配置" : "未配置"}
+          </span>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">操作</span>
+          <button className="btn-sm primary" onClick={saveBasemaps} disabled={basemapSaving}>
+            {basemapSaving ? "保存中…" : "保存底图配置"}
+          </button>
+          {basemapMsg && <span className="sp-auth-msg">{basemapMsg}</span>}
+        </div>
+        <div className="sp-note">
+          输入 Key 后保存即启用对应底图；输入框留空保存 = 清除该 Key（底图随之隐藏）。
+          高德（路网/卫星/注记）与 Esri（卫星/街道）始终可用，无需 Key。
+        </div>
       </div>
 
       <div className="sp-section">

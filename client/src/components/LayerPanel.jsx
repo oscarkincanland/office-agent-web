@@ -2,8 +2,8 @@ import React, { useState, useCallback, useMemo, useEffect, useRef } from "react"
 import Icon from "./Icon.jsx";
 import { mapGetLayer } from "../api.js";
 
-const GROUP_ORDER = ["基础地理", "路网", "设施点", "其他"];
-const GROUP_FALLBACK = { boundary: "基础地理", road: "路网", point: "设施点" };
+const GROUP_ORDER = ["行政区划", "公路网", "设施点", "其他"];
+const GROUP_FALLBACK = { boundary: "行政区划", road: "公路网", point: "设施点" };
 const TYPE_NAMES = { boundary: "面", road: "线", point: "点" };
 const DASH_PRESETS = [
   { label: "实线", value: null },
@@ -57,6 +57,7 @@ export default function LayerPanel({
   project, cfg, style, files, selected, onSelect,
   onToggleLayer, onSetPaint, onSetOpacity, onMoveLayerTo,
   onRenameLayer, onDuplicateLayer, onDeleteLayer, onZoomToLayer, onOpenAttribute,
+  onSetLayout,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
@@ -405,6 +406,50 @@ export default function LayerPanel({
                 </select>
               </div>
             )}
+            {selectedStyleType === "road" && (() => {
+              const labelLyr = style?.layers?.find((x) => x.id === `${selected}-label`);
+              const tf = labelLyr?.layout?.["text-field"];
+              const labelField = Array.isArray(tf) && tf[1]?.[1] ? tf[1][1] : "__auto__";
+              const setLabelField = (v) => {
+                if (!onSetLayout) return;
+                if (v === "__auto__") {
+                  onSetLayout(`${selected}-label`, "text-field", ["coalesce", ["get", "ref"], ["get", "name"], ""]);
+                } else {
+                  onSetLayout(`${selected}-label`, "text-field", ["coalesce", ["get", v], ["get", "name"], ""]);
+                }
+              };
+              return (
+                <>
+                  <div className="lp-ed-row">
+                    <span className="lp-ed-label">标号（编号/名称）</span>
+                    <input
+                      type="checkbox"
+                      checked={layerVisible(`${selected}-label`)}
+                      onChange={(e) => onToggleLayer(`${selected}-label`)}
+                      title="沿道路线显示标号文字"
+                    />
+                    <span className="lp-ed-val">{layerVisible(`${selected}-label`) ? "显示" : "隐藏"}</span>
+                  </div>
+                  <div className="lp-ed-row">
+                    <span className="lp-ed-label">标号字段</span>
+                    <select
+                      className="lp-ed-select lp-ed-field"
+                      value={labelField}
+                      onChange={(e) => setLabelField(e.target.value)}
+                      title="选择显示哪个字段作为标号（默认编号优先、名称回退）"
+                    >
+                      <option value="__auto__">自动（编号→名称）</option>
+                      <option value="ref">ref（编号）</option>
+                      <option value="name">name（名称）</option>
+                      {fieldData?.layerId === selected &&
+                        fieldData.fields.filter((f) => f !== "ref" && f !== "name").map((f) => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                    </select>
+                  </div>
+                </>
+              );
+            })()}
             {/* 按字段渲染（分类/分级着色） */}
             {colorKey && fieldData && fieldData.layerId === selected && (
               <div className="lp-ed-sec">

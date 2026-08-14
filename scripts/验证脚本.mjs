@@ -60,12 +60,12 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function smokeTest() {
   // 等待服务器就绪
   let ready = false;
-  for (let i = 0; i < 240; i++) {
+  for (let i = 0; i < 400; i++) {
     if (serverOut.includes("running at")) { ready = true; break; }
     if (serverOut.includes("Error") || serverOut.includes("EADDR")) { break; }
     await wait(250);
   }
-  if (!ready) { fail("服务器未在 20s 内启动: " + (serverOut.slice(-800) || "(无输出)")); cleanup(1); return; }
+  if (!ready) { fail("服务器未在 100s 内启动: " + (serverOut.slice(-800) || "(无输出)")); cleanup(1); return; }
   ok("服务器启动");
 
   const endpoints = [

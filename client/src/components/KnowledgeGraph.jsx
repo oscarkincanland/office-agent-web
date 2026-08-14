@@ -22,6 +22,18 @@ const EDGE_COLORS = {
 
 const BATCH_SIZE = 500; // 分批渲染阈值
 
+const GRAPH_SETTINGS_KEY = "oaw_graph_settings";
+function loadGraphSettings() {
+  try {
+    return { minRefs: 0, showTags: true, showFiles: true, showFolders: true, ...JSON.parse(localStorage.getItem(GRAPH_SETTINGS_KEY) || "{}") };
+  } catch {
+    return { minRefs: 0, showTags: true, showFiles: true, showFolders: true };
+  }
+}
+function saveGraphSettings(s) {
+  try { localStorage.setItem(GRAPH_SETTINGS_KEY, JSON.stringify(s)); } catch {}
+}
+
 /**
  * 知识图谱（antv G6 v5 力导向图，Obsidian/siyuan 风格）
  * - 边 = 真实关系（wikilink/标签/目录），similar 相似边默认关闭由上层控制
@@ -30,6 +42,9 @@ const BATCH_SIZE = 500; // 分批渲染阈值
  * - file 节点按顶层目录分组着色（Obsidian 颜色分组）
  * - 缩放联动：缩小到阈值以下自动隐藏标签文字（防密）
  * - 控制条：搜索定位节点 / 隐藏孤立节点（对齐 siyuan pruneUnref）
+ * - minRefs 过滤（siyuan）：引用数低于阈值的文件节点剔除
+ * - 按类型过滤（siyuan）：文档/标签/目录独立开关
+ * - 配置持久化到 localStorage（oaw_graph_settings）
  * - 大数据量分批渲染（对齐 siyuan 分批策略）
  */
 export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusId }) {
@@ -38,6 +53,15 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   const [hideIsolated, setHideIsolated] = useState(false);
   const [density, setDensity] = useState(1); // 布局密度（0.6 紧凑 ~ 1.8 舒展）
   const [query, setQuery] = useState("");
+  const [minRefs, setMinRefs] = useState(() => loadGraphSettings().minRefs);
+  const [showTags, setShowTags] = useState(() => loadGraphSettings().showTags);
+  const [showFiles, setShowFiles] = useState(() => loadGraphSettings().showFiles);
+  const [showFolders, setShowFolders] = useState(() => loadGraphSettings().showFolders);
+  // 配置持久化（siyuan：图谱配置保存，刷新不丢）
+  useEffect(() => {
+    saveGraphSettings({ minRefs, showTags, showFiles, showFolders });
+  }, [minRefs, showTags, showFiles, showFolders]);
+
   const adjMapRef = useRef(new Map());
   const degreeMapRef = useRef(new Map());
   const allNodesRef = useRef([]);
@@ -123,9 +147,19 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const el = containerRef.current;
     if (!el) return;
 
-    const visibleNodes = hideIsolated
-      ? allNodes.filter((n) => n.data.type !== "file" || (degreeMapRef.current.get(n.id) || 0) > 0)
-      : allNodes;
+    const visibleNodes = allNodes.filter((n) => {
+      const t = n.data.type;
+      if (t === "tag" && !showTags) return false;
+      if (t === "folder" && !showFolders) return false;
+      if (t === "file" && !showFiles) return false;
+      // minRefs：引用数低于阈值的文件节点剔除（局部图谱聚焦节点保留）
+      if (t === "file" && minRefs > 0) {
+        const deg = degreeMapRef.current.get(n.id) || 0;
+        if (deg < minRefs && !subSet?.has(n.id)) return false;
+      }
+      if (hideIsolated && t === "file" && (degreeMapRef.current.get(n.id) || 0) <= 0) return false;
+      return true;
+    });
     const localIds = subSet || null;
     const scopeNodes = localIds ? visibleNodes.filter((n) => localIds.has(n.id)) : visibleNodes;
     const scopeIds = new Set(scopeNodes.map((n) => n.id));
@@ -290,7 +324,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       graphRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, hideIsolated, highlightId, focusId, subSet, density]);
+  }, [data, hideIsolated, highlightId, focusId, subSet, density, minRefs, showTags, showFiles, showFolders]);
 
   // 高亮定位（外部选中文档时）
   useEffect(() => {
@@ -329,6 +363,21 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点
         </label>
+        <span className="kb-filter-block" title="按类型过滤（siyuan 式）">
+          <label className="kb-check kb-type-check"><input type="checkbox" checked={showFiles} onChange={(e) => setShowFiles(e.target.checked)} />文档</label>
+          <label className="kb-check kb-type-check"><input type="checkbox" checked={showTags} onChange={(e) => setShowTags(e.target.checked)} />标签</label>
+          <label className="kb-check kb-type-check"><input type="checkbox" checked={showFolders} onChange={(e) => setShowFolders(e.target.checked)} />目录</label>
+        </span>
+        <span className="kb-minrefs" title="最小引用数过滤（siyuan minRefs）：引用数低于阈值的文档节点隐藏">
+          <span className="kb-density-label">最少引用</span>
+          <input
+            type="range"
+            min="0" max="8" step="1"
+            value={minRefs}
+            onChange={(e) => setMinRefs(Number(e.target.value))}
+          />
+          <span className="kb-density-val">{minRefs}</span>
+        </span>
         <span className="kb-density" title="调整节点间距">
           <span className="kb-density-label">间距</span>
           <input

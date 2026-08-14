@@ -229,6 +229,41 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
     setLoading(false);
   }, [rootIdx, docCache, ensureVisible]);
 
+  // 引用悬浮预览（siyuan 式）：hover [[目标]] → 读取目标文档并弹窗预览
+  const [wikiPreview, setWikiPreview] = useState(null); // { title, snippet, x, y }
+  const wikiTimerRef = useRef(null);
+  const handleWikilinkHover = useCallback(async (target, e) => {
+    const targetName = target.split("|")[0].trim();
+    if (!targetName) return;
+    const rect = e?.currentTarget?.getBoundingClientRect?.();
+    // 延迟 400ms 再请求（避免快速扫过触发过多请求）
+    if (wikiTimerRef.current) clearTimeout(wikiTimerRef.current);
+    wikiTimerRef.current = setTimeout(async () => {
+      try {
+        // 目标可能是纯文件名或含路径；依次尝试 原名 / 原名+".md" / 文件名 / 文件名+".md"
+        const base = targetName.split("/").pop();
+        const candidates = [targetName, targetName.endsWith(".md") ? targetName : targetName + ".md", base, base.endsWith(".md") ? base : base + ".md"];
+        let d = null;
+        for (const p of candidates) {
+          d = await kbDoc(p, rootIdx).catch(() => null);
+          if (d) break;
+        }
+        if (d) {
+          setWikiPreview({
+            title: d.title || targetName,
+            snippet: String(d.content || "").replace(/[#*_`>|]/g, "").slice(0, 260),
+            x: rect?.left ?? 200,
+            y: (rect?.bottom ?? 200) + 6,
+          });
+        }
+      } catch {}
+    }, 400);
+  }, [rootIdx]);
+  const hideWikiPreview = useCallback(() => {
+    if (wikiTimerRef.current) clearTimeout(wikiTimerRef.current);
+    setWikiPreview(null);
+  }, []);
+
   // 关闭 tab
   const closeTab = useCallback((relPath) => {
     setTabs((prev) => {
@@ -608,7 +643,38 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
                     <span className="kb-crumb-current">{doc.relPath.split("/").pop()}</span>
                   </div>
                 </div>
-                <MarkdownBody onTagClick={(t) => { setSearchQ(t); doSearch(t); }}>{doc.content}</MarkdownBody>
+                <MarkdownBody
+                  onTagClick={(t) => { setSearchQ(t); doSearch(t); }}
+                  onWikilinkHover={handleWikilinkHover}
+                >{doc.content}</MarkdownBody>
+                {/* 文档底部反链区块（siyuan 式：正文下方显示引用来源） */}
+                {(doc.backlinks?.length > 0 || doc.mentions?.length > 0) && (
+                  <div className="kb-doc-backlinks">
+                    <div className="kb-doc-backlinks-title">
+                      <Icon name="backlink" size={12} /> 反向链接（{doc.backlinks.length}）· 提及（{doc.mentions?.length || 0}）
+                    </div>
+                    {doc.backlinks.length > 0 && (
+                      <ul className="kb-doc-backlinks-list">
+                        {doc.backlinks.slice(0, 12).map((b, i) => (
+                          <li key={i} className="kb-doc-backlink-item" onClick={() => openDoc(b.relPath, b.rootIdx)} title={b.snippet}>
+                            <span className="kb-backlink-title">{b.title}</span>
+                            <span className="kb-backlink-snippet">{b.snippet}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {doc.mentions?.length > 0 && (
+                      <ul className="kb-doc-backlinks-list">
+                        {doc.mentions.slice(0, 6).map((m, i) => (
+                          <li key={"m" + i} className="kb-doc-backlink-item" onClick={() => openDoc(m.relPath, m.rootIdx)} title={m.snippet}>
+                            <span className="kb-backlink-title">{m.title} <span className="kb-backlink-tag">提及</span></span>
+                            <span className="kb-backlink-snippet">{m.snippet}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -717,6 +783,19 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
           ) : (
             <div className="kb-loading">图谱加载中…</div>
           )}
+        </div>
+      )}
+
+      {/* 引用悬浮预览弹窗（siyuan 式） */}
+      {wikiPreview && (
+        <div
+          className="kb-wiki-preview"
+          style={{ left: Math.min(wikiPreview.x, window.innerWidth - 320), top: wikiPreview.y }}
+          onMouseEnter={() => { if (wikiTimerRef.current) clearTimeout(wikiTimerRef.current); }}
+          onMouseLeave={hideWikiPreview}
+        >
+          <div className="kb-wiki-preview-title">{wikiPreview.title}</div>
+          <div className="kb-wiki-preview-snippet">{wikiPreview.snippet}</div>
         </div>
       )}
     </div>

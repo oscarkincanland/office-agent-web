@@ -81,6 +81,9 @@ export const mapImportLayer = (name, layerId, geojson) =>
   api("/api/map/import", { method: "POST", body: JSON.stringify({ name, layerId, geojson }) });
 export const mapRebuild = (name, layerIds) =>
   api("/api/map/rebuild", { method: "POST", body: JSON.stringify({ name, layerIds }) });
+export const mapSettings = () => api("/api/map/settings");
+export const mapSettingsSave = (basemaps) =>
+  api("/api/map/settings", { method: "POST", body: JSON.stringify({ basemaps }) });
 export const mapDeleteLayer = (name, layerId) =>
   api("/api/map/layer/delete", { method: "POST", body: JSON.stringify({ name, layerId }) });
 export const mapGetLayer = (name, layerId) =>
