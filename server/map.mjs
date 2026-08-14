@@ -21,36 +21,157 @@ export const DEFAULT_PROJECT = "zhejiang-map";
 
 export const STATIC_ROOT = MAPS_ROOT; // index.mjs 静态挂载点
 
-const BASEMAPS = {
-  carto: {
-    name: "Carto 亮色",
+// 基础底图（始终可用）：高德 3 档，国内 CDN 稳定、CORS 全开
+// style=8 路网（含道路注记） / style=6 卫星影像 / style=7 卫星影像+注记
+const GAODE_BASEMAPS = {
+  "gaode-road": {
+    name: "高德路网",
     type: "raster",
-    tiles: ["https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
     tileSize: 256,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    tiles: [
+      "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+      "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
   },
-  osm: {
-    name: "OSM 标准",
+  "gaode-sat": {
+    name: "高德卫星",
     type: "raster",
-    tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
     tileSize: 256,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    tiles: [
+      "https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst02.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst03.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+      "https://webst04.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
   },
-  dark: {
-    name: "Carto 暗色",
+  "gaode-sat-label": {
+    name: "高德卫星注记",
     type: "raster",
-    tiles: ["https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
     tileSize: 256,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  },
-  satellite: {
-    name: "卫星影像",
-    type: "raster",
-    tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
-    tileSize: 256,
-    attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+    tiles: [
+      "https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst02.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst03.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+      "https://webst04.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+    ],
+    attribution: '&copy; <a href="https://www.amap.com/">高德地图</a>',
   },
 };
+
+// 底图设置（maps/settings.json）：各底图服务 Key
+const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
+const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", esriToken: "" } };
+
+export function loadMapSettings() {
+  const raw = readJson(MAP_SETTINGS_PATH, null);
+  if (!raw) return structuredClone(DEFAULT_MAP_SETTINGS);
+  return {
+    basemaps: {
+      ...DEFAULT_MAP_SETTINGS.basemaps,
+      ...(raw.basemaps || {}),
+    },
+  };
+}
+
+export function saveMapSettings(basemaps = {}) {
+  const cur = loadMapSettings();
+  cur.basemaps = {
+    tiandituKey: String(basemaps.tiandituKey ?? cur.basemaps.tiandituKey ?? ""),
+    maptilerKey: String(basemaps.maptilerKey ?? cur.basemaps.maptilerKey ?? ""),
+    esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
+  };
+  fs.mkdirSync(MAPS_ROOT, { recursive: true });
+  fs.writeFileSync(MAP_SETTINGS_PATH, JSON.stringify(cur, null, 2));
+  return cur;
+}
+
+// Esri 免费底图（World_Imagery / World_Street_Map，无需 Key）
+function esriBasemaps() {
+  return {
+    "esri-sat": {
+      name: "Esri 卫星",
+      type: "raster",
+      tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+      attribution: '&copy; Esri, Maxar, Earthstar Geographics',
+    },
+    "esri-street": {
+      name: "Esri 街道",
+      type: "raster",
+      tileSize: 256,
+      tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"],
+      attribution: '&copy; Esri, HERE, Garmin, OpenStreetMap contributors',
+    },
+  };
+}
+
+// 天地图 WMTS（XYZ 风格），需用户填 tk；子域 t0-t7
+function tiandituBasemaps(key) {
+  const tk = encodeURIComponent(key);
+  const hosts = ["t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7"];
+  const wmts = (layer, matrix) =>
+    hosts.map(
+      (h) =>
+        `https://${h}.tianditu.gov.cn/${layer}_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=default&TILEMATRIXSET=${matrix}&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${tk}`
+    );
+  return {
+    "tianditu-vec": {
+      name: "天地图矢量",
+      type: "raster",
+      tileSize: 256,
+      tiles: wmts("vec", "w"),
+      attribution: '&copy; <a href="https://www.tianditu.gov.cn/">天地图</a>',
+    },
+    "tianditu-img": {
+      name: "天地图影像",
+      type: "raster",
+      tileSize: 256,
+      tiles: wmts("img", "w"),
+      attribution: '&copy; <a href="https://www.tianditu.gov.cn/">天地图</a>',
+    },
+  };
+}
+
+// MapTiler XYZ，需用户填 Key
+function maptilerBasemaps(key) {
+  const k = encodeURIComponent(key);
+  return {
+    "maptiler-streets": {
+      name: "MapTiler 街道",
+      type: "raster",
+      tileSize: 256,
+      tiles: [`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${k}`],
+      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
+    },
+    "maptiler-sat": {
+      name: "MapTiler 卫星",
+      type: "raster",
+      tileSize: 256,
+      tiles: [`https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=${k}`],
+      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
+    },
+  };
+}
+
+/** 按设置生成可用底图源（高德 + Esri 固定，天地图/MapTiler 填 Key 后启用） */
+function markBasemap(s) {
+  return { ...s, metadata: { ...(s.metadata || {}), basemap: true } };
+}
+export function getBasemaps(settings = loadMapSettings()) {
+  let b = {};
+  b.blank = markBasemap({ name: "无底图", type: "raster", tileSize: 256, tiles: [], attribution: "" });
+  for (const [id, s] of Object.entries(GAODE_BASEMAPS)) b[id] = markBasemap(s);
+  for (const [id, s] of Object.entries(esriBasemaps())) b[id] = markBasemap(s);
+  const tk = settings?.basemaps?.tiandituKey;
+  if (tk) for (const [id, s] of Object.entries(tiandituBasemaps(tk))) b[id] = markBasemap(s);
+  const mk = settings?.basemaps?.maptilerKey;
+  if (mk) for (const [id, s] of Object.entries(maptilerBasemaps(mk))) b[id] = markBasemap(s);
+  return b;
+}
 
 /** 图层默认样式（与 LAYER_DEFS 对齐，Agent 可改 style.json 覆盖） */
 function layerStyle(def) {
@@ -95,7 +216,8 @@ function layerStyle(def) {
 }
 
 function getDefaultStyle(project) {
-  const sources = { ...BASEMAPS };
+  const basemaps = getBasemaps();
+  const sources = { ...basemaps };
   for (const def of LAYER_DEFS) {
     sources[def.id] = {
       type: "vector",
@@ -104,14 +226,24 @@ function getDefaultStyle(project) {
       maxzoom: def.maxzoom,
     };
   }
-  // 4 个底图栅格图层：切换底图 = 切换显隐，无需整样式重载
-  const basemapLayers = Object.keys(BASEMAPS).map((id) => ({
-    id: `basemap-${id}`,
-    type: "raster",
-    source: id,
-    layout: { visibility: id === "carto" ? "visible" : "none" },
-    paint: { "raster-opacity": 1 },
-  }));
+  // 底图栅格图层：切换底图 = 切换显隐，无需整样式重载
+  const DEFAULT_BASEMAP = "gaode-road";
+  const basemapLayers = Object.keys(basemaps).map((id) =>
+    id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        }
+  );
   const layers = [
     ...basemapLayers,
     ...LAYER_DEFS.map(layerStyle),
@@ -127,11 +259,11 @@ function getDefaultStyle(project) {
 
 function defaultConfig(project) {
   return {
-    name: project === "zhejiang-map" ? "浙江省交通地图" : project,
+    name: project === "zhejiang-map" ? "浙江省交通基础数据沙盘" : project,
     project,
     center: [120.0, 29.2],
     zoom: 7,
-    basemap: "carto",
+    basemap: "gaode-road",
     layers: LAYER_DEFS.map((d) => ({
       id: d.id,
       name: d.name,
@@ -195,7 +327,14 @@ export function getProject(name = DEFAULT_PROJECT) {
           return { file: e.name, id: e.name.replace(/\.geojson$/, ""), size: st.size, mtime: st.mtimeMs };
         })
     : [];
-  return { config, style, files, basemaps: Object.keys(BASEMAPS) };
+  const basemaps = getBasemaps();
+  return {
+    config,
+    style,
+    files,
+    basemaps: Object.keys(basemaps),
+    basemapMeta: Object.entries(basemaps).map(([id, s]) => ({ id, name: s.name || id })),
+  };
 }
 
 export function saveStyle(name, style) {
@@ -209,6 +348,92 @@ export function saveConfig(name, config) {
   const dir = ensureProject(name);
   if (!dir || !config) return null;
   fs.writeFileSync(path.join(dir, "map.config.json"), JSON.stringify(config, null, 2));
+  return true;
+}
+
+/**
+ * 按最新底图设置重建 style.json 的底图部分（保留图层自定义样式）。
+ * 底图源 = id 出现在当前 getBasemaps() 里的 sources；其余 sources/图层原样保留。
+ */
+export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return false;
+  const stylePath = path.join(dir, "style.json");
+  const basemaps = getBasemaps();
+  const cfg = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
+  const current = cfg?.basemap;
+  const DEFAULT_BASEMAP = current && basemaps[current] ? current : "gaode-road";
+
+  let style = readJson(stylePath, null);
+  if (!style || typeof style !== "object" || !style.sources) {
+    fs.writeFileSync(stylePath, JSON.stringify(getDefaultStyle(name), null, 2));
+    return true;
+  }
+  // 保留非底图 sources（底图 source 带 metadata.basemap 标记）
+  const sources = {};
+  for (const [id, s] of Object.entries(style.sources)) {
+    if (!s?.metadata?.basemap && !s?.basemap) sources[id] = s;
+  }
+  Object.assign(sources, basemaps);
+  // 保留非底图图层，重建 basemap-* 图层
+  const keep = style.layers.filter((l) => !String(l.id).startsWith("basemap-"));
+  const baseLayers = Object.keys(basemaps).map((id) =>
+    id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === DEFAULT_BASEMAP ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        }
+  );
+  // 同步 config.layers 中缺失的矢量图层（数据已导入但 style 未注册，如 roads-province）
+  for (const l of cfg?.layers || []) {
+    const id = l.id;
+    if (!sources[id]) {
+      sources[id] = {
+        type: "vector",
+        tiles: [`/api/map/data/${name}/tiles/${id}/{z}/{x}/{y}.pbf`],
+        maxzoom: l.maxzoom || 13,
+      };
+    }
+    if (!style.layers.some((x) => x.id === id)) {
+      const def = { id, type: l.type || "road", minzoom: l.minzoom || 5, maxzoom: l.maxzoom || 13 };
+      keep.push(layerStyle(def));
+    }
+    // 道路图层自动补标号图层（显示 ref 编号，缺失回退 name），置于线图层之后
+    if (l.type === "road" && !style.layers.some((x) => x.id === `${id}-label`)) {
+      keep.push({
+        id: `${id}-label`,
+        type: "symbol",
+        source: id,
+        "source-layer": id,
+        minzoom: (l.minzoom || 5) + 2,
+        layout: {
+          "symbol-placement": "line",
+          "text-field": ["coalesce", ["get", "ref"], ["get", "name"], ""],
+          "text-size": ["interpolate", ["linear"], ["zoom"], 8, 10, 13, 12],
+          "text-font": ["Noto Sans Regular"],
+          "text-rotation-alignment": "map",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#ffffff",
+          "text-halo-color": "rgba(0,0,0,0.75)",
+          "text-halo-width": 1.2,
+        },
+      });
+    }
+  }
+  style.sources = sources;
+  style.layers = [...baseLayers, ...keep];
+  fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
   return true;
 }
 

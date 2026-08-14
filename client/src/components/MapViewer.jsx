@@ -7,6 +7,12 @@ import { mapImportLayer } from "../api.js";
 
 const STYLE_PATH = (project) => `/api/map/data/${project}/style.json`;
 
+// 底图 id 清单（与 server/map.mjs BASEMAPS 对齐）
+const BASEMAP_IDS = ["gaode-road", "gaode-sat", "gaode-sat-label"];
+// 旧底图 id → 新底图 id（老项目 config 里可能存的是 carto/osm/dark/satellite）
+const LEGACY_BASEMAP = { carto: "gaode-road", osm: "gaode-road", dark: "gaode-road", satellite: "gaode-sat" };
+const normalizeBasemap = (id) => LEGACY_BASEMAP[id] || (BASEMAP_IDS.includes(id) ? id : "gaode-road");
+
 /**
  * 地图主区（MapLibre GL）
  * - 加载 style.json（矢量瓦片图层 + 4 底图）
@@ -15,15 +21,20 @@ const STYLE_PATH = (project) => `/api/map/data/${project}/style.json`;
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onLayerTilesChanged },
+  { project = "zhejiang-map", config, onConfigChange, onLayerTilesChanged, onDrillDown },
   ref
 ) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const styleHashRef = useRef("");
   const popupEnabledRef = useRef(true); // 绘制/测量模式下禁用属性弹窗
+  // 当前 style 中实际存在的底图图层 id（服务端按 Key 配置动态生成）
+  const basemapIdsRef = useRef([...BASEMAP_IDS]);
+  // 路网图层 id（下钻过滤目标：非边界 line 图层 + 标号 symbol 图层）
+  const roadLayerIdsRef = useRef([]);
+  const drillRef = useRef(null);
   const [loaded, setLoaded] = useState(false);
-  const [basemap, setBasemap] = useState(config?.basemap || "carto");
+  const [basemap, setBasemap] = useState(() => normalizeBasemap(config?.basemap));
   const [cursor, setCursor] = useState({ lng: null, lat: null, zoom: null });
   const [importing, setImporting] = useState(false);
   const [msg, setMsg] = useState(""); // 轻提示
@@ -34,7 +45,7 @@ const MapViewer = forwardRef(function MapViewer(
   // 初始化地图
   useEffect(() => {
     if (!containerRef.current) return undefined;
-    const map = new MapLibreMap({
+  const map = new MapLibreMap({
       container: containerRef.current,
       style: STYLE_PATH(project),
       center: config?.center || [120.0, 29.2],
@@ -44,7 +55,28 @@ const MapViewer = forwardRef(function MapViewer(
     mapRef.current = map;
     map.addControl(new NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
-    map.on("load", () => setLoaded(true));
+    // 从 style 提取底图/路网图层 id（下钻过滤与底图切换用）
+    const syncLayerRefs = (s) => {
+      if (!s?.layers) return;
+      const ids = s.layers
+        .filter((l) => String(l.id).startsWith("basemap-"))
+        .map((l) => String(l.id).slice("basemap-".length));
+      if (ids.length) basemapIdsRef.current = ids;
+      roadLayerIdsRef.current = s.layers
+        .filter((l) => l.type === "line" && !["boundary-city", "boundary-county"].includes(l.id))
+        .map((l) => l.id)
+        .concat(
+          s.layers.filter((l) => l.type === "symbol" && String(l.id).endsWith("-label")).map((l) => l.id)
+        );
+    };
+    map.on("load", () => {
+      setLoaded(true);
+      // 立即同步图层列表（避免加载后第一时间下钻时 ref 为空）
+      fetch(STYLE_PATH(project))
+        .then((r) => r.json())
+        .then(syncLayerRefs)
+        .catch(() => {});
+    });
     map.on("move", () => {
       const c = map.getCenter();
       setCursor({ lng: c.lng.toFixed(5), lat: c.lat.toFixed(5), zoom: map.getZoom().toFixed(2) });
@@ -69,6 +101,19 @@ const MapViewer = forwardRef(function MapViewer(
         (f) => f.layer && !f.layer.id.startsWith("basemap") && f.properties && Object.keys(f.properties).length
       );
       if (!pick) return;
+      // 点击行政区划边界 → 触发下钻（市级/县区级）
+      if (pick.layer.id === "boundary-city" || pick.layer.id === "boundary-county") {
+        const p = pick.properties;
+        const code = String(p.adcode ?? "");
+        if (code) {
+          onDrillDown?.({
+            source: pick.layer.id,
+            code,
+            name: p.name || code,
+            level: pick.layer.id === "boundary-city" ? "city" : "county",
+          });
+        }
+      }
       const p = pick.properties;
       const rows = Object.entries(p)
         .filter(([, v]) => v !== "" && v !== null && v !== undefined)
@@ -112,9 +157,51 @@ const MapViewer = forwardRef(function MapViewer(
     const zoom = map.getZoom();
     try { map.setStyle(style, { diff: false }); } catch {}
     map.jumpTo({ center: camera, zoom });
+    // 记录 style 中实际存在的底图图层（服务端按 Key 配置动态生成）
+    const ids = (style?.layers || [])
+      .filter((l) => String(l.id).startsWith("basemap-"))
+      .map((l) => String(l.id).slice("basemap-".length));
+    if (ids.length) basemapIdsRef.current = ids;
+    // 记录路网图层（下钻过滤目标）
+    roadLayerIdsRef.current = (style?.layers || [])
+      .filter((l) => l.type === "line" && !["boundary-city", "boundary-county"].includes(l.id))
+      .map((l) => l.id)
+      .concat(
+        (style?.layers || [])
+          .filter((l) => l.type === "symbol" && String(l.id).endsWith("-label"))
+          .map((l) => l.id)
+      );
+    // 重放下钻状态（style 重载后恢复过滤与高亮；setStyle 异步，需等 style 渲染完成）
+    if (drillRef.current) {
+      const d = drillRef.current;
+      const field = d.level === "city" ? "city_code" : "adcode";
+      const restoreDrill = () => {
+        const m = mapRef.current;
+        if (!m || !drillRef.current) return;
+        try { if (m.getLayer("drill-highlight")) m.removeLayer("drill-highlight"); } catch {}
+        if (d.source && m.getSource(d.source)) {
+          m.addLayer({
+            id: "drill-highlight",
+            type: "fill",
+            source: d.source,
+            "source-layer": d.source,
+            filter: ["==", "adcode", d.code],
+            paint: { "fill-color": "#ffd54f", "fill-opacity": 0.3 },
+          });
+        }
+        for (const id of roadLayerIdsRef.current) {
+          if (m.getLayer(id)) m.setFilter(id, ["in", field, d.code]);
+        }
+      };
+      map.once("idle", restoreDrill);
+      // 兜底：idle 若长时间不触发（无交互时不触发？MapLibre idle 在渲染稳定后触发）
+      setTimeout(() => {
+        if (drillRef.current && mapRef.current) restoreDrill();
+      }, 1500);
+    }
     // 重放底图
     setBasemap((prev) => {
-      for (const id of ["carto", "osm", "dark", "satellite"]) {
+      for (const id of basemapIdsRef.current) {
         if (map.getLayer(`basemap-${id}`)) {
           map.setLayoutProperty(`basemap-${id}`, "visibility", id === prev ? "visible" : "none");
         }
@@ -139,12 +226,43 @@ const MapViewer = forwardRef(function MapViewer(
     setBasemap: (id) => {
       const map = mapRef.current;
       if (!map) return;
-      for (const bid of ["carto", "osm", "dark", "satellite"]) {
+      for (const bid of basemapIdsRef.current) {
         if (map.getLayer(`basemap-${bid}`)) {
           map.setLayoutProperty(`basemap-${bid}`, "visibility", bid === id ? "visible" : "none");
         }
       }
       setBasemap(id);
+    },
+    /** 省市县下钻：高亮区域 + 按 adcode/city_code 过滤路网 */
+    drillTo: (d) => {
+      const map = mapRef.current;
+      if (!map || !d?.code) return;
+      try { if (map.getLayer("drill-highlight")) map.removeLayer("drill-highlight"); } catch {}
+      const field = d.level === "city" ? "city_code" : "adcode";
+      if (d.source && map.getSource(d.source)) {
+        map.addLayer({
+          id: "drill-highlight",
+          type: "fill",
+          source: d.source,
+          "source-layer": d.source,
+          filter: ["==", "adcode", d.code],
+          paint: { "fill-color": "#ffd54f", "fill-opacity": 0.3 },
+        });
+      }
+      for (const id of roadLayerIdsRef.current) {
+        if (map.getLayer(id)) map.setFilter(id, ["in", field, d.code]);
+      }
+      drillRef.current = d;
+    },
+    /** 清除下钻 */
+    clearDrill: () => {
+      const map = mapRef.current;
+      if (!map) return;
+      try { if (map.getLayer("drill-highlight")) map.removeLayer("drill-highlight"); } catch {}
+      for (const id of roadLayerIdsRef.current) {
+        if (map.getLayer(id)) map.setFilter(id, null);
+      }
+      drillRef.current = null;
     },
     /** 绘制/测量模式：开关属性弹窗与光标 */
     setDrawingMode: (on) => {
@@ -419,7 +537,7 @@ const MapViewer = forwardRef(function MapViewer(
       <div className="map-status">
         {cursor.lng !== null
           ? `经度 ${cursor.lng}  纬度 ${cursor.lat}  缩放 ${cursor.zoom}`
-          : "浙江省交通地图 — 点击要素查看属性"}
+          : "浙江省交通基础数据沙盘 — 点击要素查看属性"}
       </div>
     </div>
   );

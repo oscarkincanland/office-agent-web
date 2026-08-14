@@ -3398,6 +3398,13 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   max-width: 180px;
 }
 .mp-basemap { display: flex; gap: 3px; }
+.mp-drill-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--accent); color: #0e0e1a;
+  border: none; border-radius: 3px; padding: 2px 8px;
+  font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+.mp-drill-x { font-weight: 700; margin-left: 2px; }
 .mp-basemap-btn {
   background: var(--panel2-bg);
   border: 1px solid var(--border);
@@ -5128,3 +5135,71 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-top: 1px solid var(--border);
 }
 .chat-hist-list .session-list { padding: 2px 0; }
+
+/* ===== 知识库引用悬浮预览（siyuan 式） ===== */
+.kb-wikilink {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+  padding: 0 1px;
+}
+.kb-wikilink:hover { background: rgba(138, 190, 183, 0.15); border-radius: 2px; }
+.kb-wiki-preview {
+  position: fixed;
+  z-index: 200;
+  width: 300px;
+  max-height: 220px;
+  overflow: hidden;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.kb-wiki-preview-title { font-weight: 700; color: var(--accent); margin-bottom: 6px; }
+.kb-wiki-preview-snippet { color: var(--muted); line-height: 1.6; }
+
+/* ===== 文档底部反链区块 ===== */
+.kb-doc-backlinks {
+  margin-top: 24px;
+  border-top: 1px dashed var(--border);
+  padding-top: 12px;
+}
+.kb-doc-backlinks-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.kb-doc-backlinks-list { list-style: none; padding: 0; margin: 0 0 8px; }
+.kb-doc-backlink-item {
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.kb-doc-backlink-item:hover { border-left-color: var(--accent); background: var(--selected); }
+.kb-backlink-title { display: block; font-size: 12px; font-weight: 600; color: var(--text); }
+.kb-backlink-tag {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--dim);
+  background: var(--panel2-bg);
+  padding: 0 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+}
+.kb-backlink-snippet { display: block; font-size: 11px; color: var(--dim); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== 图谱控制条增强（siyuan：类型过滤 + minRefs） ===== */
+.kb-filter-block { display: inline-flex; gap: 6px; align-items: center; }
+.kb-type-check { font-size: 11px; }
+.kb-minrefs { display: inline-flex; align-items: center; gap: 6px; }
+.kb-minrefs input[type="range"] { width: 70px; accent-color: var(--accent); }

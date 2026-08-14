@@ -9,7 +9,12 @@ import {
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapIsochrone,
 } from "../api.js";
 
-const BASEMAP_NAMES = { carto: "亮色", osm: "OSM", dark: "暗色", satellite: "卫星" };
+// 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
+const BASEMAP_FALLBACK = [
+  { id: "gaode-road", name: "路网" },
+  { id: "gaode-sat", name: "卫星" },
+  { id: "gaode-sat-label", name: "卫星注记" },
+];
 const ISO_MODES = [
   { id: "driving", label: "驾车" },
   { id: "walking", label: "步行" },
@@ -36,6 +41,8 @@ export default function MapPanel({
   const [cfg, setCfg] = useState(null);
   const [style, setStyle] = useState(null);
   const [files, setFiles] = useState([]);
+  const [basemapMeta, setBasemapMeta] = useState([]);
+  const [drill, setDrill] = useState(null); // 下钻状态 {source, code, name, level}
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
   const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
@@ -86,6 +93,7 @@ export default function MapPanel({
       setCfg(p.config);
       setStyle(p.style);
       setFiles(p.files || []);
+      setBasemapMeta(Array.isArray(p.basemapMeta) && p.basemapMeta.length ? p.basemapMeta : BASEMAP_FALLBACK);
     } catch (e) {
       flash("加载项目失败: " + e.message);
     }
@@ -191,9 +199,24 @@ export default function MapPanel({
       layers: style.layers.map((l) => {
         if (l.id !== layerId) return l;
         const paint = { ...(l.paint || {}) };
-        if (value === null || value === undefined) delete paint[key];
-        else paint[key] = value;
+        if (value === null || value === undefined) delete paint[key];        else paint[key] = value;
         return { ...l, paint };
+      }),
+    };
+    saveStyle(next);
+  }, [style, saveStyle]);
+
+  // 样式编辑器：设置单个 layout 属性（null 删除；标号字段等）
+  const setLayerLayout = useCallback((layerId, key, value) => {
+    if (!style) return;
+    const next = {
+      ...style,
+      layers: style.layers.map((l) => {
+        if (l.id !== layerId) return l;
+        const layout = { ...(l.layout || {}) };
+        if (value === null || value === undefined) delete layout[key];
+        else layout[key] = value;
+        return { ...l, layout };
       }),
     };
     saveStyle(next);
@@ -597,17 +620,25 @@ export default function MapPanel({
             <option key={p.project || p.name} value={p.project || p.name}>{p.name}</option>
           ))}
         </select>
-        <div className="mp-basemap" title="开源底图切换">
-          {Object.entries(BASEMAP_NAMES).map(([id, label]) => (
-            <button
-              key={id}
-              className={`mp-basemap-btn ${cfg?.basemap === id ? "active" : ""}`}
-              onClick={() => switchBasemap(id)}
-            >
-              {label}
-            </button>
+        <select
+          className="mp-project-select mp-basemap-select"
+          value={cfg?.basemap || "gaode-road"}
+          onChange={(e) => switchBasemap(e.target.value)}
+          title="底图切换（可在设置界面配置 Key 扩展底图）"
+        >
+          {basemapMeta.map((b) => (
+            <option key={b.id} value={b.id}>{b.name}</option>
           ))}
-        </div>
+        </select>
+        {drill && (
+          <button
+            className="mp-drill-btn"
+            onClick={() => { mapRef.current?.clearDrill(); setDrill(null); }}
+            title="清除下钻过滤，恢复全省路网"
+          >
+            <Icon name="locate" size={12} /> {drill.name} <span className="mp-drill-x">✕</span>
+          </button>
+        )}
         <span className="mp-sep" />
         <button className="btn-sm" onClick={handleRebuild} title="重建矢量瓦片（数据变更后）">
           <Icon name="refresh" size={13} /> 重建瓦片
@@ -652,6 +683,7 @@ export default function MapPanel({
             onSelect={setSelectedLayer}
             onToggleLayer={toggleLayer}
             onSetPaint={setLayerPaint}
+            onSetLayout={setLayerLayout}
             onSetOpacity={setOpacity}
             onMoveLayerTo={moveLayerTo}
             onRenameLayer={renameLayer}
@@ -670,6 +702,10 @@ export default function MapPanel({
             project={project}
             config={cfg}
             onLayerTilesChanged={() => loadProject(project)}
+            onDrillDown={(d) => {
+              setDrill(d);
+              mapRef.current?.drillTo(d);
+            }}
           />
           {/* 测量/绘制提示条 */}
           {draw && (

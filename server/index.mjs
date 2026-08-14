@@ -307,6 +307,27 @@ app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
 });
 
 // ---------- 地图（GIS 项目：浙江交通地图） ----------
+// style.json 动态响应：矢量瓦片 URL 相对路径 → 绝对 URL
+// （MapLibre 在 Web Worker 中加载矢量瓦片，Worker 无法解析 /api/... 相对路径）
+// 必须注册在任何 /api/map/data 静态挂载之前，否则被 express.static 抢先返回原文件
+app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
+  const name = req.params[0];
+  const p = path.join(map.STATIC_ROOT, name, "style.json");
+  if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
+  try {
+    const style = JSON.parse(fs.readFileSync(p, "utf8"));
+    const origin = `${req.protocol}://${req.get("host")}`;
+    for (const s of Object.values(style.sources || {})) {
+      if (Array.isArray(s.tiles)) {
+        s.tiles = s.tiles.map((t) => (typeof t === "string" && t.startsWith("/") ? origin + t : t));
+      }
+    }
+    res.json(style);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 静态文件（style.json / 矢量瓦片 / 图层数据）
 app.use("/api/map/data", express.static(map.STATIC_ROOT));
 
@@ -1359,11 +1380,44 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
 import * as mapSvc from "./map.mjs";
 
 // 静态资源：/api/map/data/{project}/style.json|tiles/...|layers/...
+// （style.json 动态注入绝对瓦片 URL 的路由已注册在文件前部的 /api/map/data 静态挂载之前）
 app.use("/api/map/data", express.static(mapSvc.STATIC_ROOT, { fallthrough: true, maxAge: 0 }));
 
 // 项目列表
 app.get("/api/map/projects", (_req, res) => {
   res.json({ projects: mapSvc.listProjects() });
+});
+
+// 底图服务设置（Key 不回传明文，只回传是否已配置）
+app.get("/api/map/settings", (_req, res) => {
+  const s = mapSvc.loadMapSettings();
+  res.json({
+    basemaps: {
+      tiandituKey: !!s.basemaps?.tiandituKey,
+      maptilerKey: !!s.basemaps?.maptilerKey,
+      esriToken: !!s.basemaps?.esriToken,
+    },
+  });
+});
+
+// 保存底图服务 Key → 重建所有项目 style.json 的底图部分
+app.post("/api/map/settings", (req, res) => {
+  try {
+    const s = mapSvc.saveMapSettings(req.body?.basemaps || {});
+    const projects = mapSvc.listProjects();
+    for (const p of projects) mapSvc.rebuildBasemapStyle(p.project);
+    res.json({
+      ok: true,
+      basemaps: {
+        tiandituKey: !!s.basemaps?.tiandituKey,
+        maptilerKey: !!s.basemaps?.maptilerKey,
+        esriToken: !!s.basemaps?.esriToken,
+      },
+      projects: projects.map((p) => p.project),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // 项目详情（config + style + 图层文件清单）
