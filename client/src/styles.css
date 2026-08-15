@@ -5203,3 +5203,18 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .kb-type-check { font-size: 11px; }
 .kb-minrefs { display: inline-flex; align-items: center; gap: 6px; }
 .kb-minrefs input[type="range"] { width: 70px; accent-color: var(--accent); }
+
+/* ================= v0.8.18 文件树元信息 ================= */
+.file-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--dim);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.file-mtime { font-variant-numeric: tabular-nums; }
+.file-item { gap: 6px; }
+.file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-meta + .file-at { margin-left: 0; }
