@@ -127,8 +127,9 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const t = d.data.type;
     if (t === "tag") return 7;
     if (t === "folder") return 9;
+    // 对数缩放（对齐 siyuan getGraphNodeSize：log2(被引用数+1)+1）× base，避免大度节点尺寸爆炸
     const deg = degreeMapRef.current.get(d.id) || 0;
-    return Math.min(34, 14 + deg * 2.2);
+    return Math.min(56, (Math.log2(deg + 1) + 0.6) * 12);
   }, []);
 
   const nodeFill = useCallback((d) => {
@@ -178,12 +179,16 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       container: el,
       autoResize: true,
       data: {
-        // 初始随机分散（force 布局以此为起点，避免全部堆在中心）
-        nodes: initialNodes.map((n) => ({
-          ...n,
-          x: (Math.random() - 0.5) * 900,
-          y: (Math.random() - 0.5) * 900,
-        })),
+        // 黄金角螺旋初始布局（对齐 siyuan createInitialPositions：均匀展开，避免初始化堆叠）
+        nodes: initialNodes.map((n, i) => {
+          const golden = Math.PI * (3 - Math.sqrt(5));
+          let hash = 2166136261;
+          for (let j = 0; j < n.id.length; j++) { hash ^= n.id.charCodeAt(j); hash = Math.imul(hash, 16777619); }
+          hash >>>= 0;
+          const angle = i * golden + (hash % 1024) / 1024;
+          const radius = Math.sqrt(i + 1) * Math.max(40, 220 * 0.35);
+          return { ...n, x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+        }),
         edges: initialEdges,
       },
       node: {
