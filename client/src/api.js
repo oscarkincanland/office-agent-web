@@ -79,6 +79,10 @@ export const mapSaveConfig = (name, config) =>
   api("/api/map/config", { method: "POST", body: JSON.stringify({ name, config }) });
 export const mapImportLayer = (name, layerId, geojson) =>
   api("/api/map/import", { method: "POST", body: JSON.stringify({ name, layerId, geojson }) });
+export const mapImportBatch = (name, items) =>
+  api("/api/map/import-batch", { method: "POST", body: JSON.stringify({ name, items }) });
+export const mapPrepare = (srcDir) =>
+  api("/api/map/prepare", { method: "POST", body: JSON.stringify({ srcDir }) });
 export const mapRebuild = (name, layerIds) =>
   api("/api/map/rebuild", { method: "POST", body: JSON.stringify({ name, layerIds }) });
 export const mapSettings = () => api("/api/map/settings");
@@ -90,6 +94,8 @@ export const mapGetLayer = (name, layerId) =>
   api(`/api/map/layer?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layerId)}`);
 export const mapIsochrone = (params) =>
   api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
+export const mapRoute = (params) =>
+  api("/api/map/route", { method: "POST", body: JSON.stringify(params) });
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);

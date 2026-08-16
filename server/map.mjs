@@ -472,7 +472,20 @@ export function rebuildTiles(name = DEFAULT_PROJECT, layerIds = null) {
   return buildProjectTiles(dir, { force: true, layerIds });
 }
 
-/** 获取图层 GeoJSON 数据（供属性表/要素定位） */
+/** 批量导入多个图层（逐个导入 + 统一重建瓦片） */
+export async function importBatch(name, items) {
+  const results = {};
+  for (const it of items || []) {
+    if (!it?.geojson) continue;
+    const safeId = String(it.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeId) continue;
+    try { results[safeId] = await importLayer(name, safeId, it.geojson); } catch { results[safeId] = { ok: false, error: "导入失败" }; }
+  }
+  const tiles = rebuildTiles(name);
+  return { ok: true, layers: results, tiles };
+}
+
+/** 读取图层原始 GeoJSON */
 export function getLayer(name, layerId) {
   const dir = projectDir(name);
   const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
@@ -508,11 +521,7 @@ export function deleteLayer(name, layerId) {
 
 // ---------- 外部服务 ----------
 
-/**
- * 等时圈分析（高德地图 Web 服务 v5 isochrone）
- * 依赖环境变量 AMAP_KEY（高德 Web 服务 Key），未配置时返回明确错误。
- * 返回: { error: null, center, cost, polygons: [[[lng,lat],...], ...] }
- */
+/** 等时圈分析（高德 v5 isochrone）… */
 export async function isochrone({ location, mode = "driving", range = 30, rangeType = "time" }) {
   const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
   if (!key) {
@@ -549,4 +558,73 @@ function normalizePoints(points) {
     if (p && typeof p === "object") return [Number(p.lng), Number(p.lat)];
     return null;
   }).filter(Boolean);
+}
+
+/**
+ * 路径规划（可插拔 provider）
+ * - osrm（默认）：开源 OSRM 公共服务器，零配置；也可配 OSRM_URL 指向自托管实例
+ * - amap：高德 v5 direction（需 AMAP_KEY，中国路网更准）
+ * 返回: { error: null, provider, distance(米), duration(秒), geometry: [[lng,lat],...] }
+ */
+export async function route({ from, to, mode = "driving", provider = "osrm" }) {
+  if (!from || !to) return { error: "需要起点和终点坐标" };
+  if (provider === "amap") return routeAmap(from, to, mode);
+  return routeOsrm(from, to, mode);
+}
+
+async function routeOsrm(from, to, mode) {
+  const profile = mode === "walking" ? "foot" : mode === "bicycling" ? "bike" : "driving";
+  const base = process.env.OSRM_URL || "https://router.project-osrm.org";
+  const url = `${base}/route/v1/${profile}/${from};${to}?overview=full&geometries=geojson&steps=false`;
+  let data;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    data = await r.json();
+  } catch (e) {
+    return { error: "OSRM 请求失败: " + e.message + "（可配置环境变量 OSRM_URL 指向自托管实例，或改用 provider=amap）" };
+  }
+  if (data.code !== "Ok" || !data.routes?.length) {
+    return { error: "OSRM 未找到路径: " + (data.code || "unknown") + "（请确认两点间有路网）" };
+  }
+  const route0 = data.routes[0];
+  return {
+    error: null,
+    provider: "osrm",
+    distance: route0.distance,
+    duration: route0.duration,
+    geometry: route0.geometry?.coordinates || [],
+  };
+}
+
+async function routeAmap(from, to, mode) {
+  const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
+  if (!key) return { error: "未配置高德 Web 服务 Key（环境变量 AMAP_KEY），请改用默认 OSRM 开源路由" };
+  const amapMode = { driving: "driving", walking: "walking", bicycling: "bicycling", transit: "transit" }[mode] || "driving";
+  const url = new URL("https://restapi.amap.com/v5/direction/" + amapMode);
+  url.searchParams.set("key", key);
+  url.searchParams.set("origin", from);
+  url.searchParams.set("destination", to);
+  url.searchParams.set("show_fields", "polyline,cost");
+  let data;
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    data = await r.json();
+  } catch (e) {
+    return { error: "高德路径请求失败: " + e.message };
+  }
+  if (data.status !== "1" || !data.route?.paths?.length) {
+    return { error: "高德未找到路径: " + (data.info || data.infocode || "unknown") };
+  }
+  const path = data.route.paths[0];
+  const coords = String(path.polyline || "")
+    .split(";")
+    .filter(Boolean)
+    .map((p) => p.split(",").map(Number));
+  return {
+    error: null,
+    provider: "amap",
+    distance: path.distance ? Number(path.distance) : 0,
+    duration: path.cost?.duration ? Number(path.cost.duration) : 0,
+    geometry: coords,
+  };
 }

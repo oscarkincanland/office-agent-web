@@ -17,6 +17,8 @@ const TYPE_ORDER = { markdown: 0, html: 1, word: 2, pdf: 3, ppt: 4, xls: 5, othe
 
 export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
   const [atMarks, setAtMarks] = useState([]); // 多次 @ 累积的标记（返回时统一传给对话）
+  const [genOpen, setGenOpen] = useState(false); // 一键生成弹窗
+  const [genTopic, setGenTopic] = useState("");
   const [categories, setCategories] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeCategory, setActiveCategory] = useState("all");
@@ -255,6 +257,12 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
     );
   };
 
+  // 一键生成：携带主题指令返回对话（复用 @模板 标记机制）
+  const confirmGenerate = () => {
+    if (!genTopic.trim() || !preview) return;
+    onExit?.([`@模板[${preview.name}] 请参考该模板的风格与结构，生成主题为「${genTopic.trim()}」的 HTML PPT，保存到工作区后告诉我文件名`]);
+  };
+
   return (
     <div className="tpl">
       {/* 顶栏 */}
@@ -407,6 +415,13 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                 title="把该模板 @到对话（可继续 @多个，返回时统一插入）"
                 onClick={() => setAtMarks((m) => [...m, `@模板[${preview.name}]`])}
               >@ 模板</button>
+              <button
+                className="btn-sm primary"
+                title="一键让 agent 按该模板风格生成作品（输入主题后自动带入对话）"
+                onClick={() => setGenOpen(true)}
+              >
+                <Icon name="penTool" size={12} /> 用此模板生成
+              </button>
               {preview.relPath?.includes("/") && (
                 <button
                   className="btn-sm tpl-preview-at-dir"
@@ -423,6 +438,37 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
           </div>
         )}
       </div>
+
+      {/* 一键生成弹窗：输入主题 → 返回对话并预填生成指令 */}
+      {genOpen && (
+        <div className="tpl-gen-backdrop" onClick={() => setGenOpen(false)}>
+          <div className="tpl-gen" onClick={(e) => e.stopPropagation()}>
+            <div className="tpl-gen-head">
+              <span><Icon name="penTool" size={13} /> 用模板生成</span>
+              <button className="mp-op" onClick={() => setGenOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="tpl-gen-body">
+              <div className="tpl-gen-note">将按「{preview?.title}」的风格生成作品，并自动带入对话让 agent 执行。</div>
+              <input
+                className="tpl-gen-input"
+                placeholder="输入作品主题，如：松阳县停车设施规划汇报"
+                value={genTopic}
+                onChange={(e) => setGenTopic(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") confirmGenerate(); }}
+                autoFocus
+              />
+              <div className="tpl-gen-actions">
+                <button className="btn-sm" onClick={() => setGenOpen(false)}>取消</button>
+                <button
+                  className="btn-sm primary"
+                  disabled={!genTopic.trim()}
+                  onClick={confirmGenerate}
+                >生成</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
