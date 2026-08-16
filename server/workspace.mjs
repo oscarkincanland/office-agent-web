@@ -8,9 +8,32 @@ export const PROJECT_DIR = path.resolve(__dirname, "..");
 export const WORKSPACE_DIR = path.join(PROJECT_DIR, "office-workspace");
 export const CLIENT_DIST = path.join(PROJECT_DIR, "client", "dist");
 
-export const OFFICECLI = process.env.OFFICECLI_BIN
-  ? process.env.OFFICECLI_BIN
-  : path.join(process.env.LOCALAPPDATA || "C:\\Users\\admin\\AppData\\Local", "OfficeCLI", "officecli.exe");
+// OfficeCLI 二进制解析优先级：
+//   1. 环境变量 OFFICECLI_BIN（显式指定）
+//   2. 项目内置 bin/officecli（node scripts/install-officecli.mjs 安装）
+//   3. 系统 PATH 中的 officecli
+//   4. Windows 默认安装路径（officecli.ai 官方安装脚本）
+function resolveOfficecli() {
+  if (process.env.OFFICECLI_BIN) return process.env.OFFICECLI_BIN;
+  const bundled = path.join(PROJECT_DIR, "bin", process.platform === "win32" ? "officecli.exe" : "officecli");
+  if (fs.existsSync(bundled)) return bundled;
+  const onPath = process.platform === "win32" ? null : (() => { try { return requireResolveInPath("officecli"); } catch { return null; } })();
+  if (onPath) return onPath;
+  return path.join(process.env.LOCALAPPDATA || "C:\\Users\\admin\\AppData\\Local", "OfficeCLI", "officecli.exe");
+}
+
+function requireResolveInPath(name) {
+  const dirs = (process.env.PATH || "").split(path.delimiter);
+  for (const d of dirs) {
+    try {
+      const p = path.join(d, name);
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+  return null;
+}
+
+export const OFFICECLI = resolveOfficecli();
 
 export const AGENT_DIR =
   process.env.PI_AGENT_DIR ||
