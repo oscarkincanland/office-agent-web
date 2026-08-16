@@ -236,12 +236,11 @@ app.post("/api/kb/export-docx", async (req, res) => {
   }
 });
 
-// ---------- HTML 标注持久化 ----------
-const ANNO_DIR = path.join(WORKSPACE_DIR, ".annotations");
+// ---------- HTML 标注持久化（跟随当前工作区） ----------
 function annotationsPath(fileName) {
   const safe = path.basename(String(fileName || ""));
   if (!safe || safe.includes("..")) return null;
-  return path.join(ANNO_DIR, safe + ".json");
+  return path.join(getWorkspace(), ".annotations", safe + ".json");
 }
 
 app.get(/^\/api\/doc\/([^\/]+)\/annotations$/, (_req, res) => {
@@ -260,7 +259,7 @@ app.post(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
   const p = annotationsPath(fileName);
   if (!p) return res.status(400).json({ error: "invalid name" });
   try {
-    fs.mkdirSync(ANNO_DIR, { recursive: true });
+    fs.mkdirSync(path.join(getWorkspace(), ".annotations"), { recursive: true });
     const list = Array.isArray(req.body?.annotations) ? req.body.annotations : [];
     fs.writeFileSync(p, JSON.stringify(list, null, 2), "utf8");
     res.json({ ok: true, count: list.length });
@@ -450,7 +449,7 @@ app.post("/api/files/upload", async (req, res) => {
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
   if (!/\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
-  fs.writeFileSync(path.join(WORKSPACE_DIR, safe), buf);
+  fs.writeFileSync(path.join(getWorkspace(), safe), buf);
   res.json({ ok: true, file: safe });
 });
 
@@ -1558,10 +1557,11 @@ function walkSnapshot(dir, root) {
   return out;
 }
 function snapshotWorkspace() {
+  const ws = getWorkspace();
   const top = listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
   // 地图项目位于工作区子目录，递归快照以便检测 layers/tiles/style 变化
-  const mapRoot = path.join(WORKSPACE_DIR, "maps");
-  const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, WORKSPACE_DIR) : [];
+  const mapRoot = path.join(ws, "maps");
+  const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, ws) : [];
   return [...top, ...maps];
 }
 function diffWorkspace(before, after) {
