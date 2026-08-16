@@ -9,20 +9,21 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI } from "./workspace.mjs";
+import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "./workspace.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
-/** 读取工作区记忆（AGENTS.md + memory/*.md 合并，限长）——每次对话前注入 agent 上下文 */
+/** 读取工作区记忆（AGENTS.md + memory/*.md 合并，限长）——每次对话前注入 agent 上下文，跟随当前工作区 */
 function readMemoryContext() {
   const parts = [];
   try {
-    const agentsMd = path.join(WORKSPACE_DIR, "AGENTS.md");
+    const ws = getWorkspace();
+    const agentsMd = path.join(ws, "AGENTS.md");
     if (fs.existsSync(agentsMd)) {
       const c = fs.readFileSync(agentsMd, "utf8").trim();
       if (c) parts.push("## 工作区准则 (AGENTS.md)\n" + c.slice(0, 1500));
     }
-    const memDir = path.join(WORKSPACE_DIR, "memory");
+    const memDir = path.join(ws, "memory");
     if (fs.existsSync(memDir)) {
       for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
         try {
@@ -35,9 +36,9 @@ function readMemoryContext() {
   return parts.join("\n\n").slice(0, 4000);
 }
 
-/** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制） */
+/** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制）——写入当前工作区 */
 function writeMemorySection(section, content) {
-  const memDir = path.join(WORKSPACE_DIR, "memory");
+  const memDir = path.join(getWorkspace(), "memory");
   fs.mkdirSync(memDir, { recursive: true });
   const memFile = path.join(memDir, "MEMORY.md");
   const maxLen = 1200;
@@ -118,33 +119,24 @@ class AgentManager extends EventEmitter {
         agentsFiles: [
           ...current.agentsFiles,
           {
-            path: "F:\\Claude code本地文件\\office-agent-web\\.agent-context.md",
+            path: ".agent-context.md",
             content: [
               "# Open Plan（规聚）Workspace",
               "",
-              "- Office files live in the current workspace folder (default: `" + WORKSPACE_DIR + "`).",
+              "- **工作区与当前文件**: 每次对话前服务端都会刷新项目根 `.agent-context.md`，其中包含「**当前工作区**」绝对路径与「**当前工作文件**」。操作文件前必须先 read `.agent-context.md` 获取这两个信息（工作区可能被用户切换，不要假设默认路径）。",
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
-              "- **IMPORTANT**: the user is currently working on a specific document. Before modifying any document, read the file `F:\\Claude code本地文件\\office-agent-web\\.agent-context.md` (it contains the CURRENT WORKING FILE). Operate on that file unless the user explicitly names another.",
-              "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区 `" + WORKSPACE_DIR + "`（绝对路径），禁止写入项目目录 `F:\\Claude code本地文件\\office-agent-web\\`。否则产物不会被前端检测到。",
+              "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
-              "- **地图（GIS）**: 地图项目位于 `" + WORKSPACE_DIR + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
-              "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到工作区 `" + WORKSPACE_DIR + "`。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
-              "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到工作区 `" + WORKSPACE_DIR + "`。完整列表可用 GET /api/templates?category=sucaiku 查看。",
-              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到工作区 `" + WORKSPACE_DIR + "`。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
+              "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
+              "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
+              "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
-              // 工作区记忆（AGENTS.md + memory/）——每次对话前读取，保持简短
-              (() => {
-                const memCtx = readMemoryContext();
-                if (!memCtx) return "";
-                return (
-                  "## 工作区记忆（每次任务开始前阅读；沉淀新经验请用 memory_update 工具，勿直接写文件）\n" +
-                  "记忆文件位于工作区 `" + WORKSPACE_DIR + "\\memory\\MEMORY.md`，读取可用 read 工具；写入务必用 memory_update（自动按 section 管理）。\n" +
-                  memCtx
-                );
-              })(),
+              // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
+              "- **工作区记忆**: 每次任务开始前阅读 `.agent-context.md` 中的「工作区记忆」段（含 AGENTS.md 准则与 memory/*.md）；沉淀新经验请用 memory_update 工具（自动写入当前工作区 memory/MEMORY.md），勿直接写文件。",
             ].join("\n"),
           },
         ],
@@ -543,6 +535,8 @@ class AgentManager extends EventEmitter {
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}
+      // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
+      this.writeContextFile(entry.currentFile);
       // 应用推理强度（low/medium/high → pi thinking level）
       if (effort) {
         try { entry.session.setThinkingLevel(effort); } catch {}
@@ -600,29 +594,42 @@ class AgentManager extends EventEmitter {
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
-  async setCurrentFile(clientId, file) {
-    let entry = this.sessions.get(clientId);
-    if (!entry) entry = await this.getOrCreate(clientId);
-    entry.currentFile = file || null;
-    // 更新 agent 上下文文件（动态注入当前工作文件）
+  /**
+   * 写入 .agent-context.md（项目根，agent 的 read cwd 可读）——每次对话前刷新：
+   * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
+   */
+  writeContextFile(file) {
     try {
+      const ws = getWorkspace();
+      const memCtx = readMemoryContext();
       const ctx = [
         "# Open Plan（规聚）Workspace",
         "",
-        "- Office files live in `" + WORKSPACE_DIR + "` (or the current workspace).",
-        "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the workspace folder. NEVER try to run `officecli` via the bash tool.",
+        `- **当前工作区（绝对路径）**: ${ws}`,
+        "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
+        "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
+        "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
         "",
         "## 当前工作文件（用户正在查看/编辑的文档）",
-        file ? "- 当前工作文件: " + file : "- 当前没有打开文档",
+        file ? `- 当前工作文件: ${file}` : "- 当前没有打开文档",
         file
           ? "- 用户的操作默认针对此文件。修改它时直接用 officecli 操作（文件名相对工作区根目录，含子目录路径）。完成后告知用户已修改。"
           : "- 如果用户提到要修改某个文档，先用 officecli view 确认内容再操作。",
+        "",
+        memCtx ? "## 工作区记忆（每次任务开始前阅读；沉淀新经验请用 memory_update 工具，勿直接写文件）\n" + memCtx : "",
         "",
         "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
       ].join("\n");
       fs.writeFileSync(path.join(PROJECT_DIR, ".agent-context.md"), ctx, "utf8");
     } catch {}
+  }
+
+  async setCurrentFile(clientId, file) {
+    let entry = this.sessions.get(clientId);
+    if (!entry) entry = await this.getOrCreate(clientId);
+    entry.currentFile = file || null;
+    this.writeContextFile(entry.currentFile);
     return { ok: true, currentFile: entry.currentFile };
   }
 
