@@ -45,3 +45,4 @@ Thumbs.db
 # macOS 资源文件
 ._*
 
+.workspace-state.json

@@ -20,8 +20,15 @@ export const AGENT_DIR =
 
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
-// 当前工作区（可切换），默认项目内的 office-workspace
+// 当前工作区（可切换），默认项目内的 office-workspace；切换后持久化，重启恢复
 let _currentWorkspace = WORKSPACE_DIR;
+const WS_STATE_FILE = path.join(PROJECT_DIR, ".workspace-state.json");
+try {
+  const saved = JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8"));
+  if (saved && saved.workspace && fs.existsSync(saved.workspace) && fs.statSync(saved.workspace).isDirectory()) {
+    _currentWorkspace = saved.workspace;
+  }
+} catch {}
 
 export function getWorkspace() {
   return _currentWorkspace;
@@ -33,6 +40,7 @@ export function setWorkspace(dir) {
   try {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
     _currentWorkspace = d;
+    try { fs.writeFileSync(WS_STATE_FILE, JSON.stringify({ workspace: d }, null, 2), "utf8"); } catch {}
     return true;
   } catch {
     return false;
