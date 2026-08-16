@@ -367,6 +367,37 @@ app.post("/api/map/import", async (req, res) => {
   }
 });
 
+app.post("/api/map/import-batch", async (req, res) => {
+  const { name, items } = req.body || {};
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
+  try {
+    const r = await map.importBatch(name || map.DEFAULT_PROJECT, items);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 从数据目录一键生成路网图层（prepare-map-data + 瓦片重建）
+app.post("/api/map/prepare", async (req, res) => {
+  const { srcDir } = req.body || {};
+  const ws = getWorkspace();
+  const src = srcDir ? path.resolve(ws, String(srcDir)) : path.join(PROJECT_DIR, "data");
+  if (!src.startsWith(ws) && !src.startsWith(PROJECT_DIR)) return res.status(400).json({ error: "invalid dir" });
+  if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
+    return res.status(400).json({ error: "目录不存在: " + (srcDir || "data") + "（请先把矢量数据放入该目录）" });
+  }
+  const { execFile } = await import("node:child_process");
+  const run = (script, args) => new Promise((resolve) => {
+    execFile("node", [script, ...args], { cwd: PROJECT_DIR, timeout: 300000 }, (err, stdout, stderr) => {
+      resolve({ code: err ? 1 : 0, out: (stdout || "") + (stderr || "") });
+    });
+  });
+  const p1 = await run("scripts/prepare-map-data.mjs", [src]);
+  const p2 = await run("scripts/build-vector-tiles.mjs", ["--force"]);
+  res.json({ ok: p1.code === 0 && p2.code === 0, prepare: p1.out.slice(-800), tiles: p2.out.slice(-500) });
+});
+
 app.post("/api/map/rebuild", (req, res) => {
   const { name, layerIds } = req.body || {};
   const r = map.rebuildTiles(name || map.DEFAULT_PROJECT, Array.isArray(layerIds) ? layerIds : null);

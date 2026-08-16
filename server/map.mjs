@@ -472,6 +472,19 @@ export function rebuildTiles(name = DEFAULT_PROJECT, layerIds = null) {
   return buildProjectTiles(dir, { force: true, layerIds });
 }
 
+/** 批量导入多个图层（逐个导入 + 统一重建瓦片） */
+export async function importBatch(name, items) {
+  const results = {};
+  for (const it of items || []) {
+    if (!it?.geojson) continue;
+    const safeId = String(it.layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+    if (!safeId) continue;
+    try { results[safeId] = await importLayer(name, safeId, it.geojson); } catch { results[safeId] = { ok: false, error: "导入失败" }; }
+  }
+  const tiles = rebuildTiles(name);
+  return { ok: true, layers: results, tiles };
+}
+
 /** 获取图层 GeoJSON 数据（供属性表/要素定位） */
 export function getLayer(name, layerId) {
   const dir = projectDir(name);

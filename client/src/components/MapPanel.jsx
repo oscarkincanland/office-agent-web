@@ -6,7 +6,7 @@ import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapIsochrone,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -79,6 +79,13 @@ export default function MapPanel({
   }, [leftW, rightW]);
   const [isoOpen, setIsoOpen] = useState(false);
   const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "" });
+  const [exportOpen, setExportOpen] = useState(false); // 报告图导出弹窗
+  const [exp, setExp] = useState({ size: "a4l", title: "", legend: true, customW: 1600, customH: 1131 });
+  const [importOpen, setImportOpen] = useState(false); // 数据导入弹窗
+  const [impTab, setImpTab] = useState("files");
+  const [impDir, setImpDir] = useState("data");
+  const [impMsg, setImpMsg] = useState("");
+  const impFileRef = useRef(null);
   const mapRef = useRef(null);
 
   const flash = useCallback((t) => {
@@ -259,6 +266,36 @@ export default function MapPanel({
     saveStyle({ ...style, layers });
   }, [style, saveStyle]);
 
+  // 标注渲染：为图层生成/移除 {layerId}-label symbol 层
+  const setLayerLabel = useCallback((layerId, cfg) => {
+    if (!style) return;
+    const labelId = layerId + "-label";
+    const layers = style.layers.filter((l) => l.id !== labelId);
+    if (cfg && cfg.field) {
+      const srcLayer = style.layers.find((l) => l.id === layerId);
+      layers.push({
+        id: labelId,
+        type: "symbol",
+        source: srcLayer?.source || layerId,
+        "source-layer": layerId,
+        minzoom: cfg.minzoom ?? 8,
+        layout: {
+          "text-field": ["get", cfg.field],
+          "text-size": cfg.size || 13,
+          "text-offset": [0, 1.4],
+          "text-anchor": "bottom",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": cfg.color || "#2d3142",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1.5,
+        },
+      });
+    }
+    saveStyle({ ...style, layers });
+  }, [style, saveStyle]);
+
   // 打开属性表
   const openAttribute = useCallback((layerId) => {
     setAttrLayer({ layerId, name: cfg?.layers?.find((l) => l.id === layerId)?.name || layerId });
@@ -282,7 +319,159 @@ export default function MapPanel({
     m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, maxZoom: 15 });
   }, []);
 
-  // ---- 顶栏操作 ----
+  // ---- 报告图导出（截图 + 标题/图例/比例尺/指北针合成） ----
+  const EXPORT_SIZES = {
+    a4l: { label: "A4 横向", w: 1600, h: 1131, scale: 3 },
+    a4p: { label: "A4 纵向", w: 1131, h: 1600, scale: 3 },
+    square: { label: "方形", w: 1400, h: 1400, scale: 3 },
+    custom: { label: "自定义", w: 1600, h: 1200, scale: 2 },
+  };
+
+  // 图例符号绘制（线/点/面色块）
+  const drawLegendSymbol = (ctx, x, y, styleType, paint) => {
+    const c = paint?.["line-color"] || paint?.["fill-color"] || paint?.["circle-color"] || "#8abeb7";
+    ctx.strokeStyle = c;
+    ctx.fillStyle = c;
+    ctx.lineWidth = Math.min(6, paint?.["line-width"] ?? 2);
+    if (styleType === "circle") {
+      ctx.beginPath(); ctx.arc(x + 12, y + 6, Math.min(7, paint?.["circle-radius"] ?? 5), 0, Math.PI * 2); ctx.fill();
+    } else if (styleType === "fill") {
+      ctx.fillStyle = paint?.["fill-color"] || c;
+      ctx.globalAlpha = paint?.["fill-opacity"] ?? 0.5;
+      ctx.fillRect(x + 2, y, 20, 12);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.beginPath(); ctx.moveTo(x + 2, y + 6); ctx.lineTo(x + 22, y + 6); ctx.stroke();
+    }
+  };
+
+  const runExport = async () => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    const size = EXPORT_SIZES[exp.size] || EXPORT_SIZES.a4l;
+    const W = exp.size === "custom" ? Math.max(400, Math.min(4000, exp.customW)) : size.w;
+    const H = exp.size === "custom" ? Math.max(300, Math.min(4000, exp.customH)) : size.h;
+    const scale = size.scale || 2;
+    const titleH = exp.title ? 90 : 0;
+    const legendH = exp.legend ? 110 : 0;
+    const pad = 40;
+    const mapH = H - titleH - legendH - pad;
+    if (mapH < 200) return flash("画布太小，请调大尺寸");
+    setMsg("导出中…");
+    try {
+      const prevRatio = m.getPixelRatio();
+      m.setPixelRatio(scale);
+      await new Promise((r) => setTimeout(r, 400)); // 等待高分辨率重绘
+      const mapCanvas = m.getCanvas();
+      const mw = mapCanvas.width, mh = mapCanvas.height;
+      const canvas = document.createElement("canvas");
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+      // 地图区域（保持宽高比 contain + 居中裁剪）
+      const mapRatio = mw / mh, boxRatio = W / mapH;
+      let sw, sh, sx = 0, sy = 0;
+      if (mapRatio > boxRatio) { sh = mh; sw = mh * boxRatio; sx = (mw - sw) / 2; }
+      else { sw = mw; sh = mw / boxRatio; sy = (mh - sh) / 2; }
+      ctx.drawImage(mapCanvas, sx, sy, sw, sh, 0, titleH, W, mapH);
+      // 标题
+      if (exp.title) {
+        ctx.fillStyle = "#222";
+        ctx.font = "bold 34px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(exp.title, W / 2, titleH / 2 + 12);
+        ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(W * 0.3, titleH - 18); ctx.lineTo(W * 0.7, titleH - 18); ctx.stroke();
+      }
+      // 指北针（右上角）
+      const nx = W - 70, ny = titleH + 60;
+      ctx.save();
+      ctx.translate(nx, ny);
+      ctx.fillStyle = "#d62728"; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("N", 0, -12);
+      ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(7, 10); ctx.lineTo(0, 5); ctx.lineTo(-7, 10); ctx.closePath();
+      ctx.fillStyle = "#333"; ctx.fill();
+      ctx.restore();
+      // 比例尺（左下角，按 zoom 计算合适长度）
+      const lat = m.getCenter().lat;
+      const mpp = 156543.03392 * Math.cos((lat * Math.PI) / 180) / Math.pow(2, m.getZoom()); // 米/像素
+      const targets = [100000, 50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10];
+      let dist = targets[0];
+      for (const t of targets) { if (t / mpp <= 300) { dist = t; break; } }
+      const barLen = dist / mpp;
+      const by = H - (exp.legend ? legendH + 30 : 30);
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 2; ctx.fillStyle = "#333";
+      ctx.beginPath(); ctx.moveTo(50, by); ctx.lineTo(50 + barLen, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(50, by - 6); ctx.lineTo(50, by + 6); ctx.moveTo(50 + barLen, by - 6); ctx.lineTo(50 + barLen, by + 6); ctx.stroke();
+      ctx.font = "13px sans-serif"; ctx.textAlign = "left";
+      ctx.fillText(dist >= 1000 ? dist / 1000 + " km" : dist + " m", 50 + barLen / 2 - 20, by - 10);
+      // 图例
+      if (exp.legend) {
+        const ly = H - legendH + 20;
+        ctx.font = "13px 'PingFang SC', sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#555";
+        ctx.fillText("图例", 50, ly);
+        let lx = 50, row = 0;
+        const entries = (style?.layers || [])
+          .filter((l) => !l.id.startsWith("basemap") && !l.id.endsWith("-label") && !l.id.startsWith("iso-") && !l.id.startsWith("draw-"))
+          .slice(0, 12);
+        for (const l of entries) {
+          const name = cfg?.layers?.find((x) => x.id === l.id)?.name || l.id;
+          const textW = ctx.measureText(name).width + 34;
+          if (lx + textW > W - 40) { lx = 50; row++; }
+          drawLegendSymbol(ctx, lx, ly + 18 + row * 26, l.type, l.paint);
+          ctx.fillStyle = "#333";
+          ctx.fillText(name, lx + 30, ly + 24 + row * 26);
+          lx += textW;
+        }
+      }
+      // 下载
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = `${(exp.title || project + "地图").replace(/[\\/:*?"<>|]/g, "_")}.png`;
+      a.click();
+      m.setPixelRatio(prevRatio);
+      flash("导出完成 ✓");
+    } catch (e) {
+      flash("导出失败: " + e.message);
+    }
+  };
+
+  // ---- 数据导入（批量文件 / 目录一键生成） ----
+  const handleBatchImport = useCallback(async (files) => {
+    if (!files || !files.length) return;
+    setImpMsg("解析并导入中…");
+    try {
+      const items = [];
+      for (const f of [...files].filter((x) => /\\.(geojson|json)$/i.test(x.name))) {
+        const text = await f.text();
+        const geojson = JSON.parse(text);
+        items.push({ layerId: f.name.replace(/\.(geojson|json)$/i, "").replace(/[^\w-]/g, "_"), geojson });
+      }
+      if (!items.length) { setImpMsg("请选择 .geojson / .json 文件"); return; }
+      const r = await mapImportBatch(project, items);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      const names = Object.keys(r.layers || {}).join(", ");
+      setImpMsg(`已导入 ${items.length} 个图层（${names}），瓦片已重建`);
+    } catch (e) {
+      setImpMsg("导入失败: " + e.message);
+    }
+    setTimeout(() => setImpMsg(""), 5000);
+  }, [project, loadProject]);
+
+  const handleDirPrepare = useCallback(async () => {
+    setImpMsg("生成中（prepare + 瓦片重建，可能需要一会儿）…");
+    try {
+      const r = await mapPrepare(impDir.trim() || "data");
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      setImpMsg(r.ok ? `生成完成 ✓\n${r.prepare}` : `生成失败:\n${(r.prepare || "").slice(-300)}`);
+    } catch (e) {
+      setImpMsg("失败: " + e.message);
+    }
+    setTimeout(() => setImpMsg(""), 8000);
+  }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
     mapRef.current?.setBasemap(id);
     setCfg((prev) => {
@@ -643,7 +832,10 @@ export default function MapPanel({
         <button className="btn-sm" onClick={handleRebuild} title="重建矢量瓦片（数据变更后）">
           <Icon name="refresh" size={13} /> 重建瓦片
         </button>
-        <button className="btn-sm" onClick={() => mapRef.current?.exportPng(2, `${project}.png`)} title="导出高清 PNG">
+        <button className="btn-sm" onClick={() => setImportOpen(true)} title="导入路网数据（批量 GeoJSON 或目录一键生成）">
+          <Icon name="upload" size={13} /> 导入数据
+        </button>
+        <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
         <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈分析（外部 API）">
@@ -691,6 +883,7 @@ export default function MapPanel({
             onDeleteLayer={removeLayer}
             onZoomToLayer={zoomToLayer}
             onOpenAttribute={openAttribute}
+            onSetLabel={setLayerLabel}
           />
         </div>
         <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
@@ -768,6 +961,106 @@ export default function MapPanel({
               <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="penTool" size={12} /> 绘制面</button>
             </>
           )}
+        </div>
+      )}
+
+      {/* 数据导入弹窗 */}
+      {importOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setImportOpen(false)}>
+          <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="upload" size={14} /> 导入路网数据</span>
+              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-modes" style={{ marginBottom: 10 }}>
+                <button className={`mp-iso-mode ${impTab === "files" ? "active" : ""}`} onClick={() => setImpTab("files")}>批量文件</button>
+                <button className={`mp-iso-mode ${impTab === "dir" ? "active" : ""}`} onClick={() => setImpTab("dir")}>目录一键生成</button>
+              </div>
+              {impTab === "files" ? (
+                <>
+                  <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
+                    选择多个 GeoJSON 文件（文件名含 高速/国省道/农村公路/收费站/枢纽 会自动归类分组），批量导入并重建瓦片。
+                  </div>
+                  <div className="mp-iso-actions">
+                    <button className="btn primary" onClick={() => impFileRef.current?.click()}>选择文件…</button>
+                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
+                    把矢量数据（高速/国省道/农村公路/收费站/枢纽 GeoJSON）放入工作区目录，输入相对路径后一键生成图层与瓦片。
+                  </div>
+                  <div className="mp-iso-row">
+                    <span className="mp-iso-label">目录</span>
+                    <input className="mp-iso-range mp-iso-ranges" value={impDir} onChange={(e) => setImpDir(e.target.value)} placeholder="工作区相对路径，如 data" />
+                  </div>
+                  <div className="mp-iso-actions">
+                    <button className="btn primary" onClick={handleDirPrepare}>一键生成</button>
+                  </div>
+                </>
+              )}
+              {impMsg && <div className="mp-iso-info" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{impMsg}</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 报告图导出弹窗 */}
+      {exportOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setExportOpen(false)}>
+          <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="download" size={14} /> 导出报告图</span>
+              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">尺寸</span>
+                <div className="mp-iso-modes">
+                  {Object.entries(EXPORT_SIZES).map(([id, s]) => (
+                    <button
+                      key={id}
+                      className={`mp-iso-mode ${exp.size === id ? "active" : ""}`}
+                      onClick={() => setExp((p) => ({ ...p, size: id }))}
+                    >{s.label}</button>
+                  ))}
+                </div>
+              </div>
+              {exp.size === "custom" && (
+                <div className="mp-iso-row">
+                  <span className="mp-iso-label">宽高</span>
+                  <input className="mp-iso-range" type="number" min="400" max="4000" value={exp.customW} onChange={(e) => setExp((p) => ({ ...p, customW: Number(e.target.value) || 1600 }))} />
+                  <span className="mp-iso-unit">×</span>
+                  <input className="mp-iso-range" type="number" min="300" max="4000" value={exp.customH} onChange={(e) => setExp((p) => ({ ...p, customH: Number(e.target.value) || 1200 }))} />
+                  <span className="mp-iso-unit">px</span>
+                </div>
+              )}
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">标题</span>
+                <input
+                  className="mp-iso-range mp-iso-ranges"
+                  value={exp.title}
+                  onChange={(e) => setExp((p) => ({ ...p, title: e.target.value }))}
+                  placeholder="如：松阳县停车设施布局图"
+                />
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">图例</span>
+                <label className="mp-iso-check">
+                  <input type="checkbox" checked={exp.legend} onChange={(e) => setExp((p) => ({ ...p, legend: e.target.checked }))} />
+                  包含图例
+                </label>
+              </div>
+              <div className="mp-iso-actions">
+                <button className="btn primary" onClick={runExport}>导出 PNG</button>
+              </div>
+              <div className="mp-iso-hint">
+                输出 150-300dpi 报告插图：地图 + 标题 + 比例尺 + 指北针 + 图例（图例取当前可见图层）。
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
