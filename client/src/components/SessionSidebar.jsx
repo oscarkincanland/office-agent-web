@@ -46,6 +46,14 @@ function shortenCwd(cwd) {
   return "\u2026/" + parts.slice(-2).join("/");
 }
 
+// 文件大小格式化（文件树展示）
+function formatSize(bytes) {
+  if (!bytes && bytes !== 0) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
 // 日期分组（Proma groupByDate）
 function groupByDate(sessions) {
   const now = new Date();
@@ -397,7 +405,11 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                 title={f.name}
               >
                 <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? <Icon name="folder" size={12} /> : <Icon name={EXT_LABELS[f.ext] || "file"} size={12} />}</span>
-                <span className="file-name">{f.isDir ? f.name + "/" : f.name}</span>
+                <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
+                <span className="file-meta">
+                  {f.isDir ? "▶" : formatSize(f.size)}
+                  {!f.isDir && <span className="file-mtime">{formatTime(new Date(f.mtime).toISOString())}</span>}
+                </span>
                 <span
                   className="file-at"
                   onClick={(e) => {
