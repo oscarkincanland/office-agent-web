@@ -745,6 +745,16 @@ app.get("/api/models", async (_req, res) => {
   }
 });
 
+// 重新扫描模型（重置 ModelRuntime 缓存，重新读取 models.json）
+app.post("/api/models/refresh", async (_req, res) => {
+  try {
+    const models = await agentManager.refreshModels();
+    res.json({ ok: true, count: models.length, models: models.map((m) => m.id) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/agent/model", async (req, res) => {
   const { client, model } = req.body || {};
   if (!client || !model) return res.status(400).json({ error: "client and model required" });

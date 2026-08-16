@@ -4324,6 +4324,21 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   outline: none;
 }
 .ct-pop-list { max-height: 300px; overflow-y: auto; }
+.ct-pop-refresh {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  position: sticky;
+  top: 0;
+  background: var(--panel2-bg);
+  z-index: 1;
+}
+.ct-pop-refresh:hover { color: var(--accent); background: var(--selected); }
 .ct-pop-item {
   padding: 6px 10px;
   font-size: 12px;

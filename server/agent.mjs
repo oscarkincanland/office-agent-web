@@ -682,6 +682,22 @@ class AgentManager extends EventEmitter {
     }));
   }
 
+  /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
+  async refreshModels() {
+    this.modelRuntimePromise = null;
+    const mr = await this.modelRuntime();
+    try {
+      await mr.refresh({ allowNetwork: false });
+    } catch {}
+    const avail = await mr.getAvailable();
+    return avail.map((m) => ({
+      id: m.provider + "/" + m.id,
+      provider: m.provider,
+      name: m.name || m.id,
+      vision: !!m.vision,
+    }));
+  }
+
   async disposeAll() {
     for (const { session } of this.sessions.values()) {
       try {

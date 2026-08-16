@@ -693,6 +693,9 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
                     autoFocus
                   />
                   <div className="ct-pop-list">
+                    <div className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models.map((id) => ({ id, provider: id.split("/")[0], name: id.split("/")[1] }))); setModelMsg(`已扫描 ${d.count} 个模型`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(" "), 2500); }} title="重新扫描模型（读取 models.json 配置）">
+                      <Icon name="refresh" size={11} /> 重新扫描模型
+                    </div>
                     {models
                       .filter((m) => !modelQ || m.id.toLowerCase().includes(modelQ.toLowerCase()))
                       .map((m) => (
