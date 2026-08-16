@@ -6,7 +6,7 @@ import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapIsochrone,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -78,7 +78,112 @@ export default function MapPanel({
     window.addEventListener("mouseup", onUp);
   }, [leftW, rightW]);
   const [isoOpen, setIsoOpen] = useState(false);
-  const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "" });
+  const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "", tab: "iso", route: { from: null, to: null, mode: "driving", loading: false, err: "", info: "" } });
+  const [exportOpen, setExportOpen] = useState(false); // 报告图导出弹窗
+  const [exp, setExp] = useState({ size: "a4l", title: "", legend: true, customW: 1600, customH: 1131 });
+  const [importOpen, setImportOpen] = useState(false); // 数据导入弹窗
+  const [impTab, setImpTab] = useState("files");
+  const [impDir, setImpDir] = useState("data");
+  const [impMsg, setImpMsg] = useState("");
+  const impFileRef = useRef(null);
+  const [odOpen, setOdOpen] = useState(false);      // OD 分析弹窗
+  const [odText, setOdText] = useState("");
+  const [odCols, setOdCols] = useState({ olng: "", olat: "", dlng: "", dlat: "", flow: "" });
+  const [odHeader, setOdHeader] = useState([]);
+  const [odMsg, setOdMsg] = useState("");
+  const [odShowLines, setOdShowLines] = useState(true);
+
+  // ---- OD 流量热力图 ----
+  // 列名自动检测（支持中英文）
+  const detectCols = useCallback((header) => {
+    const find = (patterns) => header.find((h) => patterns.some((p) => h.toLowerCase().includes(p))) || "";
+    return {
+      olng: find(["起点经", "出发经", "olng", "from_lng", "fromlng", "origin_lng"]),
+      olat: find(["起点纬", "出发纬", "olat", "from_lat", "fromlat", "origin_lat"]),
+      dlng: find(["终点经", "到达经", "dlng", "to_lng", "tolng", "dest_lng"]),
+      dlat: find(["终点纬", "到达纬", "dlat", "to_lat", "tolat", "dest_lat"]),
+      flow: find(["流量", "客流", "客流量", "flow", "count", "量"]),
+    };
+  }, []);
+
+  const handleOdText = useCallback((text) => {
+    setOdText(text);
+    const lines = text.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) { setOdHeader([]); return; }
+    const header = lines[0].split(/[,\t]/).map((h) => h.trim().replace(/^"|"$/g, ""));
+    setOdHeader(header);
+    setOdCols(detectCols(header));
+  }, [detectCols]);
+
+  const clearOdLayers = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["od-heat", "od-lines"]) { if (m.getLayer(id)) m.removeLayer(id); }
+    for (const src of ["od-heat-src", "od-lines-src"]) { if (m.getSource(src)) m.removeSource(src); }
+  }, []);
+
+  const renderOd = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    const lines = odText.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) { setOdMsg("请先粘贴或上传 CSV 数据"); return; }
+    const header = lines[0].split(/[,\t]/).map((h) => h.trim().replace(/^"|"$/g, ""));
+    const idx = (name) => header.indexOf(odCols[name]);
+    const iO = [idx("olng"), idx("olat")];
+    const iD = [idx("dlng"), idx("dlat")];
+    const iF = idx("flow");
+    if (iO.some((i) => i < 0) || iD.some((i) => i < 0)) {
+      setOdMsg("请检查字段映射：起点/终点经纬度列必须选择");
+      return;
+    }
+    const points = [];
+    const odLines = [];
+    let maxFlow = 1, totalFlow = 0, count = 0;
+    for (let r = 1; r < lines.length; r++) {
+      const cells = lines[r].split(/[,\t]/).map((c) => c.trim().replace(/^"|"$/g, ""));
+      const o = [Number(cells[iO[0]]), Number(cells[iO[1]])];
+      const d = [Number(cells[iD[0]]), Number(cells[iD[1]])];
+      if (!Number.isFinite(o[0]) || !Number.isFinite(o[1])) continue;
+      const flow = iF >= 0 ? Number(cells[iF]) || 1 : 1;
+      maxFlow = Math.max(maxFlow, flow);
+      totalFlow += flow;
+      count++;
+      points.push({ type: "Feature", properties: { flow }, geometry: { type: "Point", coordinates: o } });
+      if (Number.isFinite(d[0]) && Number.isFinite(d[1]) && odShowLines) {
+        odLines.push({ type: "Feature", properties: { flow }, geometry: { type: "LineString", coordinates: [o, d] } });
+      }
+    }
+    if (!count) { setOdMsg("没有解析到有效记录，请检查列名映射"); return; }
+    clearOdLayers();
+    m.addSource("od-heat-src", { type: "geojson", data: { type: "FeatureCollection", features: points } });
+    m.addLayer({
+      id: "od-heat", type: "heatmap", source: "od-heat-src",
+      paint: {
+        "heatmap-weight": ["interpolate", ["linear"], ["get", "flow"], 0, 0, maxFlow, 1],
+        "heatmap-intensity": 1.2,
+        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 18, 10, 36],
+        "heatmap-opacity": 0.65,
+        "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+          0, "rgba(33,102,172,0)", 0.25, "rgb(103,169,207)", 0.45, "rgb(209,229,240)",
+          0.6, "rgb(253,219,199)", 0.8, "rgb(239,138,98)", 1, "rgb(178,24,43)"],
+      },
+    });
+    if (odLines.length) {
+      m.addSource("od-lines-src", { type: "geojson", data: { type: "FeatureCollection", features: odLines } });
+      m.addLayer({
+        id: "od-lines", type: "line", source: "od-lines-src",
+        paint: {
+          "line-color": ["interpolate", ["linear"], ["get", "flow"], 0, "#9ecae1", maxFlow / 2, "#fd8d3c", maxFlow, "#a50f15"],
+          "line-width": ["interpolate", ["linear"], ["get", "flow"], 0, 1, maxFlow, 4],
+          "line-opacity": 0.55,
+        },
+      });
+    }
+    const lngs = points.map((p) => p.geometry.coordinates[0]);
+    const lats = points.map((p) => p.geometry.coordinates[1]);
+    m.fitBounds([[Math.min(...lngs) - 0.05, Math.min(...lats) - 0.05], [Math.max(...lngs) + 0.05, Math.max(...lats) + 0.05]], { padding: 50 });
+    setOdMsg(`已渲染 ${count} 条 OD（总流量 ${Math.round(totalFlow).toLocaleString()}，最大 ${maxFlow}），起点热力图${odLines.length ? " + 流向线" : ""}`);
+  }, [odText, odCols, odShowLines, clearOdLayers]);
   const mapRef = useRef(null);
 
   const flash = useCallback((t) => {
@@ -259,6 +364,36 @@ export default function MapPanel({
     saveStyle({ ...style, layers });
   }, [style, saveStyle]);
 
+  // 标注渲染：为图层生成/移除 {layerId}-label symbol 层
+  const setLayerLabel = useCallback((layerId, cfg) => {
+    if (!style) return;
+    const labelId = layerId + "-label";
+    const layers = style.layers.filter((l) => l.id !== labelId);
+    if (cfg && cfg.field) {
+      const srcLayer = style.layers.find((l) => l.id === layerId);
+      layers.push({
+        id: labelId,
+        type: "symbol",
+        source: srcLayer?.source || layerId,
+        "source-layer": layerId,
+        minzoom: cfg.minzoom ?? 8,
+        layout: {
+          "text-field": ["get", cfg.field],
+          "text-size": cfg.size || 13,
+          "text-offset": [0, 1.4],
+          "text-anchor": "bottom",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": cfg.color || "#2d3142",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 1.5,
+        },
+      });
+    }
+    saveStyle({ ...style, layers });
+  }, [style, saveStyle]);
+
   // 打开属性表
   const openAttribute = useCallback((layerId) => {
     setAttrLayer({ layerId, name: cfg?.layers?.find((l) => l.id === layerId)?.name || layerId });
@@ -282,7 +417,159 @@ export default function MapPanel({
     m.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, maxZoom: 15 });
   }, []);
 
-  // ---- 顶栏操作 ----
+  // ---- 报告图导出（截图 + 标题/图例/比例尺/指北针合成） ----
+  const EXPORT_SIZES = {
+    a4l: { label: "A4 横向", w: 1600, h: 1131, scale: 3 },
+    a4p: { label: "A4 纵向", w: 1131, h: 1600, scale: 3 },
+    square: { label: "方形", w: 1400, h: 1400, scale: 3 },
+    custom: { label: "自定义", w: 1600, h: 1200, scale: 2 },
+  };
+
+  // 图例符号绘制（线/点/面色块）
+  const drawLegendSymbol = (ctx, x, y, styleType, paint) => {
+    const c = paint?.["line-color"] || paint?.["fill-color"] || paint?.["circle-color"] || "#8abeb7";
+    ctx.strokeStyle = c;
+    ctx.fillStyle = c;
+    ctx.lineWidth = Math.min(6, paint?.["line-width"] ?? 2);
+    if (styleType === "circle") {
+      ctx.beginPath(); ctx.arc(x + 12, y + 6, Math.min(7, paint?.["circle-radius"] ?? 5), 0, Math.PI * 2); ctx.fill();
+    } else if (styleType === "fill") {
+      ctx.fillStyle = paint?.["fill-color"] || c;
+      ctx.globalAlpha = paint?.["fill-opacity"] ?? 0.5;
+      ctx.fillRect(x + 2, y, 20, 12);
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.beginPath(); ctx.moveTo(x + 2, y + 6); ctx.lineTo(x + 22, y + 6); ctx.stroke();
+    }
+  };
+
+  const runExport = async () => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    const size = EXPORT_SIZES[exp.size] || EXPORT_SIZES.a4l;
+    const W = exp.size === "custom" ? Math.max(400, Math.min(4000, exp.customW)) : size.w;
+    const H = exp.size === "custom" ? Math.max(300, Math.min(4000, exp.customH)) : size.h;
+    const scale = size.scale || 2;
+    const titleH = exp.title ? 90 : 0;
+    const legendH = exp.legend ? 110 : 0;
+    const pad = 40;
+    const mapH = H - titleH - legendH - pad;
+    if (mapH < 200) return flash("画布太小，请调大尺寸");
+    setMsg("导出中…");
+    try {
+      const prevRatio = m.getPixelRatio();
+      m.setPixelRatio(scale);
+      await new Promise((r) => setTimeout(r, 400)); // 等待高分辨率重绘
+      const mapCanvas = m.getCanvas();
+      const mw = mapCanvas.width, mh = mapCanvas.height;
+      const canvas = document.createElement("canvas");
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, W, H);
+      // 地图区域（保持宽高比 contain + 居中裁剪）
+      const mapRatio = mw / mh, boxRatio = W / mapH;
+      let sw, sh, sx = 0, sy = 0;
+      if (mapRatio > boxRatio) { sh = mh; sw = mh * boxRatio; sx = (mw - sw) / 2; }
+      else { sw = mw; sh = mw / boxRatio; sy = (mh - sh) / 2; }
+      ctx.drawImage(mapCanvas, sx, sy, sw, sh, 0, titleH, W, mapH);
+      // 标题
+      if (exp.title) {
+        ctx.fillStyle = "#222";
+        ctx.font = "bold 34px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(exp.title, W / 2, titleH / 2 + 12);
+        ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(W * 0.3, titleH - 18); ctx.lineTo(W * 0.7, titleH - 18); ctx.stroke();
+      }
+      // 指北针（右上角）
+      const nx = W - 70, ny = titleH + 60;
+      ctx.save();
+      ctx.translate(nx, ny);
+      ctx.fillStyle = "#d62728"; ctx.font = "bold 20px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("N", 0, -12);
+      ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(7, 10); ctx.lineTo(0, 5); ctx.lineTo(-7, 10); ctx.closePath();
+      ctx.fillStyle = "#333"; ctx.fill();
+      ctx.restore();
+      // 比例尺（左下角，按 zoom 计算合适长度）
+      const lat = m.getCenter().lat;
+      const mpp = 156543.03392 * Math.cos((lat * Math.PI) / 180) / Math.pow(2, m.getZoom()); // 米/像素
+      const targets = [100000, 50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50, 20, 10];
+      let dist = targets[0];
+      for (const t of targets) { if (t / mpp <= 300) { dist = t; break; } }
+      const barLen = dist / mpp;
+      const by = H - (exp.legend ? legendH + 30 : 30);
+      ctx.strokeStyle = "#333"; ctx.lineWidth = 2; ctx.fillStyle = "#333";
+      ctx.beginPath(); ctx.moveTo(50, by); ctx.lineTo(50 + barLen, by); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(50, by - 6); ctx.lineTo(50, by + 6); ctx.moveTo(50 + barLen, by - 6); ctx.lineTo(50 + barLen, by + 6); ctx.stroke();
+      ctx.font = "13px sans-serif"; ctx.textAlign = "left";
+      ctx.fillText(dist >= 1000 ? dist / 1000 + " km" : dist + " m", 50 + barLen / 2 - 20, by - 10);
+      // 图例
+      if (exp.legend) {
+        const ly = H - legendH + 20;
+        ctx.font = "13px 'PingFang SC', sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#555";
+        ctx.fillText("图例", 50, ly);
+        let lx = 50, row = 0;
+        const entries = (style?.layers || [])
+          .filter((l) => !l.id.startsWith("basemap") && !l.id.endsWith("-label") && !l.id.startsWith("iso-") && !l.id.startsWith("draw-"))
+          .slice(0, 12);
+        for (const l of entries) {
+          const name = cfg?.layers?.find((x) => x.id === l.id)?.name || l.id;
+          const textW = ctx.measureText(name).width + 34;
+          if (lx + textW > W - 40) { lx = 50; row++; }
+          drawLegendSymbol(ctx, lx, ly + 18 + row * 26, l.type, l.paint);
+          ctx.fillStyle = "#333";
+          ctx.fillText(name, lx + 30, ly + 24 + row * 26);
+          lx += textW;
+        }
+      }
+      // 下载
+      const a = document.createElement("a");
+      a.href = canvas.toDataURL("image/png");
+      a.download = `${(exp.title || project + "地图").replace(/[\\/:*?"<>|]/g, "_")}.png`;
+      a.click();
+      m.setPixelRatio(prevRatio);
+      flash("导出完成 ✓");
+    } catch (e) {
+      flash("导出失败: " + e.message);
+    }
+  };
+
+  // ---- 数据导入（批量文件 / 目录一键生成） ----
+  const handleBatchImport = useCallback(async (files) => {
+    if (!files || !files.length) return;
+    setImpMsg("解析并导入中…");
+    try {
+      const items = [];
+      for (const f of [...files].filter((x) => /\\.(geojson|json)$/i.test(x.name))) {
+        const text = await f.text();
+        const geojson = JSON.parse(text);
+        items.push({ layerId: f.name.replace(/\.(geojson|json)$/i, "").replace(/[^\w-]/g, "_"), geojson });
+      }
+      if (!items.length) { setImpMsg("请选择 .geojson / .json 文件"); return; }
+      const r = await mapImportBatch(project, items);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      const names = Object.keys(r.layers || {}).join(", ");
+      setImpMsg(`已导入 ${items.length} 个图层（${names}），瓦片已重建`);
+    } catch (e) {
+      setImpMsg("导入失败: " + e.message);
+    }
+    setTimeout(() => setImpMsg(""), 5000);
+  }, [project, loadProject]);
+
+  const handleDirPrepare = useCallback(async () => {
+    setImpMsg("生成中（prepare + 瓦片重建，可能需要一会儿）…");
+    try {
+      const r = await mapPrepare(impDir.trim() || "data");
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      setImpMsg(r.ok ? `生成完成 ✓\n${r.prepare}` : `生成失败:\n${(r.prepare || "").slice(-300)}`);
+    } catch (e) {
+      setImpMsg("失败: " + e.message);
+    }
+    setTimeout(() => setImpMsg(""), 8000);
+  }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
     mapRef.current?.setBasemap(id);
     setCfg((prev) => {
@@ -305,13 +592,62 @@ export default function MapPanel({
   }, [project, flash]);
 
   // ---- 等时圈分析 ----
-  const startPick = useCallback(() => {
-    setIso((s) => ({ ...s, picking: true, err: "" }));
+  const startPick = useCallback((target = "center") => {
+    setIso((s) => ({ ...s, picking: target, err: "" }));
     const m = mapRef.current?.getMap();
     m?.once("click", (e) => {
-      setIso((s) => ({ ...s, loc: [e.lngLat.lng, e.lngLat.lat], picking: false }));
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      setIso((s) => {
+        if (target === "from") return { ...s, picking: null, route: { ...s.route, from: pt } };
+        if (target === "to") return { ...s, picking: null, route: { ...s.route, to: pt } };
+        return { ...s, picking: null, loc: pt };
+      });
     });
   }, []);
+
+  // ---- 路径规划（OSRM 开源默认 / 高德可选） ----
+  const drawRoute = useCallback((coords, from, to) => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["route-line", "route-pts"]) { if (m.getLayer(id)) m.removeLayer(id); }
+    if (m.getSource("route-src")) m.removeSource("route-src");
+    if (m.getSource("route-pts-src")) m.removeSource("route-pts-src");
+    if (!coords?.length) return;
+    m.addSource("route-src", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] },
+    });
+    m.addLayer({ id: "route-line", type: "line", source: "route-src", paint: { "line-color": "#1f77b4", "line-width": 4, "line-opacity": 0.85 } });
+    m.addSource("route-pts-src", {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: [from, to].filter(Boolean).map((p, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: p } })),
+      },
+    });
+    m.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, "#d62728", "#2ca02c"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+    if (from && to) {
+      m.fitBounds(
+        [[Math.min(from[0], to[0]) - 0.02, Math.min(from[1], to[1]) - 0.02], [Math.max(from[0], to[0]) + 0.02, Math.max(from[1], to[1]) + 0.02]],
+        { padding: 60 }
+      );
+    }
+  }, []);
+
+  const runRoute = useCallback(async () => {
+    const { from, to, mode } = iso.route;
+    if (!from || !to) { setIso((s) => ({ ...s, route: { ...s.route, err: "请先选择起点和终点（点「选起点/选终点」后点击地图）" } })); return; }
+    setIso((s) => ({ ...s, route: { ...s.route, loading: true, err: "", info: "" } }));
+    try {
+      const r = await mapRoute({ from: from.join(","), to: to.join(","), mode });
+      drawRoute(r.geometry, from, to);
+      const prov = r.provider === "osrm" ? "OSRM 开源" : "高德";
+      setIso((s) => ({ ...s, route: { ...s.route, info: `${prov} · 距离 ${fmtLen(r.distance)} · 约 ${Math.max(1, Math.round(r.duration / 60))} 分钟` } }));
+    } catch (e) {
+      setIso((s) => ({ ...s, route: { ...s.route, err: e.message } }));
+    }
+    setIso((s) => ({ ...s, route: { ...s.route, loading: false } }));
+  }, [iso.route, drawRoute]);
 
   // 绘制等时圈多边形（临时图层，不写入项目；suffix 区分多档叠加）
   const drawIsoPolygons = useCallback((polygons, center, color = "#7b1fa2", opacity = 0.25, suffix = "") => {
@@ -643,7 +979,13 @@ export default function MapPanel({
         <button className="btn-sm" onClick={handleRebuild} title="重建矢量瓦片（数据变更后）">
           <Icon name="refresh" size={13} /> 重建瓦片
         </button>
-        <button className="btn-sm" onClick={() => mapRef.current?.exportPng(2, `${project}.png`)} title="导出高清 PNG">
+        <button className="btn-sm" onClick={() => setImportOpen(true)} title="导入路网数据（批量 GeoJSON 或目录一键生成）">
+          <Icon name="upload" size={13} /> 导入数据
+        </button>
+        <button className={`btn-sm ${odOpen ? "active" : ""}`} onClick={() => setOdOpen((v) => !v)} title="OD 流量热力图（上传 CSV）">
+          <Icon name="locate" size={13} /> OD分析
+        </button>
+        <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
         <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈分析（外部 API）">
@@ -691,6 +1033,7 @@ export default function MapPanel({
             onDeleteLayer={removeLayer}
             onZoomToLayer={zoomToLayer}
             onOpenAttribute={openAttribute}
+            onSetLabel={setLayerLabel}
           />
         </div>
         <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
@@ -771,6 +1114,157 @@ export default function MapPanel({
         </div>
       )}
 
+      {/* OD 流量热力图弹窗 */}
+      {odOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setOdOpen(false)}>
+          <div className="mp-iso-panel mp-od-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="locate" size={14} /> OD 流量分析</span>
+              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 8 }}>
+                粘贴或上传 CSV（表头含 起点经度/起点纬度/终点经度/终点纬度/流量，支持中英文列名，自动检测映射）。
+              </div>
+              <textarea
+                className="mp-od-textarea"
+                placeholder={"起点经度,起点纬度,终点经度,终点纬度,流量\n119.9,29.5,120.3,30.1,1200\n..."}
+                value={odText}
+                onChange={(e) => handleOdText(e.target.value)}
+                rows={5}
+              />
+              {odHeader.length > 0 && (
+                <div className="mp-od-cols">
+                  {[
+                    ["olng", "起点经度"], ["olat", "起点纬度"], ["dlng", "终点经度"], ["dlat", "终点纬度"], ["flow", "流量"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="mp-od-col">
+                      <span>{label}</span>
+                      <select value={odCols[key]} onChange={(e) => setOdCols((p) => ({ ...p, [key]: e.target.value }))}>
+                        <option value="">（未选择）</option>
+                        {odHeader.map((h) => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                  <label className="mp-od-col">
+                    <span>流向线</span>
+                    <input type="checkbox" checked={odShowLines} onChange={(e) => setOdShowLines(e.target.checked)} />
+                  </label>
+                </div>
+              )}
+              {odMsg && <div className="mp-iso-info" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{odMsg}</div>}
+              <div className="mp-iso-actions">
+                <button className="btn-sm" onClick={() => { clearOdLayers(); setOdMsg(""); }}>清除图层</button>
+                <button className="btn primary" onClick={renderOd}>渲染热力图</button>
+              </div>
+              <div className="mp-iso-hint">
+                起点流量加权热力（蓝→红）+ 可选 OD 流向线（流量分级着色）。结果以临时图层叠加，不写入项目。
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 数据导入弹窗 */}
+      {importOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setImportOpen(false)}>
+          <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="upload" size={14} /> 导入路网数据</span>
+              <button className="mp-op" onClick={() => setImportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-modes" style={{ marginBottom: 10 }}>
+                <button className={`mp-iso-mode ${impTab === "files" ? "active" : ""}`} onClick={() => setImpTab("files")}>批量文件</button>
+                <button className={`mp-iso-mode ${impTab === "dir" ? "active" : ""}`} onClick={() => setImpTab("dir")}>目录一键生成</button>
+              </div>
+              {impTab === "files" ? (
+                <>
+                  <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
+                    选择多个 GeoJSON 文件（文件名含 高速/国省道/农村公路/收费站/枢纽 会自动归类分组），批量导入并重建瓦片。
+                  </div>
+                  <div className="mp-iso-actions">
+                    <button className="btn primary" onClick={() => impFileRef.current?.click()}>选择文件…</button>
+                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
+                    把矢量数据（高速/国省道/农村公路/收费站/枢纽 GeoJSON）放入工作区目录，输入相对路径后一键生成图层与瓦片。
+                  </div>
+                  <div className="mp-iso-row">
+                    <span className="mp-iso-label">目录</span>
+                    <input className="mp-iso-range mp-iso-ranges" value={impDir} onChange={(e) => setImpDir(e.target.value)} placeholder="工作区相对路径，如 data" />
+                  </div>
+                  <div className="mp-iso-actions">
+                    <button className="btn primary" onClick={handleDirPrepare}>一键生成</button>
+                  </div>
+                </>
+              )}
+              {impMsg && <div className="mp-iso-info" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>{impMsg}</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 报告图导出弹窗 */}
+      {exportOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setExportOpen(false)}>
+          <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="download" size={14} /> 导出报告图</span>
+              <button className="mp-op" onClick={() => setExportOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">尺寸</span>
+                <div className="mp-iso-modes">
+                  {Object.entries(EXPORT_SIZES).map(([id, s]) => (
+                    <button
+                      key={id}
+                      className={`mp-iso-mode ${exp.size === id ? "active" : ""}`}
+                      onClick={() => setExp((p) => ({ ...p, size: id }))}
+                    >{s.label}</button>
+                  ))}
+                </div>
+              </div>
+              {exp.size === "custom" && (
+                <div className="mp-iso-row">
+                  <span className="mp-iso-label">宽高</span>
+                  <input className="mp-iso-range" type="number" min="400" max="4000" value={exp.customW} onChange={(e) => setExp((p) => ({ ...p, customW: Number(e.target.value) || 1600 }))} />
+                  <span className="mp-iso-unit">×</span>
+                  <input className="mp-iso-range" type="number" min="300" max="4000" value={exp.customH} onChange={(e) => setExp((p) => ({ ...p, customH: Number(e.target.value) || 1200 }))} />
+                  <span className="mp-iso-unit">px</span>
+                </div>
+              )}
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">标题</span>
+                <input
+                  className="mp-iso-range mp-iso-ranges"
+                  value={exp.title}
+                  onChange={(e) => setExp((p) => ({ ...p, title: e.target.value }))}
+                  placeholder="如：松阳县停车设施布局图"
+                />
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">图例</span>
+                <label className="mp-iso-check">
+                  <input type="checkbox" checked={exp.legend} onChange={(e) => setExp((p) => ({ ...p, legend: e.target.checked }))} />
+                  包含图例
+                </label>
+              </div>
+              <div className="mp-iso-actions">
+                <button className="btn primary" onClick={runExport}>导出 PNG</button>
+              </div>
+              <div className="mp-iso-hint">
+                输出 150-300dpi 报告插图：地图 + 标题 + 比例尺 + 指北针 + 图例（图例取当前可见图层）。
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 属性表弹窗 */}
       {attrLayer && (
         <AttributeTable
@@ -782,15 +1276,21 @@ export default function MapPanel({
         />
       )}
 
-      {/* 等时圈分析弹窗（选点模式下 backdrop 不拦截鼠标，允许点击地图） */}
+      {/* 地图分析弹窗（等时圈 / 路径规划；选点模式下 backdrop 不拦截鼠标） */}
       {isoOpen && (
         <div className={`mp-iso-backdrop ${iso.picking ? "mp-iso-picking" : ""}`} onClick={() => !iso.picking && setIsoOpen(false)}>
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
-              <span><Icon name="history" size={14} /> 等时圈分析</span>
+              <span><Icon name="history" size={14} /> 地图分析</span>
+              <div className="mp-iso-tabs">
+                <button className={`mp-iso-tab ${iso.tab === "iso" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "iso" }))}>等时圈</button>
+                <button className={`mp-iso-tab ${iso.tab === "route" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "route" }))}>路径规划</button>
+              </div>
               <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
+            {iso.tab === "iso" ? (
+              <>
               <div className="mp-iso-row">
                 <span className="mp-iso-label">出行方式</span>
                 <div className="mp-iso-modes">
@@ -850,6 +1350,51 @@ export default function MapPanel({
               <div className="mp-iso-hint">
                 使用高德地图 Web 服务（需在服务端配置环境变量 AMAP_KEY）。结果以临时图层叠加在地图上，不写入项目。
               </div>
+              </>
+            ) : (
+              <>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">起点</span>
+                <button className={`btn-sm ${iso.picking === "from" ? "active" : ""}`} onClick={() => startPick("from")}>
+                  {iso.picking === "from" ? "点击地图选起点…" : "选起点"}
+                </button>
+                <span className="mp-iso-loc">
+                  {iso.route.from ? `(${iso.route.from[0].toFixed(4)}, ${iso.route.from[1].toFixed(4)})` : "未选择"}
+                </span>
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">终点</span>
+                <button className={`btn-sm ${iso.picking === "to" ? "active" : ""}`} onClick={() => startPick("to")}>
+                  {iso.picking === "to" ? "点击地图选终点…" : "选终点"}
+                </button>
+                <span className="mp-iso-loc">
+                  {iso.route.to ? `(${iso.route.to[0].toFixed(4)}, ${iso.route.to[1].toFixed(4)})` : "未选择"}
+                </span>
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">方式</span>
+                <div className="mp-iso-modes">
+                  {ISO_MODES.slice(0, 3).map((m) => (
+                    <button
+                      key={m.id}
+                      className={`mp-iso-mode ${iso.route.mode === m.id ? "active" : ""}`}
+                      onClick={() => setIso((s) => ({ ...s, route: { ...s.route, mode: m.id } }))}
+                    >{m.label}</button>
+                  ))}
+                </div>
+              </div>
+              {iso.route.err && <div className="mp-iso-err">{iso.route.err}</div>}
+              {iso.route.info && <div className="mp-iso-info">{iso.route.info}</div>}
+              <div className="mp-iso-actions">
+                <button className="btn primary" disabled={iso.route.loading || !!iso.picking} onClick={runRoute}>
+                  {iso.route.loading ? "规划中…" : "开始规划"}
+                </button>
+              </div>
+              <div className="mp-iso-hint">
+                默认使用开源 OSRM 路由（零配置，基于 OpenStreetMap）；配置环境变量 AMAP_KEY 后可切换到高德（中国路网更准）。结果以临时图层叠加，不写入项目。
+              </div>
+              </>
+            )}
             </div>
           </div>
         </div>

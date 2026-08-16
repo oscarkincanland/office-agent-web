@@ -58,6 +58,7 @@ export default function LayerPanel({
   onToggleLayer, onSetPaint, onSetOpacity, onMoveLayerTo,
   onRenameLayer, onDuplicateLayer, onDeleteLayer, onZoomToLayer, onOpenAttribute,
   onSetLayout,
+  onSetLabel,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
@@ -184,6 +185,17 @@ export default function LayerPanel({
       <code className="lp-ed-hex">{typeof value === "string" ? value : "表达式"}</code>
     </div>
   );
+
+  // ---- 标注渲染（{layerId}-label symbol 层） ----
+  const labelLayer = selected ? style?.layers?.find((l) => l.id === selected + "-label") : null;
+  const [labelField, setLabelField] = useState(labelLayer?.layout?.["text-field"]?.[1] || "name");
+  const [labelSize, setLabelSize] = useState(labelLayer?.layout?.["text-size"] || 13);
+  const [labelColor, setLabelColor] = useState(labelLayer?.paint?.["text-color"] || "#2d3142");
+  const labelOn = !!labelLayer;
+  const labelFields = fieldData?.layerId === selected ? fieldData.fields : ["name", "ref", "title", "label"];
+  const applyLabel = (on, field = labelField, size = labelSize, color = labelColor) => {
+    onSetLabel?.(selected, on ? { field, size, color } : null);
+  };
 
   // ---- 按字段渲染：应用/恢复 ----
   const colorKey = paintKeys.find((k) => k === "line-color" || k === "fill-color" || k === "circle-color") || null;
@@ -534,6 +546,56 @@ export default function LayerPanel({
                     <div className="lp-ed-row lp-ed-actions">
                       <button className="btn-sm primary" onClick={() => applyFieldRender(rm.mode, rm.field, rm.palette, rm.classes)}>应用</button>
                       <button className="btn-sm" onClick={resetFieldRender}>恢复单一颜色</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {/* 标注渲染 */}
+            {selected && (
+              <div className="lp-ed-sec">
+                <div className="lp-ed-sec-title">标注</div>
+                <div className="lp-ed-row">
+                  <span className="lp-ed-label">显示</span>
+                  <input
+                    type="checkbox"
+                    checked={labelOn}
+                    onChange={(e) => applyLabel(e.target.checked)}
+                  />
+                  {labelOn && (
+                    <button className="btn-xs" onClick={() => applyLabel(false)} title="移除标注层">移除</button>
+                  )}
+                </div>
+                {labelOn && (
+                  <>
+                    <div className="lp-ed-row">
+                      <span className="lp-ed-label">字段</span>
+                      <select
+                        className="lp-ed-select lp-ed-field"
+                        value={labelField}
+                        onChange={(e) => { setLabelField(e.target.value); applyLabel(true, e.target.value); }}
+                      >
+                        {labelFields.map((f) => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </div>
+                    <div className="lp-ed-row">
+                      <span className="lp-ed-label">字号</span>
+                      <input
+                        type="range" min="9" max="22" step="1"
+                        value={labelSize}
+                        onChange={(e) => { setLabelSize(Number(e.target.value)); applyLabel(true, labelField, Number(e.target.value)); }}
+                      />
+                      <span className="lp-ed-val">{labelSize}</span>
+                    </div>
+                    <div className="lp-ed-row">
+                      <span className="lp-ed-label">颜色</span>
+                      <input
+                        type="color"
+                        className="lp-ed-color"
+                        value={normalizeHex(labelColor)}
+                        onChange={(e) => { setLabelColor(e.target.value); applyLabel(true, labelField, labelSize, e.target.value); }}
+                      />
+                      <code className="lp-ed-hex">{labelColor}</code>
                     </div>
                   </>
                 )}
