@@ -261,7 +261,11 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
 
     // 分批渲染：稳定后再追加剩余节点/边（对齐 siyuan 分批策略）
     g.render().then(() => {
-      setTimeout(() => g.fitView(40, "both", true), 300);
+      const fit = () => { try { g.fitView(40, "both", true); } catch {} };
+      // 布局完成后再适配视口（force 布局 alpha 耗尽触发 afterlayout；避免中途定格导致节点跑出视野）
+      try { g.once?.("afterlayout", () => setTimeout(fit, 60)); } catch {}
+      // 兜底：若 afterlayout 未触发，延时适配一次
+      setTimeout(fit, 1500);
       const canvases = el.querySelectorAll("canvas");
       canvases.forEach((c) => { c.style.background = "transparent"; });
       if (batch && scopeNodes.length > BATCH_SIZE) {
