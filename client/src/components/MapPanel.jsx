@@ -86,6 +86,104 @@ export default function MapPanel({
   const [impDir, setImpDir] = useState("data");
   const [impMsg, setImpMsg] = useState("");
   const impFileRef = useRef(null);
+  const [odOpen, setOdOpen] = useState(false);      // OD 分析弹窗
+  const [odText, setOdText] = useState("");
+  const [odCols, setOdCols] = useState({ olng: "", olat: "", dlng: "", dlat: "", flow: "" });
+  const [odHeader, setOdHeader] = useState([]);
+  const [odMsg, setOdMsg] = useState("");
+  const [odShowLines, setOdShowLines] = useState(true);
+
+  // ---- OD 流量热力图 ----
+  // 列名自动检测（支持中英文）
+  const detectCols = useCallback((header) => {
+    const find = (patterns) => header.find((h) => patterns.some((p) => h.toLowerCase().includes(p))) || "";
+    return {
+      olng: find(["起点经", "出发经", "olng", "from_lng", "fromlng", "origin_lng"]),
+      olat: find(["起点纬", "出发纬", "olat", "from_lat", "fromlat", "origin_lat"]),
+      dlng: find(["终点经", "到达经", "dlng", "to_lng", "tolng", "dest_lng"]),
+      dlat: find(["终点纬", "到达纬", "dlat", "to_lat", "tolat", "dest_lat"]),
+      flow: find(["流量", "客流", "客流量", "flow", "count", "量"]),
+    };
+  }, []);
+
+  const handleOdText = useCallback((text) => {
+    setOdText(text);
+    const lines = text.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) { setOdHeader([]); return; }
+    const header = lines[0].split(/[,\t]/).map((h) => h.trim().replace(/^"|"$/g, ""));
+    setOdHeader(header);
+    setOdCols(detectCols(header));
+  }, [detectCols]);
+
+  const clearOdLayers = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["od-heat", "od-lines"]) { if (m.getLayer(id)) m.removeLayer(id); }
+    for (const src of ["od-heat-src", "od-lines-src"]) { if (m.getSource(src)) m.removeSource(src); }
+  }, []);
+
+  const renderOd = useCallback(() => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    const lines = odText.trim().split(/\r?\n/).filter(Boolean);
+    if (lines.length < 2) { setOdMsg("请先粘贴或上传 CSV 数据"); return; }
+    const header = lines[0].split(/[,\t]/).map((h) => h.trim().replace(/^"|"$/g, ""));
+    const idx = (name) => header.indexOf(odCols[name]);
+    const iO = [idx("olng"), idx("olat")];
+    const iD = [idx("dlng"), idx("dlat")];
+    const iF = idx("flow");
+    if (iO.some((i) => i < 0) || iD.some((i) => i < 0)) {
+      setOdMsg("请检查字段映射：起点/终点经纬度列必须选择");
+      return;
+    }
+    const points = [];
+    const odLines = [];
+    let maxFlow = 1, totalFlow = 0, count = 0;
+    for (let r = 1; r < lines.length; r++) {
+      const cells = lines[r].split(/[,\t]/).map((c) => c.trim().replace(/^"|"$/g, ""));
+      const o = [Number(cells[iO[0]]), Number(cells[iO[1]])];
+      const d = [Number(cells[iD[0]]), Number(cells[iD[1]])];
+      if (!Number.isFinite(o[0]) || !Number.isFinite(o[1])) continue;
+      const flow = iF >= 0 ? Number(cells[iF]) || 1 : 1;
+      maxFlow = Math.max(maxFlow, flow);
+      totalFlow += flow;
+      count++;
+      points.push({ type: "Feature", properties: { flow }, geometry: { type: "Point", coordinates: o } });
+      if (Number.isFinite(d[0]) && Number.isFinite(d[1]) && odShowLines) {
+        odLines.push({ type: "Feature", properties: { flow }, geometry: { type: "LineString", coordinates: [o, d] } });
+      }
+    }
+    if (!count) { setOdMsg("没有解析到有效记录，请检查列名映射"); return; }
+    clearOdLayers();
+    m.addSource("od-heat-src", { type: "geojson", data: { type: "FeatureCollection", features: points } });
+    m.addLayer({
+      id: "od-heat", type: "heatmap", source: "od-heat-src",
+      paint: {
+        "heatmap-weight": ["interpolate", ["linear"], ["get", "flow"], 0, 0, maxFlow, 1],
+        "heatmap-intensity": 1.2,
+        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 18, 10, 36],
+        "heatmap-opacity": 0.65,
+        "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+          0, "rgba(33,102,172,0)", 0.25, "rgb(103,169,207)", 0.45, "rgb(209,229,240)",
+          0.6, "rgb(253,219,199)", 0.8, "rgb(239,138,98)", 1, "rgb(178,24,43)"],
+      },
+    });
+    if (odLines.length) {
+      m.addSource("od-lines-src", { type: "geojson", data: { type: "FeatureCollection", features: odLines } });
+      m.addLayer({
+        id: "od-lines", type: "line", source: "od-lines-src",
+        paint: {
+          "line-color": ["interpolate", ["linear"], ["get", "flow"], 0, "#9ecae1", maxFlow / 2, "#fd8d3c", maxFlow, "#a50f15"],
+          "line-width": ["interpolate", ["linear"], ["get", "flow"], 0, 1, maxFlow, 4],
+          "line-opacity": 0.55,
+        },
+      });
+    }
+    const lngs = points.map((p) => p.geometry.coordinates[0]);
+    const lats = points.map((p) => p.geometry.coordinates[1]);
+    m.fitBounds([[Math.min(...lngs) - 0.05, Math.min(...lats) - 0.05], [Math.max(...lngs) + 0.05, Math.max(...lats) + 0.05]], { padding: 50 });
+    setOdMsg(`已渲染 ${count} 条 OD（总流量 ${Math.round(totalFlow).toLocaleString()}，最大 ${maxFlow}），起点热力图${odLines.length ? " + 流向线" : ""}`);
+  }, [odText, odCols, odShowLines, clearOdLayers]);
   const mapRef = useRef(null);
 
   const flash = useCallback((t) => {
@@ -884,6 +982,9 @@ export default function MapPanel({
         <button className="btn-sm" onClick={() => setImportOpen(true)} title="导入路网数据（批量 GeoJSON 或目录一键生成）">
           <Icon name="upload" size={13} /> 导入数据
         </button>
+        <button className={`btn-sm ${odOpen ? "active" : ""}`} onClick={() => setOdOpen((v) => !v)} title="OD 流量热力图（上传 CSV）">
+          <Icon name="locate" size={13} /> OD分析
+        </button>
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
@@ -1010,6 +1111,57 @@ export default function MapPanel({
               <button onClick={() => startTool("draw", "draw-polygon")}><Icon name="penTool" size={12} /> 绘制面</button>
             </>
           )}
+        </div>
+      )}
+
+      {/* OD 流量热力图弹窗 */}
+      {odOpen && (
+        <div className="mp-iso-backdrop" onClick={() => setOdOpen(false)}>
+          <div className="mp-iso-panel mp-od-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="mp-iso-head">
+              <span><Icon name="locate" size={14} /> OD 流量分析</span>
+              <button className="mp-op" onClick={() => setOdOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="mp-iso-body">
+              <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 8 }}>
+                粘贴或上传 CSV（表头含 起点经度/起点纬度/终点经度/终点纬度/流量，支持中英文列名，自动检测映射）。
+              </div>
+              <textarea
+                className="mp-od-textarea"
+                placeholder={"起点经度,起点纬度,终点经度,终点纬度,流量\n119.9,29.5,120.3,30.1,1200\n..."}
+                value={odText}
+                onChange={(e) => handleOdText(e.target.value)}
+                rows={5}
+              />
+              {odHeader.length > 0 && (
+                <div className="mp-od-cols">
+                  {[
+                    ["olng", "起点经度"], ["olat", "起点纬度"], ["dlng", "终点经度"], ["dlat", "终点纬度"], ["flow", "流量"],
+                  ].map(([key, label]) => (
+                    <label key={key} className="mp-od-col">
+                      <span>{label}</span>
+                      <select value={odCols[key]} onChange={(e) => setOdCols((p) => ({ ...p, [key]: e.target.value }))}>
+                        <option value="">（未选择）</option>
+                        {odHeader.map((h) => <option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                  <label className="mp-od-col">
+                    <span>流向线</span>
+                    <input type="checkbox" checked={odShowLines} onChange={(e) => setOdShowLines(e.target.checked)} />
+                  </label>
+                </div>
+              )}
+              {odMsg && <div className="mp-iso-info" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>{odMsg}</div>}
+              <div className="mp-iso-actions">
+                <button className="btn-sm" onClick={() => { clearOdLayers(); setOdMsg(""); }}>清除图层</button>
+                <button className="btn primary" onClick={renderOd}>渲染热力图</button>
+              </div>
+              <div className="mp-iso-hint">
+                起点流量加权热力（蓝→红）+ 可选 OD 流向线（流量分级着色）。结果以临时图层叠加，不写入项目。
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
