@@ -6,7 +6,7 @@ import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -78,7 +78,7 @@ export default function MapPanel({
     window.addEventListener("mouseup", onUp);
   }, [leftW, rightW]);
   const [isoOpen, setIsoOpen] = useState(false);
-  const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "" });
+  const [iso, setIso] = useState({ mode: "driving", range: 30, multi: false, ranges: "30,60,90", loc: null, picking: false, loading: false, err: "", info: "", tab: "iso", route: { from: null, to: null, mode: "driving", loading: false, err: "", info: "" } });
   const [exportOpen, setExportOpen] = useState(false); // 报告图导出弹窗
   const [exp, setExp] = useState({ size: "a4l", title: "", legend: true, customW: 1600, customH: 1131 });
   const [importOpen, setImportOpen] = useState(false); // 数据导入弹窗
@@ -494,13 +494,62 @@ export default function MapPanel({
   }, [project, flash]);
 
   // ---- 等时圈分析 ----
-  const startPick = useCallback(() => {
-    setIso((s) => ({ ...s, picking: true, err: "" }));
+  const startPick = useCallback((target = "center") => {
+    setIso((s) => ({ ...s, picking: target, err: "" }));
     const m = mapRef.current?.getMap();
     m?.once("click", (e) => {
-      setIso((s) => ({ ...s, loc: [e.lngLat.lng, e.lngLat.lat], picking: false }));
+      const pt = [e.lngLat.lng, e.lngLat.lat];
+      setIso((s) => {
+        if (target === "from") return { ...s, picking: null, route: { ...s.route, from: pt } };
+        if (target === "to") return { ...s, picking: null, route: { ...s.route, to: pt } };
+        return { ...s, picking: null, loc: pt };
+      });
     });
   }, []);
+
+  // ---- 路径规划（OSRM 开源默认 / 高德可选） ----
+  const drawRoute = useCallback((coords, from, to) => {
+    const m = mapRef.current?.getMap();
+    if (!m) return;
+    for (const id of ["route-line", "route-pts"]) { if (m.getLayer(id)) m.removeLayer(id); }
+    if (m.getSource("route-src")) m.removeSource("route-src");
+    if (m.getSource("route-pts-src")) m.removeSource("route-pts-src");
+    if (!coords?.length) return;
+    m.addSource("route-src", {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } }] },
+    });
+    m.addLayer({ id: "route-line", type: "line", source: "route-src", paint: { "line-color": "#1f77b4", "line-width": 4, "line-opacity": 0.85 } });
+    m.addSource("route-pts-src", {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: [from, to].filter(Boolean).map((p, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: p } })),
+      },
+    });
+    m.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, "#d62728", "#2ca02c"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+    if (from && to) {
+      m.fitBounds(
+        [[Math.min(from[0], to[0]) - 0.02, Math.min(from[1], to[1]) - 0.02], [Math.max(from[0], to[0]) + 0.02, Math.max(from[1], to[1]) + 0.02]],
+        { padding: 60 }
+      );
+    }
+  }, []);
+
+  const runRoute = useCallback(async () => {
+    const { from, to, mode } = iso.route;
+    if (!from || !to) { setIso((s) => ({ ...s, route: { ...s.route, err: "请先选择起点和终点（点「选起点/选终点」后点击地图）" } })); return; }
+    setIso((s) => ({ ...s, route: { ...s.route, loading: true, err: "", info: "" } }));
+    try {
+      const r = await mapRoute({ from: from.join(","), to: to.join(","), mode });
+      drawRoute(r.geometry, from, to);
+      const prov = r.provider === "osrm" ? "OSRM 开源" : "高德";
+      setIso((s) => ({ ...s, route: { ...s.route, info: `${prov} · 距离 ${fmtLen(r.distance)} · 约 ${Math.max(1, Math.round(r.duration / 60))} 分钟` } }));
+    } catch (e) {
+      setIso((s) => ({ ...s, route: { ...s.route, err: e.message } }));
+    }
+    setIso((s) => ({ ...s, route: { ...s.route, loading: false } }));
+  }, [iso.route, drawRoute]);
 
   // 绘制等时圈多边形（临时图层，不写入项目；suffix 区分多档叠加）
   const drawIsoPolygons = useCallback((polygons, center, color = "#7b1fa2", opacity = 0.25, suffix = "") => {
@@ -1075,15 +1124,21 @@ export default function MapPanel({
         />
       )}
 
-      {/* 等时圈分析弹窗（选点模式下 backdrop 不拦截鼠标，允许点击地图） */}
+      {/* 地图分析弹窗（等时圈 / 路径规划；选点模式下 backdrop 不拦截鼠标） */}
       {isoOpen && (
         <div className={`mp-iso-backdrop ${iso.picking ? "mp-iso-picking" : ""}`} onClick={() => !iso.picking && setIsoOpen(false)}>
           <div className="mp-iso-panel" onClick={(e) => e.stopPropagation()}>
             <div className="mp-iso-head">
-              <span><Icon name="history" size={14} /> 等时圈分析</span>
+              <span><Icon name="history" size={14} /> 地图分析</span>
+              <div className="mp-iso-tabs">
+                <button className={`mp-iso-tab ${iso.tab === "iso" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "iso" }))}>等时圈</button>
+                <button className={`mp-iso-tab ${iso.tab === "route" ? "active" : ""}`} onClick={() => setIso((s) => ({ ...s, tab: "route" }))}>路径规划</button>
+              </div>
               <button className="mp-op" onClick={() => setIsoOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="mp-iso-body">
+            {iso.tab === "iso" ? (
+              <>
               <div className="mp-iso-row">
                 <span className="mp-iso-label">出行方式</span>
                 <div className="mp-iso-modes">
@@ -1143,6 +1198,51 @@ export default function MapPanel({
               <div className="mp-iso-hint">
                 使用高德地图 Web 服务（需在服务端配置环境变量 AMAP_KEY）。结果以临时图层叠加在地图上，不写入项目。
               </div>
+              </>
+            ) : (
+              <>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">起点</span>
+                <button className={`btn-sm ${iso.picking === "from" ? "active" : ""}`} onClick={() => startPick("from")}>
+                  {iso.picking === "from" ? "点击地图选起点…" : "选起点"}
+                </button>
+                <span className="mp-iso-loc">
+                  {iso.route.from ? `(${iso.route.from[0].toFixed(4)}, ${iso.route.from[1].toFixed(4)})` : "未选择"}
+                </span>
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">终点</span>
+                <button className={`btn-sm ${iso.picking === "to" ? "active" : ""}`} onClick={() => startPick("to")}>
+                  {iso.picking === "to" ? "点击地图选终点…" : "选终点"}
+                </button>
+                <span className="mp-iso-loc">
+                  {iso.route.to ? `(${iso.route.to[0].toFixed(4)}, ${iso.route.to[1].toFixed(4)})` : "未选择"}
+                </span>
+              </div>
+              <div className="mp-iso-row">
+                <span className="mp-iso-label">方式</span>
+                <div className="mp-iso-modes">
+                  {ISO_MODES.slice(0, 3).map((m) => (
+                    <button
+                      key={m.id}
+                      className={`mp-iso-mode ${iso.route.mode === m.id ? "active" : ""}`}
+                      onClick={() => setIso((s) => ({ ...s, route: { ...s.route, mode: m.id } }))}
+                    >{m.label}</button>
+                  ))}
+                </div>
+              </div>
+              {iso.route.err && <div className="mp-iso-err">{iso.route.err}</div>}
+              {iso.route.info && <div className="mp-iso-info">{iso.route.info}</div>}
+              <div className="mp-iso-actions">
+                <button className="btn primary" disabled={iso.route.loading || !!iso.picking} onClick={runRoute}>
+                  {iso.route.loading ? "规划中…" : "开始规划"}
+                </button>
+              </div>
+              <div className="mp-iso-hint">
+                默认使用开源 OSRM 路由（零配置，基于 OpenStreetMap）；配置环境变量 AMAP_KEY 后可切换到高德（中国路网更准）。结果以临时图层叠加，不写入项目。
+              </div>
+              </>
+            )}
             </div>
           </div>
         </div>

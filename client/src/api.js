@@ -94,6 +94,8 @@ export const mapGetLayer = (name, layerId) =>
   api(`/api/map/layer?name=${encodeURIComponent(name)}&layer=${encodeURIComponent(layerId)}`);
 export const mapIsochrone = (params) =>
   api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
+export const mapRoute = (params) =>
+  api("/api/map/route", { method: "POST", body: JSON.stringify(params) });
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);

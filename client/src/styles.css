@@ -5218,3 +5218,17 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .file-item { gap: 6px; }
 .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-meta + .file-at { margin-left: 0; }
+
+/* ================= v0.8.25 地图分析弹窗 tab ================= */
+.mp-iso-tabs { display: flex; gap: 3px; margin-left: 10px; }
+.mp-iso-tab {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.mp-iso-tab:hover { color: var(--text); background: var(--selected); }
+.mp-iso-tab.active { background: var(--accent); color: #0e0e1a; font-weight: 600; }

@@ -425,6 +425,15 @@ app.post("/api/map/isochrone", async (req, res) => {
   res.json({ ok: true, center: r.center, cost: r.cost, polygons: r.polygons });
 });
 
+// 路径规划（默认 OSRM 开源，可选高德）
+app.post("/api/map/route", async (req, res) => {
+  const { from, to, mode, provider } = req.body || {};
+  if (!from || !to) return res.status(400).json({ error: "from/to required (lng,lat)" });
+  const r = await map.route({ from, to, mode, provider });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, provider: r.provider, distance: r.distance, duration: r.duration, geometry: r.geometry });
+});
+
 app.get("/api/files", (req, res) => {
   const dir = req.query.dir || "";
   // 只允许相对路径，防止越界
