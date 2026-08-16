@@ -476,6 +476,27 @@ app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
   }
 });
 
+// docx → 纯文本（供 agent 在无 officecli 环境读取 docx 内容）
+app.get(/^\/api\/doc\/([^\/]+)\/text$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p || !/\.docx$/i.test(p)) return res.status(404).json({ error: "not found" });
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(fs.readFileSync(p));
+    const xml = await zip.file("word/document.xml")?.async("string");
+    if (!xml) return res.status(400).json({ error: "no document.xml" });
+    const paras = [];
+    for (const m of xml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)) {
+      const text = [...m[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((t) => t[1]).join("").trim();
+      if (text) paras.push(text);
+    }
+    res.json({ name: fileName, text: paras.join("\n") });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // open document
 app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);

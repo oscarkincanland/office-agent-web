@@ -548,6 +548,12 @@ class AgentManager extends EventEmitter {
           text = marker + text;
         }
       }
+      // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
+      // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
+      try {
+        const dyn = this.buildDynamicContext(entry.currentFile);
+        if (dyn) text = dyn + "\n\n" + text;
+      } catch {}
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -594,6 +600,27 @@ class AgentManager extends EventEmitter {
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
+  /**
+   * 构建每次对话前注入的动态上下文文本（当前工作区绝对路径 + 当前文件 + 记忆摘要）
+   */
+  buildDynamicContext(file) {
+    try {
+      const ws = getWorkspace();
+      const memCtx = readMemoryContext();
+      const lines = [
+        "[动态上下文]",
+        `- 当前工作区（绝对路径）: ${ws}`,
+        "- Office 文档一律用 officecli 工具操作（文件名相对当前工作区根目录）；若 officecli 不可用，用 read 工具以绝对路径读取工作区文件（docx 可用服务端接口 GET /api/doc/<文件名>/text 提取文本）。",
+        `- 当前工作文件: ${file || "（无）"}`,
+        "- 新建文件必须写入当前工作区绝对路径，禁止写入项目目录。",
+      ];
+      if (memCtx) lines.push("- 工作区记忆（AGENTS.md + memory/*.md）:\n" + memCtx.slice(0, 2000));
+      return lines.join("\n");
+    } catch {
+      return "";
+    }
+  }
+
   /**
    * 写入 .agent-context.md（项目根，agent 的 read cwd 可读）——每次对话前刷新：
    * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
