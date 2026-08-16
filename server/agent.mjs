@@ -394,9 +394,15 @@ class AgentManager extends EventEmitter {
         "当用户要求不明确、任务关键信息缺失（文档类型/格式/篇幅/受众/数据来源/风格/范围等）时调用，向用户提出具体问题并等待回答，避免盲目猜测。每次只问一个最关键的、阻塞后续工作的问题，可提供快捷选项。用户回答后继续执行。",
       parameters: Type.Object({
         question: Type.String({ description: "向用户提出的问题（具体、聚焦、一次一个）" }),
-        options: Type.Optional(Type.Array(Type.String({ description: "2-4 个快捷选项（用户可一键选择）" }))),
+        // 兼容两种传法：字符串数组（推荐）或对象数组 {label, description}
+        options: Type.Optional(Type.Array(Type.Union([
+          Type.String({ description: "快捷选项文本" }),
+          Type.Object({ label: Type.String(), description: Type.Optional(Type.String()) }),
+        ]))),
       }),
       execute: async (_toolCallId, params) => {
+        // 归一化 options（对象 → 字符串）
+        const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
           const timer = setTimeout(() => {
@@ -410,7 +416,7 @@ class AgentManager extends EventEmitter {
             resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
           };
           this.pendingAsks.set(clientId, done);
-          emitChannelSafe(entry, "ask_user", { question: params.question, options: params.options || [] });
+          emitChannelSafe(entry, "ask_user", { question: params.question, options: opts });
         });
       },
     });
