@@ -1629,6 +1629,30 @@ app.get("/api/m3/network-stats", (_req, res) => {
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {
+
+// ---------- M3 公交数据分析 API ----------
+
+// 公交线路数据
+app.get("/api/bus/routes", (req, res) => {
+  res.json(map.getBusRoutes());
+});
+
+// 公交站点数据
+app.get("/api/bus/stops", (req, res) => {
+  res.json(map.getBusStops());
+});
+
+// 公交 OD 数据
+app.get("/api/bus/od", (req, res) => {
+  const period = req.query.period || "all";
+  res.json(map.getBusOD(period));
+});
+
+// 公交线网统计
+app.get("/api/bus/stats", (req, res) => {
+  res.json(map.getBusStats());
+});
+
   app.use(express.static(dist));
   app.get("/*splat", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }

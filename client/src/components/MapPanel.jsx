@@ -1080,7 +1080,7 @@ export default function MapPanel({
               </div>
             </div>
             <div className="m2-overlay-body m3-overlay-body">
-              <M3BusPanel project={project} mapRef={mapRef} activeTab={m3Tab} />
+              <M3BusPanel project={project} mapRef={mapRef} activeTab={m3Tab} onClose={() => setM3Tab(null)} />
             </div>
           </div>
         )}
