@@ -2673,6 +2673,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .kb-graph-search:focus { border-color: var(--accent); }
 .kb-graph {
   flex: 1;
+  width: 100%;
+  height: 100%;
   min-height: 0;
   position: relative;
   /* 方格纸背景：细格线 + 主格线（暗色用白透明线，亮色用灰蓝线） */
@@ -2692,7 +2694,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
     #f7f8fb;
 }
 /* G6 的 canvas 透明，让 CSS 背景透出 */
-.kb-graph-canvas canvas {
+.kb-graph canvas {
   background: transparent !important;
 }
 .kb-graph-legend {
@@ -2713,6 +2715,19 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .kb-graph-edge-line { border-radius: 0 !important; height: 2px !important; }
 .kb-graph-legend-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; }
 .kb-graph-hint { color: var(--dim); }
+.kb-graph-error {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 7px 12px;
+  border: 1px solid var(--error, #c96b6b);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--panel-bg) 92%, transparent);
+  color: var(--error, #c96b6b);
+  font-size: 12px;
+}
 
 /* IMA 弹层 */
 .kb-ima-panel {
