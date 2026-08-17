@@ -50,6 +50,8 @@ function saveGraphSettings(s) {
 export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusId }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
+  const [graphError, setGraphError] = useState("");
+  const [graphReady, setGraphReady] = useState(false);
   const [hideIsolated, setHideIsolated] = useState(false);
   const [density, setDensity] = useState(1); // 布局密度（0.6 紧凑 ~ 1.8 舒展）
   const [query, setQuery] = useState("");
@@ -143,10 +145,18 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     return label.length > 18 ? label.slice(0, 17) + "…" : label;
   }, []);
 
+  const fitGraph = useCallback(() => {
+    const g = graphRef.current;
+    if (!g) return;
+    g.fitView({ when: "always", direction: "both" }, { duration: 300, easing: "ease-in-out" }).catch(() => {});
+  }, []);
+
   // 创建图谱
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    setGraphError("");
+    setGraphReady(false);
 
     const visibleNodes = allNodes.filter((n) => {
       const t = n.data.type;
@@ -206,8 +216,8 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           cursor: (d) => (d.data.type === "file" || d.data.type === "tag" ? "pointer" : "default"),
         },
         animation: {
-          update: { duration: 400, easing: "ease-out" },
-          enter: { duration: 300, easing: "ease-out" },
+          update: [{ fields: ["x", "y", "fill", "stroke"], duration: 400, easing: "ease-out" }],
+          enter: [{ fields: ["x", "y", "opacity"], duration: 300, easing: "ease-out" }],
         },
         state: {
           dim: { opacity: 0.12 },
@@ -224,8 +234,8 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           endArrow: false,
         },
         animation: {
-          update: { duration: 400, easing: "ease-out" },
-          enter: { duration: 300, easing: "ease-out" },
+          update: [{ fields: ["sourceNode", "targetNode", "stroke"], duration: 400, easing: "ease-out" }],
+          enter: [{ fields: ["sourceNode", "targetNode", "opacity"], duration: 300, easing: "ease-out" }],
         },
         state: {
           "dim-edge": { opacity: 0.04 },
@@ -233,19 +243,22 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
         },
       },
       layout: {
-        type: "force",
-        linkDistance: (d) => (d.data?.type === "similar" ? 330 : 220) * density,
-        nodeStrength: -1200 * density,
-        edgeStrength: (d) => (d.data?.type === "similar" ? 0.06 : 0.25) / density,
+        // 使用 d3-force 的 Barnes-Hut 近似，避免自定义 force 在大图上长期占满主线程
+        type: "d3-force",
+        linkDistance: 190 * density,
+        nodeStrength: -220 * density,
+        edgeStrength: 0.16 / density,
+        theta: 0.9,
+        distanceMax: 1200,
         preventOverlap: true,
-        collide: true,
-        collideRadius: (d) => ((nodeSize(d) || 16) + 24) * density,
-        collideStrength: 1.6,
-        alpha: 0.5,
-        alphaDecay: 0.06,
-        alphaMin: 0.004,
-        maxSpeed: 300,
-        damping: 0.7,
+        nodeSize: 22 * density,
+        nodeSpacing: 8 * density,
+        collideStrength: 0.65,
+        collideIterations: 1,
+        alpha: 0.8,
+        alphaDecay: 0.08,
+        alphaMin: 0.03,
+        velocityDecay: 0.7,
       },
       behaviors: [
         "drag-canvas",
@@ -259,26 +272,49 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       ],
     });
 
+    let fitTimer = null;
+    let resizeTimer = null;
+    let disposed = false;
+    const scheduleFit = (delay = 60) => {
+      if (fitTimer) clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => {
+        if (!disposed) fitGraph();
+      }, delay);
+    };
+    try { g.once?.("afterlayout", () => scheduleFit(60)); } catch {}
+    const resizeObserver = typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => scheduleFit(80), 80);
+      })
+      : null;
+    resizeObserver?.observe(el);
+
     // 分批渲染：稳定后再追加剩余节点/边（对齐 siyuan 分批策略）
     g.render().then(() => {
-      const fit = () => { try { g.fitView(40, "both", true); } catch {} };
-      // 布局完成后再适配视口（force 布局 alpha 耗尽触发 afterlayout；避免中途定格导致节点跑出视野）
-      try { g.once?.("afterlayout", () => setTimeout(fit, 60)); } catch {}
-      // 兜底：若 afterlayout 未触发，延时适配一次
-      setTimeout(fit, 1500);
+      if (disposed) return;
+      setGraphReady(true);
       const canvases = el.querySelectorAll("canvas");
       canvases.forEach((c) => { c.style.background = "transparent"; });
       if (batch && scopeNodes.length > BATCH_SIZE) {
         const restNodes = scopeNodes.slice(BATCH_SIZE);
         const restIds = new Set(restNodes.map((n) => n.id));
-        const restEdges = scopeEdges.filter((e) => restIds.has(e.source) && restIds.has(e.target));
+        // 追加节点时保留跨批次边，避免首批节点与后续节点的关系丢失
+        const restEdges = scopeEdges.filter((e) => restIds.has(e.source) || restIds.has(e.target));
         g.addData({ nodes: restNodes, edges: restEdges });
       }
+      // afterlayout 未触发时的兜底适配；分批图等待追加布局完成
+      scheduleFit(batch ? 800 : 180);
       // 局部图谱：聚焦中心节点
       if (focusId) {
-        try { g.focusElement(focusId, { animation: true }); } catch {}
+        try { g.focusElement(focusId, { duration: 300 }); } catch {}
       }
-    }).catch((e) => console.error("G6 render error:", e));
+    }).catch((e) => {
+      if (disposed) return;
+      console.error("G6 render error:", e);
+      setGraphError("关系图谱渲染失败，请点击“重新布局”重试。");
+      setGraphReady(false);
+    });
 
     // hover 聚焦：邻接高亮 + 非邻接 dim（Obsidian 核心交互）
     const hoverActivate = (id) => {
@@ -329,8 +365,13 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
 
     graphRef.current = g;
     return () => {
+      disposed = true;
+      if (fitTimer) clearTimeout(fitTimer);
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeObserver?.disconnect();
       try { g.destroy(); } catch {}
       graphRef.current = null;
+      setGraphReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, hideIsolated, highlightId, focusId, subSet, density, minRefs, showTags, showFiles, showFolders]);
@@ -340,7 +381,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const g = graphRef.current;
     if (!g || !highlightId) return;
     try {
-      g.focusElement(highlightId, { animation: true });
+      g.focusElement(highlightId, { duration: 300 });
       g.setElementState(highlightId, ["focus"]);
     } catch {}
   }, [highlightId]);
@@ -353,7 +394,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const n = allNodesRef.current.find((x) => String(x.data.label || "").toLowerCase().includes(q));
     if (!n) return;
     try {
-      g.focusElement(n.id, { animation: true });
+      g.focusElement(n.id, { duration: 300 });
       g.setElementState(n.id, ["focus"]);
     } catch {}
   }, [query]);
@@ -368,6 +409,8 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && doFocus()}
         />
+        <button className="btn-sm" onClick={fitGraph} disabled={!graphReady}>适配视图</button>
+        <button className="btn-sm" onClick={() => { setQuery(""); fitGraph(); }} disabled={!graphReady}>重置视图</button>
         <label className="kb-check">
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点
@@ -398,7 +441,15 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           <span className="kb-density-val">{density.toFixed(1)}×</span>
         </span>
       </div>
-      <div className="kb-graph" ref={containerRef} />
+      <div className="kb-graph" ref={containerRef}>
+        {graphError && <div className="kb-graph-error">{graphError}</div>}
+        <div className="kb-graph-legend">
+          <span><i style={{ background: EDGE_COLORS.link }} />双向链接</span>
+          <span><i style={{ background: EDGE_COLORS.similar }} />内容相似</span>
+          <span><i style={{ background: EDGE_COLORS.tag }} />标签</span>
+          <span><i style={{ background: EDGE_COLORS.folder }} />目录</span>
+        </div>
+      </div>
     </div>
   );
 }

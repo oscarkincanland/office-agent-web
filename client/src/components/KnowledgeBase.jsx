@@ -31,6 +31,8 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   const [graphData, setGraphData] = useState(null);
   const [graphInc, setGraphInc] = useState(["links", "tags"]);
   const [graphLocal, setGraphLocal] = useState(false); // 局部图谱（聚焦当前文档 1-hop）
+  const graphRequestRef = useRef(0);
+  const rootIdxRef = useRef(0);
   const [expanded, setExpanded] = useState({}); // 持久化（localStorage）
   const [backOpen, setBackOpen] = useState({}); // 反链展开上下文
   const [loading, setLoading] = useState(false);
@@ -105,7 +107,12 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   const loadSeqRef = useRef(0);
   const loadRoot = useCallback(async (idx) => {
     const seq = ++loadSeqRef.current;
+    const rootChanged = idx !== rootIdxRef.current;
+    rootIdxRef.current = idx;
     setRootIdx(idx);
+    if (rootChanged) graphRequestRef.current += 1;
+    setGraphData(null);
+    setGraphLocal(false);
     setResults(null);
     setTabs([]);
     setActiveTab(null);
@@ -293,10 +300,11 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
 
   // 图谱
   const loadGraph = useCallback(async () => {
+    const requestId = ++graphRequestRef.current;
     setLoading(true);
     try {
       const g = await kbGraph(rootIdx, graphInc, 800);
-      setGraphData(g);
+      if (requestId === graphRequestRef.current) setGraphData(g);
     } catch {}
     setLoading(false);
   }, [rootIdx, graphInc]);
@@ -776,7 +784,13 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
               disabled={!doc}
               title={graphLocal ? "退出局部图谱，显示全图" : "仅显示当前文档的直接关联（1-hop 局部图）"}
             >{graphLocal ? "全图" : "局部图谱"}</button>
-            <span className="kb-graph-meta">{graphData?.meta?.total ? `${graphData.meta.total} 篇文档` : ""}{graphData?.meta?.capped ? "（已截断）" : ""}</span>
+            <span className="kb-graph-meta" title="当前图谱统计">
+              {graphData?.stats
+                ? `节点 ${graphData.stats.nodes} · 边 ${graphData.stats.edges} · 孤立 ${graphData.stats.isolated}`
+                : (graphData?.meta?.total ? `${graphData.meta.total} 篇文档` : "")}
+              {graphData?.stats?.brokenLinks ? ` · 断链 ${graphData.stats.brokenLinks}` : ""}
+              {graphData?.meta?.capped ? `（已截断${graphData.meta.totalNodes ? `，全量 ${graphData.meta.totalNodes} 节点` : ""}）` : ""}
+            </span>
           </div>
           {graphData ? (
             <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} focusId={graphLocal && doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />

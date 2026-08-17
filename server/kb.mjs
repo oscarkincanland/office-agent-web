@@ -79,6 +79,7 @@ let scanFingerprint = "";  // 用于快速判断是否需要重扫
 let lastScanMs = 0;
 let scanning = null;
 let PARSE_VERSION = 2; // 解析逻辑变更时 +1，强制重解析
+const simCache = new Map(); // `${rootIdx}` -> edges
 
 function invalidate() {
   lastScanMs = 0;
@@ -214,6 +215,8 @@ export async function scan(force = false) {
       }
     }
     fileCache = next;
+    // 文档新增、删除或内容变化后，相似度边必须重新计算
+    simCache.clear();
     scanFingerprint = fp;
     lastScanMs = Date.now();
     return fileCache;
@@ -439,8 +442,6 @@ export function getDoc(relPath, rootIdx = null) {
 }
 
 // ---------- 相似度边（无 [[链接]] 时让图谱有意义的兜底） ----------
-const simCache = new Map(); // `${rootIdx}` -> edges
-
 function docBigrams(f) {
   // 取内容前 6000 字符，提取 CJK/字母数字 字符二元组（标题/标题行加权重复）
   const src = f.doc.title + "\n" + f.doc.headings.join("\n") + "\n" + f.doc.content.slice(0, 6000);
@@ -487,11 +488,20 @@ function computeSimilarEdges(rootIdx, all) {
  */
 export function getGraph({ rootIdx = null, include = ["links"], maxNodes = 800 } = {}) {
   const all = [...fileCache.values()].filter((f) => rootIdx === null || f.rootIdx === rootIdx);
-  if (all.length === 0) return { nodes: [], edges: [], meta: { total: 0 } };
+  if (all.length === 0) {
+    return {
+      nodes: [],
+      edges: [],
+      meta: { total: 0, capped: false },
+      stats: { nodes: 0, edges: 0, isolated: 0, brokenLinks: 0, edgeTypes: {}, totalNodes: 0, totalEdges: 0 },
+    };
+  }
+  const limit = Math.max(1, Number(maxNodes) || 800);
   const nodes = [];
   const edges = [];
   const nodeId = (f) => `n${f.rootIdx}/${f.relPath}`;
   const nodeMap = new Map();
+  let brokenLinkCount = 0;
 
   const want = new Set(Array.isArray(include) ? include : [include]);
 
@@ -512,7 +522,10 @@ export function getGraph({ rootIdx = null, include = ["links"], maxNodes = 800 }
       const srcId = nodeId(f);
       for (const l of f.doc.links) {
         const r = resolveLinkTarget(l.target, all);
-        if (!r) continue;
+        if (!r) {
+          brokenLinkCount++;
+          continue;
+        }
         const dstId = nodeId(r);
         const k = edgeKey(srcId, dstId, "link");
         if (!seenEdges.has(k)) {
@@ -577,21 +590,50 @@ export function getGraph({ rootIdx = null, include = ["links"], maxNodes = 800 }
     }
   }
 
-  // 超大图保护：只保留有边的节点 + 最多 maxNodes
-  if (nodes.length > maxNodes) {
+  const buildStats = (nodeList, edgeList) => {
     const connected = new Set();
+    const edgeTypes = {};
+    for (const e of edgeList) {
+      connected.add(e.source);
+      connected.add(e.target);
+      const type = e.type || "link";
+      edgeTypes[type] = (edgeTypes[type] || 0) + 1;
+    }
+    return {
+      nodes: nodeList.length,
+      edges: edgeList.length,
+      isolated: nodeList.filter((n) => !connected.has(n.id)).length,
+      brokenLinks: brokenLinkCount,
+      edgeTypes,
+    };
+  };
+  const fullStats = buildStats(nodes, edges);
+
+  // 超大图保护：只保留有边的节点 + 最多 limit 个，按连接度和 ID 稳定排序
+  if (nodes.length > limit) {
+    const connected = new Set();
+    const degree = new Map(nodes.map((n) => [n.id, 0]));
     for (const e of edges) {
       connected.add(e.source);
       connected.add(e.target);
+      degree.set(e.source, (degree.get(e.source) || 0) + 1);
+      degree.set(e.target, (degree.get(e.target) || 0) + 1);
     }
-    let kept = [...connected].slice(0, maxNodes);
+    const kept = [...connected]
+      .sort((a, b) => (degree.get(b) || 0) - (degree.get(a) || 0) || a.localeCompare(b, "zh-CN"))
+      .slice(0, limit);
     const keptSet = new Set(kept);
     const nodeById = new Map(nodes.map((n) => [n.id, n]));
     const filteredNodes = kept.map((id) => nodeById.get(id)).filter(Boolean);
     const filteredEdges = edges.filter((e) => keptSet.has(e.source) && keptSet.has(e.target));
-    return { nodes: filteredNodes, edges: filteredEdges, meta: { total: all.length, capped: true } };
+    return {
+      nodes: filteredNodes,
+      edges: filteredEdges,
+      meta: { total: all.length, capped: true, maxNodes: limit, totalNodes: fullStats.nodes, totalEdges: fullStats.edges },
+      stats: { ...buildStats(filteredNodes, filteredEdges), totalNodes: fullStats.nodes, totalEdges: fullStats.edges },
+    };
   }
-  return { nodes, edges, meta: { total: all.length, capped: false } };
+  return { nodes, edges, meta: { total: all.length, capped: false, maxNodes: limit }, stats: { ...fullStats, totalNodes: fullStats.nodes, totalEdges: fullStats.edges } };
 }
 
 // ---------- IMA 云端知识库代理 ----------
