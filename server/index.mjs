@@ -13,9 +13,52 @@ import * as map from "./map.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3001;
+const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 
 app.use(express.json({ limit: "60mb" }));
+
+// ---------- request boundary / local API authentication ----------
+// The app is intended to run locally. Keep the default listener on loopback and
+// make authentication opt-in so existing local workflows remain compatible.
+function tokenMatches(candidate) {
+  if (!API_TOKEN || !candidate) return false;
+  const a = Buffer.from(String(candidate));
+  const b = Buffer.from(API_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function readCookie(req, name) {
+  const raw = req.get("cookie") || "";
+  const pair = raw.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${name}=`));
+  return pair ? decodeURIComponent(pair.slice(name.length + 1)) : "";
+}
+
+function setAuthCookie(res) {
+  if (!API_TOKEN) return;
+  res.setHeader("Set-Cookie", `oaw_token=${encodeURIComponent(API_TOKEN)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`);
+}
+
+app.use((req, res, next) => {
+  const requestId = req.get("x-request-id") || crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  // Opening the UI as /?token=... bootstraps a same-origin HttpOnly cookie,
+  // which also works for direct fetch() calls and EventSource streams.
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+
+  if (!API_TOKEN || !req.path.startsWith("/api/") || req.path === "/api/status") return next();
+
+  const authorization = req.get("authorization") || "";
+  const bearer = authorization.replace(/^Bearer\s+/i, "");
+  const supplied = bearer || req.get("x-oaw-token") || readCookie(req, "oaw_token") || req.query?.token;
+  if (!tokenMatches(supplied)) {
+    return res.status(401).json({ error: "unauthorized", message: "需要有效的 OAW_API_TOKEN", requestId });
+  }
+  next();
+});
 
 // ---------- helpers ----------
 const COL_RE = /([A-Z]+)(\d+)$/;
@@ -121,8 +164,15 @@ async function readWorkbook(file) {
 }
 
 // ---------- REST ----------
-app.get("/api/status", (_req, res) => {
-  res.json({ ok: true, officecli: path.basename(OFFICECLI), version: pkg.version });
+app.get("/api/status", (req, res) => {
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+  res.json({
+    ok: true,
+    officecli: path.basename(OFFICECLI),
+    version: pkg.version,
+    host: HOST,
+    authRequired: Boolean(API_TOKEN),
+  });
 });
 
 // ---------- 知识库（本地索引 + IMA 云端） ----------
@@ -641,8 +691,20 @@ app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
 app.post("/api/office", async (req, res) => {
   const { args } = req.body || {};
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
-  const r = await runOfficecli(args.map(String));
-  res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json });
+  const normalizedArgs = args.map(String);
+  const allowedCommands = new Set(["view", "get", "set", "batch", "query", "watch"]);
+  if (!allowedCommands.has(normalizedArgs[0])) {
+    return res.status(400).json({ error: "unsupported office command", allowed: [...allowedCommands] });
+  }
+  if (normalizedArgs.some((arg) => path.isAbsolute(arg) || arg.split(/[\\/]/).includes(".."))) {
+    return res.status(400).json({ error: "office paths must stay inside the workspace" });
+  }
+  try {
+    const r = await runOfficecli(normalizedArgs, { cwd: getWorkspace() });
+    res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, requestId: req.requestId });
+  }
 });
 
 // docx 富文本编辑代理（供前端编辑工具栏调用）
@@ -1667,9 +1729,14 @@ app.post("/api/open-in-explorer", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Open Plan（规聚）running at http://localhost:${PORT}`);
+if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
+  console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
+  if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
 });
 
 process.on("SIGINT", async () => {
