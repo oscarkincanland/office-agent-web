@@ -6033,3 +6033,304 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   background: #2ca02c;
   border-color: #2ca02c;
 }
+
+/* M3 公交分析仪表盘 */
+.m3-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.m3-card {
+  background: var(--panel2-bg, #1e1e3a);
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.m3-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface, #222240);
+  border-bottom: 1px solid var(--border, #3a3a5c);
+}
+
+.m3-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text, #d4d4d4);
+}
+
+.m3-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.m3-card-body {
+  padding: 16px;
+}
+
+/* 按钮样式 */
+.m3-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.m3-btn-clear {
+  background: var(--panel2-bg, #1e1e3a);
+  color: var(--muted, #808080);
+}
+
+.m3-btn-clear:hover {
+  background: var(--error, #cc6666);
+  color: #fff;
+  border-color: var(--error, #cc6666);
+}
+
+/* 统计网格 */
+.m3-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.m3-stat-item {
+  text-align: center;
+  padding: 12px;
+  background: var(--panel-bg, #16162a);
+  border-radius: 6px;
+  border: 1px solid var(--border, #3a3a5c);
+}
+
+.m3-stat-number {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--accent, #8abeb7);
+  line-height: 1.2;
+}
+
+.m3-stat-label {
+  font-size: 11px;
+  color: var(--muted, #808080);
+  margin-top: 4px;
+}
+
+/* 过滤器组 */
+.m3-filter-group {
+  margin-bottom: 16px;
+}
+
+.m3-filter-label {
+  display: block;
+  font-size: 11px;
+  color: var(--muted, #808080);
+  margin-bottom: 8px;
+}
+
+.m3-radio-group {
+  display: flex;
+  gap: 16px;
+}
+
+.m3-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text, #d4d4d4);
+  cursor: pointer;
+}
+
+.m3-radio input[type="radio"] {
+  margin: 0;
+}
+
+.m3-select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--panel-bg, #16162a);
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 4px;
+  color: var(--text, #d4d4d4);
+  font-size: 12px;
+}
+
+/* 图例 */
+.m3-legend {
+  display: flex;
+  gap: 20px;
+  padding: 12px;
+  background: var(--panel-bg, #16162a);
+  border-radius: 4px;
+}
+
+.m3-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text, #d4d4d4);
+}
+
+.m3-legend-color {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* 热力图图例 */
+.m3-heatmap-legend {
+  margin-bottom: 12px;
+}
+
+.m3-heatmap-bar {
+  height: 20px;
+  background: linear-gradient(to right, 
+    rgba(0,0,255,0.3), 
+    rgba(0,255,255,0.5), 
+    rgba(0,255,0,0.7), 
+    rgba(255,255,0,0.85), 
+    rgba(255,0,0,1)
+  );
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+
+.m3-heatmap-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted, #808080);
+}
+
+/* 解释框 */
+.m3-explain-box {
+  padding: 12px;
+  background: var(--panel-bg, #16162a);
+  border-left: 3px solid var(--accent, #8abeb7);
+  border-radius: 4px;
+  margin-bottom: 16px;
+}
+
+.m3-explain-box h4 {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: var(--accent, #8abeb7);
+}
+
+.m3-explain-box ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 11px;
+  color: var(--text, #d4d4d4);
+}
+
+.m3-explain-box li {
+  margin-bottom: 4px;
+}
+
+/* 分布图表 */
+.m3-breakdown {
+  margin-top: 16px;
+}
+
+.m3-breakdown h4 {
+  font-size: 12px;
+  color: var(--text, #d4d4d4);
+  margin-bottom: 12px;
+}
+
+.m3-bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.m3-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.m3-bar-label {
+  width: 60px;
+  font-size: 11px;
+  color: var(--muted, #808080);
+}
+
+.m3-bar-track {
+  flex: 1;
+  height: 12px;
+  background: var(--panel-bg, #16162a);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.m3-bar-fill {
+  height: 100%;
+  background: var(--accent, #8abeb7);
+  border-radius: 6px;
+  transition: width 0.3s;
+}
+
+.m3-bar-value {
+  width: 40px;
+  text-align: right;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text, #d4d4d4);
+}
+
+/* 注释 */
+.m3-note {
+  font-size: 11px;
+  color: var(--muted, #808080);
+  font-style: italic;
+  margin: 0;
+}
+
+/* 错误状态 */
+.m3-error {
+  padding: 16px;
+  color: var(--error, #cc6666);
+  background: rgba(204, 102, 102, 0.1);
+  border-radius: 6px;
+}
+
+/* 亮色主题适配 */
+[data-theme="light"] .m3-card {
+  background: #ffffff;
+  border-color: #d4d8e4;
+}
+
+[data-theme="light"] .m3-card-header {
+  background: #eef0f6;
+  border-color: #d4d8e4;
+}
+
+[data-theme="light"] .m3-stat-item {
+  background: #f5f6fa;
+  border-color: #d4d8e4;
+}
+
+[data-theme="light"] .m3-explain-box {
+  background: #f5f6fa;
+}
+
+[data-theme="light"] .m3-legend {
+  background: #f5f6fa;
+}
