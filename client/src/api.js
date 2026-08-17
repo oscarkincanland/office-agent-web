@@ -22,8 +22,14 @@ export const agentAuthRemove = (provider) =>
   api("/api/agent/auth/remove", { method: "POST", body: JSON.stringify({ provider }) });
 
 export const listModels = () => api("/api/models");
-export const setAgentModel = (client, model) =>
-  api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, model }) });
+export const setAgentModel = (client, model, thread) =>
+  api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
+export const setAgentModelForThread = (client, thread, model) =>
+  api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
+export const createAgentThread = (client, thread, cwd) =>
+  api("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd }) });
+export const resumeAgentThread = (client, thread, sessionId, cwd) =>
+  api("/api/agent/resume", { method: "POST", body: JSON.stringify({ client, thread, sessionId, cwd }) });
 
 export const listSessions = (file) => api(`/api/sessions${file ? `?file=${encodeURIComponent(file)}` : ""}`);
 export const listWorkspaces = () => api("/api/workspaces");
@@ -31,6 +37,11 @@ export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
 export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
+export const listFileRoots = () => api("/api/file-roots");
+export const addFileRoot = (path, label) => api("/api/file-roots", { method: "POST", body: JSON.stringify({ path, label }) });
+export const removeFileRoot = (id) => api(`/api/file-roots/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const resolveContext = (references, text) => api("/api/context/resolve", { method: "POST", body: JSON.stringify({ references, text }) });
+export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
 export const exportSkill = (name) =>
