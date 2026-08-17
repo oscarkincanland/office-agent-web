@@ -1561,6 +1561,71 @@ app.post("/api/map/project/:name/isochrone", async (req, res) => {
   }
 });
 
+// ---------- M2 宏观交通分析 API ----------
+
+function sendMapAnalysis(res, loader) {
+  try {
+    const payload = loader();
+    if (payload?.error === "项目不存在") return res.status(404).json(payload);
+    return res.json(payload);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+}
+
+// 路网流量带宽图
+app.get("/api/map/traffic-bandwidth", (req, res) => {
+  const name = req.query.project || "zhejiang-map";
+  sendMapAnalysis(res, () => map.getTrafficBandwidth(name));
+});
+
+// OD 期望线数据
+app.get("/api/map/od-lines", (req, res) => {
+  const name = req.query.project || "zhejiang-map";
+  sendMapAnalysis(res, () => map.getODLines(name));
+});
+
+// 多时距等时圈
+app.post("/api/map/multi-isochrone", async (req, res) => {
+  try {
+    const { location, mode, ranges, rangeType } = req.body || {};
+    res.json(await map.multiIsochrone({ location, mode, ranges, rangeType }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 区域交换量桑基图
+app.get("/api/map/exchange-sankey", (req, res) => {
+  const name = req.query.project || "zhejiang-map";
+  sendMapAnalysis(res, () => map.getExchangeSankey(name));
+});
+
+// 路网结构统计
+app.get("/api/map/road-structure", (req, res) => {
+  const name = req.query.project || "zhejiang-map";
+  sendMapAnalysis(res, () => map.getRoadStructure(name));
+});
+
+// ---------- M3 新昌公交分析 ----------
+import * as m3 from "./m3-xinchang.mjs";
+
+app.get("/api/m3/bus-routes", (_req, res) => {
+  try { res.json(m3.getBusRoutes()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/m3/station-heatmap", (_req, res) => {
+  try { res.json(m3.getStationHeatmap()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/m3/od-lines", (_req, res) => {
+  try { res.json(m3.getBusODLines()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/m3/network-stats", (_req, res) => {
+  try { res.json(m3.getBusNetworkStats()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {
@@ -1667,6 +1732,29 @@ app.post("/api/open-in-explorer", async (req, res) => {
   }
 });
 
+
+// ---------- M3 公交数据分析 API ----------
+
+// 公交线路数据
+app.get("/api/bus/routes", (req, res) => {
+  res.json(map.getBusRoutes());
+});
+
+// 公交站点数据
+app.get("/api/bus/stops", (req, res) => {
+  res.json(map.getBusStops());
+});
+
+// 公交 OD 数据
+app.get("/api/bus/od", (req, res) => {
+  const period = req.query.period || "all";
+  res.json(map.getBusOD(period));
+});
+
+// 公交线网统计
+app.get("/api/bus/stats", (req, res) => {
+  res.json(map.getBusStats());
+});
 app.listen(PORT, () => {
   console.log(`Open Plan（规聚）running at http://localhost:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
@@ -1677,4 +1765,27 @@ process.on("SIGINT", async () => {
   stopAllWatches();
   if (memoryWatcher) { try { memoryWatcher.close(); } catch {} }
   process.exit(0);
+});
+
+// ---------- M3 公交数据分析 API ----------
+
+// 公交线路数据
+app.get("/api/bus/routes", (req, res) => {
+  res.json(map.getBusRoutes());
+});
+
+// 公交站点数据
+app.get("/api/bus/stops", (req, res) => {
+  res.json(map.getBusStops());
+});
+
+// 公交 OD 数据
+app.get("/api/bus/od", (req, res) => {
+  const period = req.query.period || "all";
+  res.json(map.getBusOD(period));
+});
+
+// 公交线网统计
+app.get("/api/bus/stats", (req, res) => {
+  res.json(map.getBusStats());
 });

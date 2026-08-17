@@ -4,6 +4,8 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import M2Analysis from "./M2宏观分析.jsx";
+import M3Analysis from "./M3公交分析.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
@@ -43,6 +45,8 @@ export default function MapPanel({
   const [files, setFiles] = useState([]);
   const [basemapMeta, setBasemapMeta] = useState([]);
   const [drill, setDrill] = useState(null); // 下钻状态 {source, code, name, level}
+  const [m2Tab, setM2Tab] = useState(null); // M2 宏观分析标签
+  const [m3Tab, setM3Tab] = useState(null); // M3 公交分析标签
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
   const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
@@ -992,6 +996,20 @@ export default function MapPanel({
           <Icon name="history" size={13} /> 等时圈
         </button>
         <button
+          className={`btn-sm m2-tab-btn ${m2Tab ? "active" : ""}`}
+          onClick={() => setM2Tab(m2Tab === "traffic" ? null : "traffic")}
+          title="宏观交通分析（流量/OD/桑基图）"
+        >
+          <Icon name="chart" size={13} /> M2 分析
+        </button>
+        <button
+          className={`btn-sm m2-tab-btn m3-tab-btn ${m3Tab ? "active" : ""}`}
+          onClick={() => setM3Tab(m3Tab === "routes" ? null : "routes")}
+          title="新昌公交分析（线路/站点/OD/统计）"
+        >
+          <Icon name="route" size={13} /> M3 公交
+        </button>
+        <button
           className={`btn-sm mp-tool-btn ${draw?.kind?.startsWith("measure") ? "active" : ""}`}
           onClick={(e) => { e.stopPropagation(); setToolMenu({ x: e.currentTarget.offsetLeft, y: 40, type: "measure" }); }}
           title="测量距离/面积（点击加点，双击结束）"
@@ -1010,6 +1028,62 @@ export default function MapPanel({
       </div>
 
       <div className="mp-body">
+        {/* M2 宏观交通分析面板 */}
+        {m2Tab && (
+          <div className="m2-overlay">
+            <div className="m2-overlay-header">
+              <h3>宏观交通分析（M2）</h3>
+              <div className="m2-tabs">
+                <button className={`m2-tab-btn ${m2Tab === "traffic" ? "active" : ""}`} onClick={() => setM2Tab("traffic")}>
+                  <Icon name="chart" size={12} /> 流量带宽
+                </button>
+                <button className={`m2-tab-btn ${m2Tab === "od" ? "active" : ""}`} onClick={() => setM2Tab("od")}>
+                  <Icon name="flow" size={12} /> OD 期望线
+                </button>
+                <button className={`m2-tab-btn ${m2Tab === "exchange" ? "active" : ""}`} onClick={() => setM2Tab("exchange")}>
+                  <Icon name="sankey" size={12} /> 区域交换量
+                </button>
+                <button className={`m2-tab-btn ${m2Tab === "structure" ? "active" : ""}`} onClick={() => setM2Tab("structure")}>
+                  <Icon name="road" size={12} /> 路网结构
+                </button>
+                <button className="m2-tab-btn" onClick={() => setM2Tab(null)}>
+                  <Icon name="close" size={12} /> 关闭
+                </button>
+              </div>
+            </div>
+            <div className="m2-overlay-body">
+              <M2Analysis project={project} mapRef={mapRef} activeTab={m2Tab} />
+            </div>
+          </div>
+        )}
+        {/* M3 新昌公交分析面板 */}
+        {m3Tab && (
+          <div className="m2-overlay m3-overlay">
+            <div className="m2-overlay-header m3-overlay-header">
+              <h3>新昌公交分析（M3）</h3>
+              <div className="m2-tabs m3-tabs">
+                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "routes" ? "active" : ""}`} onClick={() => setM3Tab("routes")}>
+                  <Icon name="route" size={12} /> 公交线路
+                </button>
+                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "stations" ? "active" : ""}`} onClick={() => setM3Tab("stations")}>
+                  <Icon name="locate" size={12} /> 站点客流
+                </button>
+                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "od" ? "active" : ""}`} onClick={() => setM3Tab("od")}>
+                  <Icon name="flow" size={12} /> OD 期望线
+                </button>
+                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "stats" ? "active" : ""}`} onClick={() => setM3Tab("stats")}>
+                  <Icon name="chart" size={12} /> 线网统计
+                </button>
+                <button className="m2-tab-btn" onClick={() => setM3Tab(null)}>
+                  <Icon name="close" size={12} /> 关闭
+                </button>
+              </div>
+            </div>
+            <div className="m2-overlay-body m3-overlay-body">
+              <M3BusPanel project={project} mapRef={mapRef} activeTab={m3Tab} />
+            </div>
+          </div>
+        )}
         {/* 左栏：QGIS 风格图层面板 */}
         <div className="mp-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="mp-left-title">
@@ -1402,3 +1476,4 @@ export default function MapPanel({
     </div>
   );
 }
+import M3BusPanel from "./M3BusPanel.jsx";

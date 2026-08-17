@@ -1,0 +1,1181 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330200",
+        "to_name": "宁波市",
+        "volume": 10940,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.85,
+            29.775000000000002
+          ],
+          [
+            121.55,
+            29.87
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330200",
+        "to_name": "宁波市",
+        "volume": 5470,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.85,
+            30.075000000000003
+          ],
+          [
+            121.55,
+            29.87
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330200",
+        "to_name": "宁波市",
+        "volume": 3646,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.85,
+            30.375000000000004
+          ],
+          [
+            121.55,
+            29.87
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330300",
+        "to_name": "温州市",
+        "volume": 39314,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.41,
+            28.84
+          ],
+          [
+            120.67,
+            28
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330300",
+        "to_name": "温州市",
+        "volume": 19657,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.41,
+            29.14
+          ],
+          [
+            120.67,
+            28
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330300",
+        "to_name": "温州市",
+        "volume": 13104,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.41,
+            29.44
+          ],
+          [
+            120.67,
+            28
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330400",
+        "to_name": "嘉兴市",
+        "volume": 16843,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.45500000000001,
+            30.215
+          ],
+          [
+            120.76,
+            30.75
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330400",
+        "to_name": "嘉兴市",
+        "volume": 8421,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.45500000000001,
+            30.515
+          ],
+          [
+            120.76,
+            30.75
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330400",
+        "to_name": "嘉兴市",
+        "volume": 5614,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.45500000000001,
+            30.815
+          ],
+          [
+            120.76,
+            30.75
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 45518,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.36500000000001,
+            29.855
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 22759,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.36500000000001,
+            30.155
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 15172,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            120.36500000000001,
+            30.455000000000002
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 28673,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            119.9,
+            29.38
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 14336,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            119.9,
+            29.68
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330100",
+        "from_name": "杭州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 9557,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.15,
+            30.28
+          ],
+          [
+            119.9,
+            29.98
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 42449,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.065,
+            29.650000000000002
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 21224,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.065,
+            29.950000000000003
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 14149,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.065,
+            30.250000000000004
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 36577,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            120.6,
+            29.175
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 18288,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            120.6,
+            29.475
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 12192,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            120.6,
+            29.775000000000002
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 42913,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.485,
+            28.965
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 21456,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.485,
+            29.265
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330200",
+        "from_name": "宁波市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 14304,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            121.55,
+            29.87
+          ],
+          [
+            121.485,
+            29.565
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 40615,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            120.16,
+            28.24
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 20307,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            120.16,
+            28.54
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "330700",
+        "to_name": "金华市",
+        "volume": 13538,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            120.16,
+            28.84
+          ],
+          [
+            119.65,
+            29.08
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 47941,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            121.045,
+            28.029999999999998
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 23970,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            121.045,
+            28.33
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330300",
+        "from_name": "温州市",
+        "to_code": "331000",
+        "to_name": "台州市",
+        "volume": 15980,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.67,
+            28
+          ],
+          [
+            121.045,
+            28.63
+          ],
+          [
+            121.42,
+            28.66
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330500",
+        "to_name": "湖州市",
+        "volume": 29331,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.42500000000001,
+            30.52
+          ],
+          [
+            120.09,
+            30.89
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330500",
+        "to_name": "湖州市",
+        "volume": 14665,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.42500000000001,
+            30.82
+          ],
+          [
+            120.09,
+            30.89
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330500",
+        "to_name": "湖州市",
+        "volume": 9777,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.42500000000001,
+            31.12
+          ],
+          [
+            120.09,
+            30.89
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 6583,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.67,
+            30.09
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 3291,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.67,
+            30.39
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330400",
+        "from_name": "嘉兴市",
+        "to_code": "330600",
+        "to_name": "绍兴市",
+        "volume": 2194,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            120.76,
+            30.75
+          ],
+          [
+            120.67,
+            30.69
+          ],
+          [
+            120.58,
+            30.03
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "330800",
+        "to_name": "衢州市",
+        "volume": 11101,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.26,
+            28.72
+          ],
+          [
+            118.87,
+            28.96
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "330800",
+        "to_name": "衢州市",
+        "volume": 5550,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.26,
+            29.02
+          ],
+          [
+            118.87,
+            28.96
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "330800",
+        "to_name": "衢州市",
+        "volume": 3700,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.26,
+            29.32
+          ],
+          [
+            118.87,
+            28.96
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "331100",
+        "to_name": "丽水市",
+        "volume": 47672,
+        "level": "high"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.785,
+            28.455
+          ],
+          [
+            119.92,
+            28.43
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "331100",
+        "to_name": "丽水市",
+        "volume": 23836,
+        "level": "medium"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.785,
+            28.755
+          ],
+          [
+            119.92,
+            28.43
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "from_code": "330700",
+        "from_name": "金华市",
+        "to_code": "331100",
+        "to_name": "丽水市",
+        "volume": 15890,
+        "level": "low"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            119.65,
+            29.08
+          ],
+          [
+            119.785,
+            29.055
+          ],
+          [
+            119.92,
+            28.43
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -13,6 +13,7 @@
     "map:prepare": "node scripts/prepare-map-data.mjs",
     "map:tiles": "node scripts/build-vector-tiles.mjs",
     "map:data": "npm run map:fetch && npm run map:prepare && npm run map:tiles",
+    "map:m2-data": "node scripts/生成M2数据.mjs",
     "setup": "node scripts/install-officecli.mjs"
   },
   "dependencies": {

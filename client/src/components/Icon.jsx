@@ -19,6 +19,11 @@ const PATHS = {
   // 地图/GIS
   map: (<><path d="M1 6v16l7-3 8 3 7-3V3l-7 3-8-3z" /><path d="M8 3v16" /><path d="M16 6v16" /></>),
   layers: (<><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></>),
+  chart: (<><path d="M4 19V5" /><path d="M4 19h17" /><path d="M8 16v-5" /><path d="M12 16V7" /><path d="M16 16v-3" /><path d="M20 16V4" /></>),
+  flow: (<><circle cx="5" cy="6" r="2" /><circle cx="19" cy="18" r="2" /><path d="M7 6h5a4 4 0 0 1 4 4v6" /><path d="M16 16l2 2-2 2" /></>),
+  sankey: (<><path d="M4 5h5v14H4z" /><path d="M15 7h5v10h-5z" /><path d="M9 9h6" /><path d="M9 15h6" /></>),
+  road: (<><path d="M8 3 5 21" /><path d="M16 3l3 18" /><path d="M10 6h4" /><path d="M9 12h6" /><path d="M8 18h8" /></>),
+  route: (<><circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" /><path d="M8 19h4a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4" /></>),
 
   // 界面操作
   search: (<><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></>),

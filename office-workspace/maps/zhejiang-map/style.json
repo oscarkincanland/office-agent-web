@@ -259,7 +259,7 @@
       "source": "roads-trunk",
       "source-layer": "roads-trunk",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
