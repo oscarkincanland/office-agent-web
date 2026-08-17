@@ -33,7 +33,7 @@ const ISO_MODES = [
  */
 export default function MapPanel({
   onExit, onOpenFile,
-  clientId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
+  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
   onSessionChange, onRefreshSessions,
 }) {
   const [projects, setProjects] = useState([]);
@@ -1079,6 +1079,7 @@ export default function MapPanel({
         <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
             clientId={clientId}
+            threadId={threadId}
             onFileChanged={handleFileChanged}
             currentDoc={`地图项目:${project}`}
             models={models}

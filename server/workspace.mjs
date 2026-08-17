@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,6 +44,9 @@ export const AGENT_DIR =
 
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
+const ROOTS_STATE_FILE = path.join(PROJECT_DIR, ".file-roots.json");
+const SUPPORTED_EXTENSIONS = /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+
 // 当前工作区（可切换），默认项目内的 office-workspace；切换后持久化，重启恢复
 let _currentWorkspace = WORKSPACE_DIR;
 const WS_STATE_FILE = path.join(PROJECT_DIR, ".workspace-state.json");
@@ -62,7 +66,9 @@ export function setWorkspace(dir) {
   if (!d) return false;
   try {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-    _currentWorkspace = d;
+    const real = fs.realpathSync(d);
+    if (!fs.statSync(real).isDirectory()) return false;
+    _currentWorkspace = real;
     try { fs.writeFileSync(WS_STATE_FILE, JSON.stringify({ workspace: d }, null, 2), "utf8"); } catch {}
     return true;
   } catch {
@@ -76,12 +82,67 @@ export function safeName(name) {
   return base;
 }
 
+function isInside(root, target) {
+  const rel = path.relative(root, target);
+  return rel === "" || (rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+function readFileRoots() {
+  try {
+    const roots = JSON.parse(fs.readFileSync(ROOTS_STATE_FILE, "utf8"));
+    return Array.isArray(roots) ? roots.filter((r) => r?.id && r?.path && fs.existsSync(r.path)) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function listFileRoots() {
+  return readFileRoots().map((r) => ({ ...r, path: fs.realpathSync(r.path) }));
+}
+
+export function addFileRoot(dir, label = "") {
+  const raw = String(dir || "").trim();
+  if (!raw) return { ok: false, error: "path required" };
+  try {
+    const real = fs.realpathSync(raw);
+    if (!fs.statSync(real).isDirectory()) return { ok: false, error: "不是文件夹" };
+    const roots = readFileRoots();
+    const existing = roots.find((r) => r.path === real);
+    if (existing) return { ok: true, root: { ...existing, path: real }, roots: listFileRoots() };
+    const id = crypto.createHash("sha1").update(real).digest("hex").slice(0, 12);
+    const root = { id, path: real, label: String(label || path.basename(real) || real), created: new Date().toISOString() };
+    fs.writeFileSync(ROOTS_STATE_FILE, JSON.stringify([...roots, root], null, 2) + "\n", "utf8");
+    return { ok: true, root, roots: listFileRoots() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+export function removeFileRoot(id) {
+  const roots = readFileRoots();
+  const next = roots.filter((r) => r.id !== String(id || ""));
+  if (next.length === roots.length) return { ok: false, error: "root not found" };
+  fs.writeFileSync(ROOTS_STATE_FILE, JSON.stringify(next, null, 2) + "\n", "utf8");
+  return { ok: true, roots: listFileRoots() };
+}
+
+export function resolveExternalPath(rootId, rel = "") {
+  const root = listFileRoots().find((r) => r.id === String(rootId || ""));
+  if (!root) return null;
+  const clean = String(rel || "").replace(/^[/\\]+/, "");
+  if (!clean || clean.includes("\0") || clean.split(/[\\/]/).includes("..") || path.isAbsolute(clean)) return null;
+  const target = path.resolve(root.path, clean);
+  if (!isInside(root.path, target) || !fs.existsSync(target)) return null;
+  const real = fs.realpathSync(target);
+  return isInside(root.path, real) ? real : null;
+}
+
 export function listWorkspace(dir) {
   const target = dir || _currentWorkspace;
   if (!fs.existsSync(target)) return [];
   const items = fs.readdirSync(target, { withFileTypes: true });
   const files = items
-    .filter((e) => e.isFile() && !e.name.startsWith("~$") && !e.name.startsWith(".") && /\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(e.name))
+    .filter((e) => e.isFile() && !e.name.startsWith("~$") && !e.name.startsWith(".") && SUPPORTED_EXTENSIONS.test(e.name))
     .map((e) => {
       const st = fs.statSync(path.join(target, e.name));
       return { name: e.name, size: st.size, mtime: st.mtimeMs, ext: path.extname(e.name).slice(1).toLowerCase(), isDir: false };
@@ -100,15 +161,21 @@ export function listWorkspace(dir) {
 
 // 解析相对路径（支持子目录），返回绝对路径
 export function resolvePath(rel) {
-  const n = String(rel || "").replace(/^\\/g, "").replace(/^\//g, "");
-  if (!n || n.includes("..")) return null;
-  const p = path.join(_currentWorkspace, n);
-  return fs.existsSync(p) ? p : null;
+  const raw = String(rel || "").trim();
+  if (!raw || raw.includes("\0") || raw.split(/[\\/]/).includes("..") || path.isAbsolute(raw) || raw.startsWith("\\\\") || raw.startsWith("//") || /^[a-zA-Z]:[\\/]/.test(raw)) return null;
+  const n = raw.replace(/^\\/g, "").replace(/^\//g, "");
+  const p = path.resolve(_currentWorkspace, n);
+  if (!isInside(_currentWorkspace, p) || !fs.existsSync(p)) return null;
+  try {
+    const real = fs.realpathSync(p);
+    return isInside(fs.realpathSync(_currentWorkspace), real) ? real : null;
+  } catch {
+    return null;
+  }
 }
 
 export function filePath(name) {
-  const n = safeName(name);
-  if (!n) return null;
-  const p = path.join(_currentWorkspace, n);
-  return fs.existsSync(p) ? p : null;
+  return resolvePath(name);
 }
+
+export { SUPPORTED_EXTENSIONS };

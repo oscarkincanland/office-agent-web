@@ -13,7 +13,7 @@ import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId } from "./api.js";
+import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
 
 // 全局错误边界
 class AppErrorBoundary extends React.Component {
@@ -66,6 +66,13 @@ export default function App() {
   const [mapMode, setMapMode] = useState(false); // 地图全屏模式（三栏：图层树+地图+对话）
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
   const [clientId] = useState(getClientId);
+  const [threadId, setThreadId] = useState(() => {
+    const saved = localStorage.getItem("oaw_thread_id");
+    if (saved) return saved;
+    const id = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+    localStorage.setItem("oaw_thread_id", id);
+    return id;
+  });
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [workspaces, setWorkspaces] = useState([]);
@@ -86,14 +93,24 @@ export default function App() {
   }, []);
 
   // 新建会话：清空历史消息和当前文档
-  const handleNewSession = useCallback(() => {
+  const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
+    const next = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+    setThreadId(next);
+    localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setTabs([]);
     setActiveTab(null);
     setCurrentDir("");
     setCurrentSessionId(null);
     lastSessionIdRef.current = null;
-  }, []);
+    try {
+      const d = await createAgentThread(clientId, next, workspace || undefined);
+      if (d.sessionId) setCurrentSessionId(d.sessionId);
+      refreshSessions();
+    } catch (e) {
+      console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
+    }
+  }, [clientId, currentWorkspace]);
 
   const refreshFiles = useCallback(async (dir) => {
     try { setFiles((await listFiles(dir || currentDir)).files); } catch {}
@@ -149,8 +166,9 @@ export default function App() {
       setFiles(r.files || []);
       setTabs([]); // 关闭所有文档
       setActiveTab(null);
+      await handleNewSession(r.workspace);
     } catch (e) { alert("切换失败: " + e.message); }
-  }, []);
+  }, [handleNewSession]);
 
   // 进入/返回子目录
   const handleDirChange = useCallback((dir) => {
@@ -161,7 +179,7 @@ export default function App() {
   const open = useCallback(async (name) => {
     setDocLoading(true);
     try {
-      const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
+      const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}`).then((r) => r.json());
       // 单次 setTabs：避免 React 批处理导致重复 tab
       setTabs((prev) => {
         const exists = prev.find((t) => t.name === name);
@@ -173,7 +191,7 @@ export default function App() {
       setActiveTab(name);
       setDocLoading(false);
     } catch (e) { alert("打开失败: " + e.message); setDocLoading(false); }
-  }, [clientId]);
+  }, [clientId, threadId]);
 
   // 关闭 tab
   const closeTab = useCallback((name) => {
@@ -193,6 +211,9 @@ export default function App() {
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
     setCurrentSessionId(session.id);
+    setThreadId(session.id);
+    localStorage.setItem("oaw_thread_id", session.id);
+    try { await resumeAgentThread(clientId, session.id, session.id, session.cwd || currentWorkspace); } catch (e) { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); }
     try {
       const d = await getSession(session.id);
       const msgs = (d.entries || [])
@@ -247,7 +268,7 @@ export default function App() {
         }
       }
     } catch (e) { alert("加载会话失败: " + e.message); }
-  }, [open]);
+  }, [clientId, currentWorkspace, open]);
 
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
@@ -296,7 +317,7 @@ export default function App() {
       for (const t of saved.tabs || []) {
         if (!t?.name) continue;
         // 防御：过滤非法/脏文件名（历史遗留的 URL 编码或正则片段），避免打开失败
-        if (!/^[^\\/:*?"<>|\[\]]{1,300}$/.test(t.name)) continue;
+        if (!/^(?![\\/])[^:*?"<>|\[\]]{1,300}$/.test(t.name) || t.name.split(/[\\/]/).includes("..")) continue;
         try { await open(t.name); } catch {}
       }
       if (saved.activeTab) setActiveTab(saved.activeTab);
@@ -377,6 +398,7 @@ export default function App() {
             onExit={() => setMapMode(false)}
             onOpenFile={open}
             clientId={clientId}
+            threadId={threadId}
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
@@ -451,6 +473,7 @@ export default function App() {
         <ChatPanel
           ref={chatInputRef}
           clientId={clientId}
+          threadId={threadId}
           onFileChanged={handleFileChanged}
           currentDoc={current?.name}
           models={models}

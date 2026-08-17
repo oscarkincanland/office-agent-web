@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "./workspace.mjs";
+import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
@@ -73,9 +74,9 @@ function writeMemorySection(section, content) {
 class AgentManager extends EventEmitter {
   constructor() {
     super();
-    this.sessions = new Map(); // clientId -> { session, emitter, busy, loader, modelRuntime }
+    this.sessions = new Map(); // agentKey(clientId:threadId) -> session entry
     this.modelRuntimePromise = null;
-    this.pendingAsks = new Map(); // clientId -> resolve(回答)（ask_user 工具阻塞等待）
+    this.pendingAsks = new Map(); // agentKey -> resolve(回答)（ask_user 工具阻塞等待）
   }
 
   /** 读取并清除待回答的问题（返回 resolve 函数） */
@@ -95,12 +96,12 @@ class AgentManager extends EventEmitter {
     return this.modelRuntimePromise;
   }
 
-  async getOrCreate(clientId) {
+  async getOrCreate(clientId, options = {}) {
     const existing = this.sessions.get(clientId);
     if (existing) return existing;
     if (!this.creates) this.creates = new Map();
     if (this.creates.has(clientId)) return this.creates.get(clientId);
-    const p = this._create(clientId);
+    const p = this._create(clientId, options);
     this.creates.set(clientId, p);
     try {
       return await p;
@@ -109,7 +110,7 @@ class AgentManager extends EventEmitter {
     }
   }
 
-  async _create(clientId) {
+  async _create(clientId, options = {}) {
     const modelRuntime = await this.modelRuntime();
     let entry; // 在下方创建，供 officeTool 闭包引用
     const loader = new DefaultResourceLoader({
@@ -215,6 +216,24 @@ class AgentManager extends EventEmitter {
         }
         const text = `# ${doc.title}\n\n标签: ${doc.tags.join(", ") || "无"}\n路径: ${relPath}\n\n${doc.content}`;
         return { content: [{ type: "text", text: text.slice(0, 40000) }], details: {} };
+      },
+    });
+
+    const contextReadTool = defineTool({
+      name: "context_read",
+      label: "读取引用上下文",
+      description: "读取用户本轮通过 @ 引用的文件、目录或外部文件。先使用引用 ID；可选 query 做行过滤，range 可传 startLine/endLine。不要猜测未解析的引用内容。",
+      parameters: Type.Object({
+        refId: Type.String({ description: "引用 ID，例如 ref_a1b2c3d4e5f6" }),
+        query: Type.Optional(Type.String({ description: "可选关键词，只返回包含该词的行" })),
+        range: Type.Optional(Type.Object({ startLine: Type.Optional(Type.Number()), endLine: Type.Optional(Type.Number()) })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const refs = entry.references || [];
+        const ref = refs.find((r) => r.id === params.refId);
+        if (!ref) return { content: [{ type: "text", text: `未找到引用 ${params.refId}。当前引用：\n${contextSummary(refs) || "（无）"}` }], details: {} };
+        const result = await readReference(ref, params.query, params.range);
+        return { content: [{ type: "text", text: result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}` }], details: { reference: result } };
       },
     });
 
@@ -421,20 +440,22 @@ class AgentManager extends EventEmitter {
       },
     });
 
-    const sessionManager = SessionManager.create(SESSION_STORE);
+    const sessionManager = options.sessionPath
+      ? SessionManager.open(options.sessionPath, SESSION_STORE, options.cwd || getWorkspace())
+      : SessionManager.create(options.cwd || getWorkspace(), SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"],
+      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "memory_update"],
       sessionManager,
     });
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"])]);
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "memory_update"])]);
     } catch {}
 
     const emitter = new EventEmitter();
@@ -528,7 +549,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader };
+    entry = { session, channel, busy: false, loader, references: [], threadId: options.threadId || null, currentFile: null };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -536,8 +557,18 @@ class AgentManager extends EventEmitter {
   /** Run a prompt. Events stream to entry.emitter; resolves on completion. */
   async prompt(clientId, text, images = [], effort) {
     const entry = await this.getOrCreate(clientId);
+    return this._promptEntry(entry, text, images, effort, []);
+  }
+
+  async promptWithContext(clientId, text, images = [], effort, references = []) {
+    const entry = await this.getOrCreate(clientId);
+    return this._promptEntry(entry, text, images, effort, references);
+  }
+
+  async _promptEntry(entry, text, images = [], effort, references = []) {
     const isStreaming = entry.busy;
     entry.busy = true;
+    entry.references = Array.isArray(references) ? references : [];
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}
@@ -560,6 +591,9 @@ class AgentManager extends EventEmitter {
         const dyn = this.buildDynamicContext(entry.currentFile);
         if (dyn) text = dyn + "\n\n" + text;
       } catch {}
+      if (entry.references.length) {
+        text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
+      }
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -603,6 +637,26 @@ class AgentManager extends EventEmitter {
     } catch {}
     entry.busy = false;
     return { ok: true };
+  }
+
+  async newThread(clientId, threadId, cwd = getWorkspace()) {
+    const old = this.sessions.get(clientId);
+    if (old) {
+      try { old.session.dispose(); } catch {}
+      this.sessions.delete(clientId);
+    }
+    const entry = await this._create(clientId, { cwd, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
+  }
+
+  async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
+    const old = this.sessions.get(clientId);
+    if (old) {
+      try { old.session.dispose(); } catch {}
+      this.sessions.delete(clientId);
+    }
+    const entry = await this._create(clientId, { cwd, sessionPath, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
