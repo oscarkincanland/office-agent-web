@@ -628,3 +628,305 @@ async function routeAmap(from, to, mode) {
     geometry: coords,
   };
 }
+
+// ---------- M2 宏观交通分析 ----------
+
+/**
+ * 路网流量带宽图数据
+ * 返回带流量属性的高速路网 GeoJSON
+ */
+export function getTrafficBandwidth(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const hwPath = path.join(dir, "layers", "highways.geojson");
+  if (!fs.existsSync(hwPath)) {
+    return { error: "高速图层不存在，请先运行数据接入脚本" };
+  }
+
+  const geojson = JSON.parse(fs.readFileSync(hwPath, "utf8"));
+  const features = geojson.features || [];
+
+  // 统计流量分布
+  const flows = features
+    .map((f) => Number(f.properties?.flow_avg))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const flowStats = numericStats(flows);
+  const stats = {
+    count: features.length,
+    withTraffic: flows.length,
+    ...flowStats,
+  };
+
+  return { error: null, geojson, stats };
+}
+
+/**
+ * OD 期望线数据
+ * 返回模拟的市 - 县区间 OD 数据
+ */
+export function getODLines(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const odPath = path.join(dir, "layers", "OD期望线.geojson");
+  if (!fs.existsSync(odPath)) {
+    return { error: "OD 数据不存在，请运行 生成M2数据.mjs" };
+  }
+
+  const geojson = JSON.parse(fs.readFileSync(odPath, "utf8"));
+
+  // 按流量分级统计
+  const levels = { high: 0, medium: 0, low: 0 };
+  const volumes = [];
+
+  for (const f of geojson.features || []) {
+    const level = f.properties?.level;
+    if (level) levels[level] = (levels[level] || 0) + 1;
+    const vol = f.properties?.volume;
+    if (vol) volumes.push(vol);
+  }
+
+  const stats = {
+    count: geojson.features?.length || 0,
+    levels,
+    volumeStats: numericStats(volumes),
+  };
+
+  return { error: null, geojson, stats };
+}
+
+/**
+ * 多时距等时圈分析
+ * 一次性返回多个时距的等时圈
+ */
+export async function multiIsochrone({ location, mode = "driving", ranges = [15, 30, 60], rangeType = "time" }) {
+  if (!location) return { error: "需要中心点坐标" };
+  const normalizedRanges = [...new Set((Array.isArray(ranges) ? ranges : String(ranges).split(","))
+    .map(Number)
+    .filter((range) => Number.isFinite(range) && range > 0))];
+  if (!normalizedRanges.length) return { error: "至少需要一个有效时距" };
+
+  const results = [];
+  for (const range of normalizedRanges) {
+    const r = await isochrone({ location, mode, range, rangeType });
+    if (r.error) {
+      return { error: r.error };
+    }
+    results.push({ range, ...r });
+  }
+  return { error: null, results };
+}
+
+/**
+ * 区域交换量桑基图数据
+ * 返回城市间的流量交换数据
+ */
+export function getExchangeSankey(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const sankeyPath = path.join(dir, "layers", "区域交换量.json");
+  if (!fs.existsSync(sankeyPath)) {
+    return { error: "区域交换量数据不存在，请运行 生成M2数据.mjs" };
+  }
+
+  const data = JSON.parse(fs.readFileSync(sankeyPath, "utf8"));
+
+  // 计算总流量
+  const totalVolume = (data.links || []).reduce((sum, l) => sum + (l.value || 0), 0);
+
+  return {
+    error: null,
+    data,
+    stats: {
+      nodes: data.nodes?.length || 0,
+      links: data.links?.length || 0,
+      totalVolume,
+    },
+  };
+}
+
+/**
+ * 路网结构统计
+ * 按公路等级分类统计
+ */
+export function getRoadStructure(name = DEFAULT_PROJECT) {
+  const dir = projectDir(name);
+  if (!dir) return { error: "项目不存在" };
+
+  const stats = {};
+
+  for (const def of LAYER_DEFS) {
+    const layerPath = path.join(dir, "layers", `${def.id}.geojson`);
+    if (fs.existsSync(layerPath)) {
+      const geojson = JSON.parse(fs.readFileSync(layerPath, "utf8"));
+      stats[def.id] = {
+        name: def.name,
+        type: def.type,
+        group: def.group,
+        count: geojson.features?.length || 0,
+      };
+    }
+  }
+
+  return { error: null, stats };
+}
+
+function numericStats(values) {
+  if (!values.length) return { min: 0, max: 0, avg: 0 };
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+    avg: Math.round(values.reduce((sum, value) => sum + value, 0) / values.length),
+  };
+}
+
+// ---------- M3 公交数据分析 ----------
+
+const BUS_DATA_DIR = path.join(MAPS_ROOT, "bus-xinchang");
+
+/** 读取公交线路数据 */
+export function getBusRoutes() {
+  const routesPath = path.join(BUS_DATA_DIR, "routes.geojson");
+  if (!fs.existsSync(routesPath)) {
+    return { error: "公交线路数据不存在，请复制新昌公交数据到 maps/bus-xinchang/" };
+  }
+  
+  const geojson = JSON.parse(fs.readFileSync(routesPath, "utf8"));
+  const features = geojson.features || [];
+  
+  // 统计
+  let urban = 0, suburban = 0, totalLength = 0;
+  for (const f of features) {
+    const type = f.properties?.type || "urban";
+    if (type === "suburban") suburban++;
+    else urban++;
+    totalLength += f.properties?.length_km || 0;
+  }
+  
+  return {
+    error: null,
+    geojson,
+    stats: {
+      total: features.length,
+      urban,
+      suburban,
+      totalLength,
+    },
+  };
+}
+
+/** 读取公交站点数据 */
+export function getBusStops() {
+  const stopsPath = path.join(BUS_DATA_DIR, "stops.csv");
+  if (!fs.existsSync(stopsPath)) {
+    return { error: "站点数据不存在" };
+  }
+  
+  const csv = fs.readFileSync(stopsPath, "utf8");
+  const lines = csv.split("\n").filter(Boolean);
+  const headers = lines[0].split(",");
+  
+  const features = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols.length >= 6) {
+      features.push({
+        type: "Feature",
+        properties: {
+          name: cols[0],
+          route: cols[1],
+          passengers: parseFloat(cols[5]) || 0,
+        },
+        geometry: {
+          type: "Point",
+          coordinates: [parseFloat(cols[3]), parseFloat(cols[2])],
+        },
+      });
+    }
+  }
+  
+  return {
+    error: null,
+    geojson: { type: "FeatureCollection", features },
+    stats: { count: features.length },
+  };
+}
+
+/** 读取公交 OD 数据 */
+export function getBusOD(period = "all") {
+  const odPath = path.join(BUS_DATA_DIR, "od.csv");
+  if (!fs.existsSync(odPath)) {
+    return { error: "OD 数据不存在" };
+  }
+  
+  const csv = fs.readFileSync(odPath, "utf8");
+  const lines = csv.split("\n").filter(Boolean);
+  
+  const features = [];
+  let totalFlow = 0;
+  
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols.length >= 10) {
+      const flow = parseFloat(cols[4]) || 0;
+      const timePeriod = cols[5] || "all";
+      
+      if (period !== "all" && timePeriod !== period) continue;
+      
+      totalFlow += flow;
+      
+      features.push({
+        type: "Feature",
+        properties: {
+          origin: cols[0],
+          dest: cols[1],
+          flow,
+          period: timePeriod,
+        },
+        geometry: {
+          type: "LineString",
+          coordinates: [
+            [parseFloat(cols[6]), parseFloat(cols[7])],
+            [parseFloat(cols[8]), parseFloat(cols[9])],
+          ],
+        },
+      });
+    }
+  }
+  
+  return {
+    error: null,
+    geojson: { type: "FeatureCollection", features },
+    stats: {
+      pairs: features.length,
+      totalFlow,
+    },
+  };
+}
+
+/** 公交线网统计 */
+export function getBusStats() {
+  const routes = getBusRoutes();
+  const stops = getBusStops();
+  
+  if (routes.error) return routes;
+  
+  // 按类型分组
+  const byType = {};
+  for (const f of routes.geojson.features || []) {
+    const type = f.properties?.type || "urban";
+    byType[type] = (byType[type] || 0) + 1;
+  }
+  
+  return {
+    error: null,
+    stats: {
+      routes: routes.stats.total,
+      stops: stops.stats?.count || 0,
+      coverage: 0, // 待计算
+      byType: Object.entries(byType).map(([type, count]) => ({ type, count })),
+    },
+  };
+}

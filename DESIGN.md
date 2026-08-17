@@ -1,6 +1,6 @@
 # Office Agent Web - 前端设计文档
 
-当前基线：**v0.6.0**（feature/knowledge-base）
+当前稳定基线：**v0.8.31**（`develop`）；M2 宏观交通分析处于工作区未发布状态
 
 ## 架构概览
 

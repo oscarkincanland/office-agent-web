@@ -75,6 +75,11 @@ async function smokeTest() {
     ["GET", "/api/sessions"],
     ["GET", "/api/workspaces"],
     ["GET", "/api/skills"],
+    ["GET", "/api/map/traffic-bandwidth?project=zhejiang-map"],
+    ["GET", "/api/map/od-lines?project=zhejiang-map"],
+    ["GET", "/api/map/exchange-sankey?project=zhejiang-map"],
+    ["GET", "/api/map/road-structure?project=zhejiang-map"],
+    ["GET", "/api/kb/graph?root=0&include=links,tags,folders&max=800"],
   ];
   for (const [method, url] of endpoints) {
     try {
@@ -84,6 +89,19 @@ async function smokeTest() {
     } catch (e) {
       fail(`${method} ${url}: ${e.message}`);
     }
+  }
+
+  // 知识图谱结构校验：节点、边和健康统计必须同时返回
+  try {
+    const res = await fetch(`http://localhost:${PORT}/api/kb/graph?root=0&include=links,tags,folders&max=800`);
+    const body = await res.json();
+    if (res.ok && Array.isArray(body.nodes) && Array.isArray(body.edges) && body.stats && Number.isFinite(body.stats.brokenLinks)) {
+      ok("GET /api/kb/graph -> nodes/edges/stats 完整");
+    } else {
+      fail(`GET /api/kb/graph -> 返回结构异常 (${res.status})`);
+    }
+  } catch (e) {
+    fail(`GET /api/kb/graph 结构校验: ${e.message}`);
   }
 
   // 静态资源

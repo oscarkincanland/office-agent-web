@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "gaode-road",
+  "basemap": "esri-sat",
   "layers": [
     {
       "id": "boundary-city",

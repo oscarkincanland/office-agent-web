@@ -5291,3 +5291,710 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   max-width: 110px;
 }
 .mp-od-col input[type="checkbox"] { accent-color: var(--accent); }
+
+/* M2 宏观交通分析面板 */
+.m2-analysis {
+  padding: 8px;
+  font-size: 12px;
+}
+
+.m2-panel {
+  background: var(--panel2-bg, #1e1e3a);
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.m2-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--text, #d4d4d4);
+}
+
+.m2-refresh {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted, #808080);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.m2-refresh:hover {
+  background: var(--border, #3a3a5c);
+  color: var(--text, #d4d4d4);
+}
+
+.m2-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.m2-stat {
+  text-align: center;
+  padding: 8px;
+  background: var(--surface, #222240);
+  border-radius: 3px;
+}
+
+.m2-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent, #8abeb7);
+}
+
+.m2-stat-label {
+  font-size: 10px;
+  color: var(--muted, #808080);
+  margin-top: 2px;
+}
+
+.m2-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.m2-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--muted, #808080);
+}
+
+.m2-legend-color {
+  display: inline-block;
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.m2-hint {
+  font-size: 11px;
+  color: var(--muted, #808080);
+  font-style: italic;
+  margin: 0;
+}
+
+.m2-error {
+  color: var(--error, #cc6666);
+  padding: 8px;
+  background: rgba(204, 102, 102, 0.1);
+  border-radius: 3px;
+}
+
+/* 桑基图列表 */
+.m2-sankey-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.m2-sankey-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface, #222240);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.m2-sankey-arrow {
+  color: var(--accent, #8abeb7);
+}
+
+.m2-sankey-value {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text, #d4d4d4);
+}
+
+/* 路网结构列表 */
+.m2-road-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.m2-road-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--surface, #222240);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.m2-road-name {
+  font-weight: 600;
+  color: var(--text, #d4d4d4);
+  flex: 1;
+}
+
+.m2-road-count {
+  font-weight: 700;
+  color: var(--accent, #8abeb7);
+}
+
+.m2-road-group {
+  font-size: 10px;
+  color: var(--muted, #808080);
+}
+
+/* M2 标签按钮 */
+.m2-tab-btn {
+  background: var(--panel2-bg, #1e1e3a);
+  border: 1px solid var(--border, #3a3a5c);
+  color: var(--muted, #808080);
+  padding: 4px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.m2-tab-btn:hover {
+  background: var(--surface, #222240);
+  color: var(--text, #d4d4d4);
+}
+
+.m2-tab-btn.active {
+  background: var(--accent, #8abeb7);
+  color: #0e0e1a;
+  border-color: var(--accent, #8abeb7);
+}
+
+/* M2 分析覆盖层 */
+.m2-overlay {
+  position: absolute;
+  top: 50px;
+  left: 280px;
+  right: 300px;
+  bottom: 20px;
+  background: var(--panel-bg, #16162a);
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.m2-overlay-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #3a3a5c);
+  background: var(--panel2-bg, #1e1e3a);
+}
+
+.m2-overlay-header h3 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: var(--text, #d4d4d4);
+}
+
+.m2-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.m2-overlay-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* 亮色主题适配 */
+[data-theme="light"] .m2-panel,
+[data-theme="light"] .m2-overlay {
+  background: #ffffff;
+  border-color: #d4d8e4;
+  color: #2d3142;
+}
+
+[data-theme="light"] .m2-stat {
+  background: #eef0f6;
+}
+
+[data-theme="light"] .m2-road-item,
+[data-theme="light"] .m2-sankey-item {
+  background: #eef0f6;
+}
+
+/* ================= M3 新昌公交分析面板 ================= */
+.m3-analysis { padding: 0; }
+
+.m3-panel {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.m3-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.m3-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 400;
+}
+.m3-toggle input { accent-color: var(--accent); cursor: pointer; }
+
+.m3-refresh {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 5px;
+  display: inline-flex;
+  align-items: center;
+}
+.m3-refresh:hover { color: var(--accent); border-color: var(--accent); }
+
+.m3-stats {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.m3-stat {
+  flex: 1;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.m3-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.m3-stat-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.m3-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.m3-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.m3-legend-color {
+  display: inline-block;
+  width: 14px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.m3-legend-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  font-size: 10px;
+}
+
+.m3-hint {
+  font-size: 10px;
+  color: var(--dim);
+  text-align: center;
+  margin-top: 4px;
+}
+
+.m3-error {
+  color: var(--error);
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+}
+
+/* 模式切换按钮（气泡/热力） */
+.m3-mode-switch {
+  display: flex;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.m3-mode-btn {
+  flex: 1;
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.m3-mode-btn:hover { color: var(--text); border-color: var(--text); }
+.m3-mode-btn.active {
+  background: var(--accent);
+  color: var(--body-bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+/* 滑块行 */
+.m3-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.m3-slider-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+}
+.m3-slider-val {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+  min-width: 28px;
+  text-align: right;
+}
+
+/* Top 站点列表 */
+.m3-top-list {
+  margin-top: 8px;
+}
+.m3-top-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.m3-top-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+.m3-top-item:last-child { border-bottom: none; }
+.m3-top-rank {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--body-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.m3-top-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m3-top-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 统计面板 - section */
+.m3-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.m3-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+/* 线路类型构成条 */
+.m3-type-bars { display: flex; flex-direction: column; gap: 6px; }
+.m3-type-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.m3-type-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.m3-type-name { flex: 1; }
+.m3-type-pct { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+.m3-type-meta { font-size: 10px; color: var(--dim); margin-top: 1px; }
+
+.m3-bar-track {
+  height: 6px;
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.m3-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* 线路长度分布 */
+.m3-dist-bars { display: flex; flex-direction: column; gap: 4px; }
+.m3-dist-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.m3-dist-label { width: 50px; color: var(--muted); font-size: 10px; }
+.m3-dist-bar .m3-bar-track { flex: 1; }
+.m3-dist-count { width: 20px; text-align: right; color: var(--accent); font-variant-numeric: tabular-nums; }
+
+/* 最长线路列表 */
+.m3-route-list { display: flex; flex-direction: column; gap: 2px; }
+.m3-route-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+  background: var(--panel2-bg);
+  border-radius: 3px;
+}
+.m3-route-rank {
+  width: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.m3-route-name { flex: 1; }
+.m3-route-type { font-size: 10px; }
+.m3-route-length {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* KPI 网格 */
+.m3-kpi-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.m3-kpi {
+  background: var(--panel2-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  text-align: center;
+}
+.m3-kpi-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.m3-kpi-label {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+/* M3 覆盖层头部颜色微调 */
+.m3-overlay-header { border-left: 3px solid #4A90D9 !important; }
+.m3-overlay-header h3 { color: #4A90D9; }
+.m3-tab-inner.active { background: #4A90D9 !important; }
+.m3-tab-btn { border-left: 2px solid #4A90D9 !important; }
+
+/* M3 亮色主题适配 */
+[data-theme="light"] .m3-stat,
+[data-theme="light"] .m3-legend,
+[data-theme="light"] .m3-kpi,
+[data-theme="light"] .m3-route-item {
+  background: #eef0f6;
+}
+
+/* M3 公交分析面板 */
+.m3-analysis {
+  padding: 8px;
+  font-size: 12px;
+}
+
+.m3-panel {
+  background: var(--panel2-bg, #1e1e3a);
+  border: 1px solid var(--border, #3a3a5c);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.m3-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--text, #d4d4d4);
+}
+
+.m3-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.m3-stat {
+  text-align: center;
+  padding: 8px;
+  background: var(--surface, #222240);
+  border-radius: 3px;
+}
+
+.m3-stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent, #8abeb7);
+}
+
+.m3-stat-label {
+  font-size: 10px;
+  color: var(--muted, #808080);
+  margin-top: 2px;
+}
+
+.m3-filter {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--muted, #808080);
+}
+
+.m3-filter label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.m3-filter select {
+  background: var(--surface, #222240);
+  border: 1px solid var(--border, #3a3a5c);
+  color: var(--text, #d4d4d4);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.m3-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.m3-list-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: var(--surface, #222240);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
+.m3-list-value {
+  font-weight: 600;
+  color: var(--accent, #8abeb7);
+}
+
+.m3-error {
+  color: var(--error, #cc6666);
+  padding: 8px;
+  background: rgba(204, 102, 102, 0.1);
+  border-radius: 3px;
+}
+
+.m3-hint {
+  font-size: 11px;
+  color: var(--muted, #808080);
+  font-style: italic;
+  margin: 0;
+}
+
+/* M3 公交分析 */
+.m3-tab-btn {
+  background: var(--panel2-bg, #1e1e3a);
+  border: 1px solid var(--border, #3a3a5c);
+  color: var(--muted, #808080);
+}
+
+.m3-tab-btn:hover {
+  background: var(--surface, #222240);
+  color: var(--text, #d4d4d4);
+}
+
+.m3-tab-btn.active {
+  background: #2ca02c;
+  color: #fff;
+  border-color: #2ca02c;
+}
+
+.m3-overlay {
+  left: 280px;
+  right: 300px;
+}
+
+.m3-overlay-header {
+  background: linear-gradient(135deg, #1e3a1e 0%, #1e1e3a 100%);
+}
+
+.m3-tab-inner {
+  background: var(--panel-bg, #16162a);
+  border-color: var(--border, #3a3a5c);
+}
+
+.m3-tab-inner.active {
+  background: #2ca02c;
+  border-color: #2ca02c;
+}
