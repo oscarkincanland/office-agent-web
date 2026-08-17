@@ -793,7 +793,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
             </span>
           </div>
           {graphData ? (
-            <KnowledgeGraph data={graphData} onSelectNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} focusId={graphLocal && doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
+            <KnowledgeGraph data={graphData} onOpenNode={handleGraphSelect} highlightId={doc ? `n${doc.rootIdx}/${doc.relPath}` : null} focusId={graphLocal && doc ? `n${doc.rootIdx}/${doc.relPath}` : null} />
           ) : (
             <div className="kb-loading">图谱加载中…</div>
           )}
