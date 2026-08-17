@@ -2715,6 +2715,41 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .kb-graph-edge-line { border-radius: 0 !important; height: 2px !important; }
 .kb-graph-legend-sep { width: 1px; height: 14px; background: var(--border); margin: 0 2px; }
 .kb-graph-hint { color: var(--dim); }
+.kb-graph-relations {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: 292px;
+  display: flex;
+  flex-direction: column;
+  z-index: 4;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel-bg) 94%, transparent);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.22);
+  backdrop-filter: blur(12px);
+}
+.kb-graph-relations-head { padding: 14px 14px 11px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.kb-graph-relations-kicker { color: var(--accent); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; }
+.kb-graph-relations-title { margin-top: 5px; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.kb-graph-relations-meta { margin-top: 5px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.kb-graph-relations-hint { margin-top: 8px; color: var(--dim); font-size: 10px; line-height: 1.4; }
+.kb-graph-relations-body { min-height: 0; overflow: auto; padding: 8px; }
+.kb-graph-relation-group { margin-bottom: 10px; }
+.kb-graph-relation-group-title { display: flex; align-items: center; gap: 6px; padding: 4px 5px; color: var(--muted); font-size: 11px; }
+.kb-graph-relation-group-title i { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; }
+.kb-graph-relation-group-title span { margin-left: auto; color: var(--dim); font-size: 10px; }
+.kb-graph-relation-list { display: flex; flex-direction: column; gap: 2px; }
+.kb-graph-relation-item { display: flex; align-items: center; width: 100%; gap: 7px; min-height: 30px; padding: 5px 6px; border: 0; border-radius: 5px; background: transparent; color: var(--text); cursor: pointer; text-align: left; }
+.kb-graph-relation-item:hover { background: var(--selected); }
+.kb-graph-relation-dot { width: 7px; height: 7px; flex: 0 0 7px; border: 1px solid rgba(255,255,255,0.18); border-radius: 50%; background: var(--accent); }
+.kb-graph-relation-dot[data-type="tag"] { background: #e8c547; }
+.kb-graph-relation-dot[data-type="folder"] { background: #6a9bc7; }
+.kb-graph-relation-name { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.kb-graph-relation-arrow { margin-left: auto; color: var(--dim); font-size: 16px; line-height: 1; }
+.kb-graph-relations-empty, .kb-graph-relations-more { padding: 9px 6px; color: var(--dim); font-size: 10px; line-height: 1.5; }
 .kb-graph-error {
   position: absolute;
   top: 12px;

@@ -47,7 +47,14 @@ function saveGraphSettings(s) {
  * - 配置持久化到 localStorage（oaw_graph_settings）
  * - 大数据量分批渲染（对齐 siyuan 分批策略）
  */
-export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusId }) {
+const RELATION_LABELS = {
+  link: "双向链接",
+  similar: "内容相似",
+  tag: "标签",
+  folder: "目录",
+};
+
+export default function KnowledgeGraph({ data, onOpenNode, highlightId, focusId }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
   const [graphError, setGraphError] = useState("");
@@ -59,6 +66,8 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   const [showTags, setShowTags] = useState(() => loadGraphSettings().showTags);
   const [showFiles, setShowFiles] = useState(() => loadGraphSettings().showFiles);
   const [showFolders, setShowFolders] = useState(() => loadGraphSettings().showFolders);
+  const [selectedId, setSelectedId] = useState(null);
+  const [exploreHistory, setExploreHistory] = useState([]);
   // 配置持久化（siyuan：图谱配置保存，刷新不丢）
   useEffect(() => {
     saveGraphSettings({ minRefs, showTags, showFiles, showFolders });
@@ -68,6 +77,13 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   const degreeMapRef = useRef(new Map());
   const allNodesRef = useRef([]);
   const allEdgesRef = useRef([]);
+  const selectedIdRef = useRef(null);
+  const historyRef = useRef([]);
+  const highlightIdRef = useRef(highlightId);
+
+  useEffect(() => {
+    highlightIdRef.current = highlightId;
+  }, [highlightId]);
 
   // 预处理：度、邻接表、分组色
   const prepared = useMemo(() => {
@@ -102,6 +118,28 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
   }, [data]);
 
   const { nodes: allNodes, edges: allEdges } = prepared;
+
+  const nodeById = useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes]);
+
+  // 当前探索中心的一跳关系，供右侧面板使用；只计算当前节点的关联边。
+  const relationGroups = useMemo(() => {
+    if (!selectedId) return [];
+    const groups = new Map();
+    for (const e of allEdges) {
+      if (e.source !== selectedId && e.target !== selectedId) continue;
+      const nodeId = e.source === selectedId ? e.target : e.source;
+      const node = nodeById.get(nodeId);
+      if (!node) continue;
+      const type = e.data.type || "link";
+      if (!groups.has(type)) groups.set(type, []);
+      if (!groups.get(type).some((item) => item.node.id === node.id)) {
+        groups.get(type).push({ edge: e, node });
+      }
+    }
+    return [...groups.entries()]
+      .map(([type, items]) => ({ type, label: RELATION_LABELS[type] || type, items }))
+      .sort((a, b) => (Object.keys(RELATION_LABELS).indexOf(a.type) - Object.keys(RELATION_LABELS).indexOf(b.type)));
+  }, [allEdges, nodeById, selectedId]);
 
   // 局部图谱：focusId 非空时只渲染其 1-hop 子图（对齐 siyuan 局部图）
   const subSet = useMemo(() => {
@@ -150,6 +188,74 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     if (!g) return;
     g.fitView({ when: "always", direction: "both" }, { duration: 300, easing: "ease-in-out" }).catch(() => {});
   }, []);
+
+  // 只更新元素状态，不重建 G6 实例；这是点击探索保持布局稳定的关键。
+  const applyExploreState = useCallback((id) => {
+    const g = graphRef.current;
+    if (!g) return;
+    const adj = id ? (adjMapRef.current.get(id) || new Set()) : new Set();
+    for (const n of allNodesRef.current) {
+      const states = !id
+        ? (n.id === highlightIdRef.current ? ["focus"] : [])
+        : n.id === id
+          ? ["focus"]
+          : adj.has(n.id)
+            ? ["neighbor"]
+            : ["dim"];
+      try { g.setElementState(n.id, states); } catch {}
+    }
+    for (const e of allEdgesRef.current) {
+      const near = !!id && (e.source === id || e.target === id);
+      try { g.setElementState(e.id, near ? ["near"] : id ? ["dim-edge"] : []); } catch {}
+    }
+  }, []);
+
+  const selectNode = useCallback((id, { pushHistory = true, focus = true } = {}) => {
+    if (!id) return;
+    const g = graphRef.current;
+    const current = selectedIdRef.current;
+    if (current === id) {
+      if (focus) {
+        try { g?.focusElement(id, { duration: 260 }); } catch {}
+      }
+      applyExploreState(id);
+      return;
+    }
+    if (pushHistory && current) {
+      historyRef.current = [...historyRef.current, current].slice(-30);
+      setExploreHistory(historyRef.current);
+    }
+    selectedIdRef.current = id;
+    setSelectedId(id);
+    applyExploreState(id);
+    if (focus) {
+      try { g?.focusElement(id, { duration: 260 }); } catch {}
+    }
+  }, [applyExploreState]);
+
+  const clearSelection = useCallback(() => {
+    selectedIdRef.current = null;
+    historyRef.current = [];
+    setSelectedId(null);
+    setExploreHistory([]);
+    applyExploreState(null);
+  }, [applyExploreState]);
+
+  const goBack = useCallback(() => {
+    const history = [...historyRef.current];
+    const previous = history.pop();
+    if (!previous) return;
+    historyRef.current = history;
+    setExploreHistory(history);
+    selectedIdRef.current = previous;
+    setSelectedId(previous);
+    applyExploreState(previous);
+    try { graphRef.current?.focusElement(previous, { duration: 260 }); } catch {}
+  }, [applyExploreState]);
+
+  useEffect(() => {
+    if (selectedId && !nodeById.has(selectedId)) clearSelection();
+  }, [clearSelection, nodeById, selectedId]);
 
   // 创建图谱
   useEffect(() => {
@@ -212,7 +318,7 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           labelMaxWidth: 160,
           labelWordWrap: true,
           lineWidth: 1.5,
-          stroke: (d) => (d.id === highlightId ? themeTextColor : "rgba(255,255,255,0.08)"),
+          stroke: (d) => (d.id === highlightIdRef.current ? themeTextColor : "rgba(255,255,255,0.08)"),
           cursor: (d) => (d.data.type === "file" || d.data.type === "tag" ? "pointer" : "default"),
         },
         animation: {
@@ -264,11 +370,6 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
         "drag-canvas",
         "zoom-canvas",
         "drag-element",
-        {
-          type: "hover-activate",
-          key: "hover",
-          duration: 200,
-        },
       ],
     });
 
@@ -316,26 +417,13 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       setGraphReady(false);
     });
 
-    // hover 聚焦：邻接高亮 + 非邻接 dim（Obsidian 核心交互）
+    // hover 只做轻量临时提示；持久化的邻接高亮由单击探索负责。
     const hoverActivate = (id) => {
-      const adj = adjMapRef.current.get(id) || new Set([id]);
-      adj.add(id);
-      for (const n of allNodesRef.current) {
-        const s = adj.has(n.id) ? (n.id === id ? ["hover", "focus", "neighbor"] : ["neighbor"]) : ["dim"];
-        try { g.setElementState(n.id, s); } catch {}
-      }
-      for (const e of allEdgesRef.current) {
-        const near = adj.has(e.source) && adj.has(e.target);
-        try { g.setElementState(e.id, near ? ["near"] : ["dim-edge"]); } catch {}
-      }
+      const selected = selectedIdRef.current;
+      try { g.setElementState(id, id === selected ? ["focus", "hover"] : ["hover"]); } catch {}
     };
     const clearHover = () => {
-      for (const n of allNodesRef.current) {
-        try { g.setElementState(n.id, n.id === highlightId ? ["focus"] : []); } catch {}
-      }
-      for (const e of allEdgesRef.current) {
-        try { g.setElementState(e.id, []); } catch {}
-      }
+      applyExploreState(selectedIdRef.current);
     };
 
     g.on("node:pointerenter", (evt) => {
@@ -344,22 +432,39 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     });
     g.on("node:pointerleave", clearHover);
 
-    // 点击：文件/标签节点回传（标签 → 上层执行搜索）
+    // 单击进入探索态；双击才打开文档，避免打开文档触发图谱重建。
     g.on("node:click", (evt) => {
       const id = evt.target?.id;
       if (!id) return;
-      const nodeData = allNodesRef.current.find((n) => n.id === id)?.data;
-      if (!nodeData) return;
-      onSelectNode?.(nodeData);
+      selectNode(id);
     });
+    g.on("node:dblclick", (evt) => {
+      const id = evt.target?.id;
+      const nodeData = allNodesRef.current.find((n) => n.id === id)?.data;
+      if (nodeData) onOpenNode?.(nodeData);
+    });
+    g.on("canvas:click", clearSelection);
 
-    // 缩放联动：低于阈值隐藏标签文字（防密）
+    // 缩放联动：只在跨过阈值时批量更新一次标签，避免每个 wheel 事件逐节点更新。
+    let zoomLabelFrame = null;
+    let zoomLabelsVisible = true;
+    const requestFrame = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb) => setTimeout(cb, 0);
+    const cancelFrame = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
     const applyZoomLabels = () => {
       const zoom = g.getZoom();
       const show = zoom > 0.55;
-      for (const n of allNodesRef.current) {
-        try { g.updateNodeData([{ id: n.id, style: { labelText: show ? labelText(n) : "" } }]); } catch {}
-      }
+      if (show === zoomLabelsVisible) return;
+      zoomLabelsVisible = show;
+      if (zoomLabelFrame) cancelFrame(zoomLabelFrame);
+      zoomLabelFrame = requestFrame(() => {
+        zoomLabelFrame = null;
+        try {
+          g.updateNodeData(allNodesRef.current.map((n) => ({
+            id: n.id,
+            style: { labelText: show ? labelText(n) : "" },
+          })));
+        } catch {}
+      });
     };
     g.on("wheel", applyZoomLabels);
 
@@ -368,13 +473,14 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
       disposed = true;
       if (fitTimer) clearTimeout(fitTimer);
       if (resizeTimer) clearTimeout(resizeTimer);
+      if (zoomLabelFrame) cancelFrame(zoomLabelFrame);
       resizeObserver?.disconnect();
       try { g.destroy(); } catch {}
       graphRef.current = null;
       setGraphReady(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, hideIsolated, highlightId, focusId, subSet, density, minRefs, showTags, showFiles, showFolders]);
+  }, [data, hideIsolated, focusId, subSet, density, minRefs, showTags, showFiles, showFolders, applyExploreState, selectNode, clearSelection, onOpenNode]);
 
   // 高亮定位（外部选中文档时）
   useEffect(() => {
@@ -382,9 +488,10 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     if (!g || !highlightId) return;
     try {
       g.focusElement(highlightId, { duration: 300 });
-      g.setElementState(highlightId, ["focus"]);
+      if (selectedIdRef.current) applyExploreState(selectedIdRef.current);
+      else g.setElementState(highlightId, ["focus"]);
     } catch {}
-  }, [highlightId]);
+  }, [applyExploreState, highlightId]);
 
   // 搜索定位节点
   const doFocus = useCallback(() => {
@@ -393,11 +500,14 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
     const q = query.trim().toLowerCase();
     const n = allNodesRef.current.find((x) => String(x.data.label || "").toLowerCase().includes(q));
     if (!n) return;
+    selectNode(n.id, { pushHistory: true, focus: true });
     try {
       g.focusElement(n.id, { duration: 300 });
-      g.setElementState(n.id, ["focus"]);
     } catch {}
-  }, [query]);
+  }, [query, selectNode]);
+
+  const selectedNode = selectedId ? nodeById.get(selectedId) : null;
+  const relationCount = relationGroups.reduce((sum, group) => sum + group.items.length, 0);
 
   return (
     <div className="kb-graph-wrap">
@@ -411,6 +521,8 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
         />
         <button className="btn-sm" onClick={fitGraph} disabled={!graphReady}>适配视图</button>
         <button className="btn-sm" onClick={() => { setQuery(""); fitGraph(); }} disabled={!graphReady}>重置视图</button>
+        <button className="btn-sm" onClick={goBack} disabled={!exploreHistory.length} title="回到上一个探索节点">← 返回</button>
+        <button className="btn-sm" onClick={clearSelection} disabled={!selectedId} title="清除探索状态并恢复全图">回到全图</button>
         <label className="kb-check">
           <input type="checkbox" checked={hideIsolated} onChange={(e) => setHideIsolated(e.target.checked)} />
           隐藏孤立节点
@@ -449,6 +561,49 @@ export default function KnowledgeGraph({ data, onSelectNode, highlightId, focusI
           <span><i style={{ background: EDGE_COLORS.tag }} />标签</span>
           <span><i style={{ background: EDGE_COLORS.folder }} />目录</span>
         </div>
+        {selectedNode && (
+          <aside className="kb-graph-relations" aria-label="当前节点关联知识">
+            <div className="kb-graph-relations-head">
+              <div className="kb-graph-relations-kicker">当前探索</div>
+              <div className="kb-graph-relations-title" title={selectedNode.data.relPath || selectedNode.data.label}>
+                {selectedNode.data.label || "未命名节点"}
+              </div>
+              <div className="kb-graph-relations-meta">
+                {selectedNode.data.type === "file" ? "文档" : selectedNode.data.type === "tag" ? "标签" : "目录"}
+                {selectedNode.data.relPath ? ` · ${selectedNode.data.relPath}` : ""}
+                {` · ${relationCount} 条关联`}
+              </div>
+              <div className="kb-graph-relations-hint">单击关系继续探索，双击节点打开文档</div>
+            </div>
+            <div className="kb-graph-relations-body">
+              {relationGroups.length === 0 && <div className="kb-graph-relations-empty">这个节点暂时没有可展示的关联知识。</div>}
+              {relationGroups.map((group) => (
+                <section className="kb-graph-relation-group" key={group.type}>
+                  <div className="kb-graph-relation-group-title">
+                    <i style={{ background: EDGE_COLORS[group.type] || "#5a6a85" }} />
+                    {group.label}<span>{group.items.length}</span>
+                  </div>
+                  <div className="kb-graph-relation-list">
+                    {group.items.slice(0, 40).map(({ node }) => (
+                      <button
+                        type="button"
+                        className="kb-graph-relation-item"
+                        key={`${group.type}:${node.id}`}
+                        onClick={() => selectNode(node.id)}
+                        title={node.data.relPath || node.data.label}
+                      >
+                        <span className="kb-graph-relation-dot" data-type={node.data.type} />
+                        <span className="kb-graph-relation-name">{node.data.label || "未命名节点"}</span>
+                        <span className="kb-graph-relation-arrow">›</span>
+                      </button>
+                    ))}
+                    {group.items.length > 40 && <div className="kb-graph-relations-more">还有 {group.items.length - 40} 条关联</div>}
+                  </div>
+                </section>
+              ))}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   );
