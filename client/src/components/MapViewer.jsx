@@ -7,11 +7,25 @@ import { mapImportLayer } from "../api.js";
 
 const STYLE_PATH = (project) => `/api/map/data/${project}/style.json`;
 
-// 底图 id 清单（与 server/map.mjs BASEMAPS 对齐）
+// 启动前的兜底底图 id；运行时会从服务端 style.json 同步完整列表。
 const BASEMAP_IDS = ["gaode-road", "gaode-sat", "gaode-sat-label"];
 // 旧底图 id → 新底图 id（老项目 config 里可能存的是 carto/osm/dark/satellite）
 const LEGACY_BASEMAP = { carto: "gaode-road", osm: "gaode-road", dark: "gaode-road", satellite: "gaode-sat" };
-const normalizeBasemap = (id) => LEGACY_BASEMAP[id] || (BASEMAP_IDS.includes(id) ? id : "gaode-road");
+const normalizeBasemap = (id) => {
+  const value = String(id || "").trim();
+  return LEGACY_BASEMAP[value] || value || "gaode-road";
+};
+
+function setBasemapVisibility(map, ids, desired) {
+  if (!map) return desired;
+  const available = ids.filter((id) => map.getLayer(`basemap-${id}`));
+  if (!available.length) return desired;
+  const selected = available.includes(desired) ? desired : (available.includes("gaode-road") ? "gaode-road" : available[0]);
+  for (const id of available) {
+    try { map.setLayoutProperty(`basemap-${id}`, "visibility", id === selected ? "visible" : "none"); } catch {}
+  }
+  return selected;
+}
 
 /**
  * 地图主区（MapLibre GL）
@@ -30,6 +44,7 @@ const MapViewer = forwardRef(function MapViewer(
   const popupEnabledRef = useRef(true); // 绘制/测量模式下禁用属性弹窗
   // 当前 style 中实际存在的底图图层 id（服务端按 Key 配置动态生成）
   const basemapIdsRef = useRef([...BASEMAP_IDS]);
+  const basemapRef = useRef(normalizeBasemap(config?.basemap));
   // 路网图层 id（下钻过滤目标：非边界 line 图层 + 标号 symbol 图层）
   const roadLayerIdsRef = useRef([]);
   const drillRef = useRef(null);
@@ -74,7 +89,12 @@ const MapViewer = forwardRef(function MapViewer(
       // 立即同步图层列表（避免加载后第一时间下钻时 ref 为空）
       fetch(STYLE_PATH(project))
         .then((r) => r.json())
-        .then(syncLayerRefs)
+        .then((s) => {
+          syncLayerRefs(s);
+          const selected = setBasemapVisibility(map, basemapIdsRef.current, basemapRef.current);
+          basemapRef.current = selected;
+          setBasemap(selected);
+        })
         .catch(() => {});
     });
     map.on("move", () => {
@@ -87,6 +107,18 @@ const MapViewer = forwardRef(function MapViewer(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
+
+  // 项目配置加载/切换后同步底图；配置是持久化选择的唯一来源，避免热更新时回到样式文件中的旧默认值。
+  useEffect(() => {
+    if (!config?.basemap) return;
+    const desired = normalizeBasemap(config.basemap);
+    basemapRef.current = desired;
+    if (loaded && mapRef.current) {
+      const selected = setBasemapVisibility(mapRef.current, basemapIdsRef.current, desired);
+      basemapRef.current = selected;
+      setBasemap(selected);
+    } else setBasemap(desired);
+  }, [config?.basemap, loaded]);
 
   // 点击要素弹窗
   useEffect(() => {
@@ -199,15 +231,17 @@ const MapViewer = forwardRef(function MapViewer(
         if (drillRef.current && mapRef.current) restoreDrill();
       }, 1500);
     }
-    // 重放底图
-    setBasemap((prev) => {
-      for (const id of basemapIdsRef.current) {
-        if (map.getLayer(`basemap-${id}`)) {
-          map.setLayoutProperty(`basemap-${id}`, "visibility", id === prev ? "visible" : "none");
-        }
-      }
-      return prev;
-    });
+    // 重放底图。setStyle 是异步的，必须等新样式的图层注册完成后再设置显隐，
+    // 否则用户选择会被旧样式/默认可见图层覆盖。
+    const desired = basemapRef.current || normalizeBasemap(config?.basemap);
+    const restoreBasemap = () => {
+      const selected = setBasemapVisibility(map, basemapIdsRef.current, desired);
+      basemapRef.current = selected;
+      setBasemap(selected);
+    };
+    if (map.isStyleLoaded?.()) restoreBasemap();
+    else map.once("idle", restoreBasemap);
+    setTimeout(restoreBasemap, 800);
   }, []);
 
   // 外部命令（MapPanel 调用）
@@ -225,13 +259,13 @@ const MapViewer = forwardRef(function MapViewer(
     },
     setBasemap: (id) => {
       const map = mapRef.current;
-      if (!map) return;
-      for (const bid of basemapIdsRef.current) {
-        if (map.getLayer(`basemap-${bid}`)) {
-          map.setLayoutProperty(`basemap-${bid}`, "visibility", bid === id ? "visible" : "none");
-        }
-      }
-      setBasemap(id);
+      const desired = normalizeBasemap(id);
+      basemapRef.current = desired;
+      if (map) {
+        const selected = setBasemapVisibility(map, basemapIdsRef.current, desired);
+        basemapRef.current = selected;
+        setBasemap(selected);
+      } else setBasemap(desired);
     },
     /** 省市县下钻：高亮区域 + 按 adcode/city_code 过滤路网 */
     drillTo: (d) => {
@@ -393,18 +427,23 @@ const MapViewer = forwardRef(function MapViewer(
         const firstGeometry = data.features?.[0]?.geometry?.type || "";
         const polygon = action.analysis === "isochrone" || firstGeometry === "Polygon" || firstGeometry === "MultiPolygon";
         const points = data.features?.some((f) => ["Point", "MultiPoint"].includes(f.geometry?.type));
+        const opts = action.options || {};
+        const radius = Number.isFinite(Number(opts.radius)) ? Number(opts.radius) : null;
+        const opacity = Number.isFinite(Number(opts.opacity)) ? Number(opts.opacity) : 0.72;
+        const intensity = Number.isFinite(Number(opts.intensity)) ? Number(opts.intensity) : 1.15;
+        const weightMax = Number.isFinite(Number(opts.weightMax)) ? Math.max(1, Number(opts.weightMax)) : 800;
         ensureGeoSource(`${base}-src`, data);
         if (polygon) {
           ensureLayer(`${base}-fill`, { type: "fill", source: `${base}-src`, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.24, "fill-outline-color": "#7c3aed" } });
         } else if (points) {
           ensureLayer(`${base}-heat`, { type: "heatmap", source: `${base}-src`, paint: {
-            "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, 800, 1],
-            "heatmap-intensity": 1.15,
-            "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 34],
-            "heatmap-opacity": 0.72,
+            "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, weightMax, 1],
+            "heatmap-intensity": intensity,
+            "heatmap-radius": radius === null ? ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 34] : radius,
+            "heatmap-opacity": opacity,
             "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(33,102,172,0)", 0.25, "#2d9cdb", 0.5, "#f2c94c", 0.78, "#f97316", 1, "#eb5757"],
           } });
-          ensureLayer(`${base}-points`, { type: "circle", source: `${base}-src`, minzoom: 10, paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, 800, 10], "circle-color": "#eb5757", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+          ensureLayer(`${base}-points`, { type: "circle", source: `${base}-src`, minzoom: 10, paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, weightMax, 10], "circle-color": "#eb5757", "circle-opacity": opacity, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
         }
         if (linesData) {
           ensureGeoSource(`${base}-lines-src`, linesData);
@@ -425,6 +464,35 @@ const MapViewer = forwardRef(function MapViewer(
       const base = `analysis-${String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
       for (const id of [`${base}-fill`, `${base}-heat`, `${base}-points`, `${base}-lines`]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
       for (const id of [`${base}-src`, `${base}-lines-src`]) { try { if (map.getSource(id)) map.removeSource(id); } catch {} }
+    },
+    /** 临时分析图层显隐，不写入业务 style，关闭弹窗后仍可恢复。 */
+    setAnalysisVisibility: (analysisId = "analysis", visible = true) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const base = `analysis-${String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      for (const id of [`${base}-fill`, `${base}-heat`, `${base}-points`, `${base}-lines`]) {
+        try { if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", visible ? "visible" : "none"); } catch {}
+      }
+    },
+    /** 调整热力图半径/权重范围/透明度/强度。 */
+    setAnalysisOptions: (analysisId = "analysis", options = {}) => {
+      const map = mapRef.current;
+      if (!map) return;
+      const base = `analysis-${String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      const heat = `${base}-heat`;
+      const points = `${base}-points`;
+      try {
+        if (map.getLayer(heat)) {
+          if (Number.isFinite(Number(options.radius))) map.setPaintProperty(heat, "heatmap-radius", Number(options.radius));
+          if (Number.isFinite(Number(options.opacity))) map.setPaintProperty(heat, "heatmap-opacity", Number(options.opacity));
+          if (Number.isFinite(Number(options.intensity))) map.setPaintProperty(heat, "heatmap-intensity", Number(options.intensity));
+          if (Number.isFinite(Number(options.weightMax))) {
+            const max = Math.max(1, Number(options.weightMax));
+            map.setPaintProperty(heat, "heatmap-weight", ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, max, 1]);
+          }
+        }
+        if (map.getLayer(points) && Number.isFinite(Number(options.opacity))) map.setPaintProperty(points, "circle-opacity", Number(options.opacity));
+      } catch {}
     },
     /** 测量/绘制工具：startDraw(kind, { onDone, onUpdate })；双击完成，Esc 取消 */
     startDraw: (kind, handlers = {}) => {

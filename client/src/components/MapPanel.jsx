@@ -98,6 +98,8 @@ export default function MapPanel({
   const [cambodiaOpen, setCambodiaOpen] = useState(false);
   const [busTab, setBusTab] = useState(null);
   const [activeAnalysis, setActiveAnalysis] = useState(null);
+  const [analysisVisible, setAnalysisVisible] = useState(true);
+  const [heatmapOptions, setHeatmapOptions] = useState({ radius: 28, weightMax: 800, opacity: 0.72, intensity: 1.15 });
 
   // ---- OD 流量热力图 ----
   // 列名自动检测（支持中英文）
@@ -245,10 +247,31 @@ export default function MapPanel({
   const runDemoAnalysis = useCallback(async (analysis) => {
     try {
       const action = await mapDemoAnalysis({ analysis, region: "义乌市", project });
+      const nextOptions = analysis === "heatmap" ? { radius: 28, weightMax: 800, opacity: 0.72, intensity: 1.15 } : heatmapOptions;
+      if (analysis === "heatmap") setHeatmapOptions(nextOptions);
+      action.options = analysis === "heatmap" ? nextOptions : action.options;
       handleMapAction(action);
-      setDemoOpen(false);
+      setAnalysisVisible(true);
+      setDemoOpen(true);
     } catch (e) { flash(`演示分析失败：${e.message}`); }
-  }, [project, handleMapAction, flash]);
+  }, [project, handleMapAction, flash, heatmapOptions]);
+
+  const updateHeatmapOptions = useCallback((patch) => {
+    setHeatmapOptions((prev) => {
+      const next = { ...prev, ...patch };
+      if (activeAnalysis?.analysis === "heatmap") mapRef.current?.setAnalysisOptions(activeAnalysis.id, next);
+      return next;
+    });
+  }, [activeAnalysis]);
+
+  const toggleAnalysisVisible = useCallback(() => {
+    if (!activeAnalysis) return;
+    setAnalysisVisible((prev) => {
+      const next = !prev;
+      mapRef.current?.setAnalysisVisibility(activeAnalysis.id, next);
+      return next;
+    });
+  }, [activeAnalysis]);
 
   // 初始化：项目列表 + 默认项目
   useEffect(() => {
@@ -618,12 +641,22 @@ export default function MapPanel({
   }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
     mapRef.current?.setBasemap(id);
+    // 同步写入 style 的底图显隐，避免轮询/Agent 热更新后恢复到旧的地形或卫星图层。
+    if (style?.layers) {
+      const nextStyle = {
+        ...style,
+        layers: style.layers.map((l) => String(l.id).startsWith("basemap-")
+          ? { ...l, layout: { ...(l.layout || {}), visibility: l.id === `basemap-${id}` ? "visible" : "none" } }
+          : l),
+      };
+      await saveStyle(nextStyle);
+    }
     setCfg((prev) => {
       const next = { ...(prev || {}), basemap: id };
       mapSaveConfig(project, next).catch(() => {});
       return next;
     });
-  }, [project]);
+  }, [project, style, saveStyle]);
 
   const handleRebuild = useCallback(async () => {
     setMsg("重建瓦片中…");
@@ -1033,6 +1066,11 @@ export default function MapPanel({
         <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="义乌热力图与演示等时圈">
           <Icon name="chart" size={13} /> 义乌Demo
         </button>
+        {activeAnalysis && (
+          <button className="btn-sm" onClick={toggleAnalysisVisible} title="显示/隐藏当前 Agent 分析结果">
+            {analysisVisible ? "隐藏分析" : "显示分析"}
+          </button>
+        )}
         <button className={`btn-sm ${cambodiaOpen ? "active" : ""}`} onClick={() => setCambodiaOpen((v) => !v)} title="暹粒 OD 演示仪表盘">
           <Icon name="flow" size={13} /> 暹粒OD
         </button>
@@ -1068,7 +1106,14 @@ export default function MapPanel({
           <div className="analysis-overlay" onClick={() => setDemoOpen(false)}>
             <div className="analysis-popover" onClick={(e) => e.stopPropagation()}>
               <div className="analysis-head"><div><small>DEMO · 义乌市</small><h3>热力图与等时圈</h3></div><button className="mp-op" onClick={() => setDemoOpen(false)} aria-label="关闭"><Icon name="close" size={14} /></button></div>
-              <div className="analysis-actions"><button className="btn primary" onClick={() => runDemoAnalysis("heatmap")}>生成义乌热力图</button><button className="btn primary" onClick={() => runDemoAnalysis("isochrone")}>生成演示等时圈</button>{activeAnalysis && <button className="btn-sm" onClick={() => { mapRef.current?.clearAnalysis(activeAnalysis.id); setActiveAnalysis(null); }}>清除</button>}</div>
+              <div className="analysis-actions"><button className="btn primary" onClick={() => runDemoAnalysis("heatmap")}>生成义乌热力图</button><button className="btn primary" onClick={() => runDemoAnalysis("isochrone")}>生成演示等时圈</button>{activeAnalysis && <><button className="btn-sm" onClick={toggleAnalysisVisible}>{analysisVisible ? "隐藏" : "显示"}</button><button className="btn-sm" onClick={() => { mapRef.current?.clearAnalysis(activeAnalysis.id); setActiveAnalysis(null); setAnalysisVisible(false); }}>清除</button></>}</div>
+              {activeAnalysis?.analysis === "heatmap" && (
+                <div className="analysis-controls">
+                  <label>影响范围 <input type="range" min="8" max="60" step="1" value={heatmapOptions.radius} onChange={(e) => updateHeatmapOptions({ radius: Number(e.target.value) })} /><span>{heatmapOptions.radius}px</span></label>
+                  <label>数值范围 <input type="range" min="50" max="2000" step="50" value={heatmapOptions.weightMax} onChange={(e) => updateHeatmapOptions({ weightMax: Number(e.target.value) })} /><span>{heatmapOptions.weightMax}</span></label>
+                  <label>透明度 <input type="range" min="0.1" max="1" step="0.05" value={heatmapOptions.opacity} onChange={(e) => updateHeatmapOptions({ opacity: Number(e.target.value) })} /><span>{Math.round(heatmapOptions.opacity * 100)}%</span></label>
+                </div>
+              )}
               <div className="analysis-hint">没有真实数据时使用确定性演示点位；结果会直接叠加在中间地图，可通过“保存为图层”留存。</div>
             </div>
           </div>
