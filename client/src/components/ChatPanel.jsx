@@ -444,7 +444,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         break;
       case "run_finished":
         setRunState({ status: data.status || "completed", runId: data.runId || null, artifacts: data.artifacts || [], references: data.references || [] });
-        if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, runStatus: data.status || "completed" } : m));
+        if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, references: data.references || m.references, runStatus: data.status || "completed" } : m));
         break;
       case "memory_proposal":
         if (data.proposal) {
@@ -546,6 +546,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       const d = await res.json().catch(() => ({}));
       // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
       if (d.sessionId) onSessionChange?.(d.sessionId);
+      if (d.runId) {
+        patch(aid, (m) => ({ ...m, runId: d.runId, task: d.task || null, references: d.task?.references || sendReferences }));
+        setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences }));
+      }
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
@@ -987,7 +991,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
               <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
             )}
             {m.currentDoc && <div className="msg-context">当前文件: {m.currentDoc}</div>}
-            {m.references?.length > 0 && <div className="msg-references">{m.references.map((r) => <span key={r.id}>@{r.target}</span>)}</div>}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {m.text && <div className="msg-text">{m.text}</div>}
           </div>
         ) : (
@@ -1008,6 +1012,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
                 return null;
               })}
             </div>
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
               <div className="bubble loading-bubble">
@@ -1036,6 +1041,24 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ReferenceChips({ references = [], onOpenFile }) {
+  if (!references.length) return null;
+  return (
+    <div className="msg-references" aria-label="本轮引用">
+      {references.map((r) => {
+        const label = r.metadata?.name || r.metadata?.relativePath || r.target;
+        const canOpen = r.kind === "file" && !!onOpenFile && r.status !== "missing";
+        const content = <><Icon name="file" size={10} /> @{label}</>;
+        return canOpen ? (
+          <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
+        ) : (
+          <span className={`msg-reference-chip ${r.status || ""}`} key={r.id} title={r.message || label}>{content}</span>
+        );
+      })}
     </div>
   );
 }
