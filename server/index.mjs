@@ -10,6 +10,9 @@ import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
+import { beginRun, recordRunEvent, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
+import { createTaskEnvelope } from "./task.mjs";
+import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -1007,6 +1010,17 @@ app.get("/api/skills", (_req, res) => {
   res.json({ skills: scanSkills() });
 });
 
+// 声明式工作流注册表：返回技能依赖、可用性和执行步骤，供前端与 Agent 共用。
+app.get("/api/workflows", (_req, res) => {
+  res.json({ workflows: listWorkflows(scanSkills()) });
+});
+
+app.get("/api/workflows/:id/validate", (req, res) => {
+  const workflow = getWorkflow(req.params.id, scanSkills());
+  if (!workflow) return res.status(404).json({ ok: false, error: "workflow not found" });
+  res.json({ ok: workflow.valid, workflow, message: workflow.valid ? "工作流依赖完整" : `缺少技能：${workflow.missing.join(", ")}` });
+});
+
 // POST /api/skills/export - 导出 skill（返回 base64 内容）
 app.post("/api/skills/export", (req, res) => {
   const { name } = req.body || {};
@@ -1113,6 +1127,41 @@ function parseJsonl(text) {
   }
   return out;
 }
+
+// ---------- 任务执行（run）与产物清单 ----------
+app.get("/api/runs", (req, res) => {
+  res.json({ runs: listRuns({ threadId: String(req.query.thread || ""), limit: parseInt(req.query.limit, 10) || 50 }) });
+});
+
+app.get("/api/runs/:id", (req, res) => {
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "run not found" });
+  res.json({ run });
+});
+
+app.post("/api/runs/:id/rollback", (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "rollback requires confirm=true" });
+  const result = rollbackRun(req.params.id, req.body?.paths);
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
+});
+
+app.post("/api/sessions/:id/fork", (req, res) => {
+  const found = findSessionFile(req.params.id);
+  if (!found) return res.status(404).json({ error: "not found" });
+  try {
+    const source = fs.readFileSync(found.fullPath, "utf8");
+    const lines = source.split(/\r?\n/).filter(Boolean);
+    if (!lines.length) return res.status(400).json({ error: "empty session" });
+    const header = JSON.parse(lines[0]);
+    const id = crypto.randomUUID();
+    const nextHeader = { ...header, id, sessionId: id, parentSessionId: header.sessionId || header.id || req.params.id, created: new Date().toISOString(), label: String(req.body?.label || `${header.label || "会话"}（分支）`) };
+    lines[0] = JSON.stringify(nextHeader);
+    const fileName = `${id}.jsonl`;
+    fs.writeFileSync(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
+    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // GET /api/workspaces - 列出已知工作区目录
 app.get("/api/workspaces", (_req, res) => {
@@ -1353,6 +1402,12 @@ app.post("/api/agent/abort", async (req, res) => {
   }
 });
 
+app.get("/api/agent/pending", (req, res) => {
+  const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
+  res.json({ questions: agentManager.pendingQuestions(client && thread ? agentKey(client, thread) : "") });
+});
+
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
   const { client, thread, answer } = req.body || {};
@@ -1364,10 +1419,13 @@ app.post("/api/agent/answer", (req, res) => {
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, thread, text, images, attachments, references, effort } = req.body || {};
+  const { client, thread, text, images, attachments, references, effort, task: taskInput } = req.body || {};
   if (!client || !text) return res.status(400).json({ error: "client and text required" });
   const key = agentKey(client, thread);
   const before = snapshotWorkspace();
+  let run = null;
+  let resolved = [];
+  let task = null;
   // 保存上传的附件到工作区（agent 可读取）
   if (Array.isArray(attachments) && attachments.length) {
     for (const att of attachments) {
@@ -1379,8 +1437,24 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
   }
   try {
-    const resolved = resolveReferences(references, text);
-    await agentManager.promptWithContext(key, text, images, effort, resolved);
+    resolved = resolveReferences(references, text);
+    const workflowId = taskInput?.workflowId || workflowIdFromText(text);
+    const workflow = workflowId ? getWorkflow(workflowId, scanSkills()) : null;
+    task = createTaskEnvelope({
+      ...(taskInput || {}),
+      text,
+      threadId: thread || null,
+      currentFile: taskInput?.currentFile || null,
+      references: resolved,
+      workflowId,
+      constraints: [
+        ...(taskInput?.constraints || []),
+        ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
+      ],
+    });
+    run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved });
+    recordRunEvent(run.id, "prompt", { text: String(text).slice(0, 4000), workflowId, referenceCount: resolved.length });
+    await agentManager.promptWithContext(key, text, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
     const entry = agentManager.sessions.get(key);
     if (entry) emitChannel(entry, "agent_error", { message: e.message });
@@ -1395,26 +1469,33 @@ app.post("/api/agent/prompt", async (req, res) => {
         });
       }
     }
+    if (run) {
+      const failed = finishRun(run.id, { status: "failed", error: e.message, summary: "Agent 执行失败" });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: "failed" });
+    }
     res.status(500).json({ error: e.message });
     return;
   }
   // officecli keeps files in a resident process — disk writes flush asynchronously.
   // Poll until the workspace snapshot stabilizes, then diff.
   const changed = await waitForFlush(before);
-  if (changed.length) {
-    const entry = agentManager.sessions.get(key);
-    if (entry) {
+  const entry = agentManager.sessions.get(key);
+  const completed = run ? finishRun(run.id, { status: "completed", sessionId: entry?.session?.sessionId || null, summary: changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件` : "本轮对话完成，未检测到文件变更" }) : null;
+  if (entry) {
+    if (changed.length) {
       emitChannel(entry, "file_changed", { files: changed });
-      // 对话结束总结：产物清单
       emitChannel(entry, "agent_summary", {
         products: changed,
         summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        runId: run?.id || null,
+        artifacts: completed?.artifacts || [],
+        references: resolved,
       });
     }
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: "completed" });
   }
   // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
-  const entry = agentManager.sessions.get(key);
-  res.json({ ok: true, changed, sessionId: entry?.session?.sessionId || null, thread: thread || null });
+  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
 });
 
 app.post("/api/agent/new", async (req, res) => {
@@ -1582,6 +1663,16 @@ app.post("/api/memory/init", (_req, res) => {
     startMemoryWatcher();
     res.json({ ok: true, files: listMemoryFiles() });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/memory/proposals", (req, res) => {
+  res.json({ proposals: agentManager.memoryProposals(req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "") });
+});
+
+app.post("/api/memory/proposals/:id/approve", (req, res) => {
+  const result = agentManager.approveMemoryProposal(req.params.id);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
 });
 
 app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {

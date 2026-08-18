@@ -44,6 +44,8 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+export const listWorkflows = () => api("/api/workflows");
+export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
 export const exportSkill = (name) =>
   api("/api/skills/export", { method: "POST", body: JSON.stringify({ name }) });
 export const importSkill = (payload) =>
@@ -53,6 +55,13 @@ export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
+export const forkSession = (id, label) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label }) });
+export const listRuns = (thread) => api(`/api/runs${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
+export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
+export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
+export const approveMemoryProposal = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) });
+export const listPendingQuestions = (client, thread) => api(`/api/agent/pending?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread)}`);
 
 export function getClientId() {
   let id = localStorage.getItem("oaw_client_id");

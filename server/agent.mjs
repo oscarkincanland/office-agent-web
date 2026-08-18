@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -11,30 +12,45 @@ import {
 import { Type } from "typebox";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "./workspace.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
+import { recordRunEvent } from "./runs.mjs";
+import { taskSummary } from "./task.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
-/** 读取工作区记忆（AGENTS.md + memory/*.md 合并，限长）——每次对话前注入 agent 上下文，跟随当前工作区 */
-function readMemoryContext() {
-  const parts = [];
+/** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
+function readMemoryLayers() {
+  const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
   try {
     const ws = getWorkspace();
-    const agentsMd = path.join(ws, "AGENTS.md");
-    if (fs.existsSync(agentsMd)) {
-      const c = fs.readFileSync(agentsMd, "utf8").trim();
-      if (c) parts.push("## 工作区准则 (AGENTS.md)\n" + c.slice(0, 1500));
-    }
+    const read = (file, max = 1800) => {
+      try { return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().slice(0, max) : ""; } catch { return ""; }
+    };
+    layers.rules = read(path.join(ws, "AGENTS.md"), 1800);
     const memDir = path.join(ws, "memory");
     if (fs.existsSync(memDir)) {
       for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
-        try {
-          const c = fs.readFileSync(path.join(memDir, f), "utf8").trim();
-          if (c) parts.push(`## 记忆：${f}\n${c.slice(0, 1500)}`);
-        } catch {}
+        const content = read(path.join(memDir, f), 1800);
+        if (!content) continue;
+        const key = f.toLowerCase();
+        if (key.includes("preference") || key.includes("用户偏好")) layers.preferences += `\n${content}`;
+        else if (key.includes("project") || key.includes("项目信息")) layers.project += `\n${content}`;
+        else if (key.includes("lesson") || key.includes("经验教训")) layers.lessons += `\n${content}`;
+        else layers.other.push({ file: f, content });
       }
     }
   } catch {}
-  return parts.join("\n\n").slice(0, 4000);
+  return layers;
+}
+
+function readMemoryContext() {
+  const layers = readMemoryLayers();
+  return [
+    layers.rules && `## 工作区准则（AGENTS.md）\n${layers.rules}`,
+    layers.project && `## 项目信息\n${layers.project.slice(0, 1400)}`,
+    layers.preferences && `## 用户偏好\n${layers.preferences.slice(0, 1400)}`,
+    layers.lessons && `## 经验教训\n${layers.lessons.slice(0, 1400)}`,
+    ...layers.other.map((x) => `## 记忆：${x.file}\n${x.content.slice(0, 1000)}`),
+  ].filter(Boolean).join("\n\n").slice(0, 6000);
 }
 
 /** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制）——写入当前工作区 */
@@ -70,6 +86,54 @@ function writeMemorySection(section, content) {
   return { ok: true, section, file: "memory/MEMORY.md" };
 }
 
+const PROPOSALS_FILE = path.join(PROJECT_DIR, ".oaw", "memory-proposals.json");
+const PENDING_ASKS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
+function readMemoryProposals() {
+  try { return JSON.parse(fs.readFileSync(PROPOSALS_FILE, "utf8")); } catch { return []; }
+}
+function saveMemoryProposals(items) {
+  fs.mkdirSync(path.dirname(PROPOSALS_FILE), { recursive: true });
+  fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(items.slice(-200), null, 2) + "\n", "utf8");
+}
+function createMemoryProposal(threadId, section, content) {
+  const items = readMemoryProposals();
+  const proposal = { id: `memory_${crypto.randomUUID()}`, threadId, section, content: String(content || "").trim().slice(0, 1200), status: "pending", createdAt: new Date().toISOString() };
+  items.push(proposal);
+  saveMemoryProposals(items);
+  return proposal;
+}
+function approveMemoryProposal(id) {
+  const items = readMemoryProposals();
+  const proposal = items.find((x) => x.id === id);
+  if (!proposal) return { ok: false, error: "proposal not found" };
+  if (proposal.status !== "approved") {
+    const result = writeMemorySection(proposal.section, proposal.content);
+    proposal.status = result.ok ? "approved" : "failed";
+    proposal.approvedAt = new Date().toISOString();
+  }
+  saveMemoryProposals(items);
+  return { ok: proposal.status === "approved", proposal };
+}
+
+function readPendingAsks() {
+  try { return JSON.parse(fs.readFileSync(PENDING_ASKS_FILE, "utf8")); } catch { return []; }
+}
+function savePendingAsks(items) {
+  fs.mkdirSync(path.dirname(PENDING_ASKS_FILE), { recursive: true });
+  fs.writeFileSync(PENDING_ASKS_FILE, JSON.stringify(items.slice(-100), null, 2) + "\n", "utf8");
+}
+function persistPendingAsk(item) {
+  const items = readPendingAsks().filter((x) => x.clientId !== item.clientId || x.status !== "pending");
+  items.push(item);
+  savePendingAsks(items);
+}
+function resolvePendingAsk(clientId, answer, status = "answered") {
+  const items = readPendingAsks();
+  const item = [...items].reverse().find((x) => x.clientId === clientId && x.status === "pending");
+  if (item) { item.status = status; item.answer = answer || null; item.resolvedAt = new Date().toISOString(); savePendingAsks(items); }
+  return item;
+}
+
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 class AgentManager extends EventEmitter {
   constructor() {
@@ -84,6 +148,24 @@ class AgentManager extends EventEmitter {
     const ask = this.pendingAsks.get(clientId);
     if (ask) this.pendingAsks.delete(clientId);
     return ask;
+  }
+
+  memoryProposals(threadId = "") {
+    return readMemoryProposals().filter((p) => !threadId || p.threadId === threadId);
+  }
+
+  approveMemoryProposal(id) {
+    const result = approveMemoryProposal(id);
+    const proposal = result.proposal;
+    if (proposal?.threadId) {
+      const entry = this.sessions.get(proposal.threadId);
+      if (entry) emitChannelSafe(entry, "memory_proposal_resolved", { proposal });
+    }
+    return result;
+  }
+
+  pendingQuestions(clientId = "") {
+    return readPendingAsks().filter((q) => !clientId || q.clientId === clientId);
   }
 
   modelRuntime() {
@@ -387,7 +469,7 @@ class AgentManager extends EventEmitter {
       name: "memory_update",
       label: "记忆更新",
       description:
-        "把本次任务中值得长期记住的信息写入工作区记忆（memory/MEMORY.md），供后续任务读取。仅在确有价值时调用（如：用户偏好、项目约定、反复出现的坑、本次学会的关键流程），不要为琐碎细节调用。section 取值：项目信息（项目背景/术语/约定）/ 用户偏好（写作风格/格式习惯/命名规范）/ 经验教训（踩坑记录/有效做法）。每条控制在 100 字以内，简明扼要。",
+        "提出一条可确认的长期记忆建议。默认不会直接写入；用户确认后由界面批准。section 取值：项目信息 / 用户偏好 / 经验教训。每条控制在 100 字以内。",
       parameters: Type.Object({
         section: Type.Union([
           Type.Literal("项目信息"),
@@ -395,8 +477,14 @@ class AgentManager extends EventEmitter {
           Type.Literal("经验教训"),
         ]),
         content: Type.String({ description: "要记住的内容（≤100 字）" }),
+        approved: Type.Optional(Type.Boolean({ description: "仅在用户明确确认后传 true" })),
       }),
       execute: async (_toolCallId, params) => {
+        if (!params.approved) {
+          const proposal = createMemoryProposal(clientId, params.section, params.content);
+          emitChannelSafe(entry, "memory_proposal", { proposal });
+          return { content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户确认后写入。` }], details: { proposal } };
+        }
         const r = writeMemorySection(params.section, params.content);
         return {
           content: [{ type: "text", text: `已更新记忆（${params.section}），后续任务会自动读取。${r.ok ? "" : "写入失败"}` }],
@@ -424,14 +512,25 @@ class AgentManager extends EventEmitter {
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
+          persistPendingAsk({
+            id: `ask_${crypto.randomUUID()}`,
+            clientId,
+            runId: entry.activeRunId || null,
+            question: String(params.question || ""),
+            options: opts,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+          });
           const timer = setTimeout(() => {
             this.pendingAsks.delete(clientId);
+            resolvePendingAsk(clientId, null, "expired");
             resolve({
               content: [{ type: "text", text: "(用户未在 5 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)" }],
             });
           }, 300000);
           const done = (answer) => {
             clearTimeout(timer);
+            resolvePendingAsk(clientId, String(answer || ""), "answered");
             resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
           };
           this.pendingAsks.set(clientId, done);
@@ -467,6 +566,9 @@ class AgentManager extends EventEmitter {
       channel.history.push(ev);
       if (channel.history.length > 2000) channel.history.shift();
       channel.emitter.emit("event", ev);
+      if (entry?.activeRunId && ["tool_start", "tool_end", "ask_user", "agent_error", "agent_end"].includes(type)) {
+        try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+      }
     };
     session.subscribe((ev) => {
       // forward interesting events
@@ -549,7 +651,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, references: [], threadId: options.threadId || null, currentFile: null };
+    entry = { session, channel, busy: false, loader, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -560,15 +662,17 @@ class AgentManager extends EventEmitter {
     return this._promptEntry(entry, text, images, effort, []);
   }
 
-  async promptWithContext(clientId, text, images = [], effort, references = []) {
+  async promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
     const entry = await this.getOrCreate(clientId);
-    return this._promptEntry(entry, text, images, effort, references);
+    return this._promptEntry(entry, text, images, effort, references, runContext);
   }
 
-  async _promptEntry(entry, text, images = [], effort, references = []) {
+  async _promptEntry(entry, text, images = [], effort, references = [], runContext = null) {
     const isStreaming = entry.busy;
     entry.busy = true;
     entry.references = Array.isArray(references) ? references : [];
+    entry.activeRunId = runContext?.runId || null;
+    entry.task = runContext?.task || null;
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}
@@ -594,6 +698,7 @@ class AgentManager extends EventEmitter {
       if (entry.references.length) {
         text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
       }
+      if (entry.task) text = `${taskSummary(entry.task)}\n\n${text}`;
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -624,6 +729,7 @@ class AgentManager extends EventEmitter {
       }
     } finally {
       entry.busy = false;
+      entry.activeRunId = null;
     }
   }
 
@@ -673,6 +779,7 @@ class AgentManager extends EventEmitter {
         "- Office 文档一律用 officecli 工具操作（文件名相对当前工作区根目录）；若 officecli 不可用，用 read 工具以绝对路径读取工作区文件（docx 可用服务端接口 GET /api/doc/<文件名>/text 提取文本）。",
         `- 当前工作文件: ${file || "（无）"}`,
         "- 新建文件必须写入当前工作区绝对路径，禁止写入项目目录。",
+        "- 任务完成时必须按‘读取来源 / 修改文件 / 产物 / 假设 / 下一步’五项给出简短总结；引用缺失或未读取时必须明确说明。",
       ];
       if (memCtx) lines.push("- 工作区记忆（AGENTS.md + memory/*.md）:\n" + memCtx.slice(0, 2000));
       return lines.join("\n");

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession, forkSession, approveMemoryProposal, rollbackRun } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -124,6 +124,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
+  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [] });
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -397,6 +398,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        setRunState((s) => ({ ...s, status: "finishing" }));
         if (onAgentEnd) onAgentEnd();
         break;
       case "agent_error":
@@ -405,6 +407,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        setRunState((s) => ({ ...s, status: "failed" }));
         break;
       case "steer":
         pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`);
@@ -432,10 +435,24 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             role: "system",
             text: `${data.summary || "本轮对话完成"}`,
             products: data.products,
+            runId: data.runId,
+            artifacts: data.artifacts || [],
             status: "done",
             summary: true,
           }]);
         }
+        break;
+      case "run_finished":
+        setRunState({ status: data.status || "completed", runId: data.runId || null, artifacts: data.artifacts || [], references: data.references || [] });
+        if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, runStatus: data.status || "completed" } : m));
+        break;
+      case "memory_proposal":
+        if (data.proposal) {
+          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done" }]);
+        }
+        break;
+      case "memory_proposal_resolved":
+        setMessages((ms) => ms.map((m) => m.memoryProposal?.id === data.proposal?.id ? { ...m, memoryProposal: data.proposal, text: "长期记忆建议已写入。" } : m));
         break;
       default:
         break;
@@ -503,11 +520,27 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setImages([]);
     setAttachments([]);
     setBusy(true);
+    setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences });
     try {
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, thread: threadId, text: fullText, images: imgs, attachments: atts, references: sendReferences, effort }),
+        body: JSON.stringify({
+          client: clientId,
+          thread: threadId,
+          text: fullText,
+          images: imgs,
+          attachments: atts,
+          references: sendReferences,
+          effort,
+          task: {
+            goal: text,
+            mode: editMode,
+            currentFile: currentDoc || null,
+            references: sendReferences,
+            workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
+          },
+        }),
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
@@ -517,6 +550,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
         if (mountedRef.current) setBusy(false);
+        setRunState((s) => ({ ...s, status: "failed" }));
       }
     } catch (e) {
       if (!mountedRef.current) return;
@@ -535,6 +569,24 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         body: JSON.stringify({ client: clientId, thread: threadId }),
       });
     } catch {}
+  };
+
+  const handleMemoryApprove = async (id) => {
+    try {
+      const d = await approveMemoryProposal(id);
+      if (d.proposal) setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, memoryProposal: d.proposal, text: "长期记忆建议已写入。" } : m));
+    } catch (e) {
+      setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, text: `记忆写入失败：${e.message}` } : m));
+    }
+  };
+
+  const handleRollbackRun = async (runId, paths) => {
+    if (!runId || !window.confirm("确认回滚本轮产物？这会恢复修改前的文件内容。")) return;
+    try {
+      await rollbackRun(runId, paths);
+      pushSystem("已回滚本轮可恢复的文件变更。");
+      onFileChanged?.(paths || []);
+    } catch (e) { pushSystem(`回滚失败：${e.message}`); }
   };
 
   const handleFiles = async (list) => {
@@ -603,6 +655,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                 onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
                 onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
+                onFork={async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } }}
               />
             </div>
           )}
@@ -611,6 +664,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           <span className="chat-title"><Logo size={16} /> Open Plan</span>
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
+        </div>
+        <div className="task-status-bar" role="status" aria-live="polite">
+          <span className={`task-status-dot ${runState.status}`} />
+          <span>{runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
+          {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
+          {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
         </div>
 
         <div className="chat-body" ref={bodyRef} onScroll={() => {
@@ -629,7 +689,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -822,12 +882,20 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole, clientId, threadId }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
         <div className="bubble">
           {m.text}
+          {m.memoryProposal && (
+            <div className="memory-proposal-card" role="note">
+              <div><strong>{m.memoryProposal.section}</strong>：{m.memoryProposal.content}</div>
+              {m.memoryProposal.status === "pending" ? (
+                <button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button>
+              ) : <span className="memory-proposal-state">{m.memoryProposal.status === "approved" ? "✓ 已写入" : "未写入"}</span>}
+            </div>
+          )}
           {m.products?.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物</span>
@@ -843,6 +911,12 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+          {m.artifacts?.length > 0 && (
+            <div className="run-artifacts">
+              {m.artifacts.map((a) => <div key={a.path} className="run-artifact-row"><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
+              {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
             </div>
           )}
         </div>
