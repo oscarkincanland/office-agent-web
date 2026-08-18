@@ -425,7 +425,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         if (data.files?.length) onFileChanged(data.files);
         break;
       case "map_action":
-        pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
+        if (data.action === "clear_analysis") {
+          pushSystem("已清除地图临时分析结果");
+        } else {
+          pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
+        }
         onMapAction?.(data);
         break;
       case "agent_summary":
