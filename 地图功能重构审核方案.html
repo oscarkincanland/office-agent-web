@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>地图功能重构审核方案</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #66727d;
+      --paper: #f3f0e9;
+      --panel: #fbfaf6;
+      --line: #d9d7d0;
+      --navy: #11283a;
+      --blue: #2563eb;
+      --teal: #12857c;
+      --orange: #e8792f;
+      --yellow: #f3c94e;
+      --red: #d84e43;
+      --shadow: 0 18px 60px rgba(24, 42, 53, .12);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 10%, rgba(37,99,235,.08), transparent 28rem),
+        linear-gradient(135deg, #f8f7f2 0%, var(--paper) 48%, #ebe8e0 100%);
+      font-family: "Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.6;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .18;
+      background-image: url("data:image/svg+xml,%3Csvg width='140' height='140' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.12'/%3E%3C/svg%3E");
+      mix-blend-mode: multiply;
+    }
+    a { color: inherit; }
+    .shell { display: grid; grid-template-columns: 248px minmax(0, 1fr); min-height: 100vh; }
+    .sidebar {
+      position: sticky; top: 0; height: 100vh; padding: 28px 20px;
+      color: #e7edf1; background: var(--navy); overflow: auto;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 42px; }
+    .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid #6ba9bd; color: #c6f0e7; background: #1b4355; border-radius: 9px; font-weight: 800; }
+    .brand strong { display: block; font-size: 14px; letter-spacing: .08em; }
+    .brand span { display: block; color: #8fa4b0; font-size: 11px; margin-top: 2px; }
+    .side-label { color: #78919f; font-size: 10px; letter-spacing: .17em; margin: 0 10px 10px; text-transform: uppercase; }
+    .nav { display: grid; gap: 5px; }
+    .nav a { display: flex; gap: 10px; align-items: center; padding: 10px 11px; border-radius: 8px; color: #b6c6cd; text-decoration: none; font-size: 13px; transition: .2s ease; }
+    .nav a:hover, .nav a.active { color: #fff; background: rgba(255,255,255,.1); transform: translateX(3px); }
+    .nav b { width: 20px; color: #73c6b6; font-size: 11px; font-family: monospace; }
+    .side-note { margin-top: 42px; padding: 14px; border: 1px solid rgba(255,255,255,.13); border-radius: 10px; color: #a9bbc3; font-size: 11px; }
+    .side-note strong { color: #f3c94e; display: block; margin-bottom: 5px; }
+    .main { max-width: 1380px; width: 100%; margin: 0 auto; padding: 32px clamp(24px, 5vw, 76px) 80px; }
+    .topline { display: flex; justify-content: space-between; gap: 20px; align-items: center; color: var(--muted); font-size: 12px; }
+    .status { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; color: #8a5c14; border: 1px solid #e8ca86; background: #fff8df; border-radius: 999px; }
+    .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--yellow); box-shadow: 0 0 0 4px rgba(243,201,78,.18); }
+    .hero { display: grid; grid-template-columns: 1fr 1.05fr; gap: clamp(24px, 5vw, 76px); align-items: center; min-height: 610px; padding: 54px 0 66px; }
+    .eyebrow { color: var(--teal); font-size: 12px; font-weight: 800; letter-spacing: .18em; }
+    h1 { margin: 15px 0 18px; max-width: 680px; font-size: clamp(42px, 6vw, 80px); line-height: 1.05; letter-spacing: -.07em; font-weight: 900; }
+    h1 em { color: var(--orange); font-style: normal; }
+    .lead { max-width: 560px; color: var(--muted); font-size: 17px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+    button, .button { border: 0; cursor: pointer; font: inherit; }
+    .button { display: inline-flex; align-items: center; gap: 8px; padding: 11px 16px; border-radius: 7px; text-decoration: none; font-size: 13px; font-weight: 800; }
+    .button.primary { color: white; background: var(--blue); box-shadow: 0 9px 20px rgba(37,99,235,.2); }
+    .button.secondary { color: var(--navy); background: #fff; border: 1px solid var(--line); }
+    .button:hover { transform: translateY(-2px); }
+    .hero-meta { display: flex; gap: 24px; margin-top: 36px; color: var(--muted); font-size: 11px; }
+    .hero-meta strong { display: block; color: var(--ink); font-size: 20px; }
+    .map-card { position: relative; min-height: 458px; overflow: hidden; border: 1px solid #b9c5c4; border-radius: 18px; background: #dbe4df; box-shadow: var(--shadow); transform: rotate(1.2deg); }
+    .map-card::before { content: ""; position: absolute; inset: 0; background: linear-gradient(rgba(255,255,255,.28) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.28) 1px, transparent 1px); background-size: 37px 37px; }
+    .map-card::after { content: "DEMO / MAP ACTION PREVIEW"; position: absolute; right: 18px; bottom: 15px; color: rgba(17,40,58,.45); font: 10px monospace; letter-spacing: .11em; }
+    .map-grid { position: absolute; inset: 0; background: radial-gradient(ellipse at 63% 44%, rgba(18,133,124,.18), transparent 29%), radial-gradient(ellipse at 32% 70%, rgba(232,121,47,.18), transparent 25%); }
+    .route { position: absolute; height: 5px; transform-origin: left center; border-radius: 9px; background: var(--orange); box-shadow: 0 0 0 2px rgba(255,255,255,.45); }
+    .r1 { width: 290px; left: 22%; top: 49%; transform: rotate(-28deg); }
+    .r2 { width: 250px; left: 31%; top: 63%; transform: rotate(18deg); background: var(--blue); }
+    .r3 { width: 220px; left: 54%; top: 32%; transform: rotate(74deg); background: var(--teal); }
+    .river { position: absolute; width: 120%; height: 105px; left: -10%; top: 52%; border-top: 18px solid rgba(67,146,182,.3); border-radius: 50%; transform: rotate(-16deg); }
+    .place { position: absolute; display: grid; place-items: center; width: 18px; height: 18px; border: 3px solid white; border-radius: 50%; background: var(--red); box-shadow: 0 3px 8px rgba(19,40,50,.25); }
+    .place::after { content: attr(data-name); position: absolute; top: 23px; white-space: nowrap; color: var(--navy); font-size: 11px; font-weight: 900; }
+    .p1 { left: 59%; top: 42%; background: var(--yellow); }
+    .p2 { left: 32%; top: 66%; background: var(--teal); }
+    .p3 { left: 73%; top: 63%; background: var(--orange); }
+    .iso { position: absolute; left: 46%; top: 26%; width: 140px; height: 140px; border: 2px solid rgba(124,58,237,.58); border-radius: 50% 45% 52% 42%; background: rgba(139,92,246,.12); transform: rotate(17deg); }
+    .iso::after { content: "30 min"; position: absolute; right: 8px; top: 7px; color: #6244a2; font-size: 10px; font-weight: 800; }
+    .map-head { position: absolute; z-index: 3; left: 18px; right: 18px; top: 17px; display: flex; justify-content: space-between; align-items: center; }
+    .map-head span { padding: 6px 9px; border-radius: 5px; color: white; background: rgba(17,40,58,.87); font-size: 11px; font-weight: 800; }
+    .legend { display: flex; gap: 8px; padding: 6px 8px; border-radius: 5px; background: rgba(255,255,255,.78); font-size: 10px; }
+    .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 3px; border-radius: 50%; }
+    section { scroll-margin-top: 28px; margin-top: 28px; }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin-bottom: 20px; }
+    .section-kicker { color: var(--orange); font: 11px monospace; letter-spacing: .14em; }
+    h2 { margin: 5px 0 0; font-size: clamp(26px, 3vw, 42px); line-height: 1.15; letter-spacing: -.05em; }
+    .section-head p { max-width: 410px; margin: 0; color: var(--muted); font-size: 13px; }
+    .surface { padding: clamp(20px, 3vw, 32px); border: 1px solid var(--line); border-radius: 14px; background: rgba(251,250,246,.87); box-shadow: 0 8px 30px rgba(24,42,53,.045); }
+    .decision { display: grid; grid-template-columns: 1.2fr .8fr; gap: 20px; }
+    .decision h3, .card h3 { margin: 0 0 7px; font-size: 18px; }
+    .decision p { margin: 0; color: var(--muted); font-size: 14px; }
+    .callout { padding: 17px; border-left: 4px solid var(--orange); background: #fff5e9; }
+    .callout strong { display: block; margin-bottom: 4px; color: #9a4c16; }
+    .demo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .card { min-height: 220px; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); position: relative; overflow: hidden; }
+    .card::before { content: ""; position: absolute; width: 100px; height: 100px; right: -28px; top: -28px; border-radius: 50%; background: var(--tint, rgba(37,99,235,.12)); }
+    .card > * { position: relative; }
+    .card-tag { display: inline-flex; margin-bottom: 24px; padding: 5px 8px; color: var(--tag, var(--blue)); background: var(--tint, #eef3ff); border-radius: 5px; font: 10px monospace; letter-spacing: .08em; }
+    .card p, .card li { color: var(--muted); font-size: 12px; }
+    .card ul { padding-left: 18px; margin-bottom: 0; }
+    .visual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+    .swatches { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; margin-top: 16px; }
+    .swatch { height: 72px; padding: 8px; display: flex; flex-direction: column; justify-content: end; border-radius: 7px; color: white; font: 10px monospace; }
+    .icon-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 9px; margin-top: 16px; }
+    .icon-box { padding: 13px 8px; border: 1px solid var(--line); border-radius: 8px; text-align: center; background: white; font-size: 11px; }
+    .glyph { display: block; margin-bottom: 7px; color: var(--blue); font-size: 22px; }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; align-items: center; margin-top: 22px; }
+    .flow-step { position: relative; text-align: center; }
+    .flow-step:not(:last-child)::after { content: "→"; position: absolute; right: -10px; top: 10px; color: var(--orange); font-size: 20px; }
+    .flow-dot { width: 38px; height: 38px; display: grid; place-items: center; margin: 0 auto 10px; border-radius: 50%; color: white; background: var(--navy); font: 12px monospace; }
+    .flow-step strong { display: block; font-size: 12px; }
+    .flow-step span { color: var(--muted); font-size: 10px; }
+    .timeline { display: grid; gap: 10px; }
+    .phase { display: grid; grid-template-columns: 90px 1fr auto; gap: 15px; align-items: center; padding: 15px 16px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+    .phase-no { color: var(--orange); font: 12px monospace; font-weight: 800; }
+    .phase strong { display: block; font-size: 14px; }
+    .phase span { color: var(--muted); font-size: 11px; }
+    .phase-status { padding: 4px 8px; border-radius: 999px; color: #36726a; background: #e8f5f1; font-size: 10px; white-space: nowrap; }
+    .checklist { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 26px; }
+    .check { display: flex; align-items: start; gap: 9px; color: var(--muted); font-size: 13px; }
+    .check input { accent-color: var(--blue); margin-top: 5px; }
+    .approval { position: sticky; bottom: 18px; z-index: 10; display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 30px; padding: 15px 18px; border: 1px solid #bfd0d2; border-radius: 12px; background: rgba(239,248,246,.94); box-shadow: 0 10px 30px rgba(24,42,53,.12); backdrop-filter: blur(12px); }
+    .approval strong { display: block; font-size: 13px; }
+    .approval span { color: var(--muted); font-size: 11px; }
+    .approval-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .approval button { padding: 9px 13px; border-radius: 6px; font-size: 12px; font-weight: 800; }
+    #confirm { color: white; background: var(--teal); }
+    #revise { color: var(--ink); background: white; border: 1px solid var(--line); }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; padding: 12px 16px; border-radius: 8px; color: white; background: var(--navy); box-shadow: var(--shadow); transform: translateY(20px); opacity: 0; pointer-events: none; transition: .25s ease; font-size: 13px; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    @media (max-width: 1040px) { .shell { grid-template-columns: 1fr; } .sidebar { position: relative; height: auto; padding: 17px 22px; } .brand { margin-bottom: 16px; } .nav { display: flex; flex-wrap: wrap; } .side-note { display: none; } .hero { grid-template-columns: 1fr; padding-top: 35px; } .map-card { transform: none; } }
+    @media (max-width: 720px) { .main { padding: 22px 16px 60px; } .topline { align-items: start; flex-direction: column; } .demo-grid, .visual-grid, .decision { grid-template-columns: 1fr; } .flow { grid-template-columns: 1fr; gap: 20px; } .flow-step:not(:last-child)::after { content: "↓"; right: auto; left: calc(50% + 6px); top: 50px; } .phase { grid-template-columns: 62px 1fr; } .phase-status { grid-column: 2; justify-self: start; } .checklist { grid-template-columns: 1fr; } .approval { align-items: start; flex-direction: column; } .swatches { grid-template-columns: repeat(3, 1fr); } h1 { font-size: 48px; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">◎</div>
+        <div><strong>地图工作台</strong><span>功能重构审核方案</span></div>
+      </div>
+      <p class="side-label">Review map</p>
+      <nav class="nav">
+        <a class="active" href="#overview"><b>01</b>重构目标</a>
+        <a href="#demos"><b>02</b>三套 Demo</a>
+        <a href="#visual"><b>03</b>视觉与标注</a>
+        <a href="#agent"><b>04</b>Agent 流程</a>
+        <a href="#phases"><b>05</b>实施阶段</a>
+        <a href="#acceptance"><b>06</b>验收标准</a>
+      </nav>
+      <div class="side-note"><strong>审核提示</strong>这是一份独立的方案稿，不会嵌入现有项目。确认后才开始修改 React、MapLibre、Express 和地图数据适配层。</div>
+    </aside>
+
+    <main class="main">
+      <div class="topline"><span>OFFICE AGENT WEB / MAP PLATFORM</span><span class="status"><i></i>待确认 · v0.8.33 之后</span></div>
+
+      <section class="hero" id="overview">
+        <div>
+          <div class="eyebrow">FUNCTION REBUILD / 01</div>
+          <h1>把地图变成<br><em>可对话的分析工作台</em></h1>
+          <p class="lead">一次性完成整体能力重构，但内部按可回退阶段实施：地图、标注、热力图、等时圈、OD、公交流程和 Agent 操作都围绕同一个地图状态工作。</p>
+          <div class="hero-actions"><a class="button primary" href="#demos">查看 Demo 范围 ↘</a><a class="button secondary" href="#phases">查看实施顺序</a></div>
+          <div class="hero-meta"><div><strong>03</strong>真实数据 Demo</div><div><strong>01</strong>统一地图动作协议</div><div><strong>0</strong>整体刷新依赖</div></div>
+        </div>
+        <div class="map-card" aria-label="地图动作预览">
+          <div class="map-grid"></div><div class="river"></div><div class="iso"></div>
+          <div class="route r1"></div><div class="route r2"></div><div class="route r3"></div>
+          <div class="place p1" data-name="义乌市"></div><div class="place p2" data-name="公交站点"></div><div class="place p3" data-name="OD 节点"></div>
+          <div class="map-head"><span>义乌市 · 分析预览</span><div class="legend"><span><i style="background:#e8792f"></i>道路</span><span><i style="background:#7c3aed"></i>等时圈</span></div></div>
+        </div>
+      </section>
+
+      <section>
+        <div class="decision"><div class="surface"><h3>可以一次性完成吗？</h3><p>可以按一个完整目标进行重构，但不建议把所有变更压成一个不可回退的大提交。计划采用“一个整体目标、多个内部阶段”的方式：用户最终得到完整地图工作台，开发过程中每阶段都可验证、回滚和定位问题。</p></div><div class="surface callout"><strong>本次审核的边界</strong><p>先审核产品结构、视觉方向、Demo 数据范围和验收标准；确认后再嵌入现有项目，不提前改动业务代码。</p></div></div>
+      </section>
+
+      <section id="demos">
+        <div class="section-head"><div><div class="section-kicker">REAL DATA DEMOS / 02</div><h2>三套数据，验证三类能力</h2></div><p>浙江验证空间工作台，柬埔寨验证 OD 出行，新昌验证公交线网与客流。</p></div>
+        <div class="demo-grid">
+          <article class="card" style="--tag:#2563eb;--tint:#edf3ff"><span class="card-tag">DEMO A / ZHEJIANG</span><h3>浙江交通地图</h3><p>把省、市、县市区边界、道路、设施、标注、义乌热力图和等时圈串成一条完整地图流程。</p><ul><li>区域切换与边界高亮</li><li>行政区和道路标注</li><li>义乌热力图与等时圈</li><li>图层、底图和结果导出</li></ul></article>
+          <article class="card" style="--tag:#e8792f;--tint:#fff1e4"><span class="card-tag">DEMO B / SIEM REAP</span><h3>暹粒 OD 出行分析</h3><p>使用柬埔寨项目中的坐标完整 OD 数据，展示真实来源、流量统计和地图—排行榜联动。</p><ul><li>OD 线与起终点热力</li><li>Top 起点、终点和 OD 对</li><li>流量过滤与数据说明</li><li>分析图和报告图导出</li></ul></article>
+          <article class="card" style="--tag:#12857c;--tint:#e7f6f1"><span class="card-tag">DEMO C / XINCHANG</span><h3>新昌公交线网</h3><p>参考现有新昌公交仪表盘，统一线路、站点、客流、公交 OD 和线网结构统计。</p><ul><li>线路分类和线路标注</li><li>站点客流热力和 Top 站点</li><li>公交 OD 与客流走廊</li><li>高峰 / 平峰筛选</li></ul></article>
+        </div>
+      </section>
+
+      <section id="visual">
+        <div class="section-head"><div><div class="section-kicker">VISUAL SYSTEM / 03</div><h2>让图标和颜色有明确语义</h2></div><p>基础地理保持克制，分析结果使用高辨识度颜色；所有功能使用统一图标语义。</p></div>
+        <div class="visual-grid">
+          <div class="surface"><h3>地图与分析色板</h3><p class="card p" style="padding:0;border:0;background:transparent">道路、公交、OD、热力和等时圈不共用同一套颜色，避免图例无法理解。</p><div class="swatches"><div class="swatch" style="background:#11283a">工作台<br>#11283A</div><div class="swatch" style="background:#2563eb">主操作<br>#2563EB</div><div class="swatch" style="background:#16a34a">低流量<br>#16A34A</div><div class="swatch" style="background:#f97316">中流量<br>#F97316</div><div class="swatch" style="background:#dc2626">高流量<br>#DC2626</div><div class="swatch" style="background:#7c3aed">OD / 可达性<br>#7C3AED</div><div class="swatch" style="background:#2d9cdb">热力低值<br>#2D9CDB</div><div class="swatch" style="background:#f2c94c;color:#4d4013">热力中值<br>#F2C94C</div><div class="swatch" style="background:#eb5757">热力高值<br>#EB5757</div><div class="swatch" style="background:#facc15;color:#56470d">选中高亮<br>#FACC15</div></div></div>
+          <div class="surface"><h3>功能图标语义</h3><p class="card p" style="padding:0;border:0;background:transparent">继续复用项目现有 Icon 组件，减少新图标依赖；按钮不使用难以理解的纯图标。</p><div class="icon-row"><div class="icon-box"><span class="glyph">⌖</span>区域切换</div><div class="icon-box"><span class="glyph">▱</span>图层管理</div><div class="icon-box"><span class="glyph">⌁</span>OD 出行</div><div class="icon-box"><span class="glyph">⇢</span>公交线路</div><div class="icon-box"><span class="glyph">◉</span>热力分析</div><div class="icon-box"><span class="glyph">◌</span>等时圈</div><div class="icon-box"><span class="glyph">✎</span>标注绘制</div><div class="icon-box"><span class="glyph">⇩</span>导出保存</div></div></div>
+        </div>
+        <div class="surface" style="margin-top:15px"><h3>标注系统</h3><div class="checklist"><label class="check"><input type="checkbox" checked />地市、县市区名称按缩放级别显示</label><label class="check"><input type="checkbox" checked />当前区域边界和名称高亮</label><label class="check"><input type="checkbox" checked />道路和公交线路名称标注</label><label class="check"><input type="checkbox" checked />站点、设施和 OD 节点标注</label><label class="check"><input type="checkbox" checked />热力 Top 点和等时圈时间标注</label><label class="check"><input type="checkbox" checked />标注显示 / 隐藏、字号和颜色控制</label></div></div>
+      </section>
+
+      <section id="agent">
+        <div class="section-head"><div><div class="section-kicker">AGENT MAP ACTION / 04</div><h2>从一句话到地图结果</h2></div><p>Agent 只负责理解意图和生成分析动作，地图前端局部更新结果图层，不整体重载样式。</p></div>
+        <div class="surface"><div class="flow"><div class="flow-step"><div class="flow-dot">01</div><strong>用户指令</strong><span>在义乌生成热力图</span></div><div class="flow-step"><div class="flow-dot">02</div><strong>意图识别</strong><span>区域 + 分析类型</span></div><div class="flow-step"><div class="flow-dot">03</div><strong>数据校验</strong><span>真实数据 / 演示数据</span></div><div class="flow-step"><div class="flow-dot">04</div><strong>地图动作</strong><span>局部更新 source</span></div><div class="flow-step"><div class="flow-dot">05</div><strong>确认保存</strong><span>临时层 → 正式图层</span></div></div></div>
+      </section>
+
+      <section id="phases">
+        <div class="section-head"><div><div class="section-kicker">IMPLEMENTATION / 05</div><h2>一个目标，七个可回退阶段</h2></div><p>用户看到的是一次完整重构，Git 和测试内部保留清晰边界。</p></div>
+        <div class="surface timeline">
+          <div class="phase"><div class="phase-no">PHASE 00</div><div><strong>基线与数据确认</strong><span>确认柬埔寨 OD 数据源，统一新昌公交数据适配器和分析字段。</span></div><div class="phase-status">先确认</div></div>
+          <div class="phase"><div class="phase-no">PHASE 01</div><div><strong>地图视觉与标注基础</strong><span>调整图标、配色、图例、状态反馈，加入行政区、道路和点位标注。</span></div><div class="phase-status">地图基础</div></div>
+          <div class="phase"><div class="phase-no">PHASE 02</div><div><strong>区域切换与地图状态</strong><span>省 / 市 / 县市区选择、搜索、定位、高亮和分析范围联动。</span></div><div class="phase-status">空间入口</div></div>
+          <div class="phase"><div class="phase-no">PHASE 03</div><div><strong>热力图与等时圈 Demo</strong><span>真实数据、演示数据、网格聚合、多档等时圈、统计卡和结果保存。</span></div><div class="phase-status">核心 Demo</div></div>
+          <div class="phase"><div class="phase-no">PHASE 04</div><div><strong>柬埔寨 OD 分析</strong><span>OD 线、起终点热力、排名、过滤、数据说明和导出。</span></div><div class="phase-status">真实数据</div></div>
+          <div class="phase"><div class="phase-no">PHASE 05</div><div><strong>新昌公交分析</strong><span>线路、站点、公交 OD、客流热力、线网结构和高峰筛选。</span></div><div class="phase-status">真实数据</div></div>
+          <div class="phase"><div class="phase-no">PHASE 06</div><div><strong>Agent 地图操作</strong><span>自然语言生成、叠加、保存、清除和撤销地图分析结果。</span></div><div class="phase-status">对话闭环</div></div>
+        </div>
+      </section>
+
+      <section id="acceptance">
+        <div class="section-head"><div><div class="section-kicker">ACCEPTANCE / 06</div><h2>确认后什么算完成？</h2></div><p>下面的清单将作为实现后的验收基线，而不是只看页面是否“能打开”。</p></div>
+        <div class="surface"><div class="checklist"><label class="check"><input type="checkbox" checked />地图视觉统一，图标和配色具有稳定语义</label><label class="check"><input type="checkbox" checked />浙江县市区可以切换、定位、高亮和恢复全省</label><label class="check"><input type="checkbox" checked />行政区、道路、公交、点位和分析结果可标注</label><label class="check"><input type="checkbox" checked />义乌热力图可用演示数据或用户数据生成</label><label class="check"><input type="checkbox" checked />等时圈支持多档叠加、演示模式和保存</label><label class="check"><input type="checkbox" checked />柬埔寨暹粒 OD Demo 可完成完整分析流程</label><label class="check"><input type="checkbox" checked />新昌公交 Demo 数据源和统计结果一致</label><label class="check"><input type="checkbox" checked />Agent 生成结果不整体刷新地图</label><label class="check"><input type="checkbox" checked />分析结果支持清除、撤销、保存和导出</label><label class="check"><input type="checkbox" checked />每阶段有 Git 提交、验证记录和变更日志</label></div></div>
+      </section>
+
+      <div class="approval"><div><strong id="approval-title">请审核这份整体方案</strong><span id="approval-text">确认后将把方案嵌入现有地图项目，开始一次完整但可回退的重构。</span></div><div class="approval-actions"><button id="revise">需要调整</button><button id="confirm">确认方案，开始重构</button></div></div>
+      <footer>独立审核稿 · 不会自动修改现有项目 · 现有工作区未提交修改将保留 · 方案文件：地图功能重构审核方案.html</footer>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    const toast = document.getElementById("toast");
+    let timer;
+    function showToast(text) {
+      toast.textContent = text;
+      toast.classList.add("show");
+      clearTimeout(timer);
+      timer = setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+    document.querySelectorAll(".nav a").forEach((link) => link.addEventListener("click", () => {
+      document.querySelectorAll(".nav a").forEach((item) => item.classList.remove("active"));
+      link.classList.add("active");
+    }));
+    document.getElementById("confirm").addEventListener("click", () => {
+      document.getElementById("approval-title").textContent = "方案已标记为确认待执行";
+      document.getElementById("approval-text").textContent = "下一步将先建立重构基线，然后开始地图视觉与标注基础阶段。";
+      showToast("已记录：确认方案，等待开始重构");
+    });
+    document.getElementById("revise").addEventListener("click", () => {
+      document.getElementById("approval-title").textContent = "方案需要调整";
+      document.getElementById("approval-text").textContent = "请在对话中指出需要调整的模块、视觉方向或 Demo 范围。";
+      showToast("已标记为需要调整");
+    });
+  </script>
+</body>
+</html>

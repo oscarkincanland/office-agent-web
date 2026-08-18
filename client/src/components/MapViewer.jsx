@@ -41,6 +41,166 @@ const MapViewer = forwardRef(function MapViewer(
   const fileInputRef = useRef(null);
   const drawModeRef = useRef(false); // 绘制/选点模式中（抑制要素弹窗）
   const stopDrawRef = useRef(null); // 当前绘制会话的清理函数
+  const labelsVisibleRef = useRef(true);
+  const analysisIdsRef = useRef(new Set());
+  const analysisPayloadsRef = useRef(new Map());
+
+  // 运行时标注不写回 style.json，避免 Agent 修改样式时反复覆盖分析状态。
+  const runtimeLabelLayers = ["boundary-city-label", "boundary-county-label"];
+  const ensureRuntimeLayers = (map) => {
+    if (!map || !map.isStyleLoaded?.()) return;
+    const addLabel = (id, source, minzoom, maxzoom, size, color) => {
+      if (!map.getSource(source) || map.getLayer(id)) return;
+      try {
+        map.addLayer({
+          id,
+          type: "symbol",
+          source,
+          "source-layer": source,
+          minzoom,
+          maxzoom,
+          layout: {
+            "text-field": ["coalesce", ["get", "name"], ["get", "名称"], ""],
+            "text-size": ["interpolate", ["linear"], ["zoom"], minzoom, size - 1, maxzoom, size + 2],
+            "text-font": ["Noto Sans Regular"],
+            "text-anchor": "center",
+            "text-allow-overlap": false,
+            "text-ignore-placement": false,
+          },
+          paint: {
+            "text-color": color,
+            "text-halo-color": "rgba(255,255,255,0.92)",
+            "text-halo-width": 1.6,
+            "text-halo-blur": 0.2,
+          },
+        });
+      } catch {}
+    };
+    addLabel("boundary-city-label", "boundary-city", 5, 10, 13, "#8f321e");
+    addLabel("boundary-county-label", "boundary-county", 8, 14, 11, "#344454");
+    const labelIds = new Set([
+      ...runtimeLabelLayers,
+      ...(map.getStyle()?.layers || []).filter((l) => String(l.id).endsWith("-label")).map((l) => l.id),
+    ]);
+    for (const id of labelIds) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", labelsVisibleRef.current ? "visible" : "none");
+    }
+  };
+
+  const clearRegionHighlight = (map) => {
+    if (!map) return;
+    for (const id of ["region-highlight-fill", "region-highlight-line", "drill-highlight"]) {
+      try { if (map.getLayer(id)) map.removeLayer(id); } catch {}
+    }
+  };
+
+  const restoreRegionHighlight = (map, d) => {
+    if (!map || !d?.code || !map.isStyleLoaded?.()) return;
+    clearRegionHighlight(map);
+    const source = d.source;
+    if (!source || !map.getSource(source)) return;
+    const before = map.getLayer(source) ? source : undefined;
+    try {
+      map.addLayer({
+        id: "region-highlight-fill",
+        type: "fill",
+        source,
+        "source-layer": source,
+        filter: ["==", "adcode", String(d.code)],
+        paint: { "fill-color": "#facc15", "fill-opacity": 0.16 },
+      }, before);
+      map.addLayer({
+        id: "region-highlight-line",
+        type: "line",
+        source,
+        "source-layer": source,
+        filter: ["==", "adcode", String(d.code)],
+        paint: { "line-color": "#f59e0b", "line-width": 3, "line-opacity": 0.95 },
+      });
+    } catch {}
+  };
+
+  const geometryBounds = (geojson) => {
+    const b = [Infinity, Infinity, -Infinity, -Infinity];
+    const walk = (g) => {
+      if (!g) return;
+      if (g.type === "FeatureCollection") return (g.features || []).forEach((f) => walk(f));
+      if (g.type === "Feature") return walk(g.geometry);
+      if (g.type === "Point") return walk(g.coordinates);
+      if (Array.isArray(g) && typeof g[0] === "number") {
+        b[0] = Math.min(b[0], g[0]); b[1] = Math.min(b[1], g[1]);
+        b[2] = Math.max(b[2], g[0]); b[3] = Math.max(b[3], g[1]);
+        return;
+      }
+      if (Array.isArray(g)) g.forEach(walk);
+      else if (g.coordinates) walk(g.coordinates);
+    };
+    walk(geojson);
+    return b[0] === Infinity ? null : b;
+  };
+
+  const removeAnalysisLayers = (map, id = "agent-analysis") => {
+    const layerIds = [`${id}-heat`, `${id}-circles`, `${id}-labels`, `${id}-fill`, `${id}-line`, `${id}-od-lines`];
+    for (const layerId of layerIds) {
+      try { if (map?.getLayer(layerId)) map.removeLayer(layerId); } catch {}
+    }
+    try { if (map?.getSource(`${id}-source`)) map.removeSource(`${id}-source`); } catch {}
+    try { if (map?.getSource(`${id}-lines-source`)) map.removeSource(`${id}-lines-source`); } catch {}
+    analysisIdsRef.current.delete(id);
+    analysisPayloadsRef.current.delete(id);
+  };
+
+  const showAnalysisLayer = (map, payload = {}) => {
+    if (!map || !payload.geojson || !map.isStyleLoaded?.()) return false;
+    const id = String(payload.id || "agent-analysis").replace(/[^a-zA-Z0-9_-]/g, "-");
+    removeAnalysisLayers(map, id);
+    const source = `${id}-source`;
+    const type = payload.type || payload.analysis || "heatmap";
+    map.addSource(source, { type: "geojson", data: payload.geojson });
+    if (type === "isochrone") {
+      map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.2 } });
+      map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#7c3aed"], "line-width": 2, "line-opacity": 0.9 } });
+    } else {
+      const max = Math.max(1, ...(payload.geojson.features || []).map((f) => Number(f.properties?.value ?? f.properties?.flow ?? 1)).filter(Number.isFinite));
+      map.addLayer({
+        id: `${id}-heat`, type: "heatmap", source,
+        maxzoom: 14,
+        paint: {
+          "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, max, 1],
+          "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 5, 0.8, 12, 1.6],
+          "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 30],
+          "heatmap-opacity": 0.76,
+          "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(45,156,219,0)", 0.28, "#2d9cdb", 0.52, "#f2c94c", 0.78, "#f97316", 1, "#dc2626"],
+        },
+      });
+      map.addLayer({
+        id: `${id}-circles`, type: "circle", source, minzoom: 10,
+        paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, max, 10], "circle-color": "#f97316", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 },
+      });
+      map.addLayer({
+        id: `${id}-labels`, type: "symbol", source, minzoom: 12,
+        layout: { "text-field": ["coalesce", ["get", "name"], ""], "text-size": 11, "text-offset": [0, 1.2], "text-anchor": "top", "text-allow-overlap": false },
+        paint: { "text-color": "#17212b", "text-halo-color": "#fff", "text-halo-width": 1.2 },
+      });
+    }
+    if (type === "od" && payload.lines) {
+      const lineSource = `${id}-lines-source`;
+      map.addSource(lineSource, { type: "geojson", data: payload.lines });
+      map.addLayer({
+        id: `${id}-od-lines`, type: "line", source: lineSource,
+        paint: {
+          "line-color": "#7c3aed",
+          "line-width": ["interpolate", ["linear"], ["get", "flow"], 1, 0.7, 10, 2.2, 40, 4.5],
+          "line-opacity": 0.5,
+        },
+      });
+    }
+    analysisIdsRef.current.add(id);
+    analysisPayloadsRef.current.set(id, payload);
+    const b = geometryBounds(payload.geojson);
+    if (payload.fitBounds && b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, maxZoom: 14, duration: 600 });
+    return true;
+  };
 
   // 初始化地图
   useEffect(() => {
@@ -71,6 +231,7 @@ const MapViewer = forwardRef(function MapViewer(
     };
     map.on("load", () => {
       setLoaded(true);
+      ensureRuntimeLayers(map);
       // 立即同步图层列表（避免加载后第一时间下钻时 ref 为空）
       fetch(STYLE_PATH(project))
         .then((r) => r.json())
@@ -102,15 +263,16 @@ const MapViewer = forwardRef(function MapViewer(
       );
       if (!pick) return;
       // 点击行政区划边界 → 触发下钻（市级/县区级）
-      if (pick.layer.id === "boundary-city" || pick.layer.id === "boundary-county") {
+      const boundaryLayer = String(pick.layer.id).replace(/-label$/, "");
+      if (boundaryLayer === "boundary-city" || boundaryLayer === "boundary-county") {
         const p = pick.properties;
         const code = String(p.adcode ?? "");
         if (code) {
           onDrillDown?.({
-            source: pick.layer.id,
+            source: boundaryLayer,
             code,
             name: p.name || code,
-            level: pick.layer.id === "boundary-city" ? "city" : "county",
+            level: boundaryLayer === "boundary-city" ? "city" : "county",
           });
         }
       }
@@ -178,19 +340,9 @@ const MapViewer = forwardRef(function MapViewer(
       const restoreDrill = () => {
         const m = mapRef.current;
         if (!m || !drillRef.current) return;
-        try { if (m.getLayer("drill-highlight")) m.removeLayer("drill-highlight"); } catch {}
-        if (d.source && m.getSource(d.source)) {
-          m.addLayer({
-            id: "drill-highlight",
-            type: "fill",
-            source: d.source,
-            "source-layer": d.source,
-            filter: ["==", "adcode", d.code],
-            paint: { "fill-color": "#ffd54f", "fill-opacity": 0.3 },
-          });
-        }
+        restoreRegionHighlight(m, d);
         for (const id of roadLayerIdsRef.current) {
-          if (m.getLayer(id)) m.setFilter(id, ["in", field, d.code]);
+          if (m.getLayer(id)) m.setFilter(id, ["==", field, d.code]);
         }
       };
       map.once("idle", restoreDrill);
@@ -200,13 +352,19 @@ const MapViewer = forwardRef(function MapViewer(
       }, 1500);
     }
     // 重放底图
-    setBasemap((prev) => {
+      setBasemap((prev) => {
       for (const id of basemapIdsRef.current) {
         if (map.getLayer(`basemap-${id}`)) {
           map.setLayoutProperty(`basemap-${id}`, "visibility", id === prev ? "visible" : "none");
         }
       }
       return prev;
+      });
+    ensureRuntimeLayers(map);
+    map.once("idle", () => {
+      ensureRuntimeLayers(map);
+      const payloads = [...analysisPayloadsRef.current.values()];
+      payloads.forEach((payload) => showAnalysisLayer(map, payload));
     });
   }, []);
 
@@ -237,20 +395,12 @@ const MapViewer = forwardRef(function MapViewer(
     drillTo: (d) => {
       const map = mapRef.current;
       if (!map || !d?.code) return;
-      try { if (map.getLayer("drill-highlight")) map.removeLayer("drill-highlight"); } catch {}
+      ensureRuntimeLayers(map);
+      clearRegionHighlight(map);
       const field = d.level === "city" ? "city_code" : "adcode";
-      if (d.source && map.getSource(d.source)) {
-        map.addLayer({
-          id: "drill-highlight",
-          type: "fill",
-          source: d.source,
-          "source-layer": d.source,
-          filter: ["==", "adcode", d.code],
-          paint: { "fill-color": "#ffd54f", "fill-opacity": 0.3 },
-        });
-      }
+      restoreRegionHighlight(map, d);
       for (const id of roadLayerIdsRef.current) {
-        if (map.getLayer(id)) map.setFilter(id, ["in", field, d.code]);
+        if (map.getLayer(id)) map.setFilter(id, ["==", field, d.code]);
       }
       drillRef.current = d;
     },
@@ -258,12 +408,37 @@ const MapViewer = forwardRef(function MapViewer(
     clearDrill: () => {
       const map = mapRef.current;
       if (!map) return;
-      try { if (map.getLayer("drill-highlight")) map.removeLayer("drill-highlight"); } catch {}
+      clearRegionHighlight(map);
       for (const id of roadLayerIdsRef.current) {
         if (map.getLayer(id)) map.setFilter(id, null);
       }
       drillRef.current = null;
     },
+    /** 区域选择器定位到边界范围，不改变当前样式。 */
+    focusBounds: (bbox, options = {}) => {
+      const map = mapRef.current;
+      if (!map || !Array.isArray(bbox) || bbox.length !== 4) return;
+      try {
+        map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: options.padding || 56, maxZoom: options.maxZoom || 13, duration: 650 });
+      } catch {}
+    },
+    /** 标注总开关：只改运行时 symbol 图层。 */
+    setAnnotationVisibility: (visible) => {
+      labelsVisibleRef.current = !!visible;
+      const map = mapRef.current;
+      if (!map) return;
+      ensureRuntimeLayers(map);
+      const labelIds = new Set([
+        ...runtimeLabelLayers,
+        ...(map.getStyle()?.layers || []).filter((l) => String(l.id).endsWith("-label")).map((l) => l.id),
+      ]);
+      for (const id of labelIds) {
+        if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+      }
+    },
+    /** Agent 或仪表盘生成的分析结果：只更新临时图层，不重载完整 style。 */
+    showAnalysis: (payload) => showAnalysisLayer(mapRef.current, payload),
+    clearAnalysis: (id = "agent-analysis") => removeAnalysisLayers(mapRef.current, id),
     /** 绘制/测量模式：开关属性弹窗与光标 */
     setDrawingMode: (on) => {
       popupEnabledRef.current = !on;
