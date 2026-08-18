@@ -9,6 +9,7 @@ import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
+import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1760,6 +1761,13 @@ app.get("/api/map/exchange-sankey", (req, res) => {
 app.get("/api/map/road-structure", (req, res) => {
   const name = req.query.project || "zhejiang-map";
   sendMapAnalysis(res, () => map.getRoadStructure(name));
+});
+
+// 柬埔寨暹粒 OD 演示数据（来源路径可通过 CAMBODIA_OD_FILE 覆盖）
+app.get("/api/demo/cambodia-od", (_req, res) => {
+  const payload = cambodiaOD.getCambodiaOD();
+  if (payload.error) return res.status(404).json(payload);
+  res.json(payload);
 });
 
 // ---------- M3 新昌公交分析 ----------

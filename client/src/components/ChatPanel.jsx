@@ -106,7 +106,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -423,6 +423,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "file_changed":
         pushSystem(`文件已更新: ${(data.files || []).join(", ")}`);
         if (data.files?.length) onFileChanged(data.files);
+        break;
+      case "map_action":
+        pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
+        onMapAction?.(data);
         break;
       case "agent_summary":
         // 对话结束总结条
