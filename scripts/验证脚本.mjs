@@ -80,6 +80,11 @@ async function smokeTest() {
     ["GET", "/api/map/exchange-sankey?project=zhejiang-map"],
     ["GET", "/api/map/road-structure?project=zhejiang-map"],
     ["GET", "/api/map/demo-analysis?analysis=heatmap&region=%E4%B9%89%E4%B9%8C%E5%B8%82"],
+    ["GET", "/api/demo/cambodia-od?minFlow=0"],
+    ["GET", "/api/m3/bus-routes"],
+    ["GET", "/api/m3/station-heatmap"],
+    ["GET", "/api/m3/od-lines"],
+    ["GET", "/api/m3/network-stats"],
     ["GET", "/api/kb/graph?root=0&include=links,tags,folders&max=800"],
   ];
   for (const [method, url] of endpoints) {

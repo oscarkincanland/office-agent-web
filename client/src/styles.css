@@ -3479,6 +3479,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .mp-project-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 .mp-region-select { max-width: 178px; border-color: #3e6d78; }
 .mp-region-select option { background: var(--panel2-bg); color: var(--text); }
+.mp-region-search { width: 86px; background: var(--panel2-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+.mp-region-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 .mp-annotation-btn.active { color: #0e0e1a; background: #f0c674; border-color: #f0c674; }
 .mp-annotation-btn:not(.active) { color: var(--muted); }
 .mp-demo-wrap { position: relative; display: inline-flex; }
@@ -3492,6 +3494,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   padding: 7px 8px; color: var(--text); background: transparent; font-size: 12px; text-align: left; cursor: pointer;
 }
 .mp-demo-menu button:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.mp-demo-menu button:disabled { opacity: .45; cursor: not-allowed; }
 .mp-basemap { display: flex; gap: 3px; }
 .mp-drill-btn {
   display: inline-flex; align-items: center; gap: 4px;
@@ -3639,6 +3642,10 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .cambodia-source span { grid-row: span 2; align-self: center; padding: 3px 6px; border-radius: 3px; color: #805a13; background: #fff2c7; font-weight: 700; }
 .cambodia-source strong { color: var(--text); font-size: 11px; font-weight: 600; }
 .cambodia-source small { color: var(--dim); }
+.cambodia-filter { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin: 4px 0 12px; color: var(--muted); font-size: 11px; }
+.cambodia-filter strong { color: var(--accent); }
+.cambodia-filter input { min-width: 80px; accent-color: #e8792f; }
+.cambodia-filter span { color: var(--dim); white-space: nowrap; }
 .cambodia-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 14px; }
 .cambodia-kpis > div { padding: 8px 5px; border: 1px solid var(--border); border-radius: 5px; text-align: center; background: var(--panel2-bg); }
 .cambodia-kpis strong { display: block; color: #e8792f; font-size: 16px; font-variant-numeric: tabular-nums; }
