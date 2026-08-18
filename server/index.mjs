@@ -3,19 +3,68 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
+import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
+import * as mapAnalysis from "./map-analysis.mjs";
+import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
+import { createTaskEnvelope } from "./task.mjs";
+import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
+import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3001;
+const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 
 app.use(express.json({ limit: "60mb" }));
+
+// ---------- request boundary / local API authentication ----------
+// The app is intended to run locally. Keep the default listener on loopback and
+// make authentication opt-in so existing local workflows remain compatible.
+function tokenMatches(candidate) {
+  if (!API_TOKEN || !candidate) return false;
+  const a = Buffer.from(String(candidate));
+  const b = Buffer.from(API_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function readCookie(req, name) {
+  const raw = req.get("cookie") || "";
+  const pair = raw.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${name}=`));
+  return pair ? decodeURIComponent(pair.slice(name.length + 1)) : "";
+}
+
+function setAuthCookie(res) {
+  if (!API_TOKEN) return;
+  res.setHeader("Set-Cookie", `oaw_token=${encodeURIComponent(API_TOKEN)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`);
+}
+
+app.use((req, res, next) => {
+  const requestId = req.get("x-request-id") || crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  // Opening the UI as /?token=... bootstraps a same-origin HttpOnly cookie,
+  // which also works for direct fetch() calls and EventSource streams.
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+
+  if (!API_TOKEN || !req.path.startsWith("/api/") || req.path === "/api/status") return next();
+
+  const authorization = req.get("authorization") || "";
+  const bearer = authorization.replace(/^Bearer\s+/i, "");
+  const supplied = bearer || req.get("x-oaw-token") || readCookie(req, "oaw_token") || req.query?.token;
+  if (!tokenMatches(supplied)) {
+    return res.status(401).json({ error: "unauthorized", message: "需要有效的 OAW_API_TOKEN", requestId });
+  }
+  next();
+});
 
 // ---------- helpers ----------
 const COL_RE = /([A-Z]+)(\d+)$/;
@@ -121,8 +170,15 @@ async function readWorkbook(file) {
 }
 
 // ---------- REST ----------
-app.get("/api/status", (_req, res) => {
-  res.json({ ok: true, officecli: path.basename(OFFICECLI), version: pkg.version });
+app.get("/api/status", (req, res) => {
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+  res.json({
+    ok: true,
+    officecli: path.basename(OFFICECLI),
+    version: pkg.version,
+    host: HOST,
+    authRequired: Boolean(API_TOKEN),
+  });
 });
 
 // ---------- 知识库（本地索引 + IMA 云端） ----------
@@ -314,7 +370,7 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
   const p = path.join(map.STATIC_ROOT, name, "style.json");
   if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
   try {
-    const style = JSON.parse(fs.readFileSync(p, "utf8"));
+    const style = map.hydrateBasemapSources(JSON.parse(fs.readFileSync(p, "utf8")));
     const origin = `${req.protocol}://${req.get("host")}`;
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray(s.tiles)) {
@@ -433,14 +489,104 @@ app.post("/api/map/route", async (req, res) => {
   res.json({ ok: true, provider: r.provider, distance: r.distance, duration: r.duration, geometry: r.geometry });
 });
 
+// 地图分析演示与数据适配器（结果只在内存中生成，明确标记 source=demo）
+app.get("/api/map/demo-analysis", (req, res) => {
+  try {
+    res.json(mapAnalysis.createDemoAnalysis({ analysis: req.query.analysis, region: req.query.region, project: req.query.project, count: req.query.count }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/demo/cambodia-od", (req, res) => {
+  try { res.json(mapAnalysis.getCambodiaOD({ minFlow: req.query.minFlow })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/m3/bus-routes", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("routes")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/station-heatmap", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("stations")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/od-lines", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("od")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/network-stats", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("stats")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/api/files", (req, res) => {
   const dir = req.query.dir || "";
   // 只允许相对路径，防止越界
   if (dir && (dir.includes("..") || dir.startsWith("/") || /^[a-zA-Z]:/.test(dir))) {
     return res.status(400).json({ error: "invalid dir" });
   }
-  const target = dir ? path.join(getWorkspace(), dir) : getWorkspace();
-  res.json({ files: listWorkspace(target), dir });
+  const target = dir ? resolvePath(dir) : getWorkspace();
+  if (dir && (!target || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found" });
+  const files = listWorkspace(target).map((item) => {
+    if (item.isDir) return item;
+    const p = path.join(target, item.name);
+    try {
+      const st = fs.statSync(p);
+      return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
+    } catch { return item; }
+  });
+  res.json({ files, dir, workspace: getWorkspace() });
+});
+
+function mimeForExt(ext) {
+  return ({
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    pdf: "application/pdf", csv: "text/csv", json: "application/json",
+    md: "text/markdown", markdown: "text/markdown", txt: "text/plain", html: "text/html", htm: "text/html",
+  })[String(ext || "").toLowerCase()] || "application/octet-stream";
+}
+
+// ---------- structured references / external file roots ----------
+app.post("/api/context/resolve", (req, res) => {
+  try {
+    const { references, text } = req.body || {};
+    const resolved = resolveReferences(references, text);
+    const publicRefs = resolved.map((ref) => {
+      const metadata = ref.metadata ? { ...ref.metadata } : ref.metadata;
+      if (metadata?.path) delete metadata.path;
+      if (Array.isArray(metadata?.files)) metadata.files = metadata.files.map((item) => { const next = { ...item }; delete next.path; return next; });
+      return { ...ref, metadata };
+    });
+    res.json({ ok: true, references: publicRefs, summary: contextSummary(publicRefs), requestId: req.requestId });
+  } catch (e) {
+    res.status(400).json({ error: e.message, requestId: req.requestId });
+  }
+});
+
+app.post("/api/context/read", async (req, res) => {
+  try {
+    const { reference, references, refId, query, range } = req.body || {};
+    const ref = reference || (Array.isArray(references) ? references.find((r) => r?.id === refId) : null);
+    if (!ref) return res.status(400).json({ error: "reference or refId required", requestId: req.requestId });
+    const result = await readReference(ref, query, range);
+    if (result.status !== "resolved") return res.status(404).json({ ...result, requestId: req.requestId });
+    const metadata = result.metadata ? { ...result.metadata } : result.metadata;
+    if (metadata?.path) delete metadata.path;
+    res.json({ ...result, metadata, requestId: req.requestId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, requestId: req.requestId });
+  }
+});
+
+app.get("/api/file-roots", (_req, res) => res.json({ roots: listFileRoots() }));
+app.post("/api/file-roots", (req, res) => {
+  const result = addFileRoot(req.body?.path, req.body?.label);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+app.delete("/api/file-roots/:id", (req, res) => {
+  const result = removeFileRoot(req.params.id);
+  res.status(result.ok ? 200 : 404).json(result);
 });
 
 app.post("/api/files/upload", async (req, res) => {
@@ -448,7 +594,7 @@ app.post("/api/files/upload", async (req, res) => {
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
-  if (!/\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
+  if (!/\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
   fs.writeFileSync(path.join(getWorkspace(), safe), buf);
   res.json({ ok: true, file: safe });
 });
@@ -461,7 +607,7 @@ app.post("/api/files/delete", async (req, res) => {
 });
 
 // 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
-app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -477,7 +623,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
 });
 
 // docx → 纯文本（供 agent 在无 officecli 环境读取 docx 内容）
-app.get(/^\/api\/doc\/([^\/]+)\/text$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p || !/\.docx$/i.test(p)) return res.status(404).json({ error: "not found" });
@@ -498,26 +644,30 @@ app.get(/^\/api\/doc\/([^\/]+)\/text$/, async (req, res) => {
 });
 
 // open document
-app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   const fileName = decodeURIComponent(req.params[0]);
+  if (/(?:^|\/)(?:raw|text|html|comments|watch)(?:\/stop)?$/.test(fileName)) return next();
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
+  const thread = req.query.thread;
   if (client) {
-    try { agentManager.setCurrentFile(client, fileName); } catch {}
+    try { agentManager.setCurrentFile(agentKey(client, thread), fileName); } catch {}
   }
   try {
     if (ext === "xlsx") {
       const wb = await readWorkbook(p);
       res.json({ kind: "xlsx", name: fileName, ...wb });
-    } else if (ext === "md" || ext === "markdown" || ext === "txt") {
+    } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
       const content = fs.readFileSync(p, "utf8");
       res.json({ kind: "text", name: fileName, content, ext });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
       res.json({ kind: "htmlfile", name: fileName, content });
+    } else if (ext === "pdf") {
+      res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw` });
     } else {
       res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
     }
@@ -527,7 +677,7 @@ app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
 });
 
 // rendered html for docx/pptx (iframe target)
-app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).send("not found");
@@ -543,7 +693,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
 // 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
-app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -597,7 +747,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
   }
 });
 
-app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/watch$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -610,7 +760,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
 });
 
 // 停止某文件的 watch
-app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
+app.post(/^\/api\/doc\/(.+)\/watch\/stop$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (p) stopWatch(p);
@@ -618,7 +768,7 @@ app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
 });
 
 // apply xlsx cell edits (batch)
-app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
+app.post(/^\/api\/doc\/(.+)\/cells$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -641,8 +791,20 @@ app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
 app.post("/api/office", async (req, res) => {
   const { args } = req.body || {};
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
-  const r = await runOfficecli(args.map(String));
-  res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json });
+  const normalizedArgs = args.map(String);
+  const allowedCommands = new Set(["view", "get", "set", "batch", "query", "watch"]);
+  if (!allowedCommands.has(normalizedArgs[0])) {
+    return res.status(400).json({ error: "unsupported office command", allowed: [...allowedCommands] });
+  }
+  if (normalizedArgs.some((arg) => path.isAbsolute(arg) || arg.split(/[\\/]/).includes(".."))) {
+    return res.status(400).json({ error: "office paths must stay inside the workspace" });
+  }
+  try {
+    const r = await runOfficecli(normalizedArgs, { cwd: getWorkspace() });
+    res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, requestId: req.requestId });
+  }
 });
 
 // docx 富文本编辑代理（供前端编辑工具栏调用）
@@ -729,6 +891,12 @@ app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
 });
 
 // ---------- agent ----------
+function agentKey(client, thread) {
+  const c = String(client || "").trim();
+  const t = String(thread || "").trim();
+  return t ? `${c}::${t}` : c;
+}
+
 app.get("/api/models", async (_req, res) => {
   try {
     const models = await agentManager.listModels();
@@ -756,10 +924,10 @@ app.post("/api/models/refresh", async (_req, res) => {
 });
 
 app.post("/api/agent/model", async (req, res) => {
-  const { client, model } = req.body || {};
+  const { client, thread, model } = req.body || {};
   if (!client || !model) return res.status(400).json({ error: "client and model required" });
   try {
-    res.json(await agentManager.setModel(client, model));
+    res.json(await agentManager.setModel(agentKey(client, thread), model));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -873,6 +1041,35 @@ app.get("/api/skills", (_req, res) => {
   res.json({ skills: scanSkills() });
 });
 
+// 声明式工作流注册表：返回技能依赖、可用性和执行步骤，供前端与 Agent 共用。
+app.get("/api/workflows", (_req, res) => {
+  res.json({ workflows: listWorkflows(scanSkills()) });
+});
+
+app.get("/api/workflows/:id/validate", (req, res) => {
+  const workflow = getWorkflow(req.params.id, scanSkills());
+  if (!workflow) return res.status(404).json({ ok: false, error: "workflow not found" });
+  res.json({ ok: workflow.valid, workflow, message: workflow.valid ? "工作流依赖完整" : `缺少技能：${workflow.missing.join(", ")}` });
+});
+
+// ---------- 外部文件连接器 ----------
+app.get("/api/connectors", (_req, res) => res.json({ connectors: listConnectors() }));
+app.get("/api/connectors/:id", (req, res) => {
+  const connector = getConnector(req.params.id);
+  if (!connector) return res.status(404).json({ error: "connector not found" });
+  res.json({ connector });
+});
+app.post("/api/connectors/:id/auth/start", (req, res) => {
+  const result = beginConnectorAuth(req.params.id, req.body?.redirectUri);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+app.post("/api/connectors/:id/status", (req, res) => {
+  const result = setConnectorStatus(req.params.id, req.body || {});
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
 // POST /api/skills/export - 导出 skill（返回 base64 内容）
 app.post("/api/skills/export", (req, res) => {
   const { name } = req.body || {};
@@ -979,6 +1176,47 @@ function parseJsonl(text) {
   }
   return out;
 }
+
+// ---------- 任务执行（run）与产物清单 ----------
+app.get("/api/runs", (req, res) => {
+  res.json({ runs: listRuns({ threadId: String(req.query.thread || ""), limit: parseInt(req.query.limit, 10) || 50 }) });
+});
+
+app.get("/api/runs/:id", (req, res) => {
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "run not found" });
+  res.json({ run });
+});
+
+app.post("/api/runs/:id/rollback", (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "rollback requires confirm=true" });
+  const result = rollbackRun(req.params.id, req.body?.paths);
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
+});
+
+app.post("/api/runs/:id/steps/:stepId", (req, res) => {
+  const run = updateRunStep(req.params.id, req.params.stepId, req.body || {});
+  if (!run) return res.status(404).json({ error: "run or step not found" });
+  res.json({ ok: true, run: getRun(req.params.id) });
+});
+
+app.post("/api/sessions/:id/fork", (req, res) => {
+  const found = findSessionFile(req.params.id);
+  if (!found) return res.status(404).json({ error: "not found" });
+  try {
+    const source = fs.readFileSync(found.fullPath, "utf8");
+    const lines = source.split(/\r?\n/).filter(Boolean);
+    if (!lines.length) return res.status(400).json({ error: "empty session" });
+    const header = JSON.parse(lines[0]);
+    const id = crypto.randomUUID();
+    const nextHeader = { ...header, id, sessionId: id, parentSessionId: header.sessionId || header.id || req.params.id, created: new Date().toISOString(), label: String(req.body?.label || `${header.label || "会话"}（分支）`) };
+    lines[0] = JSON.stringify(nextHeader);
+    const fileName = `${id}.jsonl`;
+    fs.writeFileSync(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
+    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 // GET /api/workspaces - 列出已知工作区目录
 app.get("/api/workspaces", (_req, res) => {
@@ -1210,29 +1448,43 @@ app.post("/api/sessions/:id/rename", (req, res) => {
 
 // 中止当前 agent 运行
 app.post("/api/agent/abort", async (req, res) => {
-  const { client } = req.body || {};
+  const { client, thread } = req.body || {};
   if (!client) return res.status(400).json({ error: "client required" });
   try {
-    res.json(await agentManager.abort(client));
+    res.json(await agentManager.abort(agentKey(client, thread)));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+app.get("/api/agent/pending", (req, res) => {
+  const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
+  res.json({ questions: agentManager.pendingQuestions(client && thread ? agentKey(client, thread) : "") });
+});
+
 // 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
 app.post("/api/agent/answer", (req, res) => {
-  const { client, answer } = req.body || {};
+  const { client, thread, answer } = req.body || {};
   if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
-  const done = agentManager.askPending(client);
-  if (!done) return res.status(404).json({ error: "no pending question" });
-  done(String(answer).slice(0, 2000));
-  res.json({ ok: true });
+  const result = agentManager.submitAnswer(agentKey(client, thread), String(answer).slice(0, 2000));
+  if (!result.ok) return res.status(404).json({ error: "no pending question" });
+  res.json(result);
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, text, images, attachments, effort } = req.body || {};
-  if (!client || !text) return res.status(400).json({ error: "client and text required" });
+  const { client, thread, text, images, attachments, references, effort, task: taskInput } = req.body || {};
+  const hasImages = Array.isArray(images) && images.some((img) => img?.data);
+  const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
+  if (!client || (!String(text || "").trim() && !hasImages && !hasAttachments)) {
+    return res.status(400).json({ error: "text, image, or attachment required" });
+  }
+  const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
+  const key = agentKey(client, thread);
   const before = snapshotWorkspace();
+  let run = null;
+  let resolved = [];
+  let task = null;
   // 保存上传的附件到工作区（agent 可读取）
   if (Array.isArray(attachments) && attachments.length) {
     for (const att of attachments) {
@@ -1244,20 +1496,43 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
   }
   try {
-    await agentManager.prompt(client, text, images, effort);
+    resolved = resolveReferences(references, normalizedText);
+    const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
+    const workflow = workflowId ? getWorkflow(workflowId, scanSkills()) : null;
+    task = createTaskEnvelope({
+      ...(taskInput || {}),
+      text: normalizedText,
+      threadId: thread || null,
+      currentFile: taskInput?.currentFile || null,
+      references: resolved,
+      workflowId,
+      constraints: [
+        ...(taskInput?.constraints || []),
+        ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
+      ],
+    });
+    run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved, workflow });
+    recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
+    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
-    const entry = agentManager.sessions.get(client);
+    const entry = agentManager.sessions.get(key);
     if (entry) emitChannel(entry, "agent_error", { message: e.message });
     // 出错也检测产物（agent 可能已部分写入文件）
     const changed = await waitForFlush(before);
     if (changed.length) {
       if (entry) {
-        emitChannel(entry, "file_changed", { files: changed });
+        emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
         emitChannel(entry, "agent_summary", {
           products: changed,
           summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+          runId: run?.id || null,
+          artifacts: [],
         });
       }
+    }
+    if (run) {
+      const failed = finishRun(run.id, { status: "failed", error: e.message, summary: "Agent 执行失败" });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: "failed" });
     }
     res.status(500).json({ error: e.message });
     return;
@@ -1265,27 +1540,49 @@ app.post("/api/agent/prompt", async (req, res) => {
   // officecli keeps files in a resident process — disk writes flush asynchronously.
   // Poll until the workspace snapshot stabilizes, then diff.
   const changed = await waitForFlush(before);
-  if (changed.length) {
-    const entry = agentManager.sessions.get(client);
-    if (entry) {
-      emitChannel(entry, "file_changed", { files: changed });
-      // 对话结束总结：产物清单
+  const entry = agentManager.sessions.get(key);
+  const completed = run ? finishRun(run.id, { status: "completed", sessionId: entry?.session?.sessionId || null, summary: changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件` : "本轮对话完成，未检测到文件变更" }) : null;
+  if (entry) {
+    if (changed.length) {
+      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
         products: changed,
         summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        runId: run?.id || null,
+        artifacts: completed?.artifacts || [],
+        references: resolved,
       });
     }
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: "completed" });
   }
   // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
-  const entry = agentManager.sessions.get(client);
-  res.json({ ok: true, changed, sessionId: entry?.session?.sessionId || null });
+  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
+});
+
+app.post("/api/agent/new", async (req, res) => {
+  const { client, thread, cwd } = req.body || {};
+  if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
+  try {
+    res.json(await agentManager.newThread(agentKey(client, thread), thread, cwd || getWorkspace()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/agent/resume", async (req, res) => {
+  const { client, thread, sessionId, cwd } = req.body || {};
+  if (!client || !thread || !sessionId) return res.status(400).json({ error: "client, thread and sessionId required" });
+  const found = findSessionFile(sessionId);
+  if (!found) return res.status(404).json({ error: "session not found" });
+  try {
+    res.json(await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, cwd || getWorkspace()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // SSE stream per client
 app.get("/api/agent/stream", async (req, res) => {
   const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
   if (!client) return res.status(400).end();
-  const entry = await agentManager.getOrCreate(client);
+  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -1429,6 +1726,16 @@ app.post("/api/memory/init", (_req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/api/memory/proposals", (req, res) => {
+  res.json({ proposals: agentManager.memoryProposals(req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "") });
+});
+
+app.post("/api/memory/proposals/:id/approve", (req, res) => {
+  const result = agentManager.approveMemoryProposal(req.params.id);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
 app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {
   const fp = resolveMemoryPath(req.params[0]);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "not found" });
@@ -1465,6 +1772,7 @@ app.get("/api/map/settings", (_req, res) => {
     basemaps: {
       tiandituKey: !!s.basemaps?.tiandituKey,
       maptilerKey: !!s.basemaps?.maptilerKey,
+      geoapifyKey: !!s.basemaps?.geoapifyKey,
       esriToken: !!s.basemaps?.esriToken,
     },
   });
@@ -1481,6 +1789,7 @@ app.post("/api/map/settings", (req, res) => {
       basemaps: {
         tiandituKey: !!s.basemaps?.tiandituKey,
         maptilerKey: !!s.basemaps?.maptilerKey,
+        geoapifyKey: !!s.basemaps?.geoapifyKey,
         esriToken: !!s.basemaps?.esriToken,
       },
       projects: projects.map((p) => p.project),
@@ -1667,9 +1976,14 @@ app.post("/api/open-in-explorer", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Open Plan（规聚）running at http://localhost:${PORT}`);
+if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
+  console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
+  if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
 });
 
 process.on("SIGINT", async () => {

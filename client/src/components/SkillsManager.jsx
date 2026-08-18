@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { listSkills, exportSkill, importSkill } from "../api.js";
+import { listSkills, listWorkflows, exportSkill, importSkill, validateWorkflow } from "../api.js";
 import Icon from "./Icon.jsx";
 
 /**
@@ -58,6 +58,7 @@ const WORKFLOWS = [
 
 export default function SkillsManager({ open, onClose, onAtMention }) {
   const [skills, setSkills] = useState([]);
+  const [workflows, setWorkflows] = useState(WORKFLOWS);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [view, setView] = useState("skills"); // "skills" | "workflows"
@@ -70,6 +71,10 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
     try {
       const d = await listSkills();
       setSkills(d.skills || []);
+      try {
+        const w = await listWorkflows();
+        if (w.workflows?.length) setWorkflows(w.workflows);
+      } catch {}
     } catch (e) { setMsg("加载失败: " + e.message); }
     setLoading(false);
   }, []);
@@ -131,17 +136,18 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
   // 启动工作流：插入工作流 prompt 并逐个 @ 其依赖技能
   const startWorkflow = (wf) => {
     const ats = wf.skills.map((s) => `@${s}`).join(" ");
-    onAtMention(`${ats} ${wf.prompt}`);
+    const prompt = wf.prompt || `请按「${wf.name}」工作流执行：${(wf.steps || []).join(" → ")}。完成后汇总产物和来源。`;
+    onAtMention(`@工作流[${wf.id}] ${ats} ${prompt}`);
     onClose();
     setMsg(`已启动「${wf.name}」工作流`);
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="skills-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={onClose} role="presentation">
+      <div className="skills-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="技能广场">
         <div className="modal-head">
           <span className="modal-title"><Icon name="skills" size={14} /> 技能广场 ({skills.length})</span>
-          <button className="btn-xs" onClick={onClose}><Icon name="close" size={12} /> 关闭</button>
+          <button className="btn-xs" onClick={onClose} aria-label="关闭技能广场"><Icon name="close" size={12} /> 关闭</button>
         </div>
 
         <div className="modal-toolbar">
@@ -172,18 +178,19 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
         {view === "workflows" ? (
           <div className="skills-list">
             <div className="workflow-intro">面向交通规划工程师的多技能组合工作流，一键启动</div>
-            {WORKFLOWS.map((wf) => (
+            {workflows.map((wf) => (
               <div className="workflow-item" key={wf.id}>
                 <div className="workflow-info">
                   <div className="workflow-name"><Icon name={wf.icon} size={14} /> {wf.name}</div>
-                  <div className="workflow-desc">{wf.desc}</div>
+                  <div className="workflow-desc">{wf.desc || wf.description}</div>
                   <div className="workflow-skills">
                     {wf.skills.map((s) => (
                       <span className="workflow-skill-chip" key={s} title={s}>@{s}</span>
                     ))}
                   </div>
+                  {wf.missing?.length > 0 && <div className="workflow-warning">缺少技能：{wf.missing.join(", ")}</div>}
                 </div>
-                <button className="btn-sm primary" onClick={() => startWorkflow(wf)}>启动</button>
+                <button className="btn-sm primary" onClick={async () => { try { const v = await validateWorkflow(wf.id); if (!v.ok) setMsg(v.message || "部分技能不可用，仍将保留工作流上下文"); } catch (e) { setMsg(e.message); } startWorkflow(wf); }}>启动</button>
               </div>
             ))}
           </div>

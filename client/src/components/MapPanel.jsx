@@ -4,9 +4,11 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import CambodiaODPanel from "./CambodiaODPanel.jsx";
+import XinchangBusPanel from "./XinchangBusPanel.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -33,7 +35,7 @@ const ISO_MODES = [
  */
 export default function MapPanel({
   onExit, onOpenFile,
-  clientId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
+  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
   onSessionChange, onRefreshSessions,
 }) {
   const [projects, setProjects] = useState([]);
@@ -92,6 +94,12 @@ export default function MapPanel({
   const [odHeader, setOdHeader] = useState([]);
   const [odMsg, setOdMsg] = useState("");
   const [odShowLines, setOdShowLines] = useState(true);
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [cambodiaOpen, setCambodiaOpen] = useState(false);
+  const [busTab, setBusTab] = useState(null);
+  const [activeAnalysis, setActiveAnalysis] = useState(null);
+  const [analysisVisible, setAnalysisVisible] = useState(true);
+  const [heatmapOptions, setHeatmapOptions] = useState({ radius: 28, weightMax: 800, opacity: 0.72, intensity: 1.15 });
 
   // ---- OD 流量热力图 ----
   // 列名自动检测（支持中英文）
@@ -204,6 +212,67 @@ export default function MapPanel({
     }
   }, [flash]);
 
+  // Agent 与分析面板统一使用 map_action，只更新运行时临时图层。
+  const handleMapAction = useCallback((action) => {
+    if (!action || (action.project && action.project !== project)) return;
+    if (action.action === "clear_analysis") {
+      mapRef.current?.clearAnalysis(action.id || "agent-analysis");
+      setActiveAnalysis(null);
+      flash("已清除地图临时分析结果");
+      return;
+    }
+    setActiveAnalysis(action);
+    let attempts = 0;
+    const render = () => {
+      attempts += 1;
+      if (mapRef.current?.showAnalysis(action) || attempts >= 12) clearInterval(timer);
+    };
+    const timer = setInterval(render, 250);
+    render();
+    flash(`${action.title || "地图分析结果"}${action.source === "demo" ? "（演示数据）" : ""}已显示`);
+  }, [project, flash]);
+
+  const saveAnalysis = useCallback(async (action = activeAnalysis) => {
+    if (!action?.geojson) return flash("当前没有可保存的分析结果");
+    const base = String(action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "analysis-result";
+    try {
+      await mapImportLayer(project, base, action.geojson);
+      if (action.lines) await mapImportLayer(project, `${base}-lines`, action.lines);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      flash(`分析结果已保存为图层「${base}」`);
+    } catch (e) { flash(`分析结果保存失败：${e.message}`); }
+  }, [activeAnalysis, project, loadProject, flash]);
+
+  const runDemoAnalysis = useCallback(async (analysis) => {
+    try {
+      const action = await mapDemoAnalysis({ analysis, region: "义乌市", project });
+      const nextOptions = analysis === "heatmap" ? { radius: 28, weightMax: 800, opacity: 0.72, intensity: 1.15 } : heatmapOptions;
+      if (analysis === "heatmap") setHeatmapOptions(nextOptions);
+      action.options = analysis === "heatmap" ? nextOptions : action.options;
+      handleMapAction(action);
+      setAnalysisVisible(true);
+      setDemoOpen(true);
+    } catch (e) { flash(`演示分析失败：${e.message}`); }
+  }, [project, handleMapAction, flash, heatmapOptions]);
+
+  const updateHeatmapOptions = useCallback((patch) => {
+    setHeatmapOptions((prev) => {
+      const next = { ...prev, ...patch };
+      if (activeAnalysis?.analysis === "heatmap") mapRef.current?.setAnalysisOptions(activeAnalysis.id, next);
+      return next;
+    });
+  }, [activeAnalysis]);
+
+  const toggleAnalysisVisible = useCallback(() => {
+    if (!activeAnalysis) return;
+    setAnalysisVisible((prev) => {
+      const next = !prev;
+      mapRef.current?.setAnalysisVisibility(activeAnalysis.id, next);
+      return next;
+    });
+  }, [activeAnalysis]);
+
   // 初始化：项目列表 + 默认项目
   useEffect(() => {
     mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
@@ -221,12 +290,19 @@ export default function MapPanel({
   // ---- 图层操作 ----
   const toggleLayer = useCallback((layerId, target) => {
     if (!style) return;
+    // 一个业务图层可能对应多个 MapLibre 样式层（例如 OD 主线、样式线和标签）。
+    // 只切换同名 layer 会留下其它关联层继续渲染，造成“取消勾选但地图仍显示”。
+    const related = style.layers.filter((l) => (
+      l.id === layerId
+      || l.source === layerId
+      || l.id.startsWith(`${layerId}-`)
+    ));
+    const cur = related.some((l) => l.layout?.visibility !== "none");
+    const vis = typeof target === "boolean" ? target : !cur;
     const next = {
       ...style,
       layers: style.layers.map((l) => {
-        if (l.id !== layerId) return l;
-        const cur = l.layout?.visibility !== "none";
-        const vis = typeof target === "boolean" ? target : !cur;
+        if (!related.includes(l)) return l;
         return { ...l, layout: { ...(l.layout || {}), visibility: vis ? "visible" : "none" } };
       }),
     };
@@ -572,12 +648,22 @@ export default function MapPanel({
   }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
     mapRef.current?.setBasemap(id);
+    // 同步写入 style 的底图显隐，避免轮询/Agent 热更新后恢复到旧的地形或卫星图层。
+    if (style?.layers) {
+      const nextStyle = {
+        ...style,
+        layers: style.layers.map((l) => String(l.id).startsWith("basemap-")
+          ? { ...l, layout: { ...(l.layout || {}), visibility: l.id === `basemap-${id}` ? "visible" : "none" } }
+          : l),
+      };
+      await saveStyle(nextStyle);
+    }
     setCfg((prev) => {
       const next = { ...(prev || {}), basemap: id };
       mapSaveConfig(project, next).catch(() => {});
       return next;
     });
-  }, [project]);
+  }, [project, style, saveStyle]);
 
   const handleRebuild = useCallback(async () => {
     setMsg("重建瓦片中…");
@@ -930,7 +1016,6 @@ export default function MapPanel({
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
       loadProject(project);
-      mapRef.current?.reloadStyle();
     }, 300);
     onAgentEnd?.();
   }, [project, loadProject, onAgentEnd]);
@@ -985,6 +1070,20 @@ export default function MapPanel({
         <button className={`btn-sm ${odOpen ? "active" : ""}`} onClick={() => setOdOpen((v) => !v)} title="OD 流量热力图（上传 CSV）">
           <Icon name="locate" size={13} /> OD分析
         </button>
+        <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="义乌热力图与演示等时圈">
+          <Icon name="chart" size={13} /> 义乌Demo
+        </button>
+        {activeAnalysis && (
+          <button className="btn-sm" onClick={toggleAnalysisVisible} title="显示/隐藏当前 Agent 分析结果">
+            {analysisVisible ? "隐藏分析" : "显示分析"}
+          </button>
+        )}
+        <button className={`btn-sm ${cambodiaOpen ? "active" : ""}`} onClick={() => setCambodiaOpen((v) => !v)} title="暹粒 OD 演示仪表盘">
+          <Icon name="flow" size={13} /> 暹粒OD
+        </button>
+        <button className={`btn-sm ${busTab ? "active" : ""}`} onClick={() => setBusTab(busTab ? null : "routes")} title="新昌公交线网与客流演示">
+          <Icon name="route" size={13} /> 公交Demo
+        </button>
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
@@ -1010,6 +1109,24 @@ export default function MapPanel({
       </div>
 
       <div className="mp-body">
+        {demoOpen && (
+          <div className="analysis-overlay" onClick={() => setDemoOpen(false)}>
+            <div className="analysis-popover" onClick={(e) => e.stopPropagation()}>
+              <div className="analysis-head"><div><small>DEMO · 义乌市</small><h3>热力图与等时圈</h3></div><button className="mp-op" onClick={() => setDemoOpen(false)} aria-label="关闭"><Icon name="close" size={14} /></button></div>
+              <div className="analysis-actions"><button className="btn primary" onClick={() => runDemoAnalysis("heatmap")}>生成义乌热力图</button><button className="btn primary" onClick={() => runDemoAnalysis("isochrone")}>生成演示等时圈</button>{activeAnalysis && <><button className="btn-sm" onClick={toggleAnalysisVisible}>{analysisVisible ? "隐藏" : "显示"}</button><button className="btn-sm" onClick={() => saveAnalysis()}>保存为图层</button><button className="btn-sm" onClick={() => { mapRef.current?.clearAnalysis(activeAnalysis.id); setActiveAnalysis(null); setAnalysisVisible(false); }}>清除</button></>}</div>
+              {activeAnalysis?.analysis === "heatmap" && (
+                <div className="analysis-controls">
+                  <label>影响范围 <input type="range" min="8" max="60" step="1" value={heatmapOptions.radius} onChange={(e) => updateHeatmapOptions({ radius: Number(e.target.value) })} /><span>{heatmapOptions.radius}px</span></label>
+                  <label>数值范围 <input type="range" min="50" max="2000" step="50" value={heatmapOptions.weightMax} onChange={(e) => updateHeatmapOptions({ weightMax: Number(e.target.value) })} /><span>{heatmapOptions.weightMax}</span></label>
+                  <label>透明度 <input type="range" min="0.1" max="1" step="0.05" value={heatmapOptions.opacity} onChange={(e) => updateHeatmapOptions({ opacity: Number(e.target.value) })} /><span>{Math.round(heatmapOptions.opacity * 100)}%</span></label>
+                </div>
+              )}
+              <div className="analysis-hint">没有真实数据时使用确定性演示点位；结果会直接叠加在中间地图，可通过“保存为图层”留存。</div>
+            </div>
+          </div>
+        )}
+        {cambodiaOpen && <div className="analysis-overlay" onClick={() => setCambodiaOpen(false)}><div className="analysis-popover analysis-wide" onClick={(e) => e.stopPropagation()}><CambodiaODPanel mapRef={mapRef} onClose={() => setCambodiaOpen(false)} onSaveAnalysis={saveAnalysis} /></div></div>}
+        {busTab && <div className="analysis-overlay" onClick={() => setBusTab(null)}><div className="analysis-popover analysis-wide" onClick={(e) => e.stopPropagation()}><div className="analysis-tabs"><button className={busTab === "routes" ? "active" : ""} onClick={() => setBusTab("routes")}>公交线路</button><button className={busTab === "stations" ? "active" : ""} onClick={() => setBusTab("stations")}>站点客流</button><button className={busTab === "od" ? "active" : ""} onClick={() => setBusTab("od")}>公交OD</button><button className={busTab === "stats" ? "active" : ""} onClick={() => setBusTab("stats")}>线网统计</button><button onClick={() => setBusTab(null)}>关闭</button></div><XinchangBusPanel mapRef={mapRef} activeTab={busTab} onClose={() => setBusTab(null)} /></div></div>}
         {/* 左栏：QGIS 风格图层面板 */}
         <div className="mp-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="mp-left-title">
@@ -1079,12 +1196,14 @@ export default function MapPanel({
         <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
             clientId={clientId}
+            threadId={threadId}
             onFileChanged={handleFileChanged}
+            onMapAction={handleMapAction}
             currentDoc={`地图项目:${project}`}
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
-            historyMessages={null}
+            historyMessages={historyMessages}
             onNewSession={onNewSession}
             onOpenFile={handleOpenFile}
             sessions={sessions}
@@ -1348,7 +1467,7 @@ export default function MapPanel({
                 </button>
               </div>
               <div className="mp-iso-hint">
-                使用高德地图 Web 服务（需在服务端配置环境变量 AMAP_KEY）。结果以临时图层叠加在地图上，不写入项目。
+                优先使用 Geoapify Isoline 服务（在设置中配置 Geoapify Key），未配置时回退服务端 AMAP_KEY。结果以临时图层叠加在地图上，不写入项目。
               </div>
               </>
             ) : (

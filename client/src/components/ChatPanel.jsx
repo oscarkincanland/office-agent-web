@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession, forkSession, approveMemoryProposal, rollbackRun } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -76,9 +76,40 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+function referenceId(kind, target) {
+  let hash = 0;
+  for (const ch of `${kind}:${target}`) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  return `ref_${Math.abs(hash).toString(36)}`;
+}
+
+function parseReferenceMarkers(text = "") {
+  const refs = [];
+  const seen = new Set();
+  const add = (kind, target, source) => {
+    const value = String(target || "").trim();
+    if (!value) return;
+    const id = referenceId(kind, value);
+    if (seen.has(id)) return;
+    seen.add(id);
+    refs.push({ id, kind, target: value, source });
+  };
+  for (const m of String(text).matchAll(/@知识库目录\[([^\]]+)\]/g)) add("knowledge_dir", m[1], m[0]);
+  for (const m of String(text).matchAll(/@知识库\[([^\]]+)\]/g)) add("knowledge", m[1], m[0]);
+  for (const m of String(text).matchAll(/@模板目录\[([^\]]+)\]/g)) add("template_dir", m[1], m[0]);
+  for (const m of String(text).matchAll(/@模板\[([^\]]+)\]/g)) add("template", m[1], m[0]);
+  for (const m of String(text).matchAll(/@文件\[([^\]]+)\]/g)) add("file", m[1], m[0]);
+  for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
+    const target = m[2].replace(/[),;。！？]+$/, "");
+    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
+  }
+  return refs;
+}
+
+export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [references, setReferences] = useState([]);
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
@@ -93,6 +124,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
+  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [] });
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -103,6 +135,17 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const streamingMsgIdRef = useRef(null);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
+  // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
+  const systemEventKeysRef = useRef(new Set());
+
+  useEffect(() => {
+    const found = parseReferenceMarkers(input);
+    if (!found.length) return;
+    setReferences((prev) => {
+      const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
+      return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+    });
+  }, [input]);
 
   // 组件卸载时标记
   useEffect(() => {
@@ -125,6 +168,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       assistantIdRef.current = null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
+      systemEventKeysRef.current.clear();
     }
   }, [historyMessages]);
 
@@ -136,14 +180,18 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
     setInput("");
+    setReferences([]);
     setImages([]);
     setAttachments([]);
+    systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
   }, [onNewSession]);
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
     insertText(text) {
+      const found = parseReferenceMarkers(text);
+      if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
       setInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
         return v + sep + text;
@@ -210,7 +258,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     setModel(id);
     applyModel(id);
     setModelMsg("切换中...");
-    try { await setAgentModel(clientId, id); setModelMsg("ok"); }
+    try { await setAgentModel(clientId, id, threadId); setModelMsg("ok"); }
     catch (e) { setModelMsg("失败: " + e.message); }
     setTimeout(() => setModelMsg(""), 2500);
   };
@@ -223,7 +271,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     const connect = () => {
       if (!mountedRef.current) return;
       
-      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}`);
+      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}`);
       
       es.onopen = () => {
         if (mountedRef.current) setConnected(true);
@@ -254,7 +302,20 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [clientId]);
+  }, [clientId, threadId]);
+
+  const acceptSystemEvent = useCallback((key) => {
+    const value = String(key || "");
+    if (!value) return true;
+    if (systemEventKeysRef.current.has(value)) return false;
+    systemEventKeysRef.current.add(value);
+    // 限制长期运行的浏览器标签页内存增长。
+    if (systemEventKeysRef.current.size > 600) {
+      const first = systemEventKeysRef.current.values().next().value;
+      if (first) systemEventKeysRef.current.delete(first);
+    }
+    return true;
+  }, []);
 
   function handleEvent(ev) {
     const { type, data } = ev;
@@ -354,6 +415,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        setRunState((s) => ({ ...s, status: "finishing" }));
         if (onAgentEnd) onAgentEnd();
         break;
       case "agent_error":
@@ -362,9 +424,10 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        setRunState((s) => ({ ...s, status: "failed" }));
         break;
       case "steer":
-        pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`);
+        pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
         break;
       case "aborted":
         if (aid) patch(aid, (m) => ({
@@ -378,21 +441,47 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
         setBusy(false);
         break;
       case "file_changed":
-        pushSystem(`文件已更新: ${(data.files || []).join(", ")}`);
+        {
+          const files = Array.isArray(data.files) ? data.files.filter(Boolean) : [];
+          const runKey = data.runId || runState.runId || "unknown";
+          pushSystem(`文件已更新: ${files.join(", ")}`, `file_changed:${runKey}:${files.join("|")}`);
+        }
         if (data.files?.length) onFileChanged(data.files);
+        break;
+      case "map_action":
+        if (data && acceptSystemEvent(`map_action:${data.id || "analysis"}:${data.updatedAt || JSON.stringify(data.stats || {})}`)) onMapAction?.(data);
         break;
       case "agent_summary":
         // 对话结束总结条
+        {
+          const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
+          if (!acceptSystemEvent(key)) break;
+        }
         if (data.products?.length) {
           setMessages((ms) => [...ms, {
             id: newId(),
             role: "system",
             text: `${data.summary || "本轮对话完成"}`,
             products: data.products,
+            runId: data.runId,
+            artifacts: data.artifacts || [],
             status: "done",
             summary: true,
+            createdAt: Date.now(),
           }]);
         }
+        break;
+      case "run_finished":
+        setRunState({ status: data.status || "completed", runId: data.runId || null, artifacts: data.artifacts || [], references: data.references || [] });
+        if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, references: data.references || m.references, runStatus: data.status || "completed" } : m));
+        break;
+      case "memory_proposal":
+        if (data.proposal && acceptSystemEvent(`memory_proposal:${data.proposal.id || JSON.stringify(data.proposal)}`)) {
+          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done", createdAt: Date.now() }]);
+        }
+        break;
+      case "memory_proposal_resolved":
+        setMessages((ms) => ms.map((m) => m.memoryProposal?.id === data.proposal?.id ? { ...m, memoryProposal: data.proposal, text: "长期记忆建议已写入。" } : m));
         break;
       default:
         break;
@@ -416,16 +505,19 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     }
   }, [patch]);
 
-  const pushSystem = useCallback((text) => {
+  const pushSystem = useCallback((text, key = text) => {
     if (!mountedRef.current) return;
-    setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done" }]);
-  }, []);
+    if (!acceptSystemEvent(key)) return;
+    setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
+  }, [acceptSystemEvent]);
 
   const send = async (overrideText) => {
-    const text = (overrideText ?? input).trim();
-    if (!text && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
+    const rawText = (overrideText ?? input).trim();
+    if (!rawText && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
+    const text = rawText || (images.length ? "（图片消息）" : "（附件消息）");
     const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
+    const sendReferences = [...references, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
 
     // 注入当前文件上下文
     const contextPrefix = currentDoc ? `[当前打开文件: ${currentDoc}]\n` : "";
@@ -436,7 +528,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     const attachPrefix = attachments.length > 0
       ? `[已上传附件: ${attachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
       : "";
-    const fullText = contextPrefix + modePrefix + attachPrefix + text;
+    const fullText = contextPrefix + modePrefix + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
     
@@ -444,7 +536,9 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       id: newId(), role: "user", text,
       images: images.map((i) => i.dataUrl),
       attachments: attachments.map((a) => a.name),
+      references: sendReferences,
       status: "done", currentDoc,
+      createdAt: Date.now(),
     }]);
     const aid = newId();
     assistantIdRef.current = aid;
@@ -453,25 +547,47 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     setMessages((ms) => [...ms, {
       id: aid, role: "assistant", blocks: [],
       status: "streaming", images: [],
+      createdAt: Date.now(),
     }]);
     setInput("");
     setImages([]);
     setAttachments([]);
     setBusy(true);
+    setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences });
     try {
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, text: fullText, images: imgs, attachments: atts, effort }),
+        body: JSON.stringify({
+          client: clientId,
+          thread: threadId,
+          text: fullText,
+          images: imgs,
+          attachments: atts,
+          references: sendReferences,
+          effort,
+          task: {
+            goal: text,
+            mode: editMode,
+            currentFile: currentDoc || null,
+            references: sendReferences,
+            workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
+          },
+        }),
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
       // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
       if (d.sessionId) onSessionChange?.(d.sessionId);
+      if (d.runId) {
+        patch(aid, (m) => ({ ...m, runId: d.runId, task: d.task || null, references: d.task?.references || sendReferences }));
+        setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences }));
+      }
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
         if (mountedRef.current) setBusy(false);
+        setRunState((s) => ({ ...s, status: "failed" }));
       }
     } catch (e) {
       if (!mountedRef.current) return;
@@ -487,9 +603,27 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       await fetch("/api/agent/abort", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId }),
+        body: JSON.stringify({ client: clientId, thread: threadId }),
       });
     } catch {}
+  };
+
+  const handleMemoryApprove = async (id) => {
+    try {
+      const d = await approveMemoryProposal(id);
+      if (d.proposal) setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, memoryProposal: d.proposal, text: "长期记忆建议已写入。" } : m));
+    } catch (e) {
+      setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, text: `记忆写入失败：${e.message}` } : m));
+    }
+  };
+
+  const handleRollbackRun = async (runId, paths) => {
+    if (!runId || !window.confirm("确认回滚本轮产物？这会恢复修改前的文件内容。")) return;
+    try {
+      await rollbackRun(runId, paths);
+      pushSystem("已回滚本轮可恢复的文件变更。");
+      onFileChanged?.(paths || []);
+    } catch (e) { pushSystem(`回滚失败：${e.message}`); }
   };
 
   const handleFiles = async (list) => {
@@ -558,6 +692,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
                 onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
                 onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
+                onFork={async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } }}
               />
             </div>
           )}
@@ -566,6 +701,13 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
           <span className="chat-title"><Logo size={16} /> Open Plan</span>
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
+        </div>
+        <div className="task-status-bar" role="status" aria-live="polite">
+          <span className={`task-status-dot ${runState.status}`} />
+          <span>{runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
+          {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
+          {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
         </div>
 
         <div className="chat-body" ref={bodyRef} onScroll={() => {
@@ -584,7 +726,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -627,6 +769,17 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
             ))}
           </div>
         )}
+        {references.length > 0 && (
+          <div className="reference-bar" aria-label="本轮引用">
+            <span className="reference-bar-label">引用</span>
+            {references.map((ref) => (
+              <span className="reference-chip" key={ref.id} title={ref.target}>
+                <span className="reference-chip-kind">@</span>{ref.target}
+                <button type="button" onClick={() => setReferences((prev) => prev.filter((r) => r.id !== ref.id))} aria-label={`移除引用 ${ref.target}`}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="chat-input">
           <div className="chat-input-row">
             <textarea
@@ -641,8 +794,10 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               onCompositionEnd={() => {}}
               onPaste={(e) => {
                 const items = e.clipboardData?.items;
-                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
+                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean));
               }}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
+              onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
               onChange={(e) => setInput(e.target.value)}
             />
             <div className="input-send">
@@ -766,12 +921,20 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole, clientId }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
         <div className="bubble">
           {m.text}
+          {m.memoryProposal && (
+            <div className="memory-proposal-card" role="note">
+              <div><strong>{m.memoryProposal.section}</strong>：{m.memoryProposal.content}</div>
+              {m.memoryProposal.status === "pending" ? (
+                <button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button>
+              ) : <span className="memory-proposal-state">{m.memoryProposal.status === "approved" ? "✓ 已写入" : "未写入"}</span>}
+            </div>
+          )}
           {m.products?.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物</span>
@@ -787,6 +950,12 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
                   </span>
                 ))}
               </div>
+            </div>
+          )}
+          {m.artifacts?.length > 0 && (
+            <div className="run-artifacts">
+              {m.artifacts.map((a) => <div key={a.path} className="run-artifact-row"><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
+              {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
             </div>
           )}
         </div>
@@ -857,10 +1026,14 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
               <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
             )}
             {m.currentDoc && <div className="msg-context">当前文件: {m.currentDoc}</div>}
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {m.text && <div className="msg-text">{m.text}</div>}
           </div>
         ) : (
           <>
+            {m.images?.length > 0 && (
+              <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
+            )}
             {/* 任务进度卡（Proma TaskProgressCard：聚合 - [x] 任务 + 进度条） */}
             {planTasks.length > 0 && <TaskProgressCard tasks={planTasks} />}
             {/* 独立条目流（pi-web BlockView 模型）：思考/工具调用/文本按原始顺序各自成条目，不包裹分组框 */}
@@ -868,7 +1041,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
               {blocks.map((b, i) => {
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
                 if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
-                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} />;
+                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
                     <SafeMarkdown text={b.text} />
@@ -877,6 +1050,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
                 return null;
               })}
             </div>
+            {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
               <div className="bubble loading-bubble">
@@ -905,6 +1079,24 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ReferenceChips({ references = [], onOpenFile }) {
+  if (!references.length) return null;
+  return (
+    <div className="msg-references" aria-label="本轮引用">
+      {references.map((r) => {
+        const label = r.metadata?.name || r.metadata?.relativePath || r.target;
+        const canOpen = r.kind === "file" && !!onOpenFile && r.status !== "missing";
+        const content = <><Icon name="file" size={10} /> @{label}</>;
+        return canOpen ? (
+          <button type="button" className={`msg-reference-chip ${r.status || ""}`} key={r.id} onClick={() => onOpenFile(r.metadata?.relativePath || r.target)} title={`打开引用：${label}`}>{content}</button>
+        ) : (
+          <span className={`msg-reference-chip ${r.status || ""}`} key={r.id} title={r.message || label}>{content}</span>
+        );
+      })}
     </div>
   );
 }
@@ -951,7 +1143,7 @@ function ThinkingBlock({ text, startTime, streaming }) {
 }
 
 // ========== 主动提问卡片（ask_user：agent 遇不明确处询问用户） ==========
-function AskBlock({ block, clientId }) {
+function AskBlock({ block, clientId, threadId }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -963,7 +1155,7 @@ function AskBlock({ block, clientId }) {
       await fetch("/api/agent/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, answer }),
+      body: JSON.stringify({ client: clientId, thread: threadId, answer }),
       });
       block.answer = answer;
       setInput("");

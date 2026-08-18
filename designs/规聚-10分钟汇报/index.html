@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>规聚｜10 分钟项目汇报</title>
+  <style>
+    :root {
+      --ink: #f2f5f7;
+      --muted: #a8b3bd;
+      --dim: #6d7883;
+      --bg: #101522;
+      --panel: #171e2c;
+      --panel-2: #202a3a;
+      --line: rgba(255,255,255,.12);
+      --teal: #7fd5c7;
+      --teal-2: #2a8c82;
+      --blue: #7da8e8;
+      --amber: #e7b96b;
+      --red: #ed8e8e;
+      --title: 64px;
+      --subtitle: 38px;
+      --body: 30px;
+      --small: 24px;
+      --tiny: 20px;
+      --pad-x: 104px;
+      --pad-top: 82px;
+      --pad-bottom: 64px;
+      --gap: 28px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; background: #080b11; color: var(--ink); }
+    body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    deck-stage:not(:defined) { visibility: hidden; }
+    section[data-label] > *:not(img):not(picture):not(video):not(svg):not(canvas) { height: 100%; box-sizing: border-box; }
+    .slide { background: var(--bg); color: var(--ink); }
+    .slide-inner { height: 100%; padding: var(--pad-top) var(--pad-x) var(--pad-bottom); position: relative; overflow: hidden; }
+    .slide-inner::after { content: ""; position: absolute; right: 54px; bottom: 40px; width: 120px; height: 1px; background: var(--line); }
+    .kicker { color: var(--teal); font-size: var(--small); letter-spacing: .08em; text-transform: uppercase; font-weight: 700; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 96px; line-height: 1.06; letter-spacing: -.045em; }
+    h2 { font-size: var(--title); line-height: 1.12; letter-spacing: -.035em; }
+    h3 { font-size: var(--subtitle); line-height: 1.18; }
+    p, li { font-size: var(--body); line-height: 1.45; }
+    .muted { color: var(--muted); }
+    .dim { color: var(--dim); }
+    .teal { color: var(--teal); }
+    .amber { color: var(--amber); }
+    .red { color: var(--red); }
+    .blue { color: var(--blue); }
+    .rule { height: 1px; background: var(--line); }
+    .footer { position: absolute; left: var(--pad-x); bottom: 36px; color: var(--dim); font-size: var(--tiny); letter-spacing: .04em; }
+    .page { position: absolute; right: 64px; bottom: 32px; color: var(--dim); font-size: var(--tiny); font-variant-numeric: tabular-nums; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+    .pill { display: inline-flex; align-items: center; padding: 9px 17px; border: 1px solid rgba(127,213,199,.45); border-radius: 999px; color: var(--teal); font-size: var(--small); }
+    .card { background: rgba(255,255,255,.055); border: 1px solid var(--line); border-radius: 18px; padding: 28px; }
+    .card h3 { font-size: 30px; margin-bottom: 13px; }
+    .card p { font-size: 24px; color: var(--muted); line-height: 1.45; }
+    .num { font-size: 72px; line-height: .95; color: var(--teal); font-weight: 750; letter-spacing: -.07em; }
+    .num-label { margin-top: 12px; font-size: var(--small); color: var(--muted); }
+    .fade-up { opacity: 1; transform: translateY(0); }
+    @media (prefers-reduced-motion: no-preference) {
+      [data-deck-active] .fade-up { animation: fadeUp .65s cubic-bezier(.2,.8,.2,1) both; }
+      [data-deck-active] .step-1 { animation-delay: .08s; }
+      [data-deck-active] .step-2 { animation-delay: .2s; }
+      [data-deck-active] .step-3 { animation-delay: .32s; }
+      [data-deck-active] .step-4 { animation-delay: .44s; }
+      [data-deck-active] .step-5 { animation-delay: .56s; }
+      [data-deck-active] .pulse { animation: pulse 2.8s ease-in-out infinite; }
+    }
+    @keyframes fadeUp { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(127,213,199,.24); } 50% { box-shadow: 0 0 0 18px rgba(127,213,199,0); } }
+    .cover { background: radial-gradient(circle at 74% 34%, rgba(42,140,130,.27), transparent 27%), linear-gradient(135deg, #0b111d 0%, #101927 52%, #172d36 100%); }
+    .cover .slide-inner { padding-top: 130px; }
+    .cover h1 { max-width: 1020px; margin-top: 34px; }
+    .cover .subtitle { margin-top: 26px; font-size: 36px; color: var(--muted); }
+    .cover-meta { position: absolute; left: var(--pad-x); bottom: 88px; display: flex; gap: 44px; color: var(--muted); font-size: var(--small); }
+    .cover-mark { position: absolute; right: 150px; top: 206px; width: 340px; height: 340px; opacity: .85; }
+    .cover-mark .ring { position: absolute; inset: 0; border: 1px solid rgba(127,213,199,.35); border-radius: 50%; }
+    .cover-mark .ring:nth-child(2) { inset: 42px; border-color: rgba(127,213,199,.22); }
+    .cover-mark .ring:nth-child(3) { inset: 86px; border-color: rgba(127,213,199,.18); }
+    .cover-mark .node { position: absolute; width: 28px; height: 28px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 24px rgba(127,213,199,.65); }
+    .cover-mark .n1 { left: 156px; top: 18px; } .cover-mark .n2 { right: 16px; top: 158px; } .cover-mark .n3 { left: 42px; bottom: 44px; } .cover-mark .n4 { left: 156px; top: 156px; width: 48px; height: 48px; background: var(--amber); }
+    .cover-mark .edge { position: absolute; left: 170px; top: 38px; width: 2px; height: 140px; background: linear-gradient(var(--teal), transparent); transform: rotate(38deg); transform-origin: top; }
+    .cover-mark .edge.e2 { left: 184px; top: 188px; width: 2px; height: 158px; transform: rotate(144deg); }
+    .agenda { background: #f3f1eb; color: #17202a; }
+    .agenda .slide-inner::after { background: rgba(23,32,42,.16); }
+    .agenda .kicker, .agenda .footer, .agenda .page { color: #54766f; }
+    .agenda h2 { color: #17202a; }
+    .agenda-item { display: grid; grid-template-columns: 90px 1fr; gap: 22px; align-items: baseline; padding: 18px 0; border-bottom: 1px solid rgba(23,32,42,.14); }
+    .agenda-item .idx { font-size: 32px; font-weight: 700; color: #2a8c82; font-variant-numeric: tabular-nums; }
+    .agenda-item .name { font-size: 34px; font-weight: 650; }
+    .agenda-item .desc { margin-top: 4px; font-size: 22px; color: #5e6870; }
+    .chapter { background: #17222c; }
+    .chapter .big { position: absolute; left: 86px; bottom: 24px; font-size: 420px; line-height: .7; letter-spacing: -.1em; color: rgba(127,213,199,.10); font-weight: 800; }
+    .chapter h2 { position: relative; margin-top: 174px; font-size: 88px; }
+    .chapter .chapter-line { margin-top: 34px; width: 680px; }
+    .chapter .chapter-note { margin-top: 30px; color: var(--muted); font-size: 30px; max-width: 720px; }
+    .pain-layout { display: grid; grid-template-columns: 1.05fr .95fr; gap: 56px; align-items: center; height: 100%; }
+    .pain-layout h2 { margin-top: 20px; }
+    .pain-list { display: grid; gap: 18px; }
+    .pain-item { display: grid; grid-template-columns: 52px 1fr; gap: 16px; align-items: start; padding: 20px 22px; background: rgba(255,255,255,.055); border-left: 3px solid var(--red); border-radius: 0 14px 14px 0; }
+    .pain-item .icon { font-size: 30px; color: var(--red); }
+    .pain-item p { font-size: 26px; }
+    .pain-item span { display: block; margin-top: 4px; font-size: 21px; color: var(--muted); }
+    .stack-visual { position: relative; height: 460px; }
+    .stack-card { position: absolute; width: 480px; height: 112px; padding: 24px 28px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); box-shadow: 0 18px 40px rgba(0,0,0,.16); }
+    .stack-card strong { font-size: 28px; }
+    .stack-card small { display: block; margin-top: 6px; color: var(--muted); font-size: 20px; }
+    .stack-card.s1 { left: 26px; top: 20px; transform: rotate(-4deg); }
+    .stack-card.s2 { left: 74px; top: 148px; transform: rotate(2deg); border-color: rgba(125,168,232,.4); }
+    .stack-card.s3 { left: 4px; top: 276px; transform: rotate(-2deg); border-color: rgba(127,213,199,.45); }
+    .stack-card.s4 { left: 116px; top: 390px; transform: rotate(4deg); border-color: rgba(231,185,107,.4); }
+    .arch { display: grid; grid-template-columns: 1fr 1.25fr 1fr; gap: 24px; align-items: stretch; margin-top: 54px; height: 575px; }
+    .arch-col { display: flex; flex-direction: column; gap: 20px; }
+    .arch-box { flex: 1; border: 1px solid var(--line); border-radius: 18px; padding: 26px; background: rgba(255,255,255,.045); position: relative; }
+    .arch-box.center { background: linear-gradient(160deg, rgba(42,140,130,.34), rgba(34,46,64,.8)); border-color: rgba(127,213,199,.48); display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+    .arch-box h3 { font-size: 27px; margin-bottom: 12px; }
+    .arch-box p { font-size: 21px; color: var(--muted); }
+    .arch-box.center p { color: #d8f2ee; }
+    .arch-arrow { position: absolute; top: 50%; right: -28px; color: var(--teal); font-size: 38px; z-index: 2; }
+    .arch-arrow.left { right: auto; left: -28px; }
+    .feature-head { display: flex; justify-content: space-between; align-items: end; }
+    .feature-head .note { width: 470px; color: var(--muted); font-size: 25px; line-height: 1.45; }
+    .feature-grid { margin-top: 50px; }
+    .feature-card { min-height: 390px; display: flex; flex-direction: column; justify-content: space-between; }
+    .feature-card .mini { font-size: 23px; color: var(--dim); letter-spacing: .06em; }
+    .feature-card h3 { margin-top: 24px; }
+    .feature-card p { font-size: 23px; }
+    .mini-window { height: 106px; margin-top: 22px; border-radius: 12px; overflow: hidden; background: #121a24; border: 1px solid rgba(255,255,255,.14); }
+    .mini-window .bar { height: 22px; background: #263244; }
+    .mini-window .body { display: grid; grid-template-columns: 26% 1fr 23%; height: 84px; }
+    .mini-window .body > div { border-right: 1px solid rgba(255,255,255,.08); padding: 8px; }
+    .mini-window .lines { display: grid; gap: 6px; align-content: start; }
+    .mini-window .lines i { display: block; height: 6px; border-radius: 8px; background: #3c4b5d; }
+    .mini-window .lines i:nth-child(2) { width: 72%; background: var(--teal-2); } .mini-window .lines i:nth-child(3) { width: 86%; }
+    .kb-layout { display: grid; grid-template-columns: 1.1fr .9fr; gap: 54px; align-items: center; height: 100%; }
+    .kb-layout h2 { margin-top: 18px; }
+    .kb-points { display: grid; gap: 14px; margin-top: 30px; }
+    .kb-point { display: flex; gap: 16px; align-items: start; font-size: 25px; color: var(--muted); }
+    .kb-point b { color: var(--teal); font-size: 30px; line-height: 1; }
+    .graph { height: 530px; position: relative; border: 1px solid rgba(127,213,199,.3); border-radius: 26px; background: radial-gradient(circle at 50% 52%, rgba(42,140,130,.21), transparent 33%), #151d2b; overflow: hidden; }
+    .graph::before, .graph::after { content: ""; position: absolute; left: 48%; top: 49%; width: 2px; height: 230px; background: linear-gradient(var(--teal), transparent); transform: rotate(32deg); transform-origin: top; opacity: .55; }
+    .graph::after { transform: rotate(-56deg); background: linear-gradient(var(--blue), transparent); }
+    .node { position: absolute; display: grid; place-items: center; border-radius: 50%; color: #071018; font-size: 18px; font-weight: 750; text-align: center; }
+    .node.main { width: 134px; height: 134px; left: 43%; top: 40%; background: var(--teal); box-shadow: 0 0 34px rgba(127,213,199,.55); }
+    .node.a { width: 86px; height: 86px; left: 15%; top: 18%; background: var(--blue); }
+    .node.b { width: 94px; height: 94px; right: 11%; top: 22%; background: var(--amber); }
+    .node.c { width: 74px; height: 74px; left: 21%; bottom: 17%; background: #c9a8e6; }
+    .node.d { width: 80px; height: 80px; right: 18%; bottom: 15%; background: #7bb0d8; }
+    .node.e { width: 54px; height: 54px; left: 58%; top: 10%; background: #d58989; }
+    .graph-label { position: absolute; left: 24px; bottom: 20px; font-size: 20px; color: var(--dim); }
+    .map-layout { display: grid; grid-template-columns: .7fr 1.3fr; gap: 32px; margin-top: 46px; height: 560px; }
+    .map-side { border: 1px solid var(--line); border-radius: 18px; padding: 26px; background: rgba(255,255,255,.04); }
+    .map-side h3 { font-size: 28px; margin-bottom: 20px; }
+    .layer { display: flex; gap: 12px; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 24px; }
+    .layer i { width: 16px; height: 16px; border-radius: 4px; background: var(--teal); }
+    .layer:nth-child(3) i { background: var(--blue); } .layer:nth-child(4) i { background: var(--amber); } .layer:nth-child(5) i { background: var(--red); }
+    .map { position: relative; overflow: hidden; border-radius: 20px; border: 1px solid rgba(127,213,199,.42); background: #0f2028; }
+    .map::before { content: ""; position: absolute; inset: 0; opacity: .44; background-image: linear-gradient(30deg, transparent 48%, rgba(127,213,199,.55) 49%, transparent 51%), linear-gradient(130deg, transparent 47%, rgba(125,168,232,.55) 48%, transparent 50%), linear-gradient(90deg, transparent 49.7%, rgba(255,255,255,.08) 50%, transparent 50.3%); background-size: 190px 150px, 160px 180px, 92px 92px; transform: scale(1.35) rotate(-8deg); }
+    .map::after { content: "浙江省交通基础图层"; position: absolute; left: 28px; top: 22px; padding: 8px 14px; border-radius: 8px; font-size: 20px; color: #c9f1ea; background: rgba(9,18,24,.72); border: 1px solid rgba(127,213,199,.32); }
+    .route { position: absolute; height: 7px; border-radius: 10px; background: var(--amber); box-shadow: 0 0 12px rgba(231,185,107,.8); transform-origin: left; }
+    .route.r1 { width: 420px; left: 150px; top: 190px; transform: rotate(22deg); } .route.r2 { width: 360px; left: 380px; top: 350px; transform: rotate(-28deg); background: var(--teal); }
+    .map-dot { position: absolute; width: 22px; height: 22px; border: 4px solid #fff; border-radius: 50%; background: var(--red); box-shadow: 0 0 18px rgba(237,142,142,.8); }
+    .map-dot.d1 { left: 42%; top: 34%; } .map-dot.d2 { left: 72%; top: 63%; background: var(--teal); }
+    .agent-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: 56px; align-items: center; height: 100%; }
+    .agent-flow { display: grid; gap: 18px; margin-top: 36px; }
+    .flow-step { display: grid; grid-template-columns: 62px 1fr; gap: 18px; align-items: center; }
+    .flow-step .dot { width: 62px; height: 62px; border-radius: 50%; display: grid; place-items: center; border: 1px solid rgba(127,213,199,.55); color: var(--teal); font-size: 26px; }
+    .flow-step strong { font-size: 28px; }
+    .flow-step span { display: block; margin-top: 4px; color: var(--muted); font-size: 22px; }
+    .terminal { padding: 30px; border-radius: 22px; background: #090d14; border: 1px solid rgba(127,213,199,.34); box-shadow: 0 24px 70px rgba(0,0,0,.24); }
+    .terminal-bar { display: flex; gap: 8px; margin-bottom: 26px; } .terminal-bar i { width: 12px; height: 12px; border-radius: 50%; background: #7b4d51; } .terminal-bar i:nth-child(2) { background: #92764a; } .terminal-bar i:nth-child(3) { background: #4c857b; }
+    .terminal-line { font: 22px/1.7 "SFMono-Regular", Consolas, monospace; color: #bdccd5; } .terminal-line .prompt { color: var(--teal); } .terminal-line .highlight { color: var(--amber); }
+    .video-slide { background: #0b1118; }
+    .video-layout { display: grid; grid-template-columns: 1.25fr .75fr; gap: 42px; height: 100%; align-items: center; }
+    .video-frame { height: 610px; border: 2px dashed rgba(127,213,199,.56); border-radius: 28px; background: radial-gradient(circle at 50% 43%, rgba(42,140,130,.23), transparent 31%), #151e2a; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; position: relative; }
+    .play { width: 92px; height: 92px; border-radius: 50%; display: grid; place-items: center; color: #071018; background: var(--teal); font-size: 40px; padding-left: 6px; }
+    .video-frame h3 { margin-top: 22px; font-size: 34px; } .video-frame p { margin-top: 12px; font-size: 22px; color: var(--muted); }
+    .video-tag { position: absolute; left: 24px; top: 22px; padding: 7px 14px; border-radius: 8px; font-size: 19px; color: var(--teal); background: rgba(127,213,199,.10); border: 1px solid rgba(127,213,199,.3); }
+    .demo-script { display: grid; gap: 16px; }
+    .demo-script .row { display: grid; grid-template-columns: 46px 1fr; gap: 14px; align-items: start; padding: 16px; border-radius: 14px; background: rgba(255,255,255,.05); }
+    .demo-script .row b { color: var(--teal); font-size: 24px; } .demo-script .row span { font-size: 24px; line-height: 1.35; }
+    .roadmap { background: #f3f1eb; color: #17202a; }
+    .roadmap .slide-inner::after { background: rgba(23,32,42,.16); } .roadmap .kicker, .roadmap .footer, .roadmap .page { color: #54766f; }
+    .roadmap h2 { color: #17202a; }
+    .roadmap-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 48px; align-items: center; height: calc(100% - 110px); margin-top: 30px; }
+    .roadmap-list { display: grid; gap: 18px; }
+    .roadmap-row { display: grid; grid-template-columns: 160px 1fr; align-items: center; padding: 20px 0; border-bottom: 1px solid rgba(23,32,42,.14); }
+    .roadmap-row strong { font-size: 28px; color: #2a8c82; } .roadmap-row span { font-size: 25px; color: #3f4c56; }
+    .impact { display: grid; grid-template-columns: repeat(3,1fr); gap: 18px; }
+    .impact .card { background: #fff; border-color: rgba(23,32,42,.14); min-height: 212px; } .impact .card h3 { color: #17202a; font-size: 29px; } .impact .card p { color: #66727a; }
+    .close { background: radial-gradient(circle at 75% 28%, rgba(42,140,130,.28), transparent 28%), #0e1722; }
+    .close .slide-inner { display: grid; place-items: center; text-align: center; }
+    .close h2 { font-size: 104px; } .close p { margin-top: 24px; color: var(--muted); font-size: 32px; }
+    .close .line { width: 260px; height: 2px; background: var(--teal); margin: 34px auto 0; }
+    .operator-note { position: absolute; left: 50%; bottom: 80px; transform: translateX(-50%); padding: 10px 18px; border-radius: 999px; background: rgba(255,255,255,.06); color: var(--dim); font-size: 18px; }
+    @media print { .operator-note { display: none; } }
+  </style>
+</head>
+<body>
+  <deck-stage width="1920" height="1080">
+    <section class="slide cover" data-label="封面｜规聚项目汇报">
+      <div class="slide-inner">
+        <div class="kicker fade-up step-1">OPEN PLAN · OFFICE AGENT WEB</div>
+        <h1 class="fade-up step-2">规聚：面向交通规划的<br /><span class="teal">AI 一体化工作台</span></h1>
+        <p class="subtitle fade-up step-3">把知识、文档、地图与智能协作放进同一个工作流</p>
+        <div class="cover-mark pulse" aria-hidden="true"><i class="ring"></i><i class="ring"></i><i class="ring"></i><i class="edge"></i><i class="edge e2"></i><i class="node n1"></i><i class="node n2"></i><i class="node n3"></i><i class="node n4"></i></div>
+        <div class="cover-meta fade-up step-4"><span>项目汇报材料</span><span>约 10 分钟</span><span>二〇二六年八月</span></div>
+        <div class="page">01 / 12</div>
+      </div>
+    </section>
+
+    <section class="slide agenda" data-label="汇报结构">
+      <div class="slide-inner">
+        <div class="kicker">01 · STRUCTURE</div><h2 style="margin-top:18px;">今天只讲清楚四件事</h2>
+        <div style="margin-top:52px; width:1080px;">
+          <div class="agenda-item fade-up step-1"><div class="idx">01</div><div><div class="name">为什么要做</div><div class="desc">从“工具很多、上下文很散”开始</div></div></div>
+          <div class="agenda-item fade-up step-2"><div class="idx">02</div><div><div class="name">它是什么</div><div class="desc">一个面向交通规划的 AI 一体化工作台</div></div></div>
+          <div class="agenda-item fade-up step-3"><div class="idx">03</div><div><div class="name">核心功能如何协同</div><div class="desc">知识库、GIS、Agent、Office 与模板库组成闭环</div></div></div>
+          <div class="agenda-item fade-up step-4"><div class="idx">04</div><div><div class="name">现场怎么演示</div><div class="desc">用一个真实任务串起“查—看—问—改—出成果”</div></div></div>
+        </div>
+        <div class="footer">建议讲法：每一部分只保留一个结论，细节交给现场演示。</div><div class="page">02 / 12</div>
+      </div>
+    </section>
+
+    <section class="slide" data-label="问题｜工作上下文被切碎">
+      <div class="slide-inner">
+        <div class="pain-layout">
+          <div><div class="kicker">02 · WHY</div><h2 class="fade-up step-1">规划工作的问题，<br /><span class="red">不是没有工具</span></h2><p class="muted fade-up step-2" style="margin-top:28px; max-width:760px;">而是工具之间没有共享上下文：文档、地图、历史资料和 AI 对话各自分开，成果需要反复搬运。</p></div>
+          <div class="pain-list"><div class="pain-item fade-up step-2"><div class="icon">01</div><p>资料分散<span>文件夹、聊天记录、知识库各自保存</span></p></div><div class="pain-item fade-up step-3"><div class="icon">02</div><p>判断脱离空间<span>规划结论难以直接落到地图与图层</span></p></div><div class="pain-item fade-up step-4"><div class="icon">03</div><p>成果重复加工<span>查资料、写文档、做图表、出 PPT 反复切换</span></p></div></div>
+        </div><div class="page">03 / 12</div>
+      </div>
+    </section>
+
+    <section class="slide chapter" data-label="定位｜规聚把上下文聚合起来">
+      <div class="slide-inner"><div class="big">03</div><div class="kicker">03 · WHAT</div><h2>规聚 = 规划成果 + 知识汇聚 + 智能协作</h2><div class="rule chapter-line"></div><p class="chapter-note">核心不是再做一个孤立的 AI 聊天框，而是让 Agent 能够读懂工作区里的资料、地图与成果，并在同一个任务里完成协作。</p><div class="page">04 / 12</div></div>
+    </section>
+
+    <section class="slide" data-label="总体架构｜从浏览器到工作区">
+      <div class="slide-inner"><div class="kicker">04 · ARCHITECTURE</div><h2 style="margin-top:18px;">一个工作区，连接四类能力</h2>
+        <div class="arch"><div class="arch-col"><div class="arch-box fade-up step-1"><span class="arch-arrow">→</span><h3>文档与成果</h3><p>Word / PPT / Excel / Markdown<br />批注、修订、预览、编辑</p></div><div class="arch-box fade-up step-2"><span class="arch-arrow">→</span><h3>空间与数据</h3><p>MapLibre GIS<br />图层、属性表、测量与导入</p></div></div><div class="arch-col"><div class="arch-box center fade-up step-3"><h3 style="font-size:48px;">Agent</h3><p>读取上下文 · 调用工具 · 流式反馈<br />把一个自然语言任务拆成可执行步骤</p></div></div><div class="arch-col"><div class="arch-box fade-up step-4"><span class="arch-arrow left">←</span><h3>知识与模板</h3><p>全文检索、知识图谱、反链<br />318 个模板与 OpenDesign PPT</p></div><div class="arch-box fade-up step-5"><span class="arch-arrow left">←</span><h3>记忆与会话</h3><p>工作区记忆、历史会话<br />让任务能够接着做</p></div></div></div>
+        <div class="footer">一句话：不是把功能并排摆放，而是让它们共享同一个任务上下文。</div><div class="page">05 / 12</div>
+      </div>
+    </section>
+
+    <section class="slide" data-label="功能一｜知识库与知识图谱">
+      <div class="slide-inner"><div class="kb-layout"><div><div class="kicker">05 · KNOWLEDGE BASE</div><h2 class="fade-up step-1">先把已有知识<br /><span class="teal">变成可检索、可关联的资产</span></h2><div class="kb-points"><div class="kb-point fade-up step-2"><b>01</b><span>递归扫描 Markdown，按标题、标签、正文加权检索。</span></div><div class="kb-point fade-up step-3"><b>02</b><span>用双向链接、相似内容、标签和目录形成知识图谱。</span></div><div class="kb-point fade-up step-4"><b>03</b><span>找到资料后可直接“@ 到对话”，交给 Agent 继续分析。</span></div></div></div><div class="graph fade-up step-2"><div class="node main">项目<br />总览</div><div class="node a">政策</div><div class="node b">路网</div><div class="node c">模板</div><div class="node d">案例</div><div class="node e">数据</div><div class="graph-label">图谱视图：节点大小可表达引用关系，点击节点联动预览</div></div></div><div class="page">06 / 12</div></div>
+    </section>
+
+    <section class="slide" data-label="功能二｜GIS 空间工作台">
+      <div class="slide-inner"><div class="kicker">06 · GIS WORKSPACE</div><h2 style="margin-top:18px;">把规划判断放回地图里验证</h2><div class="map-layout"><div class="map-side"><h3>图层面板</h3><div class="layer"><i></i><span>行政区边界</span></div><div class="layer"><i></i><span>高速公路</span></div><div class="layer"><i></i><span>国省道规划</span></div><div class="layer"><i></i><span>收费站与枢纽</span></div><div class="layer"><i></i><span>临时绘制图层</span></div><p class="muted" style="margin-top:28px; font-size:22px;">支持导入 GeoJSON / SHP，属性表检索、排序、分页与 CSV 导出。</p></div><div class="map fade-up step-2"><div class="route r1"></div><div class="route r2"></div><div class="map-dot d1"></div><div class="map-dot d2"></div></div></div><div class="footer">演示建议：打开图层 → 点击一个节点 → 查看属性表 → 让 Agent 修改样式或导入数据。</div><div class="page">07 / 12</div></div>
+    </section>
+
+    <section class="slide" data-label="功能三｜Agent 协作闭环">
+      <div class="slide-inner"><div class="agent-layout"><div><div class="kicker">07 · AI AGENT</div><h2 class="fade-up step-1">从“回答问题”<br />走向<span class="teal">“完成任务”</span></h2><div class="agent-flow"><div class="flow-step fade-up step-2"><div class="dot">1</div><div><strong>理解意图</strong><span>识别当前文件、知识库引用与工作区上下文</span></div></div><div class="flow-step fade-up step-3"><div class="dot">2</div><div><strong>调用工具</strong><span>officecli、kb_search、kb_read、map_read、map_edit</span></div></div><div class="flow-step fade-up step-4"><div class="dot">3</div><div><strong>流式反馈</strong><span>思考、工具调用、结果与最终文本分层展示</span></div></div></div></div><div class="terminal fade-up step-3"><div class="terminal-bar"><i></i><i></i><i></i></div><div class="terminal-line"><span class="prompt">›</span> 分析这条省道周边的规划资料</div><div class="terminal-line"><span class="prompt">↳</span> <span class="highlight">kb_search</span>：找到 12 篇相关文档</div><div class="terminal-line"><span class="prompt">↳</span> <span class="highlight">map_read</span>：读取当前图层与选中要素</div><div class="terminal-line"><span class="prompt">↳</span> <span class="highlight">officecli</span>：打开项目说明文档</div><div class="terminal-line"><span class="prompt">✓</span> 已生成结论与下一步建议</div></div></div><div class="page">08 / 12</div></div>
+    </section>
+
+    <section class="slide" data-label="功能四｜Office 与模板库">
+      <div class="slide-inner"><div class="feature-head"><div><div class="kicker">08 · OUTPUT</div><h2 style="margin-top:18px;">成果不止能看，<br />还要能继续改、继续复用</h2></div><div class="note">让“研究—分析—写作—汇报”不再是四个孤立环节，而是在同一个工作台里连续发生。</div></div><div class="grid-3 feature-grid"><div class="card feature-card fade-up step-1"><div><div class="mini">01 / OFFICE VIEWER</div><h3>高保真文档预览</h3><p>Word 批注与修订、PPT 翻页、Excel 多 sheet 编辑、Markdown 目录与公式。</p></div><div class="mini-window"><div class="bar"></div><div class="body"><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div></div></div></div><div class="card feature-card fade-up step-2"><div><div class="mini">02 / TEMPLATE LIBRARY</div><h3>模板即工作方法</h3><p>318 个模板覆盖汇报、研究、规划、论文、问卷与 OpenDesign HTML PPT。</p></div><div class="mini-window"><div class="bar"></div><div class="body"><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div></div></div></div><div class="card feature-card fade-up step-3"><div><div class="mini">03 / MEMORY</div><h3>记忆让协作可延续</h3><p>工作区指令、长期记忆与历史会话沉淀下来，下一次打开可以接着做。</p></div><div class="mini-window"><div class="bar"></div><div class="body"><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div><div class="lines"><i></i><i></i><i></i></div></div></div></div></div><div class="page">09 / 12</div></div>
+    </section>
+
+    <section class="slide video-slide" data-label="现场演示｜用一个任务串起全流程">
+      <div class="slide-inner"><div class="video-layout"><div class="video-frame fade-up step-1"><div class="video-tag">VIDEO PLACEHOLDER · 45–60 s</div><div class="play">▶</div><h3>这里替换成你的产品录屏</h3><p>建议录制：知识库检索 → 打开地图 → Agent 分析 → 生成成果</p></div><div><div class="kicker">09 · LIVE DEMO</div><h2 class="fade-up step-2" style="margin-top:18px;">现场只演示<br /><span class="teal">一个完整任务</span></h2><div class="demo-script" style="margin-top:32px;"><div class="row fade-up step-2"><b>01</b><span>从模板库选择“交通规划汇报”</span></div><div class="row fade-up step-3"><b>02</b><span>引用知识库资料，定位相关路网</span></div><div class="row fade-up step-4"><b>03</b><span>让 Agent 汇总结论并更新文档</span></div><div class="row fade-up step-5"><b>04</b><span>回到地图检查，导出或继续编辑</span></div></div></div></div><div class="operator-note">操作提示：这页播放录屏；现场讲解时 PPT 停留不翻页</div><div class="page">10 / 12</div></div>
+    </section>
+
+    <section class="slide roadmap" data-label="价值与下一步">
+      <div class="slide-inner"><div class="kicker">10 · VALUE & NEXT</div><h2 style="margin-top:18px;">当前已经形成闭环，下一步继续把闭环做深</h2><div class="roadmap-grid"><div class="roadmap-list"><div class="roadmap-row fade-up step-1"><strong>现在</strong><span>知识库、GIS、Agent、Office 与模板库已经连通</span></div><div class="roadmap-row fade-up step-2"><strong>近期</strong><span>完善地图分析工具、工作流编排与成果导出</span></div><div class="roadmap-row fade-up step-3"><strong>中期</strong><span>沉淀更多交通规划 Agent 与行业知识资产</span></div><div class="roadmap-row fade-up step-4"><strong>目标</strong><span>让规划人员把更多时间放在判断，而不是搬运资料</span></div></div><div class="impact"><div class="card fade-up step-2"><div class="num">1</div><h3>个工作区</h3><p>承载多种资料与工具</p></div><div class="card fade-up step-3"><div class="num">4</div><h3>类核心能力</h3><p>知识、空间、智能、成果</p></div><div class="card fade-up step-4"><div class="num">318</div><h3>个模板</h3><p>把经验变成可复用资产</p></div></div></div><div class="page">11 / 12</div></div>
+    </section>
+
+    <section class="slide close" data-label="结束｜谢谢">
+      <div class="slide-inner"><div><div class="kicker">OPEN PLAN · OFFICE AGENT WEB</div><h2 class="fade-up step-1">让规划工作，<br /><span class="teal">从资料堆里回到任务里</span></h2><div class="line"></div><p class="fade-up step-2">规聚项目汇报完毕<br />欢迎现场体验与批评指正</p></div><div class="page">12 / 12</div></div>
+    </section>
+  </deck-stage>
+  <script src="deck-stage.js"></script>
+</body>
+</html>

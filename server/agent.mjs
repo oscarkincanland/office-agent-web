@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -10,30 +11,47 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "./workspace.mjs";
+import { resolveReferences, readReference, contextSummary } from "./context.mjs";
+import { recordRunEvent } from "./runs.mjs";
+import { taskSummary } from "./task.mjs";
+import { createDemoAnalysis } from "./map-analysis.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
-/** 读取工作区记忆（AGENTS.md + memory/*.md 合并，限长）——每次对话前注入 agent 上下文，跟随当前工作区 */
-function readMemoryContext() {
-  const parts = [];
+/** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
+function readMemoryLayers() {
+  const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
   try {
     const ws = getWorkspace();
-    const agentsMd = path.join(ws, "AGENTS.md");
-    if (fs.existsSync(agentsMd)) {
-      const c = fs.readFileSync(agentsMd, "utf8").trim();
-      if (c) parts.push("## 工作区准则 (AGENTS.md)\n" + c.slice(0, 1500));
-    }
+    const read = (file, max = 1800) => {
+      try { return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().slice(0, max) : ""; } catch { return ""; }
+    };
+    layers.rules = read(path.join(ws, "AGENTS.md"), 1800);
     const memDir = path.join(ws, "memory");
     if (fs.existsSync(memDir)) {
       for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
-        try {
-          const c = fs.readFileSync(path.join(memDir, f), "utf8").trim();
-          if (c) parts.push(`## 记忆：${f}\n${c.slice(0, 1500)}`);
-        } catch {}
+        const content = read(path.join(memDir, f), 1800);
+        if (!content) continue;
+        const key = f.toLowerCase();
+        if (key.includes("preference") || key.includes("用户偏好")) layers.preferences += `\n${content}`;
+        else if (key.includes("project") || key.includes("项目信息")) layers.project += `\n${content}`;
+        else if (key.includes("lesson") || key.includes("经验教训")) layers.lessons += `\n${content}`;
+        else layers.other.push({ file: f, content });
       }
     }
   } catch {}
-  return parts.join("\n\n").slice(0, 4000);
+  return layers;
+}
+
+function readMemoryContext() {
+  const layers = readMemoryLayers();
+  return [
+    layers.rules && `## 工作区准则（AGENTS.md）\n${layers.rules}`,
+    layers.project && `## 项目信息\n${layers.project.slice(0, 1400)}`,
+    layers.preferences && `## 用户偏好\n${layers.preferences.slice(0, 1400)}`,
+    layers.lessons && `## 经验教训\n${layers.lessons.slice(0, 1400)}`,
+    ...layers.other.map((x) => `## 记忆：${x.file}\n${x.content.slice(0, 1000)}`),
+  ].filter(Boolean).join("\n\n").slice(0, 6000);
 }
 
 /** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制）——写入当前工作区 */
@@ -69,13 +87,70 @@ function writeMemorySection(section, content) {
   return { ok: true, section, file: "memory/MEMORY.md" };
 }
 
+const PROPOSALS_FILE = path.join(PROJECT_DIR, ".oaw", "memory-proposals.json");
+const PENDING_ASKS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
+function readMemoryProposals() {
+  try { return JSON.parse(fs.readFileSync(PROPOSALS_FILE, "utf8")); } catch { return []; }
+}
+function saveMemoryProposals(items) {
+  fs.mkdirSync(path.dirname(PROPOSALS_FILE), { recursive: true });
+  fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(items.slice(-200), null, 2) + "\n", "utf8");
+}
+function createMemoryProposal(threadId, section, content) {
+  const items = readMemoryProposals();
+  const proposal = { id: `memory_${crypto.randomUUID()}`, threadId, section, content: String(content || "").trim().slice(0, 1200), status: "pending", createdAt: new Date().toISOString() };
+  items.push(proposal);
+  saveMemoryProposals(items);
+  return proposal;
+}
+function approveMemoryProposal(id) {
+  const items = readMemoryProposals();
+  const proposal = items.find((x) => x.id === id);
+  if (!proposal) return { ok: false, error: "proposal not found" };
+  if (proposal.status !== "approved") {
+    const result = writeMemorySection(proposal.section, proposal.content);
+    proposal.status = result.ok ? "approved" : "failed";
+    proposal.approvedAt = new Date().toISOString();
+  }
+  saveMemoryProposals(items);
+  return { ok: proposal.status === "approved", proposal };
+}
+
+function readPendingAsks() {
+  try { return JSON.parse(fs.readFileSync(PENDING_ASKS_FILE, "utf8")); } catch { return []; }
+}
+function savePendingAsks(items) {
+  fs.mkdirSync(path.dirname(PENDING_ASKS_FILE), { recursive: true });
+  fs.writeFileSync(PENDING_ASKS_FILE, JSON.stringify(items.slice(-100), null, 2) + "\n", "utf8");
+}
+function persistPendingAsk(item) {
+  const items = readPendingAsks().filter((x) => x.clientId !== item.clientId || x.status !== "pending");
+  items.push(item);
+  savePendingAsks(items);
+}
+function resolvePendingAsk(clientId, answer, status = "answered") {
+  const items = readPendingAsks();
+  const item = [...items].reverse().find((x) => x.clientId === clientId && x.status === "pending");
+  if (item) { item.status = status; item.answer = answer || null; item.resolvedAt = new Date().toISOString(); savePendingAsks(items); }
+  return item;
+}
+
+function consumeRecoveredAnswers(clientId) {
+  const items = readPendingAsks();
+  const recovered = items.filter((x) => x.clientId === clientId && x.status === "queued" && x.answer);
+  if (!recovered.length) return [];
+  for (const item of recovered) { item.status = "consumed"; item.consumedAt = new Date().toISOString(); }
+  savePendingAsks(items);
+  return recovered;
+}
+
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 class AgentManager extends EventEmitter {
   constructor() {
     super();
-    this.sessions = new Map(); // clientId -> { session, emitter, busy, loader, modelRuntime }
+    this.sessions = new Map(); // agentKey(clientId:threadId) -> session entry
     this.modelRuntimePromise = null;
-    this.pendingAsks = new Map(); // clientId -> resolve(回答)（ask_user 工具阻塞等待）
+    this.pendingAsks = new Map(); // agentKey -> resolve(回答)（ask_user 工具阻塞等待）
   }
 
   /** 读取并清除待回答的问题（返回 resolve 函数） */
@@ -83,6 +158,31 @@ class AgentManager extends EventEmitter {
     const ask = this.pendingAsks.get(clientId);
     if (ask) this.pendingAsks.delete(clientId);
     return ask;
+  }
+
+  submitAnswer(clientId, answer) {
+    const live = this.askPending(clientId);
+    if (live) { live(String(answer || "")); return { ok: true, mode: "live" }; }
+    const recovered = resolvePendingAsk(clientId, String(answer || ""), "queued");
+    return recovered ? { ok: true, mode: "queued", questionId: recovered.id } : { ok: false };
+  }
+
+  memoryProposals(threadId = "") {
+    return readMemoryProposals().filter((p) => !threadId || p.threadId === threadId);
+  }
+
+  approveMemoryProposal(id) {
+    const result = approveMemoryProposal(id);
+    const proposal = result.proposal;
+    if (proposal?.threadId) {
+      const entry = this.sessions.get(proposal.threadId);
+      if (entry) emitChannelSafe(entry, "memory_proposal_resolved", { proposal });
+    }
+    return result;
+  }
+
+  pendingQuestions(clientId = "") {
+    return readPendingAsks().filter((q) => !clientId || q.clientId === clientId);
   }
 
   modelRuntime() {
@@ -95,12 +195,12 @@ class AgentManager extends EventEmitter {
     return this.modelRuntimePromise;
   }
 
-  async getOrCreate(clientId) {
+  async getOrCreate(clientId, options = {}) {
     const existing = this.sessions.get(clientId);
     if (existing) return existing;
     if (!this.creates) this.creates = new Map();
     if (this.creates.has(clientId)) return this.creates.get(clientId);
-    const p = this._create(clientId);
+    const p = this._create(clientId, options);
     this.creates.set(clientId, p);
     try {
       return await p;
@@ -109,7 +209,7 @@ class AgentManager extends EventEmitter {
     }
   }
 
-  async _create(clientId) {
+  async _create(clientId, options = {}) {
     const modelRuntime = await this.modelRuntime();
     let entry; // 在下方创建，供 officeTool 闭包引用
     const loader = new DefaultResourceLoader({
@@ -129,6 +229,7 @@ class AgentManager extends EventEmitter {
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
@@ -215,6 +316,24 @@ class AgentManager extends EventEmitter {
         }
         const text = `# ${doc.title}\n\n标签: ${doc.tags.join(", ") || "无"}\n路径: ${relPath}\n\n${doc.content}`;
         return { content: [{ type: "text", text: text.slice(0, 40000) }], details: {} };
+      },
+    });
+
+    const contextReadTool = defineTool({
+      name: "context_read",
+      label: "读取引用上下文",
+      description: "读取用户本轮通过 @ 引用的文件、目录或外部文件。先使用引用 ID；可选 query 做行过滤，range 可传 startLine/endLine。不要猜测未解析的引用内容。",
+      parameters: Type.Object({
+        refId: Type.String({ description: "引用 ID，例如 ref_a1b2c3d4e5f6" }),
+        query: Type.Optional(Type.String({ description: "可选关键词，只返回包含该词的行" })),
+        range: Type.Optional(Type.Object({ startLine: Type.Optional(Type.Number()), endLine: Type.Optional(Type.Number()) })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const refs = entry.references || [];
+        const ref = refs.find((r) => r.id === params.refId);
+        if (!ref) return { content: [{ type: "text", text: `未找到引用 ${params.refId}。当前引用：\n${contextSummary(refs) || "（无）"}` }], details: {} };
+        const result = await readReference(ref, params.query, params.range);
+        return { content: [{ type: "text", text: result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}` }], details: { reference: result } };
       },
     });
 
@@ -363,12 +482,42 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    const mapAnalyzeTool = defineTool({
+      name: "map_analyze",
+      label: "地图分析结果",
+      description: "生成并直接显示地图分析临时图层。支持义乌热力图、演示等时圈；结果通过 map_action 事件局部更新前端，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+      parameters: Type.Object({
+        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("isochrone")]),
+        region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
+        project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
+        count: Type.Optional(Type.Number({ description: "演示热力点数量，默认 36，最多 120" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const action = createDemoAnalysis({ analysis: params.analysis, region: params.region, project: params.project, count: params.count });
+        action.updatedAt = Date.now();
+        emitChannelSafe(entry, "map_action", action);
+        return { content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图；用户确认后再保存为正式图层。` }], details: { mapAction: action } };
+      },
+    });
+
+    const mapClearAnalysisTool = defineTool({
+      name: "map_clear_analysis",
+      label: "清除地图分析",
+      description: "清除地图上的临时分析结果，不修改项目文件。用户要求清除上一次热力图、OD 或等时圈时使用。",
+      parameters: Type.Object({ id: Type.Optional(Type.String({ description: "分析结果 id，默认 agent-analysis" })) }),
+      execute: async (_toolCallId, params) => {
+        const action = { action: "clear_analysis", id: params.id || "agent-analysis", updatedAt: Date.now() };
+        emitChannelSafe(entry, "map_action", action);
+        return { content: [{ type: "text", text: "已清除地图临时分析结果。" }], details: { mapAction: action } };
+      },
+    });
+
     // ---- 记忆工具（agent 完成任务后自主沉淀经验/偏好） ----
     const memoryUpdateTool = defineTool({
       name: "memory_update",
       label: "记忆更新",
       description:
-        "把本次任务中值得长期记住的信息写入工作区记忆（memory/MEMORY.md），供后续任务读取。仅在确有价值时调用（如：用户偏好、项目约定、反复出现的坑、本次学会的关键流程），不要为琐碎细节调用。section 取值：项目信息（项目背景/术语/约定）/ 用户偏好（写作风格/格式习惯/命名规范）/ 经验教训（踩坑记录/有效做法）。每条控制在 100 字以内，简明扼要。",
+        "提出一条可确认的长期记忆建议。默认不会直接写入；用户确认后由界面批准。section 取值：项目信息 / 用户偏好 / 经验教训。每条控制在 100 字以内。",
       parameters: Type.Object({
         section: Type.Union([
           Type.Literal("项目信息"),
@@ -376,8 +525,14 @@ class AgentManager extends EventEmitter {
           Type.Literal("经验教训"),
         ]),
         content: Type.String({ description: "要记住的内容（≤100 字）" }),
+        approved: Type.Optional(Type.Boolean({ description: "仅在用户明确确认后传 true" })),
       }),
       execute: async (_toolCallId, params) => {
+        if (!params.approved) {
+          const proposal = createMemoryProposal(clientId, params.section, params.content);
+          emitChannelSafe(entry, "memory_proposal", { proposal });
+          return { content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户确认后写入。` }], details: { proposal } };
+        }
         const r = writeMemorySection(params.section, params.content);
         return {
           content: [{ type: "text", text: `已更新记忆（${params.section}），后续任务会自动读取。${r.ok ? "" : "写入失败"}` }],
@@ -405,14 +560,25 @@ class AgentManager extends EventEmitter {
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
+          persistPendingAsk({
+            id: `ask_${crypto.randomUUID()}`,
+            clientId,
+            runId: entry.activeRunId || null,
+            question: String(params.question || ""),
+            options: opts,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+          });
           const timer = setTimeout(() => {
             this.pendingAsks.delete(clientId);
+            resolvePendingAsk(clientId, null, "expired");
             resolve({
               content: [{ type: "text", text: "(用户未在 5 分钟内回答，请按专业判断继续，并在最终结果中注明你的假设)" }],
             });
           }, 300000);
           const done = (answer) => {
             clearTimeout(timer);
+            resolvePendingAsk(clientId, String(answer || ""), "answered");
             resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
           };
           this.pendingAsks.set(clientId, done);
@@ -421,20 +587,22 @@ class AgentManager extends EventEmitter {
       },
     });
 
-    const sessionManager = SessionManager.create(SESSION_STORE);
+    const sessionManager = options.sessionPath
+      ? SessionManager.open(options.sessionPath, SESSION_STORE, options.cwd || getWorkspace())
+      : SessionManager.create(options.cwd || getWorkspace(), SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"],
+      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapClearAnalysisTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_clear_analysis", "memory_update"],
       sessionManager,
     });
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "map_read", "map_edit", "map_import", "memory_update"])]);
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_clear_analysis", "memory_update"])]);
     } catch {}
 
     const emitter = new EventEmitter();
@@ -446,6 +614,9 @@ class AgentManager extends EventEmitter {
       channel.history.push(ev);
       if (channel.history.length > 2000) channel.history.shift();
       channel.emitter.emit("event", ev);
+      if (entry?.activeRunId && ["tool_start", "tool_end", "ask_user", "agent_error", "agent_end"].includes(type)) {
+        try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+      }
     };
     session.subscribe((ev) => {
       // forward interesting events
@@ -528,7 +699,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader };
+    entry = { session, channel, busy: false, loader, clientId, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -536,8 +707,20 @@ class AgentManager extends EventEmitter {
   /** Run a prompt. Events stream to entry.emitter; resolves on completion. */
   async prompt(clientId, text, images = [], effort) {
     const entry = await this.getOrCreate(clientId);
+    return this._promptEntry(entry, text, images, effort, []);
+  }
+
+  async promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
+    const entry = await this.getOrCreate(clientId);
+    return this._promptEntry(entry, text, images, effort, references, runContext);
+  }
+
+  async _promptEntry(entry, text, images = [], effort, references = [], runContext = null) {
     const isStreaming = entry.busy;
     entry.busy = true;
+    entry.references = Array.isArray(references) ? references : [];
+    entry.activeRunId = runContext?.runId || null;
+    entry.task = runContext?.task || null;
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}
@@ -560,6 +743,14 @@ class AgentManager extends EventEmitter {
         const dyn = this.buildDynamicContext(entry.currentFile);
         if (dyn) text = dyn + "\n\n" + text;
       } catch {}
+      const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
+      if (recoveredAnswers.length) {
+        text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+      }
+      if (entry.references.length) {
+        text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
+      }
+      if (entry.task) text = `${taskSummary(entry.task)}\n\n${text}`;
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -590,6 +781,7 @@ class AgentManager extends EventEmitter {
       }
     } finally {
       entry.busy = false;
+      entry.activeRunId = null;
     }
   }
 
@@ -603,6 +795,26 @@ class AgentManager extends EventEmitter {
     } catch {}
     entry.busy = false;
     return { ok: true };
+  }
+
+  async newThread(clientId, threadId, cwd = getWorkspace()) {
+    const old = this.sessions.get(clientId);
+    if (old) {
+      try { old.session.dispose(); } catch {}
+      this.sessions.delete(clientId);
+    }
+    const entry = await this._create(clientId, { cwd, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
+  }
+
+  async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
+    const old = this.sessions.get(clientId);
+    if (old) {
+      try { old.session.dispose(); } catch {}
+      this.sessions.delete(clientId);
+    }
+    const entry = await this._create(clientId, { cwd, sessionPath, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
@@ -619,6 +831,7 @@ class AgentManager extends EventEmitter {
         "- Office 文档一律用 officecli 工具操作（文件名相对当前工作区根目录）；若 officecli 不可用，用 read 工具以绝对路径读取工作区文件（docx 可用服务端接口 GET /api/doc/<文件名>/text 提取文本）。",
         `- 当前工作文件: ${file || "（无）"}`,
         "- 新建文件必须写入当前工作区绝对路径，禁止写入项目目录。",
+        "- 任务完成时必须按‘读取来源 / 修改文件 / 产物 / 假设 / 下一步’五项给出简短总结；引用缺失或未读取时必须明确说明。",
       ];
       if (memCtx) lines.push("- 工作区记忆（AGENTS.md + memory/*.md）:\n" + memCtx.slice(0, 2000));
       return lines.join("\n");
