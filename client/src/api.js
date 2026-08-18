@@ -60,6 +60,9 @@ export const forkSession = (id, label) =>
 export const listRuns = (thread) => api(`/api/runs${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
 export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
 export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
+export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
+export const listConnectors = () => api("/api/connectors");
+export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
 export const approveMemoryProposal = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) });
 export const listPendingQuestions = (client, thread) => api(`/api/agent/pending?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread)}`);
 
