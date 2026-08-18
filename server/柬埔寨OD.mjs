@@ -19,10 +19,11 @@ function readData() {
   }
 }
 
-export function getCambodiaOD() {
+export function getCambodiaOD({ minFlow = 0 } = {}) {
   const loaded = readData();
   if (loaded.error) return loaded;
-  const valid = loaded.rows.filter((row) => [row.start_lon, row.start_lat, row.dest_lon, row.dest_lat].every((v) => Number.isFinite(Number(v))));
+  const threshold = Math.max(0, Number(minFlow) || 0);
+  const valid = loaded.rows.filter((row) => [row.start_lon, row.start_lat, row.dest_lon, row.dest_lat].every((v) => Number.isFinite(Number(v))) && (Number(row.flow) || 0) >= threshold);
   const totalFlow = valid.reduce((sum, row) => sum + (Number(row.flow) || 0), 0);
   const origins = new Map();
   const destinations = new Map();
@@ -52,7 +53,7 @@ export function getCambodiaOD() {
     source: path.basename(loaded.file),
     sourcePath: loaded.file,
     status: "demo",
-    stats: { records: valid.length, totalFlow, averageFlow: valid.length ? Number((totalFlow / valid.length).toFixed(2)) : 0, originCount: origins.size, destinationCount: destinations.size },
+    stats: { records: valid.length, totalFlow, averageFlow: valid.length ? Number((totalFlow / valid.length).toFixed(2)) : 0, originCount: origins.size, destinationCount: destinations.size, minFlow: threshold },
     topOrigins: top(origins),
     topDestinations: top(destinations),
     topPairs: pairs.sort((a, b) => b.flow - a.flow).slice(0, 8),

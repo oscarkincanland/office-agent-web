@@ -65,11 +65,13 @@ export default function MapPanel({
   const [drill, setDrill] = useState(null); // 下钻状态 {source, code, name, level}
   const [regionOptions, setRegionOptions] = useState([{ value: "", label: "全省 / 全部区域" }]);
   const [regionCode, setRegionCode] = useState("");
+  const [regionQuery, setRegionQuery] = useState("");
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   const [m2Tab, setM2Tab] = useState(null); // M2 宏观分析标签
   const [m3Tab, setM3Tab] = useState(null); // M3 公交分析标签
   const [cambodiaOpen, setCambodiaOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  const [activeAnalysis, setActiveAnalysis] = useState(null);
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
   const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
@@ -235,6 +237,7 @@ export default function MapPanel({
   useEffect(() => {
     let cancelled = false;
     setRegionCode("");
+    setRegionQuery("");
     setRegionOptions([{ value: "", label: "全省 / 全部区域" }]);
     if (project !== "zhejiang-map") return undefined;
     Promise.all([mapGetLayer(project, "boundary-city"), mapGetLayer(project, "boundary-county")])
@@ -1006,6 +1009,13 @@ export default function MapPanel({
   // Agent 地图动作只更新临时分析图层，避免对话结束时再次整体 reloadStyle。
   const handleMapAction = useCallback((action) => {
     if (!action || action.project && action.project !== project) return;
+    if (action.action === "clear_analysis") {
+      mapRef.current?.clearAnalysis(action.id || "agent-analysis");
+      setActiveAnalysis(null);
+      flash("已清除地图临时分析结果");
+      return;
+    }
+    setActiveAnalysis(action);
     // Agent 事件可能先于 MapLibre style 完成，短暂重试只等待地图就绪，不重建地图。
     let attempts = 0;
     const render = () => {
@@ -1023,6 +1033,21 @@ export default function MapPanel({
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
   }, [project, regionOptions, selectRegion, flash]);
+
+  const saveAnalysis = useCallback(async (action = activeAnalysis) => {
+    if (!action?.geojson) return flash("当前没有可保存的分析结果");
+    const base = String(action.id || `analysis-${action.analysis || action.type || "result"}-${action.region || "map"}`)
+      .replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    try {
+      await mapImportLayer(project, base || "analysis-result", action.geojson);
+      if (action.lines) await mapImportLayer(project, `${base || "analysis-result"}-lines`, action.lines);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      flash(`分析结果已保存为图层「${base || "analysis-result"}」`);
+    } catch (e) {
+      flash(`分析结果保存失败：${e.message}`);
+    }
+  }, [activeAnalysis, project, loadProject, flash]);
 
   const runDemoAnalysis = useCallback(async (analysis) => {
     try {
@@ -1102,7 +1127,9 @@ export default function MapPanel({
             <div className="mp-demo-menu">
               <button onClick={() => runDemoAnalysis("heatmap")}><Icon name="locate" size={13} /> 义乌点位热力图</button>
               <button onClick={() => runDemoAnalysis("isochrone")}><Icon name="history" size={13} /> 义乌可达性等时圈</button>
-              <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
+              <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setActiveAnalysis(null); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
+              <button onClick={() => { mapRef.current?.undoAnalysis("agent-analysis"); setDemoOpen(false); flash("已撤销上一次临时分析"); }}><Icon name="back" size={13} /> 撤销上一次结果</button>
+              <button disabled={!activeAnalysis} onClick={() => { saveAnalysis(); setDemoOpen(false); }}><Icon name="download" size={13} /> 保存当前结果</button>
             </div>
           )}
         </div>
@@ -1132,8 +1159,9 @@ export default function MapPanel({
           onChange={(e) => selectRegion(e.target.value)}
           title="切换浙江省地市和县市区"
         >
-          {regionOptions.map((r) => <option key={r.value || "all"} value={r.value}>{r.label}</option>)}
+          {regionOptions.filter((r) => !regionQuery.trim() || !r.value || r.name?.includes(regionQuery.trim()) || r.label?.includes(regionQuery.trim())).map((r) => <option key={r.value || "all"} value={r.value}>{r.label}</option>)}
         </select>
+        <input className="mp-region-search" value={regionQuery} onChange={(e) => setRegionQuery(e.target.value)} placeholder="搜索区域" title="按名称筛选地市和县市区" />
         <button
           className={`btn-sm mp-annotation-btn ${annotationsVisible ? "active" : ""}`}
           onClick={() => { const next = !annotationsVisible; setAnnotationsVisible(next); mapRef.current?.setAnnotationVisibility(next); }}
@@ -1162,7 +1190,7 @@ export default function MapPanel({
       <div className="mp-body">
         {cambodiaOpen && (
           <div className="cambodia-overlay">
-            <CambodiaODPanel mapRef={mapRef} onClose={() => setCambodiaOpen(false)} />
+            <CambodiaODPanel mapRef={mapRef} onClose={() => setCambodiaOpen(false)} onSaveAnalysis={saveAnalysis} />
           </div>
         )}
         {/* M2 宏观交通分析面板 */}
@@ -1217,7 +1245,7 @@ export default function MapPanel({
               </div>
             </div>
             <div className="m2-overlay-body m3-overlay-body">
-              <M3BusPanel project={project} mapRef={mapRef} activeTab={m3Tab} onClose={() => setM3Tab(null)} />
+              <M3Analysis mapRef={mapRef} activeTab={m3Tab} />
             </div>
           </div>
         )}
@@ -1616,4 +1644,3 @@ export default function MapPanel({
     </div>
   );
 }
-import M3BusPanel from "./M3BusPanel.jsx";

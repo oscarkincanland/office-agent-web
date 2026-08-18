@@ -131,7 +131,7 @@ class AgentManager extends EventEmitter {
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
-              "- **地图分析动作**: 用户要求‘在某区域生成热力图/等时圈并显示在中间地图’时优先调用 map_analyze；用户确认后再用 map_import 或其他工具把结果保存为正式图层。",
+              "- **地图分析动作**: 用户要求‘在某区域生成热力图/等时圈并显示在中间地图’时优先调用 map_analyze；用户确认后调用 map_save_analysis 保存，要求清除时调用 map_clear_analysis。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
@@ -397,11 +397,44 @@ class AgentManager extends EventEmitter {
       }),
       execute: async (_toolCallId, params) => {
         const action = createDemoAnalysis({ analysis: params.analysis, region: String(params.region || "义乌市"), project: params.project || "zhejiang-map", count: params.count });
+        entry.lastMapAnalysis = action;
         emitChannelSafe(entry, "map_action", action);
         return {
-          content: [{ type: "text", text: `已生成${title}，使用演示数据，结果已发送到中间地图。用户确认后再保存为正式图层。` }],
+          content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图。用户确认后再保存为正式图层。` }],
           details: { mapAction: action },
         };
+      },
+    });
+
+    const mapSaveAnalysisTool = defineTool({
+      name: "map_save_analysis",
+      label: "保存地图分析",
+      description: "将本轮 map_analyze 生成的最近一次分析结果保存为正式地图图层。用户说‘保存刚才的热力图/等时圈’时使用。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "项目名，默认使用分析结果中的项目" })),
+        layerId: Type.Optional(Type.String({ description: "正式图层 id，可选" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const action = entry.lastMapAnalysis;
+        if (!action?.geojson) return { content: [{ type: "text", text: "当前没有可保存的地图分析结果，请先生成热力图或等时圈。" }], details: {} };
+        const map = await import("./map.mjs");
+        const project = params.project || action.project || map.DEFAULT_PROJECT;
+        const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
+        await map.importLayer(project, layerId, action.geojson);
+        if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
+        emitChannelSafe(entry, "file_changed", { files: [`maps/${project}/layers/${layerId}.geojson`] });
+        return { content: [{ type: "text", text: `已将${action.title || "分析结果"}保存为正式图层 ${layerId}。` }], details: { project, layerId } };
+      },
+    });
+
+    const mapClearAnalysisTool = defineTool({
+      name: "map_clear_analysis",
+      label: "清除地图分析",
+      description: "清除前端地图上的临时分析结果。用户说‘清除刚才的分析/热力图/等时圈’时使用。",
+      parameters: Type.Object({ layerId: Type.Optional(Type.String({ description: "可选，指定分析图层 id" })) }),
+      execute: async (_toolCallId, params) => {
+        emitChannelSafe(entry, "map_action", { action: "clear_analysis", id: params.layerId || "agent-analysis" });
+        return { content: [{ type: "text", text: "已发送清除地图临时分析结果的操作。" }], details: {} };
       },
     });
 
@@ -471,14 +504,14 @@ class AgentManager extends EventEmitter {
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "memory_update"],
+      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
       sessionManager,
     });
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "memory_update"])]);
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"])]);
     } catch {}
 
     const emitter = new EventEmitter();

@@ -1765,8 +1765,8 @@ app.get("/api/map/road-structure", (req, res) => {
 });
 
 // 柬埔寨暹粒 OD 演示数据（来源路径可通过 CAMBODIA_OD_FILE 覆盖）
-app.get("/api/demo/cambodia-od", (_req, res) => {
-  const payload = cambodiaOD.getCambodiaOD();
+app.get("/api/demo/cambodia-od", (req, res) => {
+  const payload = cambodiaOD.getCambodiaOD({ minFlow: req.query.minFlow });
   if (payload.error) return res.status(404).json(payload);
   res.json(payload);
 });

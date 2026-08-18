@@ -44,6 +44,8 @@ const MapViewer = forwardRef(function MapViewer(
   const labelsVisibleRef = useRef(true);
   const analysisIdsRef = useRef(new Set());
   const analysisPayloadsRef = useRef(new Map());
+  const analysisKindsRef = useRef(new Map());
+  const analysisHistoryRef = useRef(new Map());
 
   // 运行时标注不写回 style.json，避免 Agent 修改样式时反复覆盖分析状态。
   const runtimeLabelLayers = ["boundary-city-label", "boundary-county-label"];
@@ -148,19 +150,30 @@ const MapViewer = forwardRef(function MapViewer(
     try { if (map?.getSource(`${id}-lines-source`)) map.removeSource(`${id}-lines-source`); } catch {}
     analysisIdsRef.current.delete(id);
     analysisPayloadsRef.current.delete(id);
+    analysisKindsRef.current.delete(id);
   };
 
-  const showAnalysisLayer = (map, payload = {}) => {
+  const showAnalysisLayer = (map, payload = {}, options = {}) => {
     if (!map || !payload.geojson || !map.isStyleLoaded?.()) return false;
     const id = String(payload.id || "agent-analysis").replace(/[^a-zA-Z0-9_-]/g, "-");
-    removeAnalysisLayers(map, id);
     const source = `${id}-source`;
     const type = payload.type || payload.analysis || "heatmap";
-    map.addSource(source, { type: "geojson", data: payload.geojson });
-    if (type === "isochrone") {
+    const previous = analysisPayloadsRef.current.get(id);
+    if (options.recordHistory !== false && previous && previous !== payload) {
+      const history = analysisHistoryRef.current.get(id) || [];
+      history.push(previous);
+      analysisHistoryRef.current.set(id, history.slice(-5));
+    }
+    const sameKind = analysisKindsRef.current.get(id) === type && !!map.getSource(source);
+    if (!sameKind) removeAnalysisLayers(map, id);
+    const geoSource = map.getSource(source);
+    if (geoSource?.setData) geoSource.setData(payload.geojson);
+    else map.addSource(source, { type: "geojson", data: payload.geojson });
+    if (!sameKind && type === "isochrone") {
       map.addLayer({ id: `${id}-fill`, type: "fill", source, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.2 } });
       map.addLayer({ id: `${id}-line`, type: "line", source, paint: { "line-color": ["coalesce", ["get", "color"], "#7c3aed"], "line-width": 2, "line-opacity": 0.9 } });
-    } else {
+      map.addLayer({ id: `${id}-labels`, type: "symbol", source, layout: { "text-field": ["concat", ["to-string", ["get", "range"]], " 分钟"], "text-size": 11, "text-anchor": "center", "text-allow-overlap": false }, paint: { "text-color": "#5b21b6", "text-halo-color": "#fff", "text-halo-width": 1.2 } });
+    } else if (!sameKind && type !== "isochrone") {
       const max = Math.max(1, ...(payload.geojson.features || []).map((f) => Number(f.properties?.value ?? f.properties?.flow ?? 1)).filter(Number.isFinite));
       map.addLayer({
         id: `${id}-heat`, type: "heatmap", source,
@@ -185,18 +198,23 @@ const MapViewer = forwardRef(function MapViewer(
     }
     if (type === "od" && payload.lines) {
       const lineSource = `${id}-lines-source`;
-      map.addSource(lineSource, { type: "geojson", data: payload.lines });
-      map.addLayer({
-        id: `${id}-od-lines`, type: "line", source: lineSource,
-        paint: {
-          "line-color": "#7c3aed",
-          "line-width": ["interpolate", ["linear"], ["get", "flow"], 1, 0.7, 10, 2.2, 40, 4.5],
-          "line-opacity": 0.5,
-        },
-      });
+      const lineGeoSource = map.getSource(lineSource);
+      if (lineGeoSource?.setData) lineGeoSource.setData(payload.lines);
+      else {
+        map.addSource(lineSource, { type: "geojson", data: payload.lines });
+        map.addLayer({
+          id: `${id}-od-lines`, type: "line", source: lineSource,
+          paint: {
+            "line-color": "#7c3aed",
+            "line-width": ["interpolate", ["linear"], ["get", "flow"], 1, 0.7, 10, 2.2, 40, 4.5],
+            "line-opacity": 0.5,
+          },
+        });
+      }
     }
     analysisIdsRef.current.add(id);
     analysisPayloadsRef.current.set(id, payload);
+    analysisKindsRef.current.set(id, type);
     const b = geometryBounds(payload.geojson);
     if (payload.fitBounds && b) map.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, maxZoom: 14, duration: 600 });
     return true;
@@ -439,6 +457,15 @@ const MapViewer = forwardRef(function MapViewer(
     /** Agent 或仪表盘生成的分析结果：只更新临时图层，不重载完整 style。 */
     showAnalysis: (payload) => showAnalysisLayer(mapRef.current, payload),
     clearAnalysis: (id = "agent-analysis") => removeAnalysisLayers(mapRef.current, id),
+    clearAllAnalysis: () => [...analysisIdsRef.current].forEach((id) => removeAnalysisLayers(mapRef.current, id)),
+    undoAnalysis: (id = "agent-analysis") => {
+      const history = analysisHistoryRef.current.get(id) || [];
+      const previous = history.pop();
+      analysisHistoryRef.current.set(id, history);
+      if (previous) return showAnalysisLayer(mapRef.current, previous, { recordHistory: false });
+      removeAnalysisLayers(mapRef.current, id);
+      return false;
+    },
     /** 绘制/测量模式：开关属性弹窗与光标 */
     setDrawingMode: (on) => {
       popupEnabledRef.current = !on;
