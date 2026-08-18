@@ -408,6 +408,33 @@ export function hydrateBasemapSources(style) {
   const out = { ...style, sources: { ...(style?.sources || {}) } };
   const runtime = getBasemaps();
   for (const [id, source] of Object.entries(runtime)) out.sources[id] = source;
+
+  // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
+  // 也能在动态样式响应中直接出现。缺失的底图图层插入到第一个业务图层之前，
+  // 避免栅格覆盖道路、边界和分析图层。
+  const layers = Array.isArray(out.layers) ? [...out.layers] : [];
+  const baseIds = new Set(layers.filter((l) => String(l?.id || "").startsWith("basemap-")).map((l) => String(l.id).slice("basemap-".length)));
+  const visibleId = layers.find((l) => String(l?.id || "").startsWith("basemap-") && l.layout?.visibility === "visible")?.id?.slice("basemap-".length) || "gaode-road";
+  const missing = Object.keys(runtime).filter((id) => !baseIds.has(id));
+  if (missing.length) {
+    const insertAt = layers.findIndex((l) => !String(l?.id || "").startsWith("basemap-"));
+    const baseLayers = missing.map((id) => id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        });
+    layers.splice(insertAt < 0 ? layers.length : insertAt, 0, ...baseLayers);
+    out.layers = layers;
+  }
   return out;
 }
 
