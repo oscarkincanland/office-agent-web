@@ -369,7 +369,7 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
   const p = path.join(map.STATIC_ROOT, name, "style.json");
   if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
   try {
-    const style = JSON.parse(fs.readFileSync(p, "utf8"));
+    const style = map.hydrateBasemapSources(JSON.parse(fs.readFileSync(p, "utf8")));
     const origin = `${req.protocol}://${req.get("host")}`;
     for (const s of Object.values(style.sources || {})) {
       if (Array.isArray(s.tiles)) {
@@ -1742,6 +1742,7 @@ app.get("/api/map/settings", (_req, res) => {
     basemaps: {
       tiandituKey: !!s.basemaps?.tiandituKey,
       maptilerKey: !!s.basemaps?.maptilerKey,
+      geoapifyKey: !!s.basemaps?.geoapifyKey,
       esriToken: !!s.basemaps?.esriToken,
     },
   });
@@ -1758,6 +1759,7 @@ app.post("/api/map/settings", (req, res) => {
       basemaps: {
         tiandituKey: !!s.basemaps?.tiandituKey,
         maptilerKey: !!s.basemaps?.maptilerKey,
+        geoapifyKey: !!s.basemaps?.geoapifyKey,
         esriToken: !!s.basemaps?.esriToken,
       },
       projects: projects.map((p) => p.project),

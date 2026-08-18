@@ -58,8 +58,8 @@ export default function SettingsPanel({ onReset }) {
   const [authLoading, setAuthLoading] = useState(false);
   const [version, setVersion] = useState("");
   // 底图服务 Key（服务端不回传明文，仅状态）
-  const [basemapKeys, setBasemapKeys] = useState({ tianditu: "", maptiler: "" });
-  const [basemapStatus, setBasemapStatus] = useState({ tianditu: false, maptiler: false });
+  const [basemapKeys, setBasemapKeys] = useState({ tianditu: "", maptiler: "", geoapify: "" });
+  const [basemapStatus, setBasemapStatus] = useState({ tianditu: false, maptiler: false, geoapify: false });
   const [basemapMsg, setBasemapMsg] = useState("");
   const [basemapSaving, setBasemapSaving] = useState(false);
 
@@ -83,7 +83,7 @@ export default function SettingsPanel({ onReset }) {
     mapSettings()
       .then((r) => {
         const b = r?.basemaps || {};
-        setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey });
+        setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey, geoapify: !!b.geoapifyKey });
       })
       .catch(() => {});
   }, []);
@@ -94,10 +94,11 @@ export default function SettingsPanel({ onReset }) {
       const r = await mapSettingsSave({
         tiandituKey: basemapKeys.tianditu.trim(),
         maptilerKey: basemapKeys.maptiler.trim(),
+        geoapifyKey: basemapKeys.geoapify.trim(),
       });
       const b = r?.basemaps || {};
-      setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey });
-      setBasemapKeys({ tianditu: "", maptiler: "" });
+      setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey, geoapify: !!b.geoapifyKey });
+      setBasemapKeys({ tianditu: "", maptiler: "", geoapify: "" });
       setBasemapMsg("已保存 ✓ 底图列表已更新，地图需刷新样式（切一次底图或重进地图）");
     } catch (e) {
       setBasemapMsg("保存失败: " + e.message);
@@ -277,6 +278,19 @@ export default function SettingsPanel({ onReset }) {
           </span>
         </div>
         <div className="sp-row">
+          <span className="sp-label">Geoapify Key</span>
+          <input
+            className="sp-input"
+            type="password"
+            placeholder="Geoapify API key（用于等时圈）"
+            value={basemapKeys.geoapify}
+            onChange={(e) => setBasemapKeys((s) => ({ ...s, geoapify: e.target.value }))}
+          />
+          <span className={`sp-badge ${basemapStatus.geoapify ? "ok" : "warn"}`}>
+            {basemapStatus.geoapify ? "已配置" : "未配置"}
+          </span>
+        </div>
+        <div className="sp-row">
           <span className="sp-label">操作</span>
           <button className="btn-sm primary" onClick={saveBasemaps} disabled={basemapSaving}>
             {basemapSaving ? "保存中…" : "保存底图配置"}
@@ -284,7 +298,7 @@ export default function SettingsPanel({ onReset }) {
           {basemapMsg && <span className="sp-auth-msg">{basemapMsg}</span>}
         </div>
         <div className="sp-note">
-          输入 Key 后保存即启用对应底图；输入框留空保存 = 清除该 Key（底图随之隐藏）。
+          输入 Key 后保存即启用对应底图或等时圈服务；输入框留空保存 = 清除该 Key（对应功能随之停用）。
           高德（路网/卫星/注记）与 Esri（卫星/街道）始终可用，无需 Key。
         </div>
       </div>
@@ -298,14 +312,16 @@ export default function SettingsPanel({ onReset }) {
           </span>
         </div>
         <div className="sp-row">
-          <span className="sp-label">高德等时圈</span>
-          <span className="sp-badge warn">需 AMAP_KEY</span>
+          <span className="sp-label">Geoapify 等时圈</span>
+          <span className={`sp-badge ${basemapStatus.geoapify ? "ok" : "warn"}`}>
+            {basemapStatus.geoapify ? "已配置" : "未配置"}
+          </span>
         </div>
         <div className="sp-row">
           <span className="sp-label">IMA 知识库</span>
           <span className="sp-badge warn">需凭证</span>
         </div>
-        <div className="sp-note">等时圈/IMA 凭证通过环境变量（AMAP_KEY / IMA ClientID）配置，改后需重启服务。</div>
+        <div className="sp-note">等时圈优先使用 Geoapify Key，也兼容服务端 AMAP_KEY；Key 保存后立即生效。</div>
       </div>
 
       <div className="sp-section">

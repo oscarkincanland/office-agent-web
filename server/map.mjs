@@ -64,15 +64,18 @@ const GAODE_BASEMAPS = {
 
 // 底图设置（maps/settings.json）：各底图服务 Key
 const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
-const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", esriToken: "" } };
+// 密钥只写入 settings.local.json（被 .gitignore 忽略），避免误提交到仓库。
+const MAP_SETTINGS_LOCAL_PATH = path.join(MAPS_ROOT, "settings.local.json");
+const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", geoapifyKey: "", esriToken: "" } };
 
 export function loadMapSettings() {
   const raw = readJson(MAP_SETTINGS_PATH, null);
-  if (!raw) return structuredClone(DEFAULT_MAP_SETTINGS);
+  const local = readJson(MAP_SETTINGS_LOCAL_PATH, null);
   return {
     basemaps: {
       ...DEFAULT_MAP_SETTINGS.basemaps,
-      ...(raw.basemaps || {}),
+      ...(raw?.basemaps || {}),
+      ...(local?.basemaps || {}),
     },
   };
 }
@@ -82,10 +85,11 @@ export function saveMapSettings(basemaps = {}) {
   cur.basemaps = {
     tiandituKey: String(basemaps.tiandituKey ?? cur.basemaps.tiandituKey ?? ""),
     maptilerKey: String(basemaps.maptilerKey ?? cur.basemaps.maptilerKey ?? ""),
+    geoapifyKey: String(basemaps.geoapifyKey ?? cur.basemaps.geoapifyKey ?? ""),
     esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
   };
   fs.mkdirSync(MAPS_ROOT, { recursive: true });
-  fs.writeFileSync(MAP_SETTINGS_PATH, JSON.stringify(cur, null, 2));
+  fs.writeFileSync(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
   return cur;
 }
 
@@ -139,21 +143,23 @@ function tiandituBasemaps(key) {
 // MapTiler XYZ，需用户填 Key
 function maptilerBasemaps(key) {
   const k = encodeURIComponent(key);
+  const raster = (name, mapId, ext = "png") => ({
+    name,
+    type: "raster",
+    tileSize: 256,
+    tiles: [`https://api.maptiler.com/maps/${mapId}/{z}/{x}/{y}.${ext}?key=${k}`],
+    attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  });
   return {
-    "maptiler-streets": {
-      name: "MapTiler 街道",
-      type: "raster",
-      tileSize: 256,
-      tiles: [`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${k}`],
-      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
+    "maptiler-streets": raster("MapTiler 街道", "streets-v2"),
+    "maptiler-satellite": {
+      ...raster("MapTiler 卫星", "satellite-v2", "jpg"),
+      tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${k}`],
     },
-    "maptiler-sat": {
-      name: "MapTiler 卫星",
-      type: "raster",
-      tileSize: 256,
-      tiles: [`https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=${k}`],
-      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
-    },
+    "maptiler-hybrid": raster("MapTiler 卫星混合注记", "hybrid", "jpg"),
+    "maptiler-outdoor": raster("MapTiler 户外地形", "outdoor-v2"),
+    "maptiler-winter": raster("MapTiler 冬季地形", "winter-v2"),
+    "maptiler-basic": raster("MapTiler 简洁底图", "basic-v2"),
   };
 }
 
@@ -301,6 +307,30 @@ function readJson(p, fallback = null) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; }
 }
 
+// 样式文件可能被提交到仓库，持久化时把底图服务凭证替换为占位符。
+// 运行时由 /api/map/data/:project/style.json 注入真实 URL，因此地图仍可正常加载。
+function redactBasemapCredentials(style) {
+  const out = { ...style, sources: { ...(style?.sources || {}) } };
+  for (const [id, source] of Object.entries(out.sources)) {
+    if (!source?.metadata?.basemap && !/^(maptiler|tianditu)-/.test(id)) continue;
+    out.sources[id] = {
+      ...source,
+      tiles: Array.isArray(source.tiles)
+        ? source.tiles.map((t) => String(t).replace(/([?&](?:key|tk)=)[^&]+/gi, "$1__MAP_SERVICE_KEY__"))
+        : source.tiles,
+    };
+  }
+  return out;
+}
+
+/** 将当前本地设置注入样式响应，不把凭证写回 tracked style.json。 */
+export function hydrateBasemapSources(style) {
+  const out = { ...style, sources: { ...(style?.sources || {}) } };
+  const runtime = getBasemaps();
+  for (const [id, source] of Object.entries(runtime)) out.sources[id] = source;
+  return out;
+}
+
 export function ensureProject(name = DEFAULT_PROJECT) {
   const dir = projectDir(name);
   if (!dir) return null;
@@ -308,7 +338,7 @@ export function ensureProject(name = DEFAULT_PROJECT) {
   const cfgPath = path.join(dir, "map.config.json");
   const stylePath = path.join(dir, "style.json");
   if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(defaultConfig(name), null, 2));
-  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(getDefaultStyle(name), null, 2));
+  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
   return dir;
 }
 
@@ -366,7 +396,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
 
   let style = readJson(stylePath, null);
   if (!style || typeof style !== "object" || !style.sources) {
-    fs.writeFileSync(stylePath, JSON.stringify(getDefaultStyle(name), null, 2));
+    fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
     return true;
   }
   // 保留非底图 sources（底图 source 带 metadata.basemap 标记）
@@ -433,7 +463,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
   }
   style.sources = sources;
   style.layers = [...baseLayers, ...keep];
-  fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
+  fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
   return true;
 }
 
@@ -523,10 +553,11 @@ export function deleteLayer(name, layerId) {
 
 /** 等时圈分析（高德 v5 isochrone）… */
 export async function isochrone({ location, mode = "driving", range = 30, rangeType = "time" }) {
+  const settings = loadMapSettings();
+  const geoapifyKey = settings?.basemaps?.geoapifyKey || process.env.GEOAPIFY_KEY || "";
+  if (geoapifyKey) return isochroneGeoapify({ location, mode, range, rangeType, key: geoapifyKey });
   const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
-  if (!key) {
-    return { error: "未配置高德地图 Web 服务 Key（设置环境变量 AMAP_KEY 后重启服务），暂时无法进行等时圈分析" };
-  }
+  if (!key) return { error: "未配置 Geoapify 或高德等时圈 Key（可在设置中配置 Geoapify Key）" };
   const url = new URL("https://restapi.amap.com/v5/isochrone");
   url.searchParams.set("key", key);
   url.searchParams.set("location", String(location || ""));
@@ -545,6 +576,41 @@ export async function isochrone({ location, mode = "driving", range = 30, rangeT
     .map((p) => normalizePoints(p.points))
     .filter((pts) => pts && pts.length >= 3);
   return { error: null, center: data.result.center, cost: data.result.cost, polygons };
+}
+
+/** Geoapify Isoline API：返回 GeoJSON，统一转换为当前前端使用的外环点数组。 */
+async function isochroneGeoapify({ location, mode = "driving", range = 30, rangeType = "time", key }) {
+  const [lon, lat] = String(location || "").split(",").map(Number);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return { error: "等时圈中心点坐标无效" };
+  const modeMap = { driving: "drive", walking: "walk", bicycling: "bicycle", transit: "transit", drive: "drive", walk: "walk", bicycle: "bicycle" };
+  const apiType = rangeType === "distance" ? "distance" : "time";
+  const numericRange = Number(range) || 30;
+  const apiRange = apiType === "distance" ? Math.round(numericRange * 1000) : Math.round(numericRange * 60);
+  const url = new URL("https://api.geoapify.com/v1/isoline");
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lon));
+  url.searchParams.set("type", apiType);
+  url.searchParams.set("mode", modeMap[mode] || "drive");
+  url.searchParams.set("range", String(apiRange));
+  url.searchParams.set("apiKey", key);
+  let data;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(25000) });
+    data = await response.json();
+    if (!response.ok) return { error: data?.message || `Geoapify 等时圈请求失败（${response.status}）` };
+  } catch (e) {
+    return { error: "Geoapify 等时圈请求失败: " + e.message };
+  }
+  const polygons = [];
+  for (const feature of data?.features || []) {
+    const geometry = feature?.geometry;
+    if (geometry?.type === "Polygon" && geometry.coordinates?.[0]?.length >= 3) polygons.push(geometry.coordinates[0]);
+    if (geometry?.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates || []) if (polygon?.[0]?.length >= 3) polygons.push(polygon[0]);
+    }
+  }
+  if (!polygons.length) return { error: data?.message || "Geoapify 未返回有效等时圈多边形" };
+  return { error: null, provider: "geoapify", center: [lon, lat], cost: null, polygons };
 }
 
 /** 高德 points 可能是 [[lng,lat],...] 或 [{lng,lat},...] 或字符串 */

@@ -1349,7 +1349,7 @@ export default function MapPanel({
                 </button>
               </div>
               <div className="mp-iso-hint">
-                使用高德地图 Web 服务（需在服务端配置环境变量 AMAP_KEY）。结果以临时图层叠加在地图上，不写入项目。
+                优先使用 Geoapify Isoline 服务（在设置中配置 Geoapify Key），未配置时回退服务端 AMAP_KEY。结果以临时图层叠加在地图上，不写入项目。
               </div>
               </>
             ) : (
