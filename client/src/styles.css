@@ -3481,6 +3481,17 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .mp-region-select option { background: var(--panel2-bg); color: var(--text); }
 .mp-annotation-btn.active { color: #0e0e1a; background: #f0c674; border-color: #f0c674; }
 .mp-annotation-btn:not(.active) { color: var(--muted); }
+.mp-demo-wrap { position: relative; display: inline-flex; }
+.mp-demo-menu {
+  position: absolute; z-index: 40; top: calc(100% + 6px); left: 0; min-width: 174px;
+  padding: 5px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--panel-bg); box-shadow: 0 10px 24px rgba(0, 0, 0, .28);
+}
+.mp-demo-menu button {
+  width: 100%; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 4px;
+  padding: 7px 8px; color: var(--text); background: transparent; font-size: 12px; text-align: left; cursor: pointer;
+}
+.mp-demo-menu button:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .mp-basemap { display: flex; gap: 3px; }
 .mp-drill-btn {
   display: inline-flex; align-items: center; gap: 4px;
