@@ -437,6 +437,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
         )}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
+        {doc.kind === "pdf" && <span className="badge">PDF</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
         {isHtmlKind && (
           <button
@@ -574,6 +575,11 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
                 setActiveComment={setActiveComment}
               />
             )}
+          </div>
+        )}
+        {doc.kind === "pdf" && (
+          <div className="docframe-container">
+            <iframe title={doc.name} src={doc.url} className="docframe" />
           </div>
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
