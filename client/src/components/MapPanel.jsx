@@ -33,7 +33,7 @@ const ISO_MODES = [
  */
 export default function MapPanel({
   onExit, onOpenFile,
-  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
+  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
   onSessionChange, onRefreshSessions,
 }) {
   const [projects, setProjects] = useState([]);
@@ -1085,7 +1085,7 @@ export default function MapPanel({
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
-            historyMessages={null}
+            historyMessages={historyMessages}
             onNewSession={onNewSession}
             onOpenFile={handleOpenFile}
             sessions={sessions}

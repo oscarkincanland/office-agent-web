@@ -126,6 +126,38 @@ export const tplContent = (relPath) => api(`/api/templates/content?path=${encode
 export const tplRefresh = () => api("/api/templates/refresh", { method: "POST" });
 
 export function fileToBase64(file) {
+  // 大图先压缩，避免把高分辨率截图以超大 Base64 发送给视觉模型。
+  if (file?.type?.startsWith("image/") && file.size > 2 * 1024 * 1024 && typeof Image !== "undefined") {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      const cleanup = () => URL.revokeObjectURL(url);
+      img.onload = () => {
+        try {
+          const maxSide = 1800;
+          const scale = Math.min(1, maxSide / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+          canvas.height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            if (!blob) { cleanup(); reject(new Error("图片压缩失败")); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+              cleanup();
+              const dataUrl = reader.result;
+              const [head, b64] = dataUrl.split(",");
+              resolve({ mediaType: head.match(/data:(.*?);/)?.[1] || "image/jpeg", data: b64 });
+            };
+            reader.onerror = (e) => { cleanup(); reject(e); };
+            reader.readAsDataURL(blob);
+          }, "image/jpeg", 0.82);
+        } catch (e) { cleanup(); reject(e); }
+      };
+      img.onerror = (e) => { cleanup(); reject(e); };
+      img.src = url;
+    });
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {

@@ -13,7 +13,7 @@ import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
+import { listFiles, listModels, listSessions, listRuns, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -72,6 +72,20 @@ class AppErrorBoundary extends React.Component {
 
 let histSeq = 0;
 const histId = () => `h${++histSeq}`;
+
+function historyImageData(block) {
+  if (!block) return null;
+  const source = block.source || block.image || block;
+  const data = source?.data || block.data || source?.url || block.url;
+  if (!data) return null;
+  if (String(data).startsWith("data:")) return String(data);
+  const mediaType = source?.mediaType || source?.mimeType || block.mediaType || block.mimeType || "image/png";
+  return `data:${mediaType};base64,${data}`;
+}
+
+function entryCreatedAt(entry, message) {
+  return entry?.timestamp || entry?.createdAt || entry?.time || message?.timestamp || message?.createdAt || null;
+}
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -236,17 +250,25 @@ export default function App() {
     localStorage.setItem("oaw_thread_id", session.id);
     try { await resumeAgentThread(clientId, session.id, session.id, session.cwd || currentWorkspace); } catch (e) { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); }
     try {
-      const d = await getSession(session.id);
+      const [d, runData] = await Promise.all([
+        getSession(session.id),
+        listRuns(session.id).catch(() => ({ runs: [] })),
+      ]);
       const msgs = (d.entries || [])
         .filter((e) => e.type === "message" && e.message)
         .map((e) => {
           const m = e.message;
           let text = "";
           const blocks = [];
+          const images = [];
           if (typeof m.content === "string") text = m.content;
           else if (Array.isArray(m.content)) {
             for (const b of m.content) {
-              if (b.type === "text") text += (text ? "\n" : "") + b.text;
+              if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
+              else if (b.type === "image" || b.type === "input_image") {
+                const src = historyImageData(b);
+                if (src) images.push(src);
+              }
               else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
               else if (b.type === "toolCall") {
                 const input = typeof b.input === "string" ? b.input : JSON.stringify(b.input, null, 2);
@@ -259,6 +281,20 @@ export default function App() {
                   result: "",
                   done: true,
                   isError: false,
+                  expanded: false,
+                  duration: null,
+                });
+              } else if (b.type === "toolResult" || b.type === "tool_result") {
+                const output = typeof b.content === "string" ? b.content : JSON.stringify(b.content || b.output || "", null, 2);
+                blocks.push({
+                  type: "tool",
+                  id: histId(),
+                  name: b.toolName || b.name || "tool result",
+                  input: "",
+                  output,
+                  result: output,
+                  done: true,
+                  isError: !!b.isError,
                   expanded: false,
                   duration: null,
                 });
@@ -275,14 +311,28 @@ export default function App() {
             id: e.id,
             role: isAssistant ? "assistant" : "user",
             text,
-            images: [],
+            images,
             blocks,
             references: historyReferences(text),
             currentDoc: currentDocMatch?.[1]?.trim() || null,
             status: "done",
+            createdAt: entryCreatedAt(e, m),
           };
         });
-      setHistoryMessages(msgs);
+      const runMessages = (runData?.runs || [])
+        .filter((run) => run?.status && (run.summary || run.artifacts?.length))
+        .map((run) => ({
+          id: `run-summary-${run.id}`,
+          role: "system",
+          text: run.summary || `本轮对话完成，共处理 ${run.artifacts?.length || 0} 个文件`,
+          products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
+          artifacts: run.artifacts || [],
+          runId: run.id,
+          status: "done",
+          summary: true,
+          createdAt: run.finishedAt || run.startedAt || null,
+        }));
+      setHistoryMessages([...msgs, ...runMessages]);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
@@ -427,6 +477,7 @@ export default function App() {
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
             onNewSession={handleNewSession}
+            historyMessages={historyMessages}
             sessions={sessions}
             onSelectSession={handleSelectSession}
             onSessionChange={handleSessionChange}

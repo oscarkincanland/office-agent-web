@@ -1444,7 +1444,12 @@ app.post("/api/agent/answer", (req, res) => {
 
 app.post("/api/agent/prompt", async (req, res) => {
   const { client, thread, text, images, attachments, references, effort, task: taskInput } = req.body || {};
-  if (!client || !text) return res.status(400).json({ error: "client and text required" });
+  const hasImages = Array.isArray(images) && images.some((img) => img?.data);
+  const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
+  if (!client || (!String(text || "").trim() && !hasImages && !hasAttachments)) {
+    return res.status(400).json({ error: "text, image, or attachment required" });
+  }
+  const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
   const key = agentKey(client, thread);
   const before = snapshotWorkspace();
   let run = null;
@@ -1461,12 +1466,12 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
   }
   try {
-    resolved = resolveReferences(references, text);
-    const workflowId = taskInput?.workflowId || workflowIdFromText(text);
+    resolved = resolveReferences(references, normalizedText);
+    const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
     const workflow = workflowId ? getWorkflow(workflowId, scanSkills()) : null;
     task = createTaskEnvelope({
       ...(taskInput || {}),
-      text,
+      text: normalizedText,
       threadId: thread || null,
       currentFile: taskInput?.currentFile || null,
       references: resolved,
@@ -1477,8 +1482,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       ],
     });
     run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved, workflow });
-    recordRunEvent(run.id, "prompt", { text: String(text).slice(0, 4000), workflowId, referenceCount: resolved.length });
-    await agentManager.promptWithContext(key, text, images, effort, resolved, { runId: run.id, task, workflow });
+    recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
+    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
     const entry = agentManager.sessions.get(key);
     if (entry) emitChannel(entry, "agent_error", { message: e.message });
@@ -1486,10 +1491,12 @@ app.post("/api/agent/prompt", async (req, res) => {
     const changed = await waitForFlush(before);
     if (changed.length) {
       if (entry) {
-        emitChannel(entry, "file_changed", { files: changed });
+        emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
         emitChannel(entry, "agent_summary", {
           products: changed,
           summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+          runId: run?.id || null,
+          artifacts: [],
         });
       }
     }
@@ -1507,7 +1514,7 @@ app.post("/api/agent/prompt", async (req, res) => {
   const completed = run ? finishRun(run.id, { status: "completed", sessionId: entry?.session?.sessionId || null, summary: changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件` : "本轮对话完成，未检测到文件变更" }) : null;
   if (entry) {
     if (changed.length) {
-      emitChannel(entry, "file_changed", { files: changed });
+      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
         products: changed,
         summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
