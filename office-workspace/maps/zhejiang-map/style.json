@@ -1,0 +1,496 @@
+{
+  "version": 8,
+  "name": "zhejiang-map 地图样式",
+  "sources": {
+    "boundary-city": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/boundary-city/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 9
+    },
+    "boundary-county": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/boundary-county/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 11
+    },
+    "highways": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/highways/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "roads-trunk": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/roads-trunk/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "roads-rural": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/roads-rural/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    },
+    "toll-stations": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/toll-stations/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    },
+    "junctions": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/junctions/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 14
+    },
+    "roads-province": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/roads-province/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
+    "blank": {
+      "name": "无底图",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [],
+      "attribution": "",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-road": {
+      "name": "高德路网",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+        "https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-sat": {
+      "name": "高德卫星",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst02.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst03.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
+        "https://webst04.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "gaode-sat-label": {
+      "name": "高德卫星注记",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst02.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst03.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}",
+        "https://webst04.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}"
+      ],
+      "attribution": "&copy; <a href=\"https://www.amap.com/\">高德地图</a>",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "esri-sat": {
+      "name": "Esri 卫星",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+      ],
+      "attribution": "&copy; Esri, Maxar, Earthstar Geographics",
+      "metadata": {
+        "basemap": true
+      }
+    },
+    "esri-street": {
+      "name": "Esri 街道",
+      "type": "raster",
+      "tileSize": 256,
+      "tiles": [
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+      ],
+      "attribution": "&copy; Esri, HERE, Garmin, OpenStreetMap contributors",
+      "metadata": {
+        "basemap": true
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "basemap-blank",
+      "type": "background",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "background-color": "rgba(0,0,0,0)"
+      }
+    },
+    {
+      "id": "basemap-gaode-road",
+      "type": "raster",
+      "source": "gaode-road",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-gaode-sat",
+      "type": "raster",
+      "source": "gaode-sat",
+      "layout": {
+        "visibility": "visible"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-gaode-sat-label",
+      "type": "raster",
+      "source": "gaode-sat-label",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-esri-sat",
+      "type": "raster",
+      "source": "esri-sat",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "basemap-esri-street",
+      "type": "raster",
+      "source": "esri-street",
+      "layout": {
+        "visibility": "none"
+      },
+      "paint": {
+        "raster-opacity": 1
+      }
+    },
+    {
+      "id": "boundary-city",
+      "source": "boundary-city",
+      "source-layer": "boundary-city",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#e4572e",
+        "line-width": 2,
+        "line-opacity": 0.9,
+        "line-dasharray": [
+          2,
+          1.2
+        ]
+      }
+    },
+    {
+      "id": "boundary-county",
+      "source": "boundary-county",
+      "source-layer": "boundary-county",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#b8b8c8",
+        "line-width": 0.8,
+        "line-opacity": 0.9,
+        "line-dasharray": [
+          2,
+          1.2
+        ]
+      }
+    },
+    {
+      "id": "highways",
+      "source": "highways",
+      "source-layer": "highways",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#d77728",
+        "line-width": 3.5,
+        "line-opacity": 0.55
+      }
+    },
+    {
+      "id": "roads-trunk",
+      "source": "roads-trunk",
+      "source-layer": "roads-trunk",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff0fa7",
+        "line-width": 2.5,
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "roads-rural",
+      "source": "roads-rural",
+      "source-layer": "roads-rural",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#2ca02c",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "toll-stations",
+      "source": "toll-stations",
+      "source-layer": "toll-stations",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4,
+        "circle-color": "#2ca02c",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "junctions",
+      "source": "junctions",
+      "source-layer": "junctions",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
+      }
+    },
+    {
+      "id": "roads-province",
+      "source": "roads-province",
+      "source-layer": "roads-province",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#01da42",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
+      "id": "highways-label",
+      "type": "symbol",
+      "source": "highways",
+      "source-layer": "highways",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "roads-trunk-label",
+      "type": "symbol",
+      "source": "roads-trunk",
+      "source-layer": "roads-trunk",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "roads-province-label",
+      "type": "symbol",
+      "source": "roads-province",
+      "source-layer": "roads-province",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    }
+  ],
+  "glyphs": "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf"
+}

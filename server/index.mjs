@@ -3,15 +3,63 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR } from "./workspace.mjs";
+import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath } from "./workspace.mjs";
 import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { agentManager } from "./agent.mjs";
+import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import * as kb from "./kb.mjs";
+import * as tpl from "./tpl.mjs";
+import * as map from "./map.mjs";
+import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3001;
+const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 
 app.use(express.json({ limit: "60mb" }));
+
+// ---------- request boundary / local API authentication ----------
+// The app is intended to run locally. Keep the default listener on loopback and
+// make authentication opt-in so existing local workflows remain compatible.
+function tokenMatches(candidate) {
+  if (!API_TOKEN || !candidate) return false;
+  const a = Buffer.from(String(candidate));
+  const b = Buffer.from(API_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function readCookie(req, name) {
+  const raw = req.get("cookie") || "";
+  const pair = raw.split(";").map((item) => item.trim()).find((item) => item.startsWith(`${name}=`));
+  return pair ? decodeURIComponent(pair.slice(name.length + 1)) : "";
+}
+
+function setAuthCookie(res) {
+  if (!API_TOKEN) return;
+  res.setHeader("Set-Cookie", `oaw_token=${encodeURIComponent(API_TOKEN)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`);
+}
+
+app.use((req, res, next) => {
+  const requestId = req.get("x-request-id") || crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+
+  // Opening the UI as /?token=... bootstraps a same-origin HttpOnly cookie,
+  // which also works for direct fetch() calls and EventSource streams.
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+
+  if (!API_TOKEN || !req.path.startsWith("/api/") || req.path === "/api/status") return next();
+
+  const authorization = req.get("authorization") || "";
+  const bearer = authorization.replace(/^Bearer\s+/i, "");
+  const supplied = bearer || req.get("x-oaw-token") || readCookie(req, "oaw_token") || req.query?.token;
+  if (!tokenMatches(supplied)) {
+    return res.status(401).json({ error: "unauthorized", message: "需要有效的 OAW_API_TOKEN", requestId });
+  }
+  next();
+});
 
 // ---------- helpers ----------
 const COL_RE = /([A-Z]+)(\d+)$/;
@@ -50,46 +98,390 @@ function sheetToGrid(children) {
 }
 
 async function readWorkbook(file) {
-  // 枚举 sheets：depth 1 不够则递增重试
-  let info = await get(file, "/", 1);
-  const sheetNodes = [];
-  const collect = (results) => {
-    for (const r of results || []) {
-      if (r.type === "sheet") sheetNodes.push(r);
-      if (r.children) {
-        for (const c of r.children) {
-          if (c.type === "sheet") sheetNodes.push(c);
+  // 尝试 officecli（Windows），失败则用 xlsx 包原生读取（macOS/Linux）
+  try {
+    const { get } = await import("./office.mjs");
+    // 枚举 sheets：depth 1 不够则递增重试
+    let info = await get(file, "/", 1);
+    const sheetNodes = [];
+    const collect = (results) => {
+      for (const r of results || []) {
+        if (r.type === "sheet") sheetNodes.push(r);
+        if (r.children) {
+          for (const c of r.children) {
+            if (c.type === "sheet") sheetNodes.push(c);
+          }
         }
       }
-    }
-  };
-  collect(info.json?.data?.results || []);
-  if (sheetNodes.length === 0) {
-    info = await get(file, "/", 2);
+    };
     collect(info.json?.data?.results || []);
-  }
-  if (sheetNodes.length === 0) {
-    throw new Error("无法枚举工作表（文件可能损坏或格式不支持）");
-  }
-  const sheets = [];
-  const grids = {};
-  for (const s of sheetNodes) {
-    const name = s.preview || s.path.split("/").pop();
-    if (!sheets.some((x) => x.name === name)) {
-      sheets.push({ name, path: s.path });
+    if (sheetNodes.length === 0) {
+      info = await get(file, "/", 2);
+      collect(info.json?.data?.results || []);
+    }
+    if (sheetNodes.length === 0) {
+      throw new Error("无法枚举工作表");
+    }
+    const sheets = [];
+    const grids = {};
+    for (const s of sheetNodes) {
+      const name = s.preview || s.path.split("/").pop();
+      if (!sheets.some((x) => x.name === name)) {
+        sheets.push({ name, path: s.path });
+      }
+    }
+    for (const s of sheets) {
+      const r = await get(file, s.name, 3);
+      const res = r.json?.data?.results?.[0];
+      grids[s.name] = sheetToGrid(res?.children || []);
+    }
+    return { sheets: sheets.map((s) => s.name), grids };
+  } catch (officeErr) {
+    // officecli 不可用，使用 xlsx 包原生读取
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.readFile(file);
+      const sheets = wb.SheetNames;
+      const grids = {};
+      for (const name of sheets) {
+        const ws = wb.Sheets[name];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+        const rows = {};
+        data.forEach((row, ri) => {
+          const cells = {};
+          row.forEach((val, ci) => {
+            const col = String.fromCharCode(65 + ci);
+            cells[`${col}${ri + 1}`] = { text: String(val) };
+          });
+          rows[ri + 1] = { cells };
+        });
+        grids[name] = { rows };
+      }
+      return { sheets, grids };
+    } catch (xlsxErr) {
+      throw new Error(`officecli: ${officeErr.message} | xlsx: ${xlsxErr.message}`);
     }
   }
-  for (const s of sheets) {
-    const r = await get(file, s.name, 3);
-    const res = r.json?.data?.results?.[0];
-    grids[s.name] = sheetToGrid(res?.children || []);
-  }
-  return { sheets: sheets.map((s) => s.name), grids };
 }
 
 // ---------- REST ----------
-app.get("/api/status", (_req, res) => {
-  res.json({ ok: true, officecli: path.basename(OFFICECLI) });
+app.get("/api/status", (req, res) => {
+  if (API_TOKEN && tokenMatches(req.query?.token)) setAuthCookie(res);
+  res.json({
+    ok: true,
+    officecli: path.basename(OFFICECLI),
+    version: pkg.version,
+    host: HOST,
+    authRequired: Boolean(API_TOKEN),
+  });
+});
+
+// ---------- 知识库（本地索引 + IMA 云端） ----------
+app.get("/api/kb/status", async (_req, res) => {
+  await kb.scan();
+  res.json(kb.status());
+});
+
+app.post("/api/kb/roots", async (req, res) => {
+  const r = kb.addRoot(req.body?.path);
+  if (!r.ok) return res.status(400).json(r);
+  await kb.scan(true);
+  res.json({ ok: true, roots: r.roots, fileCount: kb.status().fileCount });
+});
+
+app.delete("/api/kb/roots", async (req, res) => {
+  const r = kb.removeRoot(req.body?.path);
+  await kb.scan(true);
+  res.json(r);
+});
+
+app.get("/api/kb/tree", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  const dir = req.query.dir || "";
+  res.json(kb.getTreeLevel(isNaN(rootIdx) ? 0 : rootIdx, dir));
+});
+
+app.get("/api/kb/search", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  res.json({
+    results: kb.search(req.query.q || "", isNaN(rootIdx) ? null : rootIdx, parseInt(req.query.limit, 10) || 30),
+  });
+});
+
+app.get("/api/kb/graph", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  const include = (req.query.include || "links").split(",").filter(Boolean);
+  res.json(kb.getGraph({ rootIdx: isNaN(rootIdx) ? null : rootIdx, include, maxNodes: parseInt(req.query.max, 10) || 800 }));
+});
+
+app.get("/api/kb/doc", async (req, res) => {
+  await kb.scan();
+  const rootIdx = parseInt(req.query.root, 10);
+  const doc = kb.getDoc(req.query.path || "", isNaN(rootIdx) ? null : rootIdx);
+  if (!doc) return res.status(404).json({ error: "not found" });
+  res.json(doc);
+});
+
+// IMA 云端知识库（凭证未配置时返回 configured:false）
+app.get("/api/kb/ima/status", async (_req, res) => res.json(await kb.imaStatus()));
+app.get("/api/kb/ima/bases", async (_req, res) => res.json(await kb.imaListBases()));
+app.get("/api/kb/ima/search", async (req, res) => res.json(await kb.imaSearch(req.query.q || "", req.query.kb || "")));
+app.get("/api/kb/ima/doc", async (req, res) => res.json(await kb.imaDoc(req.query.media_id || "")));
+
+// ---------- 模版库 ----------
+app.get("/api/templates", (req, res) => {
+  const cat = req.query.category;
+  const cats = tpl.getCategories();
+  const items = tpl.getTemplatesByCategory(cat);
+  res.json({ categories: cats, items, total: items.length });
+});
+
+app.get("/api/templates/content", (req, res) => {
+  const relPath = req.query.path || "";
+  if (!relPath) return res.status(400).json({ error: "path required" });
+  const c = tpl.getTemplateContent(relPath);
+  if (!c) return res.status(404).json({ error: "not found" });
+  res.json(c);
+});
+
+app.post("/api/templates/refresh", (_req, res) => {
+  tpl.refresh();
+  res.json({ ok: true, total: tpl.getTemplates().length });
+});
+
+// 红头会议通知生成（docx 库生成 → 写工作区）
+app.post("/api/templates/generate-notice", async (req, res) => {
+  try {
+    const { generateNotice } = await import("./notice.mjs");
+    const r = await generateNotice(req.body || {});
+    res.json({ ok: true, name: r.name });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ---------- 文档 ↔ 知识库联动 ----------
+// docx → md 入知识库（工作区注册为 kb 根）
+app.post("/api/kb/ingest", async (req, res) => {
+  try {
+    const r = await kb.ingestDocx(req.body?.name);
+    if (!r.ok) return res.status(400).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// kb 文档 → docx 写工作区
+app.post("/api/kb/export-docx", async (req, res) => {
+  try {
+    const rootIdx = parseInt(req.body?.rootIdx, 10);
+    const r = await kb.exportDocx(req.body?.relPath, isNaN(rootIdx) ? null : rootIdx);
+    if (!r.ok) return res.status(400).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// ---------- HTML 标注持久化（跟随当前工作区） ----------
+function annotationsPath(fileName) {
+  const safe = path.basename(String(fileName || ""));
+  if (!safe || safe.includes("..")) return null;
+  return path.join(getWorkspace(), ".annotations", safe + ".json");
+}
+
+app.get(/^\/api\/doc\/([^\/]+)\/annotations$/, (_req, res) => {
+  const fileName = decodeURIComponent(_req.params[0]);
+  const p = annotationsPath(fileName);
+  if (!p || !fs.existsSync(p)) return res.json({ annotations: [] });
+  try {
+    res.json({ annotations: JSON.parse(fs.readFileSync(p, "utf8")) });
+  } catch {
+    res.json({ annotations: [] });
+  }
+});
+
+app.post(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = annotationsPath(fileName);
+  if (!p) return res.status(400).json({ error: "invalid name" });
+  try {
+    fs.mkdirSync(path.join(getWorkspace(), ".annotations"), { recursive: true });
+    const list = Array.isArray(req.body?.annotations) ? req.body.annotations : [];
+    fs.writeFileSync(p, JSON.stringify(list, null, 2), "utf8");
+    res.json({ ok: true, count: list.length });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// 模板文件流（HTML 首页 iframe 渲染；相对资源基于 templates/ 解析）
+app.get(/^\/api\/templates\/file\/(.+)$/, (req, res) => {
+  const raw = decodeURIComponent(req.params[0]);
+  // 兼容绝对路径 relPath（tpl 扫描结果）：截取 templates/ 之后的部分
+  const marker = "templates/";
+  const idx = raw.indexOf(marker);
+  const relPath = idx >= 0 ? raw.slice(idx) : raw;
+  if (!relPath || relPath.includes("..") || relPath.startsWith("/")) {
+    return res.status(400).json({ error: "invalid path" });
+  }
+  // 模板可能位于项目根 templates/ 或工作目录（_报告模板 等），双根尝试
+  const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件（工作目录）
+  const candidates = [path.join(PROJECT_DIR, relPath), path.join(TPL_ROOT, relPath)];
+  const abs = candidates.find((p) => p.startsWith(path.join(PROJECT_DIR, "templates")) || p.startsWith(path.join(TPL_ROOT, "_")));
+  if (!abs || !fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".json": "application/json" }[ext] || "application/octet-stream";
+  res.setHeader("Content-Type", mime);
+  res.sendFile(abs);
+});
+
+// 模板文件下载路由
+const TPL_ROOT = path.resolve(__dirname, "..", ".."); // F:\Claude code本地文件
+app.get(/^\/api\/templates\/files\/(.+)$/, (req, res) => {
+  const relPath = req.params[0]; // 正则捕获组
+  if (!relPath || relPath.includes("..") || relPath.startsWith("/") || /^[A-Z]:/i.test(relPath)) {
+    return res.status(400).json({ error: "invalid path" });
+  }
+  const abs = path.join(TPL_ROOT, relPath);
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
+    return res.status(404).json({ error: "file not found" });
+  }
+  res.sendFile(abs);
+});
+
+// ---------- 地图（GIS 项目：浙江交通地图） ----------
+// style.json 动态响应：矢量瓦片 URL 相对路径 → 绝对 URL
+// （MapLibre 在 Web Worker 中加载矢量瓦片，Worker 无法解析 /api/... 相对路径）
+// 必须注册在任何 /api/map/data 静态挂载之前，否则被 express.static 抢先返回原文件
+app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
+  const name = req.params[0];
+  const p = path.join(map.STATIC_ROOT, name, "style.json");
+  if (!fs.existsSync(p)) return res.status(404).json({ error: "style not found" });
+  try {
+    const style = JSON.parse(fs.readFileSync(p, "utf8"));
+    const origin = `${req.protocol}://${req.get("host")}`;
+    for (const s of Object.values(style.sources || {})) {
+      if (Array.isArray(s.tiles)) {
+        s.tiles = s.tiles.map((t) => (typeof t === "string" && t.startsWith("/") ? origin + t : t));
+      }
+    }
+    res.json(style);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 静态文件（style.json / 矢量瓦片 / 图层数据）
+app.use("/api/map/data", express.static(map.STATIC_ROOT));
+
+app.get("/api/map/projects", (_req, res) => {
+  res.json({ projects: map.listProjects() });
+});
+
+app.get("/api/map/project", (req, res) => {
+  const p = map.getProject(req.query.name || map.DEFAULT_PROJECT);
+  if (!p) return res.status(404).json({ error: "project not found" });
+  res.json(p);
+});
+
+app.post("/api/map/style", (req, res) => {
+  const { name, style } = req.body || {};
+  const r = map.saveStyle(name || map.DEFAULT_PROJECT, style);
+  if (!r) return res.status(400).json({ error: "invalid style" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/config", (req, res) => {
+  const { name, config } = req.body || {};
+  const r = map.saveConfig(name || map.DEFAULT_PROJECT, config);
+  if (!r) return res.status(400).json({ error: "invalid config" });
+  res.json({ ok: true });
+});
+
+app.post("/api/map/import", async (req, res) => {
+  const { name, layerId, geojson } = req.body || {};
+  if (!geojson) return res.status(400).json({ error: "geojson required" });
+  try {
+    const r = await map.importLayer(name || map.DEFAULT_PROJECT, layerId, geojson);
+    if (!r) return res.status(400).json({ error: "import failed" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/map/import-batch", async (req, res) => {
+  const { name, items } = req.body || {};
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
+  try {
+    const r = await map.importBatch(name || map.DEFAULT_PROJECT, items);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 从数据目录一键生成路网图层（prepare-map-data + 瓦片重建）
+app.post("/api/map/prepare", async (req, res) => {
+  const { srcDir } = req.body || {};
+  const ws = getWorkspace();
+  const src = srcDir ? path.resolve(ws, String(srcDir)) : path.join(PROJECT_DIR, "data");
+  if (!src.startsWith(ws) && !src.startsWith(PROJECT_DIR)) return res.status(400).json({ error: "invalid dir" });
+  if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
+    return res.status(400).json({ error: "目录不存在: " + (srcDir || "data") + "（请先把矢量数据放入该目录）" });
+  }
+  const { execFile } = await import("node:child_process");
+  const run = (script, args) => new Promise((resolve) => {
+    execFile("node", [script, ...args], { cwd: PROJECT_DIR, timeout: 300000 }, (err, stdout, stderr) => {
+      resolve({ code: err ? 1 : 0, out: (stdout || "") + (stderr || "") });
+    });
+  });
+  const p1 = await run("scripts/prepare-map-data.mjs", [src]);
+  const p2 = await run("scripts/build-vector-tiles.mjs", ["--force"]);
+  res.json({ ok: p1.code === 0 && p2.code === 0, prepare: p1.out.slice(-800), tiles: p2.out.slice(-500) });
+});
+
+app.post("/api/map/rebuild", (req, res) => {
+  const { name, layerIds } = req.body || {};
+  const r = map.rebuildTiles(name || map.DEFAULT_PROJECT, Array.isArray(layerIds) ? layerIds : null);
+  if (!r) return res.status(400).json({ error: "rebuild failed" });
+  res.json({ ok: true, layers: r });
+});
+
+app.post("/api/map/layer/delete", (req, res) => {
+  const { name, layerId } = req.body || {};
+  const r = map.deleteLayer(name || map.DEFAULT_PROJECT, layerId);
+  res.json(r);
+});
+
+app.get("/api/map/layer", (req, res) => {
+  const g = map.getLayer(req.query.name || map.DEFAULT_PROJECT, req.query.layer);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+app.post("/api/map/isochrone", async (req, res) => {
+  const { location, mode, range, rangeType } = req.body || {};
+  if (!location) return res.status(400).json({ error: "location required (lng,lat)" });
+  const r = await map.isochrone({ location, mode, range, rangeType });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, center: r.center, cost: r.cost, polygons: r.polygons });
+});
+
+// 路径规划（默认 OSRM 开源，可选高德）
+app.post("/api/map/route", async (req, res) => {
+  const { from, to, mode, provider } = req.body || {};
+  if (!from || !to) return res.status(400).json({ error: "from/to required (lng,lat)" });
+  const r = await map.route({ from, to, mode, provider });
+  if (r.error) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, provider: r.provider, distance: r.distance, duration: r.duration, geometry: r.geometry });
 });
 
 app.get("/api/files", (req, res) => {
@@ -98,8 +490,69 @@ app.get("/api/files", (req, res) => {
   if (dir && (dir.includes("..") || dir.startsWith("/") || /^[a-zA-Z]:/.test(dir))) {
     return res.status(400).json({ error: "invalid dir" });
   }
-  const target = dir ? path.join(getWorkspace(), dir) : getWorkspace();
-  res.json({ files: listWorkspace(target), dir });
+  const target = dir ? resolvePath(dir) : getWorkspace();
+  if (dir && (!target || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found" });
+  const files = listWorkspace(target).map((item) => {
+    if (item.isDir) return item;
+    const p = path.join(target, item.name);
+    try {
+      const st = fs.statSync(p);
+      return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
+    } catch { return item; }
+  });
+  res.json({ files, dir, workspace: getWorkspace() });
+});
+
+function mimeForExt(ext) {
+  return ({
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    pdf: "application/pdf", csv: "text/csv", json: "application/json",
+    md: "text/markdown", markdown: "text/markdown", txt: "text/plain", html: "text/html", htm: "text/html",
+  })[String(ext || "").toLowerCase()] || "application/octet-stream";
+}
+
+// ---------- structured references / external file roots ----------
+app.post("/api/context/resolve", (req, res) => {
+  try {
+    const { references, text } = req.body || {};
+    const resolved = resolveReferences(references, text);
+    const publicRefs = resolved.map((ref) => {
+      const metadata = ref.metadata ? { ...ref.metadata } : ref.metadata;
+      if (metadata?.path) delete metadata.path;
+      if (Array.isArray(metadata?.files)) metadata.files = metadata.files.map((item) => { const next = { ...item }; delete next.path; return next; });
+      return { ...ref, metadata };
+    });
+    res.json({ ok: true, references: publicRefs, summary: contextSummary(publicRefs), requestId: req.requestId });
+  } catch (e) {
+    res.status(400).json({ error: e.message, requestId: req.requestId });
+  }
+});
+
+app.post("/api/context/read", async (req, res) => {
+  try {
+    const { reference, references, refId, query, range } = req.body || {};
+    const ref = reference || (Array.isArray(references) ? references.find((r) => r?.id === refId) : null);
+    if (!ref) return res.status(400).json({ error: "reference or refId required", requestId: req.requestId });
+    const result = await readReference(ref, query, range);
+    if (result.status !== "resolved") return res.status(404).json({ ...result, requestId: req.requestId });
+    const metadata = result.metadata ? { ...result.metadata } : result.metadata;
+    if (metadata?.path) delete metadata.path;
+    res.json({ ...result, metadata, requestId: req.requestId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, requestId: req.requestId });
+  }
+});
+
+app.get("/api/file-roots", (_req, res) => res.json({ roots: listFileRoots() }));
+app.post("/api/file-roots", (req, res) => {
+  const result = addFileRoot(req.body?.path, req.body?.label);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+app.delete("/api/file-roots/:id", (req, res) => {
+  const result = removeFileRoot(req.params.id);
+  res.status(result.ok ? 200 : 404).json(result);
 });
 
 app.post("/api/files/upload", async (req, res) => {
@@ -107,8 +560,8 @@ app.post("/api/files/upload", async (req, res) => {
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
-  if (!/\.(docx|xlsx|pptx|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
-  fs.writeFileSync(path.join(WORKSPACE_DIR, safe), buf);
+  if (!/\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
+  fs.writeFileSync(path.join(getWorkspace(), safe), buf);
   res.json({ ok: true, file: safe });
 });
 
@@ -120,12 +573,12 @@ app.post("/api/files/delete", async (req, res) => {
 });
 
 // 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
-app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation" };
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
   try {
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
@@ -135,27 +588,52 @@ app.get(/^\/api\/doc\/([^\/]+)\/raw$/, (req, res) => {
   }
 });
 
-// open document
-app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
+// docx → 纯文本（供 agent 在无 officecli 环境读取 docx 内容）
+app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p || !/\.docx$/i.test(p)) return res.status(404).json({ error: "not found" });
+  try {
+    const JSZip = (await import("jszip")).default;
+    const zip = await JSZip.loadAsync(fs.readFileSync(p));
+    const xml = await zip.file("word/document.xml")?.async("string");
+    if (!xml) return res.status(400).json({ error: "no document.xml" });
+    const paras = [];
+    for (const m of xml.matchAll(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g)) {
+      const text = [...m[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((t) => t[1]).join("").trim();
+      if (text) paras.push(text);
+    }
+    res.json({ name: fileName, text: paras.join("\n") });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// open document
+app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  if (/(?:^|\/)(?:raw|text|html|comments|watch)(?:\/stop)?$/.test(fileName)) return next();
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
+  const thread = req.query.thread;
   if (client) {
-    try { agentManager.setCurrentFile(client, fileName); } catch {}
+    try { agentManager.setCurrentFile(agentKey(client, thread), fileName); } catch {}
   }
   try {
     if (ext === "xlsx") {
       const wb = await readWorkbook(p);
       res.json({ kind: "xlsx", name: fileName, ...wb });
-    } else if (ext === "md" || ext === "markdown" || ext === "txt") {
+    } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
       const content = fs.readFileSync(p, "utf8");
       res.json({ kind: "text", name: fileName, content, ext });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
       res.json({ kind: "htmlfile", name: fileName, content });
+    } else if (ext === "pdf") {
+      res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw` });
     } else {
       res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
     }
@@ -165,7 +643,7 @@ app.get(/^\/api\/doc\/([^\/]+)$/, async (req, res) => {
 });
 
 // rendered html for docx/pptx (iframe target)
-app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).send("not found");
@@ -181,7 +659,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/html$/, async (req, res) => {
 
 // watch 模式：启动/获取某文件的实时预览地址（docx/pptx）
 // 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
-app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -235,7 +713,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/comments$/, async (req, res) => {
   }
 });
 
-app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
+app.get(/^\/api\/doc\/(.+)\/watch$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -248,7 +726,7 @@ app.get(/^\/api\/doc\/([^\/]+)\/watch$/, async (req, res) => {
 });
 
 // 停止某文件的 watch
-app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
+app.post(/^\/api\/doc\/(.+)\/watch\/stop$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (p) stopWatch(p);
@@ -256,7 +734,7 @@ app.post(/^\/api\/doc\/([^\/]+)\/watch\/stop$/, (req, res) => {
 });
 
 // apply xlsx cell edits (batch)
-app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
+app.post(/^\/api\/doc\/(.+)\/cells$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
@@ -279,11 +757,112 @@ app.post(/^\/api\/doc\/([^\/]+)\/cells$/, async (req, res) => {
 app.post("/api/office", async (req, res) => {
   const { args } = req.body || {};
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
-  const r = await runOfficecli(args.map(String));
-  res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json });
+  const normalizedArgs = args.map(String);
+  const allowedCommands = new Set(["view", "get", "set", "batch", "query", "watch"]);
+  if (!allowedCommands.has(normalizedArgs[0])) {
+    return res.status(400).json({ error: "unsupported office command", allowed: [...allowedCommands] });
+  }
+  if (normalizedArgs.some((arg) => path.isAbsolute(arg) || arg.split(/[\\/]/).includes(".."))) {
+    return res.status(400).json({ error: "office paths must stay inside the workspace" });
+  }
+  try {
+    const r = await runOfficecli(normalizedArgs, { cwd: getWorkspace() });
+    res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
+  } catch (e) {
+    res.status(500).json({ error: e.message, requestId: req.requestId });
+  }
+});
+
+// docx 富文本编辑代理（供前端编辑工具栏调用）
+// body: { file, commands: [{command:"set", path:"/body/p[2]/r[1]", props:{bold:true}}, ...] }
+// file 相对工作区解析；使用 batch 一次提交多命令
+app.post("/api/doc/edit", async (req, res) => {
+  const { file, commands, open, save } = req.body || {};
+  if (!file || !Array.isArray(commands) || !commands.length) {
+    return res.status(400).json({ error: "file and commands required" });
+  }
+  const p = resolvePath(file);
+  if (!p) return res.status(404).json({ error: "file not found" });
+  try {
+    // 标准化 props：boolean 值转字符串（officecli 需要 "true"/"false"）
+    const normalized = commands.map((c) => {
+      const item = { ...c };
+      if (item.props) {
+        const props = {};
+        for (const [k, v] of Object.entries(item.props)) {
+          props[k] = typeof v === "boolean" ? String(v) : String(v);
+        }
+        item.props = props;
+      }
+      return item;
+    });
+    const r = await batch(p, normalized);
+    if (r.json?.error || (r.code !== 0 && r.json?.data?.results?.some((x) => x.error))) {
+      return res.status(500).json({ error: r.stderr || r.text || "编辑失败" });
+    }
+    res.json({ ok: true, result: r.json || r.text });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 保存前端编辑后的 docx（base64 内容直接写回文件）
+app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  const { base64 } = req.body || {};
+  if (!base64) return res.status(400).json({ error: "base64 required" });
+  try {
+    const buf = Buffer.from(base64, "base64");
+    // 校验是合法的 zip/docx（PK 头）
+    if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) {
+      return res.status(400).json({ error: "不是有效的 docx 文件" });
+    }
+    fs.writeFileSync(p, buf);
+    res.json({ ok: true, size: buf.length });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取 docx 标题大纲（供目录导航栏；前端优先用渲染后 DOM 提取，此接口为兜底）
+app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const p = resolvePath(fileName);
+  if (!p) return res.status(404).json({ error: "not found" });
+  try {
+    // 遍历文档段落，按样式名启发式识别标题（Heading* / 常见标题样式 / 短文本+大字号）
+    const r = await runOfficecli(["get", p, "/", "--depth", "3", "--json"]);
+    const results = r.json?.data?.results || [];
+    const outline = [];
+    const walk = (nodes) => {
+      for (const n of nodes || []) {
+        if (n.type === "p" || n.type === "paragraph") {
+          const style = String(n.style || n.format?.style || "");
+          const text = (n.text || n.preview || "").trim();
+          if (text && (style.startsWith("Heading") || /标题|Heading/.test(style))) {
+            const m = style.match(/(\d)/);
+            outline.push({ level: m ? Math.min(6, parseInt(m[1], 10)) : 1, text: text.slice(0, 120), path: n.path || "" });
+          }
+        }
+        if (n.children) walk(n.children);
+      }
+    };
+    walk(results);
+    res.json({ outline });
+  } catch (e) {
+    res.json({ outline: [] });
+  }
 });
 
 // ---------- agent ----------
+function agentKey(client, thread) {
+  const c = String(client || "").trim();
+  const t = String(thread || "").trim();
+  return t ? `${c}::${t}` : c;
+}
+
 app.get("/api/models", async (_req, res) => {
   try {
     const models = await agentManager.listModels();
@@ -300,14 +879,55 @@ app.get("/api/models", async (_req, res) => {
   }
 });
 
-app.post("/api/agent/model", async (req, res) => {
-  const { client, model } = req.body || {};
-  if (!client || !model) return res.status(400).json({ error: "client and model required" });
+// 重新扫描模型（重置 ModelRuntime 缓存，重新读取 models.json）
+app.post("/api/models/refresh", async (_req, res) => {
   try {
-    res.json(await agentManager.setModel(client, model));
+    const models = await agentManager.refreshModels();
+    res.json({ ok: true, count: models.length, models: models.map((m) => m.id) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+app.post("/api/agent/model", async (req, res) => {
+  const { client, thread, model } = req.body || {};
+  if (!client || !model) return res.status(400).json({ error: "client and model required" });
+  try {
+    res.json(await agentManager.setModel(agentKey(client, thread), model));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- agent API Key（模型登录/密钥配置，auth.json） ----------
+function maskKey(key) {
+  const k = String(key || "");
+  return k.length <= 8 ? "****" : k.slice(0, 3) + "****" + k.slice(-4);
+}
+
+app.get("/api/agent/auth", (_req, res) => {
+  const auth = listAuth();
+  res.json({
+    providers: Object.fromEntries(
+      Object.entries(auth).map(([p, v]) => [p, { type: v.type, masked: maskKey(v.key), set: true }])
+    ),
+  });
+});
+
+app.post("/api/agent/auth", async (req, res) => {
+  const { provider, key } = req.body || {};
+  if (!provider || !key) return res.status(400).json({ error: "provider and key required" });
+  try {
+    res.json(await setApiKey(provider, key));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/agent/auth/remove", async (req, res) => {
+  const { provider } = req.body || {};
+  if (!provider) return res.status(400).json({ error: "provider required" });
+  res.json(await removeApiKey(provider));
 });
 
 // ---------- sessions ----------
@@ -475,7 +1095,7 @@ function findSessionFile(id) {
       const firstLine = text.split(/\r?\n/)[0];
       if (!firstLine) continue;
       const h = JSON.parse(firstLine);
-      if (h && h.sessionId === id) return f;
+      if (h && (h.id === id || h.sessionId === id)) return f;
     } catch {}
   }
   return null;
@@ -542,6 +1162,29 @@ app.post("/api/workspace/validate", (req, res) => {
   }
 });
 
+// 清洗会话标题：去掉前端注入的前缀标记（[当前打开文件]/[模式]/[已上传附件]），按句子智能截断
+function cleanSessionTitle(raw) {
+  let t = String(raw || "").trim();
+  t = t.replace(/^\[当前打开文件:[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[当前工作文件:[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[模式:\s*[^\]]*\]\s*/g, "");
+  t = t.replace(/^\[已上传附件:[^\]]*\]\s*/g, "");
+  t = t.replace(/\[[^\]]*\]/g, " ").replace(/\s+/g, " ").trim();
+  if (t.length <= 50) return t;
+  // 按句子边界截断
+  const m = t.match(/^.{0,48}[。！？.!?]/);
+  if (m) return m[0];
+  return t.slice(0, 50) + "…";
+}
+
+// 判断消息是否为前端注入的系统提示（模式说明/上下文标记），此类消息不适合做会话标题
+const SYSTEM_HINTS = ["[当前工作文件:", "[当前打开文件:", "[模式:", "[当前文档:", "优先用 officecli 工具对当前文档做精准文本"];
+function isSystemHintMessage(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return true;
+  return SYSTEM_HINTS.some((h) => t.startsWith(h) || t.includes(h));
+}
+
 // GET /api/sessions - 列出所有会话（解析每个 JSONL 的 header 第一行）
 // 支持 ?file=xxx 过滤：只返回提到指定文件的会话
 app.get("/api/sessions", (req, res) => {
@@ -555,13 +1198,13 @@ app.get("/api/sessions", (req, res) => {
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
-        // 只显示 office agent 的会话（cwd 含 .sessions 专属目录），过滤 pi TUI 等其他会话
+        // 只显示 office agent 的会话（cwd 匹配项目相关目录或 pi 会话存储目录），过滤 pi TUI 等其他会话
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes(".sessions") && cwd.includes("office-agent-web");
+        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR) || cwd === SESSIONS_DIR;
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
-        // 提取第一条用户消息作为标题
+        // 提取第一条「真实」用户消息作为标题（跳过前端注入的模式提示/上下文标记）
         let title = "";
         for (const line of text.split(/\r?\n/).slice(1)) {
           if (!line.trim()) continue;
@@ -569,17 +1212,21 @@ app.get("/api/sessions", (req, res) => {
             const entry = JSON.parse(line);
             if (entry.type === "message" && entry.message?.role === "user") {
               const c = entry.message.content;
-              if (typeof c === "string") title = c.trim();
+              let raw = "";
+              if (typeof c === "string") raw = c.trim();
               else if (Array.isArray(c)) {
-                title = c.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
+                raw = c.filter((b) => b.type === "text").map((b) => b.text).join(" ").trim();
               }
-              if (title) break;
+              if (isSystemHintMessage(raw)) continue; // 系统注入提示，跳过
+              const cleaned = cleanSessionTitle(raw);
+              if (cleaned) { title = cleaned; break; }
             }
           } catch {}
         }
-        if (title.length > 50) title = title.slice(0, 50) + "…";
+        // 若首条用户消息清洗后为空（纯前缀/空），退回 label 或会话 id 前段
+        if (!title) title = h.label || "";
         sessions.push({
-          id: h.sessionId || path.basename(f.fileName, ".jsonl"),
+          id: h.id || h.sessionId || path.basename(f.fileName, ".jsonl"),
           cwd: h.cwd || "",
           created: h.created || "",
           modified: f.mtime,
@@ -697,18 +1344,29 @@ app.post("/api/sessions/:id/rename", (req, res) => {
 
 // 中止当前 agent 运行
 app.post("/api/agent/abort", async (req, res) => {
-  const { client } = req.body || {};
+  const { client, thread } = req.body || {};
   if (!client) return res.status(400).json({ error: "client required" });
   try {
-    res.json(await agentManager.abort(client));
+    res.json(await agentManager.abort(agentKey(client, thread)));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
+// 回答 agent 的提问（ask_user 工具：用户回答后 agent 继续）
+app.post("/api/agent/answer", (req, res) => {
+  const { client, thread, answer } = req.body || {};
+  if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
+  const done = agentManager.askPending(agentKey(client, thread));
+  if (!done) return res.status(404).json({ error: "no pending question" });
+  done(String(answer).slice(0, 2000));
+  res.json({ ok: true });
+});
+
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, text, images, attachments, effort } = req.body || {};
+  const { client, thread, text, images, attachments, references, effort } = req.body || {};
   if (!client || !text) return res.status(400).json({ error: "client and text required" });
+  const key = agentKey(client, thread);
   const before = snapshotWorkspace();
   // 保存上传的附件到工作区（agent 可读取）
   if (Array.isArray(attachments) && attachments.length) {
@@ -721,34 +1379,68 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
   }
   try {
-    await agentManager.prompt(client, text, images, effort);
-    // officecli keeps files in a resident process — disk writes flush asynchronously.
-    // Poll until the workspace snapshot stabilizes, then diff.
+    const resolved = resolveReferences(references, text);
+    await agentManager.promptWithContext(key, text, images, effort, resolved);
+  } catch (e) {
+    const entry = agentManager.sessions.get(key);
+    if (entry) emitChannel(entry, "agent_error", { message: e.message });
+    // 出错也检测产物（agent 可能已部分写入文件）
     const changed = await waitForFlush(before);
     if (changed.length) {
-      const entry = agentManager.sessions.get(client);
       if (entry) {
         emitChannel(entry, "file_changed", { files: changed });
-        // 对话结束总结：产物清单
         emitChannel(entry, "agent_summary", {
           products: changed,
-          summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+          summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
         });
       }
     }
-    res.json({ ok: true, changed });
-  } catch (e) {
-    const entry = agentManager.sessions.get(client);
-    if (entry) emitChannel(entry, "agent_error", { message: e.message });
     res.status(500).json({ error: e.message });
+    return;
   }
+  // officecli keeps files in a resident process — disk writes flush asynchronously.
+  // Poll until the workspace snapshot stabilizes, then diff.
+  const changed = await waitForFlush(before);
+  if (changed.length) {
+    const entry = agentManager.sessions.get(key);
+    if (entry) {
+      emitChannel(entry, "file_changed", { files: changed });
+      // 对话结束总结：产物清单
+      emitChannel(entry, "agent_summary", {
+        products: changed,
+        summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+      });
+    }
+  }
+  // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
+  const entry = agentManager.sessions.get(key);
+  res.json({ ok: true, changed, sessionId: entry?.session?.sessionId || null, thread: thread || null });
+});
+
+app.post("/api/agent/new", async (req, res) => {
+  const { client, thread, cwd } = req.body || {};
+  if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
+  try {
+    res.json(await agentManager.newThread(agentKey(client, thread), thread, cwd || getWorkspace()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/agent/resume", async (req, res) => {
+  const { client, thread, sessionId, cwd } = req.body || {};
+  if (!client || !thread || !sessionId) return res.status(400).json({ error: "client, thread and sessionId required" });
+  const found = findSessionFile(sessionId);
+  if (!found) return res.status(404).json({ error: "session not found" });
+  try {
+    res.json(await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, cwd || getWorkspace()));
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // SSE stream per client
 app.get("/api/agent/stream", async (req, res) => {
   const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
   if (!client) return res.status(400).end();
-  const entry = await agentManager.getOrCreate(client);
+  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -784,6 +1476,246 @@ function loadSettingsDefault() {
   }
 }
 
+// ---------- 记忆系统 API（Proma WorkspaceMemory 风格） ----------
+import { EventEmitter } from "node:events";
+const memoryEmitter = new EventEmitter();
+let memoryWatcher = null;
+
+function getMemoryDir() { return path.join(getWorkspace(), "memory"); }
+function getAgentsMd() { return path.join(getWorkspace(), "AGENTS.md"); }
+
+function ensureMemoryDir() {
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function listMemoryFiles() {
+  const dir = getMemoryDir();
+  const agentsMd = getAgentsMd();
+  const files = [];
+  if (fs.existsSync(agentsMd)) {
+    const st = fs.statSync(agentsMd);
+    files.push({ name: "AGENTS.md", rel: "AGENTS.md", size: st.size, mtime: st.mtimeMs, type: "agents" });
+  }
+  if (fs.existsSync(dir)) {
+    const walk = (d, prefix = "") => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${e.name}` : e.name;
+        if (e.isFile() && /\.(md|txt)$/i.test(e.name) && !e.name.startsWith(".")) {
+          const fp = path.join(d, e.name);
+          const st = fs.statSync(fp);
+          files.push({ name: e.name, rel, size: st.size, mtime: st.mtimeMs, type: "memory" });
+        } else if (e.isDirectory() && !e.name.startsWith(".")) {
+          walk(path.join(d, e.name), rel);
+        }
+      }
+    };
+    walk(dir);
+  }
+  return files.sort((a, b) => {
+    if (a.rel === "AGENTS.md") return -1;
+    if (b.rel === "AGENTS.md") return 1;
+    if (a.rel === "MEMORY.md") return -1;
+    if (b.rel === "MEMORY.md") return 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function resolveMemoryPath(rel) {
+  if (!rel || rel.includes("..")) return null;
+  if (rel === "AGENTS.md") return getAgentsMd();
+  return path.join(getMemoryDir(), rel);
+}
+
+function startMemoryWatcher() {
+  if (memoryWatcher) return;
+  const dir = getMemoryDir();
+  if (!fs.existsSync(dir)) return;
+  try {
+    memoryWatcher = fs.watch(dir, { recursive: false }, (eventType, filename) => {
+      if (!filename) return;
+      const filePath = path.join(dir, filename);
+      let content = null;
+      try { content = fs.readFileSync(filePath, "utf8").slice(0, 2000); } catch {}
+      memoryEmitter.emit("change", { file: filename, event: eventType, preview: content, time: Date.now() });
+    });
+    memoryWatcher.on("error", (err) => {
+      if (err.code === "EMFILE") {
+        try { memoryWatcher.close(); } catch {}
+        memoryWatcher = null;
+      }
+    });
+  } catch (err) {
+    memoryWatcher = null;
+  }
+}
+
+app.get("/api/memory", (_req, res) => {
+  try {
+    const files = listMemoryFiles();
+    res.json({ files, memoryDir: getMemoryDir() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/memory/stream", (req, res) => {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  startMemoryWatcher();
+  const onChange = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  memoryEmitter.on("change", onChange);
+  req.on("close", () => memoryEmitter.off("change", onChange));
+});
+
+app.post("/api/memory/init", (_req, res) => {
+  try {
+    const ws = getWorkspace();
+    const agentsMd = path.join(ws, "AGENTS.md");
+    const memDir = path.join(ws, "memory");
+    const memMd = path.join(memDir, "MEMORY.md");
+    if (!fs.existsSync(agentsMd)) {
+      fs.writeFileSync(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
+    }
+    fs.mkdirSync(memDir, { recursive: true });
+    if (!fs.existsSync(memMd)) {
+      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
+    }
+    startMemoryWatcher();
+    res.json({ ok: true, files: listMemoryFiles() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "not found" });
+  try { res.json({ content: fs.readFileSync(fp, "utf8"), path: req.params[0] }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
+  const fp = resolveMemoryPath(req.params[0]);
+  if (!fp) return res.status(400).json({ error: "invalid path" });
+  try {
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, req.body?.content || "", "utf8");
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------- 地图项目（MapLibre 可视化） ----------
+import * as mapSvc from "./map.mjs";
+
+// 静态资源：/api/map/data/{project}/style.json|tiles/...|layers/...
+// （style.json 动态注入绝对瓦片 URL 的路由已注册在文件前部的 /api/map/data 静态挂载之前）
+app.use("/api/map/data", express.static(mapSvc.STATIC_ROOT, { fallthrough: true, maxAge: 0 }));
+
+// 项目列表
+app.get("/api/map/projects", (_req, res) => {
+  res.json({ projects: mapSvc.listProjects() });
+});
+
+// 底图服务设置（Key 不回传明文，只回传是否已配置）
+app.get("/api/map/settings", (_req, res) => {
+  const s = mapSvc.loadMapSettings();
+  res.json({
+    basemaps: {
+      tiandituKey: !!s.basemaps?.tiandituKey,
+      maptilerKey: !!s.basemaps?.maptilerKey,
+      esriToken: !!s.basemaps?.esriToken,
+    },
+  });
+});
+
+// 保存底图服务 Key → 重建所有项目 style.json 的底图部分
+app.post("/api/map/settings", (req, res) => {
+  try {
+    const s = mapSvc.saveMapSettings(req.body?.basemaps || {});
+    const projects = mapSvc.listProjects();
+    for (const p of projects) mapSvc.rebuildBasemapStyle(p.project);
+    res.json({
+      ok: true,
+      basemaps: {
+        tiandituKey: !!s.basemaps?.tiandituKey,
+        maptilerKey: !!s.basemaps?.maptilerKey,
+        esriToken: !!s.basemaps?.esriToken,
+      },
+      projects: projects.map((p) => p.project),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 项目详情（config + style + 图层文件清单）
+app.get("/api/map/project/:name", (req, res) => {
+  const p = mapSvc.getProject(req.params.name);
+  if (!p) return res.status(404).json({ error: "project not found" });
+  res.json(p);
+});
+
+// 保存样式（agent/前端可写回 style.json）
+app.post("/api/map/project/:name/style", (req, res) => {
+  const ok = mapSvc.saveStyle(req.params.name, req.body?.style);
+  if (!ok) return res.status(400).json({ error: "invalid style" });
+  res.json({ ok: true });
+});
+
+// 保存配置（图层显隐/顺序/中心点）
+app.post("/api/map/project/:name/config", (req, res) => {
+  const ok = mapSvc.saveConfig(req.params.name, req.body?.config);
+  if (!ok) return res.status(400).json({ error: "invalid config" });
+  res.json({ ok: true });
+});
+
+// 导入矢量图层（body: { layerId, geojson }）→ 存 layers/ + 重建瓦片
+app.post("/api/map/project/:name/import", async (req, res) => {
+  const { layerId, geojson } = req.body || {};
+  if (!layerId || !geojson) return res.status(400).json({ error: "layerId and geojson required" });
+  try {
+    const r = await mapSvc.importLayer(req.params.name, layerId, geojson);
+    if (!r) return res.status(400).json({ error: "import failed" });
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 重建全部瓦片
+app.post("/api/map/project/:name/rebuild-tiles", (req, res) => {
+  try {
+    const r = mapSvc.rebuildTiles(req.params.name);
+    res.json({ ok: true, results: r });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 获取图层 GeoJSON（属性表/要素定位）
+app.get("/api/map/project/:name/layer/:layerId", (req, res) => {
+  const g = mapSvc.getLayer(req.params.name, req.params.layerId);
+  if (!g) return res.status(404).json({ error: "layer not found" });
+  res.json(g);
+});
+
+// 删除图层（数据 + 瓦片 + style + config）
+app.delete("/api/map/project/:name/layer/:layerId", (req, res) => {
+  try {
+    const r = mapSvc.deleteLayer(req.params.name, req.params.layerId);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 等时圈分析（高德 Web 服务，需 AMAP_KEY）
+app.post("/api/map/project/:name/isochrone", async (req, res) => {
+  try {
+    const r = await mapSvc.isochrone(req.body || {});
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ---------- static ----------
 const dist = CLIENT_DIST;
 if (fs.existsSync(path.join(dist, "index.html"))) {
@@ -792,8 +1724,31 @@ if (fs.existsSync(path.join(dist, "index.html"))) {
 }
 
 // ---------- helpers for file change detection ----------
+function walkSnapshot(dir, root) {
+  const out = [];
+  let items = [];
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of items) {
+    if (e.name.startsWith(".") || e.name === "node_modules") continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      out.push(...walkSnapshot(p, root));
+    } else {
+      try {
+        const st = fs.statSync(p);
+        out.push(`${path.relative(root, p)}|${st.mtimeMs}|${st.size}`);
+      } catch {}
+    }
+  }
+  return out;
+}
 function snapshotWorkspace() {
-  return listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
+  const ws = getWorkspace();
+  const top = listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
+  // 地图项目位于工作区子目录，递归快照以便检测 layers/tiles/style 变化
+  const mapRoot = path.join(ws, "maps");
+  const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, ws) : [];
+  return [...top, ...maps];
 }
 function diffWorkspace(before, after) {
   const b = new Set(before);
@@ -867,13 +1822,19 @@ app.post("/api/open-in-explorer", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`office-agent-web running at http://localhost:${PORT}`);
+if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
+  console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
+}
+
+app.listen(PORT, HOST, () => {
+  console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
+  if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
 });
 
 process.on("SIGINT", async () => {
   await agentManager.disposeAll();
   stopAllWatches();
+  if (memoryWatcher) { try { memoryWatcher.close(); } catch {} }
   process.exit(0);
 });
