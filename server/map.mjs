@@ -62,6 +62,85 @@ const GAODE_BASEMAPS = {
   },
 };
 
+// 公开免 Key 栅格底图。OpenFreeMap 的 Liberty/Bright/Fiord 是完整 MapLibre
+// 矢量样式，直接作为单个 raster source 会替换项目图层，因此不在此列表中。
+function noKeyBasemaps() {
+  return {
+    "osm-standard": {
+      name: "OSM 标准",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 19,
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    },
+    "carto-positron": {
+      name: "CARTO 浅色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-dark": {
+      name: "CARTO 暗色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-voyager": {
+      name: "CARTO Voyager",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    opentopomap: {
+      name: "OpenTopoMap 地形",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 17,
+      tiles: [
+        "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://c.tile.opentopomap.org/{z}/{x}/{y}.png",
+      ],
+      attribution: '&copy; <a href="https://opentopomap.org/">OpenTopoMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "tencent-road": {
+      name: "腾讯路网（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt1.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt2.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt3.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+    "tencent-satellite": {
+      name: "腾讯卫星（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://p0.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p1.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p2.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p3.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+  };
+}
+
 // 底图设置（maps/settings.json）：各底图服务 Key
 const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
 // 密钥只写入 settings.local.json（被 .gitignore 忽略），避免误提交到仓库。
@@ -163,7 +242,7 @@ function maptilerBasemaps(key) {
   };
 }
 
-/** 按设置生成可用底图源（高德 + Esri 固定，天地图/MapTiler 填 Key 后启用） */
+/** 按设置生成可用底图源（免 Key 源固定，天地图/MapTiler 填 Key 后启用） */
 function markBasemap(s) {
   return { ...s, metadata: { ...(s.metadata || {}), basemap: true } };
 }
@@ -171,6 +250,7 @@ export function getBasemaps(settings = loadMapSettings()) {
   let b = {};
   b.blank = markBasemap({ name: "无底图", type: "raster", tileSize: 256, tiles: [], attribution: "" });
   for (const [id, s] of Object.entries(GAODE_BASEMAPS)) b[id] = markBasemap(s);
+  for (const [id, s] of Object.entries(noKeyBasemaps())) b[id] = markBasemap(s);
   for (const [id, s] of Object.entries(esriBasemaps())) b[id] = markBasemap(s);
   const tk = settings?.basemaps?.tiandituKey;
   if (tk) for (const [id, s] of Object.entries(tiandituBasemaps(tk))) b[id] = markBasemap(s);
