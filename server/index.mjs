@@ -1609,6 +1609,8 @@ import * as mapSvc from "./map.mjs";
 // 静态资源：/api/map/data/{project}/style.json|tiles/...|layers/...
 // （style.json 动态注入绝对瓦片 URL 的路由已注册在文件前部的 /api/map/data 静态挂载之前）
 app.use("/api/map/data", express.static(mapSvc.STATIC_ROOT, { fallthrough: true, maxAge: 0 }));
+// 地图瓦片/图层文件缺失时必须返回 404，不能落入 SPA 首页回退，否则 MapLibre 会把 HTML 当作 PBF 解析。
+app.use("/api/map/data", (_req, res) => res.status(404).json({ error: "map data not found" }));
 
 // 项目列表
 app.get("/api/map/projects", (_req, res) => {
@@ -1799,6 +1801,8 @@ app.get("/api/m3/network-stats", (_req, res) => {
 
 // ---------- static ----------
 const dist = CLIENT_DIST;
+// 未知 API 必须返回 JSON 404，避免前端把 index.html 当作接口响应解析。
+app.use("/api", (_req, res) => res.status(404).json({ error: "api endpoint not found" }));
 if (fs.existsSync(path.join(dist, "index.html"))) {
 
 // ---------- M3 公交数据分析 API ----------
@@ -1825,6 +1829,8 @@ app.get("/api/bus/stats", (req, res) => {
 });
 
   app.use(express.static(dist));
+  // 构建产物缺失时返回明确 404，避免旧缓存请求拿到 index.html。
+  app.use("/assets", (_req, res) => res.status(404).json({ error: "asset not found" }));
   app.get("/*splat", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
