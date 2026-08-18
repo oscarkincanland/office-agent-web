@@ -375,6 +375,57 @@ const MapViewer = forwardRef(function MapViewer(
         if (map.getSource("isochrones")) map.removeSource("isochrones");
       } catch {}
     },
+    /** 分析结果局部更新：热力、OD 期望线、等时圈均不重载完整样式。 */
+    showAnalysis: (action = {}) => {
+      const map = mapRef.current;
+      if (!map || !map.isStyleLoaded?.()) return false;
+      const rawId = String(action.id || "analysis").replace(/[^a-zA-Z0-9_-]/g, "-");
+      const base = `analysis-${rawId || "result"}`;
+      const data = action.geojson?.type === "FeatureCollection" ? action.geojson : { type: "FeatureCollection", features: [] };
+      const linesData = action.lines?.type === "FeatureCollection" ? action.lines : null;
+      const ensureGeoSource = (id, fc) => {
+        const src = map.getSource(id);
+        if (src && typeof src.setData === "function") { src.setData(fc); return; }
+        map.addSource(id, { type: "geojson", data: fc });
+      };
+      const ensureLayer = (id, spec) => { if (!map.getLayer(id)) map.addLayer({ id, ...spec }); };
+      try {
+        const firstGeometry = data.features?.[0]?.geometry?.type || "";
+        const polygon = action.analysis === "isochrone" || firstGeometry === "Polygon" || firstGeometry === "MultiPolygon";
+        const points = data.features?.some((f) => ["Point", "MultiPoint"].includes(f.geometry?.type));
+        ensureGeoSource(`${base}-src`, data);
+        if (polygon) {
+          ensureLayer(`${base}-fill`, { type: "fill", source: `${base}-src`, paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.24, "fill-outline-color": "#7c3aed" } });
+        } else if (points) {
+          ensureLayer(`${base}-heat`, { type: "heatmap", source: `${base}-src`, paint: {
+            "heatmap-weight": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 0, 800, 1],
+            "heatmap-intensity": 1.15,
+            "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 14, 12, 34],
+            "heatmap-opacity": 0.72,
+            "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"], 0, "rgba(33,102,172,0)", 0.25, "#2d9cdb", 0.5, "#f2c94c", 0.78, "#f97316", 1, "#eb5757"],
+          } });
+          ensureLayer(`${base}-points`, { type: "circle", source: `${base}-src`, minzoom: 10, paint: { "circle-radius": ["interpolate", ["linear"], ["coalesce", ["get", "value"], ["get", "flow"], 1], 0, 3, 800, 10], "circle-color": "#eb5757", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+        }
+        if (linesData) {
+          ensureGeoSource(`${base}-lines-src`, linesData);
+          ensureLayer(`${base}-lines`, { type: "line", source: `${base}-lines-src`, paint: { "line-color": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, "#9ecae1", 400, "#7c3aed", 800, "#dc2626"], "line-width": ["interpolate", ["linear"], ["coalesce", ["get", "flow"], 1], 0, 1, 800, 4], "line-opacity": 0.65 } });
+        }
+        if (action.fitBounds) {
+          const coords = [];
+          const walk = (g) => { if (!g) return; if (g.type === "FeatureCollection") return g.features?.forEach((f) => walk(f.geometry)); if (g.type === "Feature") return walk(g.geometry); if (g.type === "Point") return coords.push(g.coordinates); if (g.coordinates) g.coordinates.forEach((c) => Array.isArray(c?.[0]) ? walk({ type: "LineString", coordinates: c }) : coords.push(c)); };
+          walk(data); if (linesData) walk(linesData);
+          if (coords.length) { const b = new LngLatBounds(); coords.forEach((c) => b.extend(c)); if (!b.isEmpty()) map.fitBounds(b, { padding: 55, maxZoom: 14, duration: 600 }); }
+        }
+        return true;
+      } catch { return false; }
+    },
+    clearAnalysis: (analysisId = "analysis") => {
+      const map = mapRef.current;
+      if (!map) return;
+      const base = `analysis-${String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+      for (const id of [`${base}-fill`, `${base}-heat`, `${base}-points`, `${base}-lines`]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
+      for (const id of [`${base}-src`, `${base}-lines-src`]) { try { if (map.getSource(id)) map.removeSource(id); } catch {} }
+    },
     /** 测量/绘制工具：startDraw(kind, { onDone, onUpdate })；双击完成，Esc 取消 */
     startDraw: (kind, handlers = {}) => {
       const map = mapRef.current;

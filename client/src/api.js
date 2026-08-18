@@ -119,6 +119,12 @@ export const mapIsochrone = (params) =>
   api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
 export const mapRoute = (params) =>
   api("/api/map/route", { method: "POST", body: JSON.stringify(params) });
+export const mapDemoAnalysis = (params = {}) => api(`/api/map/demo-analysis?${new URLSearchParams(params).toString()}`);
+export const mapCambodiaOD = (minFlow = 0) => api(`/api/demo/cambodia-od?minFlow=${encodeURIComponent(minFlow)}`);
+export const mapM3Routes = () => api("/api/m3/bus-routes");
+export const mapM3Stations = () => api("/api/m3/station-heatmap");
+export const mapM3OD = () => api("/api/m3/od-lines");
+export const mapM3Stats = () => api("/api/m3/network-stats");
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);
