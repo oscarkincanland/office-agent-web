@@ -4,9 +4,11 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import CambodiaODPanel from "./CambodiaODPanel.jsx";
+import XinchangBusPanel from "./XinchangBusPanel.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -92,6 +94,10 @@ export default function MapPanel({
   const [odHeader, setOdHeader] = useState([]);
   const [odMsg, setOdMsg] = useState("");
   const [odShowLines, setOdShowLines] = useState(true);
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [cambodiaOpen, setCambodiaOpen] = useState(false);
+  const [busTab, setBusTab] = useState(null);
+  const [activeAnalysis, setActiveAnalysis] = useState(null);
 
   // ---- OD 流量热力图 ----
   // 列名自动检测（支持中英文）
@@ -203,6 +209,46 @@ export default function MapPanel({
       flash("加载项目失败: " + e.message);
     }
   }, [flash]);
+
+  // Agent 与分析面板统一使用 map_action，只更新运行时临时图层。
+  const handleMapAction = useCallback((action) => {
+    if (!action || (action.project && action.project !== project)) return;
+    if (action.action === "clear_analysis") {
+      mapRef.current?.clearAnalysis(action.id || "agent-analysis");
+      setActiveAnalysis(null);
+      flash("已清除地图临时分析结果");
+      return;
+    }
+    setActiveAnalysis(action);
+    let attempts = 0;
+    const render = () => {
+      attempts += 1;
+      if (mapRef.current?.showAnalysis(action) || attempts >= 12) clearInterval(timer);
+    };
+    const timer = setInterval(render, 250);
+    render();
+    flash(`${action.title || "地图分析结果"}${action.source === "demo" ? "（演示数据）" : ""}已显示`);
+  }, [project, flash]);
+
+  const saveAnalysis = useCallback(async (action = activeAnalysis) => {
+    if (!action?.geojson) return flash("当前没有可保存的分析结果");
+    const base = String(action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "") || "analysis-result";
+    try {
+      await mapImportLayer(project, base, action.geojson);
+      if (action.lines) await mapImportLayer(project, `${base}-lines`, action.lines);
+      await loadProject(project);
+      mapRef.current?.reloadStyle();
+      flash(`分析结果已保存为图层「${base}」`);
+    } catch (e) { flash(`分析结果保存失败：${e.message}`); }
+  }, [activeAnalysis, project, loadProject, flash]);
+
+  const runDemoAnalysis = useCallback(async (analysis) => {
+    try {
+      const action = await mapDemoAnalysis({ analysis, region: "义乌市", project });
+      handleMapAction(action);
+      setDemoOpen(false);
+    } catch (e) { flash(`演示分析失败：${e.message}`); }
+  }, [project, handleMapAction, flash]);
 
   // 初始化：项目列表 + 默认项目
   useEffect(() => {
@@ -930,7 +976,6 @@ export default function MapPanel({
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
       loadProject(project);
-      mapRef.current?.reloadStyle();
     }, 300);
     onAgentEnd?.();
   }, [project, loadProject, onAgentEnd]);
@@ -985,6 +1030,15 @@ export default function MapPanel({
         <button className={`btn-sm ${odOpen ? "active" : ""}`} onClick={() => setOdOpen((v) => !v)} title="OD 流量热力图（上传 CSV）">
           <Icon name="locate" size={13} /> OD分析
         </button>
+        <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="义乌热力图与演示等时圈">
+          <Icon name="chart" size={13} /> 义乌Demo
+        </button>
+        <button className={`btn-sm ${cambodiaOpen ? "active" : ""}`} onClick={() => setCambodiaOpen((v) => !v)} title="暹粒 OD 演示仪表盘">
+          <Icon name="flow" size={13} /> 暹粒OD
+        </button>
+        <button className={`btn-sm ${busTab ? "active" : ""}`} onClick={() => setBusTab(busTab ? null : "routes")} title="新昌公交线网与客流演示">
+          <Icon name="route" size={13} /> 公交Demo
+        </button>
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
@@ -1010,6 +1064,17 @@ export default function MapPanel({
       </div>
 
       <div className="mp-body">
+        {demoOpen && (
+          <div className="analysis-overlay" onClick={() => setDemoOpen(false)}>
+            <div className="analysis-popover" onClick={(e) => e.stopPropagation()}>
+              <div className="analysis-head"><div><small>DEMO · 义乌市</small><h3>热力图与等时圈</h3></div><button className="mp-op" onClick={() => setDemoOpen(false)} aria-label="关闭"><Icon name="close" size={14} /></button></div>
+              <div className="analysis-actions"><button className="btn primary" onClick={() => runDemoAnalysis("heatmap")}>生成义乌热力图</button><button className="btn primary" onClick={() => runDemoAnalysis("isochrone")}>生成演示等时圈</button>{activeAnalysis && <button className="btn-sm" onClick={() => { mapRef.current?.clearAnalysis(activeAnalysis.id); setActiveAnalysis(null); }}>清除</button>}</div>
+              <div className="analysis-hint">没有真实数据时使用确定性演示点位；结果会直接叠加在中间地图，可通过“保存为图层”留存。</div>
+            </div>
+          </div>
+        )}
+        {cambodiaOpen && <div className="analysis-overlay" onClick={() => setCambodiaOpen(false)}><div className="analysis-popover analysis-wide" onClick={(e) => e.stopPropagation()}><CambodiaODPanel mapRef={mapRef} onClose={() => setCambodiaOpen(false)} onSaveAnalysis={saveAnalysis} /></div></div>}
+        {busTab && <div className="analysis-overlay" onClick={() => setBusTab(null)}><div className="analysis-popover analysis-wide" onClick={(e) => e.stopPropagation()}><div className="analysis-tabs"><button className={busTab === "routes" ? "active" : ""} onClick={() => setBusTab("routes")}>公交线路</button><button className={busTab === "stations" ? "active" : ""} onClick={() => setBusTab("stations")}>站点客流</button><button className={busTab === "od" ? "active" : ""} onClick={() => setBusTab("od")}>公交OD</button><button className={busTab === "stats" ? "active" : ""} onClick={() => setBusTab("stats")}>线网统计</button><button onClick={() => setBusTab(null)}>关闭</button></div><XinchangBusPanel mapRef={mapRef} activeTab={busTab} onClose={() => setBusTab(null)} /></div></div>}
         {/* 左栏：QGIS 风格图层面板 */}
         <div className="mp-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="mp-left-title">
@@ -1081,6 +1146,7 @@ export default function MapPanel({
             clientId={clientId}
             threadId={threadId}
             onFileChanged={handleFileChanged}
+            onMapAction={handleMapAction}
             currentDoc={`地图项目:${project}`}
             models={models}
             defaultModel={defaultModel}

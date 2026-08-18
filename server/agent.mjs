@@ -14,6 +14,7 @@ import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent } from "./runs.mjs";
 import { taskSummary } from "./task.mjs";
+import { createDemoAnalysis } from "./map-analysis.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
@@ -228,6 +229,7 @@ class AgentManager extends EventEmitter {
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
+              "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
@@ -480,6 +482,36 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    const mapAnalyzeTool = defineTool({
+      name: "map_analyze",
+      label: "地图分析结果",
+      description: "生成并直接显示地图分析临时图层。支持义乌热力图、演示等时圈；结果通过 map_action 事件局部更新前端，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+      parameters: Type.Object({
+        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("isochrone")]),
+        region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
+        project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
+        count: Type.Optional(Type.Number({ description: "演示热力点数量，默认 36，最多 120" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const action = createDemoAnalysis({ analysis: params.analysis, region: params.region, project: params.project, count: params.count });
+        action.updatedAt = Date.now();
+        emitChannelSafe(entry, "map_action", action);
+        return { content: [{ type: "text", text: `已生成${action.title}，使用演示数据，结果已发送到中间地图；用户确认后再保存为正式图层。` }], details: { mapAction: action } };
+      },
+    });
+
+    const mapClearAnalysisTool = defineTool({
+      name: "map_clear_analysis",
+      label: "清除地图分析",
+      description: "清除地图上的临时分析结果，不修改项目文件。用户要求清除上一次热力图、OD 或等时圈时使用。",
+      parameters: Type.Object({ id: Type.Optional(Type.String({ description: "分析结果 id，默认 agent-analysis" })) }),
+      execute: async (_toolCallId, params) => {
+        const action = { action: "clear_analysis", id: params.id || "agent-analysis", updatedAt: Date.now() };
+        emitChannelSafe(entry, "map_action", action);
+        return { content: [{ type: "text", text: "已清除地图临时分析结果。" }], details: { mapAction: action } };
+      },
+    });
+
     // ---- 记忆工具（agent 完成任务后自主沉淀经验/偏好） ----
     const memoryUpdateTool = defineTool({
       name: "memory_update",
@@ -563,14 +595,14 @@ class AgentManager extends EventEmitter {
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "memory_update"],
+      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapClearAnalysisTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_clear_analysis", "memory_update"],
       sessionManager,
     });
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "memory_update"])]);
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_clear_analysis", "memory_update"])]);
     } catch {}
 
     const emitter = new EventEmitter();

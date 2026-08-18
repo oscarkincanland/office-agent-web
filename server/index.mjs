@@ -9,6 +9,7 @@ import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
+import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
 import { createTaskEnvelope } from "./task.mjs";
@@ -486,6 +487,35 @@ app.post("/api/map/route", async (req, res) => {
   const r = await map.route({ from, to, mode, provider });
   if (r.error) return res.status(400).json({ error: r.error });
   res.json({ ok: true, provider: r.provider, distance: r.distance, duration: r.duration, geometry: r.geometry });
+});
+
+// 地图分析演示与数据适配器（结果只在内存中生成，明确标记 source=demo）
+app.get("/api/map/demo-analysis", (req, res) => {
+  try {
+    res.json(mapAnalysis.createDemoAnalysis({ analysis: req.query.analysis, region: req.query.region, project: req.query.project, count: req.query.count }));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/demo/cambodia-od", (req, res) => {
+  try { res.json(mapAnalysis.getCambodiaOD({ minFlow: req.query.minFlow })); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/m3/bus-routes", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("routes")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/station-heatmap", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("stations")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/od-lines", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("od")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get("/api/m3/network-stats", (_req, res) => {
+  try { res.json(mapAnalysis.getXinchangBus("stats")); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/api/files", (req, res) => {
