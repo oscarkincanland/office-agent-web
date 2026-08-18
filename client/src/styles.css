@@ -3476,6 +3476,11 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   font-size: 12px;
   max-width: 180px;
 }
+.mp-project-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.mp-region-select { max-width: 178px; border-color: #3e6d78; }
+.mp-region-select option { background: var(--panel2-bg); color: var(--text); }
+.mp-annotation-btn.active { color: #0e0e1a; background: #f0c674; border-color: #f0c674; }
+.mp-annotation-btn:not(.active) { color: var(--muted); }
 .mp-basemap { display: flex; gap: 3px; }
 .mp-drill-btn {
   display: inline-flex; align-items: center; gap: 4px;
@@ -3499,6 +3504,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .mp-iso-btn.active { background: var(--accent); color: #0e0e1a; }
 .mp-msg { font-size: 11px; color: var(--success); margin-left: 4px; }
 .mp-exit { margin-left: auto; }
+.mp-topbar .btn-sm { transition: background .16s ease, color .16s ease, border-color .16s ease, transform .16s ease; }
+.mp-topbar .btn-sm:hover { transform: translateY(-1px); }
 
 .mp-body {
   flex: 1;
@@ -3599,6 +3606,41 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   flex-direction: column;
   background: var(--body-bg);
 }
+.cambodia-overlay {
+  position: absolute;
+  z-index: 18;
+  top: 12px;
+  right: 12px;
+  width: 420px;
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  border: 1px solid #34576a;
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .32);
+}
+.cambodia-dashboard { padding: 14px; }
+.cambodia-head { display: flex; align-items: flex-start; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.cambodia-head > div { flex: 1; min-width: 0; }
+.cambodia-kicker { color: #e8792f; font: 9px/1.4 monospace; letter-spacing: .12em; }
+.cambodia-head h3 { margin-top: 3px; font-size: 15px; }
+.cambodia-source { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; padding: 10px 0; color: var(--muted); font-size: 10px; }
+.cambodia-source span { grid-row: span 2; align-self: center; padding: 3px 6px; border-radius: 3px; color: #805a13; background: #fff2c7; font-weight: 700; }
+.cambodia-source strong { color: var(--text); font-size: 11px; font-weight: 600; }
+.cambodia-source small { color: var(--dim); }
+.cambodia-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 14px; }
+.cambodia-kpis > div { padding: 8px 5px; border: 1px solid var(--border); border-radius: 5px; text-align: center; background: var(--panel2-bg); }
+.cambodia-kpis strong { display: block; color: #e8792f; font-size: 16px; font-variant-numeric: tabular-nums; }
+.cambodia-kpis span { color: var(--muted); font-size: 9px; }
+.cambodia-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.cambodia-columns h4 { margin-bottom: 5px; color: var(--muted); font-size: 11px; }
+.cambodia-rank { display: flex; align-items: center; gap: 5px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 10px; }
+.cambodia-rank b { width: 15px; color: #e8792f; font: 10px monospace; }
+.cambodia-rank span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cambodia-rank strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.cambodia-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--dim); font-size: 10px; }
+.cambodia-state { padding: 28px 5px; color: var(--muted); text-align: center; font-size: 12px; }
+.cambodia-state.error { color: var(--error); }
 .mp-right {
   width: 360px;
   min-width: 300px;
