@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>瀑布图示例</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; background: #f5f5f5; }
+        .chart-container { background: white; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); padding: 20px; }
+        #chart { width: 100%; height: 450px; }
+    </style>
+</head>
+<body>
+    <div class="chart-container">
+        <div id="chart"></div>
+    </div>
+    <script>
+        var chart = echarts.init(document.getElementById('chart'));
+
+        var option = {
+            title: { text: '利润瀑布图', left: 'center', textStyle: { fontSize: 18, fontWeight: 'bold' } },
+            tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+            legend: { data: ['收入', '支出', '利润'], top: 40 },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: ['营业收入', '营业成本', '销售费用', '管理费用', '研发费用', '其他收益', '利润']
+            },
+            yAxis: { type: 'value', axisLabel: { formatter: '{value} 万' } },
+            series: [
+                { name: '收入', type: 'bar', stack: 'total', itemStyle: { color: '#5470c6' }, data: [0, 1200, 0, 0, 0, 0, 0] },
+                { name: '支出', type: 'bar', stack: 'total', itemStyle: { color: '#fac858' }, data: [-300, -400, -200, -100, -80, 0, 0] },
+                { name: '利润', type: 'bar', stack: 'total', itemStyle: { color: '#91cc75' }, data: [0, 0, 0, 0, 0, 50, 0] },
+                { name: '净额', type: 'bar', itemStyle: { color: '#ee6666', opacity: 0 }, data: [1200, 800, 600, 500, 420, 470, 120] }
+            ]
+        };
+
+        chart.setOption(option);
+        window.addEventListener('resize', () => chart.resize());
+    </script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+{
+  "name": "浙江省交通基础数据沙盘",
+  "project": "zhejiang-map",
+  "center": [
+    120,
+    29.2
+  ],
+  "zoom": 7,
+  "basemap": "gaode-road",
+  "layers": [
+    {
+      "id": "boundary-city",
+      "name": "地市边界",
+      "type": "boundary",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 9,
+      "group": "行政区划"
+    },
+    {
+      "id": "boundary-county",
+      "name": "区县边界",
+      "type": "boundary",
+      "visible": true,
+      "minzoom": 0,
+      "maxzoom": 11,
+      "group": "行政区划"
+    },
+    {
+      "id": "highways",
+      "name": "高速公路",
+      "type": "road",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "group": "公路网"
+    },
+    {
+      "id": "roads-trunk",
+      "name": "国省道",
+      "type": "road",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13,
+      "group": "公路网"
+    },
+    {
+      "id": "toll-stations",
+      "name": "收费站",
+      "type": "point",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "group": "设施点"
+    },
+    {
+      "id": "junctions",
+      "name": "枢纽",
+      "type": "point",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 14,
+      "group": "设施点"
+    },
+    {
+      "id": "roads-province",
+      "name": "省道",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    }
+  ]
+}
