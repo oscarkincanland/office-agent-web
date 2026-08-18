@@ -311,8 +311,19 @@ const MapViewer = forwardRef(function MapViewer(
     },
     setLayerVisibility: (id, visible) => {
       const map = mapRef.current;
-      if (!map || !map.getLayer(id)) return;
-      map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+      if (!map) return;
+      const layers = map.getStyle()?.layers || [];
+      const related = layers.filter((layer) => (
+        layer.id === id
+        || (!id.endsWith("-label") && (
+          layer.source === id || layer.id.startsWith(`${id}-`)
+        ))
+      ));
+      for (const layer of related) {
+        if (map.getLayer(layer.id)) {
+          map.setLayoutProperty(layer.id, "visibility", visible ? "visible" : "none");
+        }
+      }
     },
     setLayerOpacity: (id, opacity) => {
       const map = mapRef.current;

@@ -1,0 +1,26 @@
+{
+  "width": 1920,
+  "height": 1080,
+  "slides": [
+    { "showJs": "document.querySelector('deck-stage').goTo(0)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(1)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(2)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(3)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(4)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(5)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(6)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(7)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(8)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(9)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(10)", "selector": "deck-stage > [data-deck-active]" },
+    { "showJs": "document.querySelector('deck-stage').goTo(11)", "selector": "deck-stage > [data-deck-active]" }
+  ],
+  "hideSelectors": [".rail", ".rail-resize", ".overlay", ".operator-note"],
+  "resetTransformSelector": "deck-stage",
+  "fontSwaps": [
+    { "from": "-apple-system", "to": "Arial" },
+    { "from": "PingFang SC", "to": "Arial" },
+    { "from": "Microsoft YaHei", "to": "Arial" }
+  ],
+  "filename": "规聚-10分钟项目汇报"
+}

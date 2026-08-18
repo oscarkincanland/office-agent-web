@@ -290,12 +290,19 @@ export default function MapPanel({
   // ---- 图层操作 ----
   const toggleLayer = useCallback((layerId, target) => {
     if (!style) return;
+    // 一个业务图层可能对应多个 MapLibre 样式层（例如 OD 主线、样式线和标签）。
+    // 只切换同名 layer 会留下其它关联层继续渲染，造成“取消勾选但地图仍显示”。
+    const related = style.layers.filter((l) => (
+      l.id === layerId
+      || l.source === layerId
+      || l.id.startsWith(`${layerId}-`)
+    ));
+    const cur = related.some((l) => l.layout?.visibility !== "none");
+    const vis = typeof target === "boolean" ? target : !cur;
     const next = {
       ...style,
       layers: style.layers.map((l) => {
-        if (l.id !== layerId) return l;
-        const cur = l.layout?.visibility !== "none";
-        const vis = typeof target === "boolean" ? target : !cur;
+        if (!related.includes(l)) return l;
         return { ...l, layout: { ...(l.layout || {}), visibility: vis ? "visible" : "none" } };
       }),
     };

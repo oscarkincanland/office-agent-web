@@ -1,0 +1,86 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "规聚10分钟汇报": {
+      "versions": [
+        {
+          "path": "index.html",
+          "createdAt": "2026-08-18T01:50:56.755Z",
+          "status": "needs-review"
+        },
+        {
+          "path": "规聚-10分钟项目汇报.pptx",
+          "createdAt": "2026-08-18T01:50:56.788Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "规聚10分钟汇报口述稿": {
+      "versions": [
+        {
+          "path": "汇报口述稿.md",
+          "createdAt": "2026-08-18T01:50:56.816Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "规聚详细版HTML汇报": {
+      "versions": [
+        {
+          "path": "index-v2.html",
+          "createdAt": "2026-08-18T03:53:17.699Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "离线版比例字体修正版": {
+      "versions": [
+        {
+          "path": "规聚项目完整介绍汇报-离线版-修正版.html",
+          "createdAt": "2026-08-18T13:12:25.101Z",
+          "status": "needs-review"
+        }
+      ]
+    },
+    "规聚项目完整介绍汇报-统一风格版": {
+      "versions": [
+        {
+          "path": "规聚项目完整介绍汇报-离线版-修正版.html",
+          "createdAt": "2026-08-18T13:48:23.441Z",
+          "status": "needs-review",
+          "subtitle": "逐页巡检版：恢复封面大标题、重排主体高度、扩大视频占位与地图工作流"
+        }
+      ]
+    },
+    "规聚工程细节展示版": {
+      "versions": [
+        {
+          "path": "规聚工程细节展示-1-12.html",
+          "createdAt": "2026-08-18T14:56:29.367Z",
+          "status": "needs-review",
+          "subtitle": "1—12 工程细节版：任务追踪、结构化引用、模板蒸馏、GIS、Agent 协作与 Office 回写"
+        }
+      ]
+    },
+    "规聚项目完整介绍汇报-四部分合并版": {
+      "versions": [
+        {
+          "path": "规聚项目完整介绍汇报-四部分合并版.html",
+          "createdAt": "2026-08-18T15:19:24.290Z",
+          "status": "needs-review",
+          "subtitle": "四部分扩展版：为什么做、解决什么、技术实现、工程资产与亮点"
+        },
+        {
+          "path": "规聚项目完整介绍汇报-四部分合并版-两列版.html",
+          "createdAt": "2026-08-18T16:07:30.649Z",
+          "status": "needs-review",
+          "subtitle": "参考工程细节展示 1–12 的两列版：左侧内容卡片，右侧媒体预留位"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-08-18T01:50:56.756Z",
+  "updatedAt": "2026-08-18T16:07:30.650Z"
+}
