@@ -1,12 +1,12 @@
-import React, { useRef, useState, useCallback } from "react";
+import React, { useRef, useState, useCallback, useEffect } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace } from "../api.js";
+import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 
-const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
+const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", markdown: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", csv: "table", json: "code" };
 const PIN_KEY = "oaw_pinned_sessions";
 
 function getPinnedSet() {
@@ -70,7 +70,7 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, onSelect, onDelete, onRename }) {
+export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
@@ -128,6 +128,7 @@ export function SessionList({ sessions, onSelect, onDelete, onRename }) {
           onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
           title="重命名"
         ><Icon name="penTool" size={12} /></button>
+        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
         <button
           className="btn-icon danger"
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
@@ -163,7 +164,7 @@ export function SessionList({ sessions, onSelect, onDelete, onRename }) {
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -174,6 +175,24 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [applying, setApplying] = useState(false);
   const [contextMenu, setContextMenu] = useState(null);
   const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
+  const [rootOpen, setRootOpen] = useState(false);
+  const [rootPath, setRootPath] = useState("");
+  const [fileRoots, setFileRoots] = useState([]);
+
+  const refreshFileRoots = useCallback(async () => {
+    try { setFileRoots((await listFileRoots()).roots || []); } catch {}
+  }, []);
+  useEffect(() => { refreshFileRoots(); }, [refreshFileRoots]);
+
+  const registerRoot = async () => {
+    const value = rootPath.trim();
+    if (!value) return;
+    try {
+      await addFileRoot(value);
+      setRootPath("");
+      refreshFileRoots();
+    } catch (e) { alert("登记失败: " + e.message); }
+  };
 
   const applyCustom = async () => {
     const dir = customPath.trim();
@@ -331,7 +350,23 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
           <Icon name="plus" size={13} />
         </button>
+        <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>
       </div>
+      {rootOpen && (
+        <div className="workspace-custom external-roots">
+          <div className="external-root-form">
+            <input type="text" placeholder="本地目录绝对路径" value={rootPath} onChange={(e) => setRootPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") registerRoot(); }} />
+            <button className="btn-xs" onClick={registerRoot}>登记</button>
+          </div>
+          {fileRoots.map((root) => (
+            <div className="external-root-item" key={root.id} title={root.path}>
+              <span>{root.label || root.path}</span>
+              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录">×</button>
+            </div>
+          ))}
+          {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
+        </div>
+      )}
       {customMode && (
         <div className="workspace-custom">
           <input
@@ -361,7 +396,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
           <Icon name="upload" size={11} />
         </button>
-        <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx" hidden onChange={handleUpload} />
+        <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
       </div>
       <div className="sidebar-section files-section">
         {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
