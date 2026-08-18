@@ -15,6 +15,27 @@ import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, listModels, listSessions, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
 
+function historyReferences(text = "") {
+  const refs = [];
+  const seen = new Set();
+  const add = (kind, target, source) => {
+    const value = String(target || "").trim();
+    if (!value) return;
+    const id = `history_ref_${kind}_${value}`;
+    if (seen.has(id)) return;
+    seen.add(id);
+    refs.push({ id, kind, target: value, source });
+  };
+  for (const m of String(text).matchAll(/@(知识库目录|知识库|模板目录|模板|文件)\[([^\]]+)\]/g)) {
+    add({"知识库目录":"knowledge_dir", "知识库":"knowledge", "模板目录":"template_dir", "模板":"template", "文件":"file"}[m[1]], m[2], m[0]);
+  }
+  for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
+    const target = m[2].replace(/[),;。！？]+$/, "");
+    if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
+  }
+  return refs;
+}
+
 // 全局错误边界
 class AppErrorBoundary extends React.Component {
   constructor(props) {
@@ -249,12 +270,15 @@ export default function App() {
           if (isAssistant && text && !blocks.some((b) => b.type === "text")) {
             blocks.push({ type: "text", text });
           }
+          const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
           return {
             id: e.id,
             role: isAssistant ? "assistant" : "user",
             text,
             images: [],
             blocks,
+            references: historyReferences(text),
+            currentDoc: currentDocMatch?.[1]?.trim() || null,
             status: "done",
           };
         });
