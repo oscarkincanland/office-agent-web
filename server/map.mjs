@@ -591,6 +591,8 @@ export async function importLayer(name, layerId, geojson) {
   // 重建该图层瓦片（缺 def 时按通用参数）
   const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
   const r = buildProjectTiles(dir, { layerIds: [safeId], force: true, defs: [def] });
+  // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
+  rebuildBasemapStyle(name);
   return { ok: true, layer: safeId, tiles: r[safeId] };
 }
 
