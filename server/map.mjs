@@ -409,6 +409,36 @@ export function hydrateBasemapSources(style) {
   const runtime = getBasemaps();
   for (const [id, source] of Object.entries(runtime)) out.sources[id] = source;
 
+  // 运行时保护：用户/Agent 手写的样式可能遗留非法 paint.line-cap，或引用了
+  // 尚未生成的矢量瓦片。修正/剔除后再交给 MapLibre，避免整份 style 加载失败。
+  const invalidSources = new Set();
+  for (const [id, source] of Object.entries(out.sources)) {
+    const tile = Array.isArray(source?.tiles) ? String(source.tiles[0] || "") : "";
+    const match = tile.match(/\/api\/map\/data\/([^/]+)\/tiles\/([^/]+)\//);
+    if (!match || source?.type !== "vector") continue;
+    const [, project, layer] = match;
+    const dir = projectDir(project);
+    if (!dir || !fs.existsSync(path.join(dir, "tiles", layer))) {
+      invalidSources.add(id);
+      continue;
+    }
+    // 用户绘制的小图层使用 GeoJSON 更稳健，不依赖旧的 PBF 产物。
+    const geojson = path.join(dir, "layers", `${layer}.geojson`);
+    if (layer.startsWith("drawn-") && fs.existsSync(geojson)) {
+      out.sources[id] = { type: "geojson", data: `/api/map/data/${project}/layers/${layer}.geojson` };
+      for (const l of out.layers || []) if (l.source === id) delete l["source-layer"];
+    }
+  }
+  if (invalidSources.size) {
+    for (const id of invalidSources) delete out.sources[id];
+    out.layers = (out.layers || []).filter((l) => !invalidSources.has(l.source));
+  }
+  out.layers = (out.layers || []).map((l) => {
+    if (l?.paint?.["line-cap"] === undefined) return l;
+    const { ["line-cap"]: cap, ...paint } = l.paint;
+    return { ...l, layout: { ...(l.layout || {}), "line-cap": cap }, paint };
+  });
+
   // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
   // 也能在动态样式响应中直接出现。缺失的底图图层插入到第一个业务图层之前，
   // 避免栅格覆盖道路、边界和分析图层。

@@ -5,7 +5,8 @@ import shp from "shpjs";
 import Icon from "./Icon.jsx";
 import { mapImportLayer } from "../api.js";
 
-const STYLE_PATH = (project) => `/api/map/data/${project}/style.json`;
+// 样式文件包含 Agent/用户实时修改，使用查询参数避免浏览器沿用失效的旧样式缓存。
+const STYLE_PATH = (project) => `/api/map/data/${project}/style.json?ts=${Date.now()}`;
 
 // 启动前的兜底底图 id；运行时会从服务端 style.json 同步完整列表。
 const BASEMAP_IDS = ["gaode-road", "gaode-sat", "gaode-sat-label"];
@@ -70,6 +71,10 @@ const MapViewer = forwardRef(function MapViewer(
     mapRef.current = map;
     map.addControl(new NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
+    map.on("error", (event) => {
+      const detail = event?.error?.message || event?.error?.statusText || String(event?.error || "地图资源加载失败");
+      console.error("[MapLibre]", detail);
+    });
     // 从 style 提取底图/路网图层 id（下钻过滤与底图切换用）
     const syncLayerRefs = (s) => {
       if (!s?.layers) return;
