@@ -107,6 +107,10 @@ export const mapIsochrone = (params) =>
   api("/api/map/isochrone", { method: "POST", body: JSON.stringify(params) });
 export const mapRoute = (params) =>
   api("/api/map/route", { method: "POST", body: JSON.stringify(params) });
+export const mapDemoAnalysis = (params = {}) => {
+  const query = new URLSearchParams({ analysis: params.analysis || "heatmap", region: params.region || "义乌市", project: params.project || "zhejiang-map", count: String(params.count || 36) });
+  return api(`/api/map/demo-analysis?${query.toString()}`);
+};
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);

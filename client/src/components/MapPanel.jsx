@@ -9,7 +9,7 @@ import M3Analysis from "./M3公交分析.jsx";
 import CambodiaODPanel from "./柬埔寨OD面板.jsx";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
-  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute,
+  mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -69,6 +69,7 @@ export default function MapPanel({
   const [m2Tab, setM2Tab] = useState(null); // M2 宏观分析标签
   const [m3Tab, setM3Tab] = useState(null); // M3 公交分析标签
   const [cambodiaOpen, setCambodiaOpen] = useState(false);
+  const [demoOpen, setDemoOpen] = useState(false);
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
   const [attrLayer, setAttrLayer] = useState(null); // {layerId, name}
@@ -1023,6 +1024,16 @@ export default function MapPanel({
     flash(`${title}${source}已显示`);
   }, [project, regionOptions, selectRegion, flash]);
 
+  const runDemoAnalysis = useCallback(async (analysis) => {
+    try {
+      const action = await mapDemoAnalysis({ analysis, region: "义乌市", project });
+      handleMapAction(action);
+      setDemoOpen(false);
+    } catch (e) {
+      flash(`演示分析失败：${e.message}`);
+    }
+  }, [project, handleMapAction, flash]);
+
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
       loadProject(project);
@@ -1083,6 +1094,18 @@ export default function MapPanel({
         <button className={`btn-sm ${cambodiaOpen ? "active" : ""}`} onClick={() => setCambodiaOpen((v) => !v)} title="打开柬埔寨暹粒 OD 演示仪表盘">
           <Icon name="flow" size={13} /> 暹粒OD
         </button>
+        <div className="mp-demo-wrap">
+          <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="打开浙江地图演示分析">
+            <Icon name="chart" size={13} /> 演示
+          </button>
+          {demoOpen && (
+            <div className="mp-demo-menu">
+              <button onClick={() => runDemoAnalysis("heatmap")}><Icon name="locate" size={13} /> 义乌点位热力图</button>
+              <button onClick={() => runDemoAnalysis("isochrone")}><Icon name="history" size={13} /> 义乌可达性等时圈</button>
+              <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
+            </div>
+          )}
+        </div>
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>

@@ -79,6 +79,7 @@ async function smokeTest() {
     ["GET", "/api/map/od-lines?project=zhejiang-map"],
     ["GET", "/api/map/exchange-sankey?project=zhejiang-map"],
     ["GET", "/api/map/road-structure?project=zhejiang-map"],
+    ["GET", "/api/map/demo-analysis?analysis=heatmap&region=%E4%B9%89%E4%B9%8C%E5%B8%82"],
     ["GET", "/api/kb/graph?root=0&include=links,tags,folders&max=800"],
   ];
   for (const [method, url] of endpoints) {
