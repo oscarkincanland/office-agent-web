@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="规聚工程细节展示版：从结构化引用到地图、Office 与可追踪 Agent 协作">
+  <title>规聚｜工程细节展示版</title>
+  <style>
+    :root {
+      --paper: #f6f3ee;
+      --paper-2: #fffdfa;
+      --ink: #2b2927;
+      --muted: #706b64;
+      --faint: #9b948b;
+      --line: #ded8cf;
+      --accent: #d97757;
+      --accent-dark: #a6533b;
+      --accent-soft: #f3dfd6;
+      --sage: #789883;
+      --sage-soft: #e4eee6;
+      --blue: #6679a7;
+      --blue-soft: #e5e9f3;
+      --lav: #9a88b7;
+      --lav-soft: #eee9f4;
+      --mono: "SF Mono", "JetBrains Mono", Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+      --serif: "Iowan Old Style", "Songti SC", "Noto Serif SC", Georgia, serif;
+      --title: clamp(48px, 5vw, 88px);
+      --heading: clamp(34px, 3.25vw, 62px);
+      --body: clamp(24px, 1.45vw, 30px);
+      --small: clamp(20px, 1.08vw, 24px);
+      --pad-x: 6vw;
+      --pad-top: 5.2vh;
+      --pad-bottom: 5vh;
+      --gap: 3vh;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+    body { background-image: radial-gradient(rgba(43,41,39,.055) .7px, transparent .7px); background-size: 9px 9px; }
+    body.low-power *, body.low-power *::before, body.low-power *::after { animation: none !important; transition: none !important; }
+    button { font: inherit; }
+    #deck { display: flex; width: 100vw; height: 100vh; transform: translateX(0); transition: transform .55s cubic-bezier(.2,.7,.2,1); }
+    .slide { flex: 0 0 100vw; width: 100vw; height: 100vh; min-height: 620px; position: relative; overflow: hidden; padding: var(--pad-top) var(--pad-x) var(--pad-bottom); display: flex; flex-direction: column; background: var(--paper); }
+    .slide.paper-2 { background: var(--paper-2); }
+    .slide.tint { background: #f4ece6; }
+    .slide.sage { background: #edf2ed; }
+    .slide.blue { background: #eef1f7; }
+    .slide.lav { background: #f0edf5; }
+    .slide::before { content: ""; position: absolute; right: 6vw; top: 7vh; width: 13vw; height: 13vw; border: 1px solid rgba(217,119,87,.22); border-radius: 50%; pointer-events: none; }
+    .slide::after { content: ""; position: absolute; right: 10vw; top: 11vh; width: 5vw; height: 5vw; border: 1px solid rgba(217,119,87,.16); border-radius: 50%; pointer-events: none; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 14px; position: relative; z-index: 2; }
+    .brand { display: flex; align-items: center; gap: 12px; font-size: 22px; color: var(--muted); letter-spacing: .03em; }
+    .brand-mark { width: 24px; height: 24px; background: var(--accent); border-radius: 8px 8px 8px 3px; position: relative; flex: 0 0 auto; }
+    .brand-mark::after { content: ""; position: absolute; left: 6px; top: 7px; width: 10px; height: 7px; border: 1.5px solid white; border-top: 0; border-radius: 0 0 6px 6px; }
+    .top-meta { font-family: var(--mono); font-size: 18px; color: var(--muted); letter-spacing: .08em; }
+    .main { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: space-between; gap: var(--gap); padding-top: 4.4vh; position: relative; z-index: 1; }
+    .eyebrow { font-family: var(--mono); font-size: 20px; color: var(--accent); letter-spacing: .1em; margin-bottom: 1.5vh; }
+    h1, h2, h3, p { margin: 0; }
+    h1, h2, h3 { font-family: var(--serif); font-weight: 400; letter-spacing: -.045em; line-height: 1.04; text-wrap: pretty; }
+    h1 { font-size: var(--title); }
+    h2 { font-size: var(--heading); }
+    h3 { font-size: clamp(28px, 2vw, 40px); }
+    .hero-title { font-size: clamp(76px, 10vw, 180px); line-height: .9; max-width: 8ch; }
+    .hero-title em, .accent { font-style: normal; color: var(--accent); }
+    .lead { font-size: clamp(26px, 1.7vw, 36px); line-height: 1.55; color: #5f5a54; max-width: 950px; }
+    .body { font-size: var(--body); line-height: 1.55; color: #5f5a54; }
+    .small { font-size: var(--small); line-height: 1.5; color: var(--muted); }
+    .foot { font-size: 20px; line-height: 1.45; color: #898177; letter-spacing: .01em; }
+    .mono { font-family: var(--mono); }
+    .pill { display: inline-flex; align-items: center; gap: 9px; padding: 9px 14px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-dark); font-size: 20px; }
+    .pill.sage { background: var(--sage-soft); color: #557564; }
+    .pill.blue { background: var(--blue-soft); color: #566b9d; }
+    .pill.lav { background: var(--lav-soft); color: #77638f; }
+    .hero { justify-content: center; gap: 6vh; }
+    .hero-grid { display: grid; grid-template-columns: 1.08fr .92fr; gap: 7vw; align-items: end; }
+    .hero-note { background: var(--paper-2); border: 1px solid var(--line); border-radius: 22px; padding: 28px; box-shadow: 0 14px 35px rgba(73,56,42,.08); display: grid; gap: 22px; max-width: 450px; }
+    .hero-note strong { font-family: var(--serif); font-size: 34px; font-weight: 400; line-height: 1.18; }
+    .hero-note span { font-size: 22px; line-height: 1.55; color: var(--muted); }
+    .route { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .route-card, .soft-card, .code-card, .metric, .stage-card, .office-card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 8px 22px rgba(73,56,42,.045); }
+    .route-card { min-height: 185px; padding: 22px; display: flex; flex-direction: column; justify-content: space-between; }
+    .route-card .n, .card-n, .stage-n { font-family: var(--mono); font-size: 20px; color: var(--accent); }
+    .route-card strong { font-family: var(--serif); font-size: 31px; font-weight: 400; }
+    .route-card span { font-size: 21px; line-height: 1.45; color: var(--muted); }
+    .section-title { display: flex; flex-direction: column; gap: 1.2vh; }
+    .feature-layout { display: grid; grid-template-columns: .9fr 1.1fr; gap: 5vw; align-items: center; min-height: 0; flex: 1; }
+    .feature-layout.reverse { grid-template-columns: 1.1fr .9fr; }
+    .feature-copy { display: grid; gap: 25px; align-content: center; }
+    .feature-copy ul, .check-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+    .feature-copy li, .check-row { display: grid; grid-template-columns: 40px 1fr; gap: 16px; padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .feature-copy li b, .check-row b { color: var(--accent); font-family: var(--mono); font-size: 20px; padding-top: 4px; }
+    .feature-copy li strong, .check-row strong { font-family: var(--serif); font-size: 28px; font-weight: 400; }
+    .feature-copy li span, .check-row span { display: block; margin-top: 5px; font-size: 21px; line-height: 1.45; color: var(--muted); }
+    .visual { position: relative; overflow: hidden; background: var(--paper-2); border: 1px solid var(--line); border-radius: 24px; min-height: 410px; box-shadow: 0 14px 32px rgba(73,56,42,.06); }
+    .visual::before { content: ""; position: absolute; inset: 16px; border: 1px dashed #e5b7a6; border-radius: 16px; pointer-events: none; z-index: 2; }
+    .visual-caption { position: absolute; left: 28px; bottom: 24px; z-index: 4; padding: 8px 13px; border-radius: 999px; background: rgba(255,253,250,.94); border: 1px solid var(--line); color: var(--muted); font-size: 20px; }
+    .visual img { display: block; width: 100%; height: 100%; min-height: 410px; object-fit: contain; padding: 28px; position: relative; z-index: 1; }
+    .video-frame { min-height: 0; aspect-ratio: 16 / 9; background: #1c1b28; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid #3d3a4c; box-shadow: 0 14px 32px rgba(35,31,27,.12); }
+    .video-frame::before { content: "VIDEO"; position: absolute; left: 22px; top: 18px; z-index: 2; color: rgba(255,255,255,.72); font-family: var(--mono); font-size: 18px; letter-spacing: .1em; }
+    .video-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #17172b; }
+    .video-frame .video-placeholder { height: 100%; min-height: 300px; display: grid; place-items: center; color: #d6d1ca; text-align: center; padding: 45px; }
+    .video-placeholder strong { display: block; font-family: var(--serif); font-size: 34px; font-weight: 400; margin-bottom: 12px; }
+    .video-placeholder span { font-size: 22px; color: #a9a3b4; line-height: 1.5; }
+    .video-label { position: absolute; right: 22px; top: 18px; z-index: 2; color: #f6eee7; font-size: 18px; }
+    .video-speed { position: absolute; right: 22px; bottom: 18px; z-index: 2; color: rgba(255,255,255,.68); font-family: var(--mono); font-size: 18px; }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .flow-step { min-height: 220px; padding: 22px 20px; border-right: 1px solid var(--line); background: rgba(255,253,250,.56); display: flex; flex-direction: column; justify-content: space-between; gap: 16px; }
+    .flow-step:last-child { border-right: 0; background: var(--accent-soft); }
+    .flow-step strong { font-family: var(--serif); font-size: 29px; font-weight: 400; }
+    .flow-step span { font-size: 21px; color: var(--muted); line-height: 1.45; }
+    .flow-step .arrow { align-self: end; color: var(--accent); font-size: 30px; }
+    .ref-board { background: #252331; color: #efebe6; border-radius: 24px; padding: 28px; min-height: 430px; position: relative; box-shadow: 0 14px 32px rgba(35,31,27,.14); }
+    .ref-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.15); padding-bottom: 18px; }
+    .ref-head strong { font-family: var(--serif); font-size: 29px; font-weight: 400; }
+    .ref-status { color: #ee9a7b; font-family: var(--mono); font-size: 18px; }
+    .ref-row { display: grid; grid-template-columns: 115px 1fr; gap: 18px; padding: 22px 0; border-bottom: 1px solid rgba(255,255,255,.1); align-items: center; }
+    .ref-token { color: #efb29e; font-family: var(--mono); font-size: 20px; }
+    .ref-value { font-size: 23px; line-height: 1.45; color: #d6d1ca; }
+    .ref-chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .ref-chip { padding: 8px 11px; border: 1px solid rgba(239,178,158,.5); border-radius: 999px; color: #f0c9bd; font-family: var(--mono); font-size: 17px; }
+    .distill { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: stretch; }
+    .distill-card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 20px; padding: 24px; min-height: 250px; position: relative; }
+    .distill-card:nth-child(2) { background: var(--lav-soft); }
+    .distill-card:nth-child(3) { background: var(--sage-soft); }
+    .distill-card .big-arrow { position: absolute; right: -28px; top: 50%; color: var(--accent); font-size: 34px; z-index: 2; }
+    .distill-card:last-child .big-arrow { display: none; }
+    .distill-card h3 { margin: 28px 0 14px; }
+    .distill-card p { font-size: 22px; line-height: 1.5; color: var(--muted); }
+    .role-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+    .role-card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 18px; padding: 20px; min-height: 215px; display: flex; flex-direction: column; justify-content: space-between; }
+    .role-icon { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 16px; color: white; font-family: var(--mono); font-size: 24px; }
+    .role-card strong { font-family: var(--serif); font-size: 29px; font-weight: 400; }
+    .role-card span { font-size: 20px; color: var(--muted); line-height: 1.45; }
+    .role-chain { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 18px; background: var(--paper-2); border: 1px solid var(--line); border-radius: 18px; font-family: var(--mono); font-size: 20px; color: var(--muted); }
+    .role-chain b { color: var(--accent); font-weight: 400; }
+    .graph-art { height: 100%; min-height: 410px; position: relative; background: #eee9e2; overflow: hidden; }
+    .graph-art::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(27deg, transparent 49%, rgba(217,119,87,.18) 50%, transparent 51%), linear-gradient(145deg, transparent 49%, rgba(102,121,167,.18) 50%, transparent 51%); background-size: 130px 96px, 170px 135px; }
+    .graph-node { position: absolute; z-index: 2; display: grid; place-items: center; text-align: center; border-radius: 50%; font-family: var(--serif); box-shadow: 0 8px 20px rgba(73,56,42,.12); }
+    .graph-node.main-node { width: 142px; height: 142px; left: 42%; top: 34%; background: var(--accent); color: white; font-size: 28px; }
+    .graph-node.n1 { width: 90px; height: 90px; left: 17%; top: 15%; background: var(--blue-soft); color: #566b9d; font-size: 21px; }
+    .graph-node.n2 { width: 96px; height: 96px; right: 15%; top: 16%; background: var(--sage-soft); color: #557564; font-size: 21px; }
+    .graph-node.n3 { width: 80px; height: 80px; left: 14%; bottom: 14%; background: var(--lav-soft); color: #77638f; font-size: 20px; }
+    .graph-node.n4 { width: 88px; height: 88px; right: 17%; bottom: 13%; background: var(--accent-soft); color: var(--accent-dark); font-size: 20px; }
+    .graph-line { position: absolute; height: 2px; background: var(--accent); transform-origin: left center; opacity: .72; z-index: 1; }
+    .gl1 { width: 280px; left: 24%; top: 30%; transform: rotate(22deg); }
+    .gl2 { width: 270px; left: 54%; top: 36%; transform: rotate(-25deg); }
+    .gl3 { width: 270px; left: 24%; top: 70%; transform: rotate(-18deg); }
+    .gl4 { width: 250px; left: 54%; top: 70%; transform: rotate(20deg); }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .metric { padding: 21px; min-height: 155px; display: flex; flex-direction: column; justify-content: space-between; }
+    .metric strong { color: var(--accent); font-family: var(--serif); font-size: 56px; font-weight: 400; line-height: .9; }
+    .metric span { font-size: 20px; color: var(--muted); line-height: 1.35; }
+    .map-split { display: grid; grid-template-columns: 1.15fr .85fr; gap: 24px; align-items: stretch; }
+    .map-screen { min-height: 420px; background: #17172b; border-radius: 23px; overflow: hidden; border: 1px solid #343249; position: relative; }
+    .map-screen img { display: block; width: 100%; height: 100%; min-height: 420px; object-fit: contain; background: #17172b; }
+    .map-screen .screen-label { position: absolute; left: 22px; top: 20px; z-index: 2; color: #f6eee7; background: rgba(23,23,43,.78); border-radius: 999px; padding: 7px 11px; font-family: var(--mono); font-size: 19px; }
+    .map-tools { display: grid; gap: 0; border-top: 1px solid var(--line); }
+    .map-tool { display: grid; grid-template-columns: 135px 1fr; gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--line); align-items: start; }
+    .map-tool b { color: var(--accent); font-family: var(--mono); font-size: 18px; padding-top: 4px; }
+    .map-tool span { font-size: 22px; line-height: 1.45; color: var(--muted); }
+    .pipeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .pipeline-step { padding: 24px 18px; min-height: 230px; border-right: 1px solid var(--line); background: rgba(255,253,250,.7); display: grid; align-content: space-between; gap: 16px; }
+    .pipeline-step:nth-child(2) { background: var(--blue-soft); }
+    .pipeline-step:nth-child(3) { background: var(--lav-soft); }
+    .pipeline-step:nth-child(4) { background: var(--sage-soft); }
+    .pipeline-step:nth-child(5) { background: var(--accent-soft); border-right: 0; }
+    .pipeline-step strong { font-family: var(--serif); font-size: 29px; font-weight: 400; }
+    .pipeline-step span { font-size: 20px; line-height: 1.45; color: var(--muted); }
+    .pipeline-step em { font-style: normal; color: var(--accent); font-family: var(--mono); font-size: 18px; }
+    .agent-map { display: grid; grid-template-columns: .78fr 1.22fr; gap: 22px; align-items: stretch; }
+    .tool-stack { display: grid; gap: 12px; }
+    .tool-card { background: #252331; color: #efebe6; border-radius: 16px; padding: 18px 20px; border: 1px solid #3d3a4c; }
+    .tool-card b { display: block; color: #ee9a7b; font-family: var(--mono); font-size: 19px; margin-bottom: 8px; }
+    .tool-card span { font-size: 21px; line-height: 1.4; color: #d6d1ca; }
+    .live-map { min-height: 405px; background: #202234; border-radius: 24px; position: relative; overflow: hidden; border: 1px solid #3d3a4c; }
+    .live-map::before { content: ""; position: absolute; inset: 0; opacity: .58; background-image: linear-gradient(27deg, transparent 48%, rgba(255,196,168,.8) 49%, transparent 51%), linear-gradient(145deg, transparent 48%, rgba(160,186,229,.65) 49%, transparent 51%); background-size: 135px 100px, 180px 145px; transform: rotate(-8deg) scale(1.2); }
+    .live-map-label { position: absolute; left: 24px; top: 20px; color: #d8d4cf; font-family: var(--mono); font-size: 19px; }
+    .live-map-core { position: absolute; inset: 0; display: grid; place-items: center; }
+    .live-map-core strong { display: grid; place-items: center; width: 158px; height: 90px; border-radius: 18px; background: rgba(217,119,87,.92); color: white; font-family: var(--serif); font-size: 28px; font-weight: 400; text-align: center; box-shadow: 0 0 0 16px rgba(217,119,87,.1), 0 18px 30px rgba(0,0,0,.16); }
+    .ask-layout { display: grid; grid-template-columns: 1fr .92fr; gap: 5vw; align-items: center; }
+    .ask-card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 24px; padding: 28px; box-shadow: 0 14px 32px rgba(73,56,42,.08); }
+    .ask-head { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 18px; }
+    .ask-head strong { font-family: var(--serif); font-size: 30px; font-weight: 400; }
+    .ask-head span { font-family: var(--mono); font-size: 18px; color: var(--accent); }
+    .ask-question { margin: 26px 0; background: var(--accent-soft); border-radius: 16px; padding: 20px; font-family: var(--serif); font-size: 30px; line-height: 1.25; color: var(--accent-dark); }
+    .ask-options { display: grid; gap: 10px; }
+    .ask-option { padding: 15px 18px; border: 1px solid var(--line); border-radius: 12px; font-size: 22px; color: var(--muted); background: #fff; }
+    .ask-option.active { border-color: var(--accent); background: #fff3ee; color: var(--accent-dark); }
+    .human-loop { display: grid; gap: 20px; }
+    .loop-step { display: grid; grid-template-columns: 64px 1fr; gap: 18px; align-items: center; padding: 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--paper-2); }
+    .loop-number { width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-family: var(--mono); font-size: 20px; }
+    .loop-step strong { font-family: var(--serif); font-size: 28px; font-weight: 400; }
+    .loop-step span { display: block; margin-top: 4px; font-size: 21px; color: var(--muted); line-height: 1.4; }
+    .session-layout { display: grid; grid-template-columns: .85fr 1.15fr; gap: 5vw; align-items: center; }
+    .session-tree { background: #252331; border-radius: 22px; padding: 25px; color: #e9e4dd; min-height: 390px; box-shadow: 0 14px 32px rgba(35,31,27,.12); }
+    .session-tree h3 { color: #fff; font-size: 31px; margin-bottom: 22px; }
+    .session-row { display: flex; justify-content: space-between; gap: 16px; padding: 17px 0; border-bottom: 1px solid rgba(255,255,255,.12); font-size: 22px; }
+    .session-row span { color: #aaa4b7; font-family: var(--mono); font-size: 18px; }
+    .session-row.active { color: #f3b39d; }
+    .session-flow { display: grid; gap: 18px; }
+    .session-card { background: var(--paper-2); border: 1px solid var(--line); border-radius: 18px; padding: 21px; display: grid; grid-template-columns: 120px 1fr; gap: 16px; }
+    .session-card b { color: var(--accent); font-family: var(--mono); font-size: 19px; padding-top: 4px; }
+    .session-card strong { font-family: var(--serif); font-size: 28px; font-weight: 400; }
+    .session-card span { display: block; font-size: 21px; line-height: 1.45; color: var(--muted); margin-top: 5px; }
+    .office-layout { display: grid; grid-template-columns: 1fr .9fr; gap: 5vw; align-items: center; }
+    .office-card { padding: 27px; min-height: 390px; }
+    .office-card h3 { margin-bottom: 22px; }
+    .office-row { display: grid; grid-template-columns: 42px 1fr; gap: 14px; padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .office-row b { color: var(--accent); font-family: var(--mono); font-size: 20px; }
+    .office-row strong { font-family: var(--serif); font-size: 27px; font-weight: 400; }
+    .office-row span { display: block; margin-top: 4px; font-size: 21px; color: var(--muted); line-height: 1.4; }
+    .final { justify-content: center; gap: 5vh; }
+    .final-grid { display: grid; grid-template-columns: 1fr .78fr; gap: 8vw; align-items: end; }
+    .final-title { font-family: var(--serif); font-size: clamp(60px, 7vw, 132px); line-height: .95; letter-spacing: -.07em; }
+    .final-list { display: grid; gap: 0; border-top: 1px solid var(--line); }
+    .final-row { display: grid; grid-template-columns: 46px 1fr; gap: 15px; padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .final-row b { color: var(--accent); font-family: var(--mono); font-size: 19px; }
+    .final-row span { font-size: 23px; line-height: 1.4; color: var(--muted); }
+    .nav { position: fixed; right: 26px; bottom: 20px; z-index: 20; display: flex; align-items: center; gap: 14px; padding: 9px 12px; border: 1px solid rgba(222,216,207,.96); border-radius: 999px; background: rgba(255,253,250,.9); backdrop-filter: blur(12px); box-shadow: 0 8px 22px rgba(73,56,42,.1); }
+    .nav button { border: 1px solid var(--line); width: 38px; height: 34px; background: transparent; color: var(--ink); cursor: pointer; border-radius: 9px; font-size: 22px; }
+    .nav button:hover { border-color: var(--accent); color: var(--accent); }
+    .dots { display: flex; align-items: center; gap: 6px; }
+    .dots .dot { width: 8px; height: 8px; padding: 0; border: 0; border-radius: 50%; background: #d4cdc4; }
+    .dots .dot:hover { background: var(--accent); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #d4cdc4; transition: transform .2s, background .2s; cursor: pointer; }
+    .dot.active { background: var(--accent); transform: scale(1.35); }
+    .counter { min-width: 78px; text-align: center; font-family: var(--mono); font-size: 18px; color: var(--muted); }
+    .index-button { position: fixed; top: 19px; right: 26px; z-index: 20; border: 1px solid var(--line); background: rgba(255,253,250,.9); color: var(--muted); border-radius: 9px; padding: 7px 11px; font-family: var(--mono); font-size: 17px; cursor: pointer; }
+    .index-overlay { position: fixed; inset: 0; z-index: 30; display: none; background: rgba(43,41,39,.48); backdrop-filter: blur(12px); padding: 7vh 8vw; }
+    .index-overlay.open { display: block; }
+    .index-panel { height: 86vh; overflow: auto; background: var(--paper-2); border: 1px solid var(--line); border-radius: 25px; padding: 30px; box-shadow: 0 24px 60px rgba(35,31,27,.25); }
+    .index-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
+    .index-head h2 { font-size: 44px; }
+    .index-close { border: 1px solid var(--line); background: transparent; padding: 9px 15px; border-radius: 9px; cursor: pointer; font-size: 20px; }
+    .index-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .index-item { border: 1px solid var(--line); border-radius: 14px; background: var(--paper); padding: 16px; cursor: pointer; min-height: 100px; }
+    .index-item:hover { border-color: var(--accent); background: #fff3ee; }
+    .index-item small { display: block; font-family: var(--mono); font-size: 17px; color: var(--accent); margin-bottom: 10px; }
+    .index-item strong { font-family: var(--serif); font-size: 25px; font-weight: 400; line-height: 1.2; }
+    [data-anim] { opacity: 0; transform: translateY(18px); }
+    .slide.active [data-anim] { animation: rise .6s cubic-bezier(.2,.7,.2,1) forwards; animation-delay: calc(var(--i, 0) * 90ms); }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } [data-anim] { opacity: 1; transform: none; } }
+    /* 16:9 演示窗口的紧凑档：不缩成小字，优先收紧空隙与卡片高度，保证一页讲完。 */
+    @media (max-height: 800px) and (min-width: 1001px) {
+      :root { --pad-top: 3.2vh; --pad-bottom: 3vh; --gap: 1.7vh; }
+      .topbar { padding-bottom: 8px; }
+      .brand { font-size: 18px; gap: 9px; }
+      .brand-mark { width: 20px; height: 20px; border-radius: 7px 7px 7px 3px; }
+      .brand-mark::after { left: 5px; top: 6px; width: 8px; height: 6px; }
+      .top-meta { font-size: 15px; }
+      .main { padding-top: 2.5vh; gap: 1.7vh; }
+      .eyebrow { font-size: 16px; margin-bottom: .8vh; }
+      h2 { font-size: clamp(30px, 2.7vw, 48px); }
+      .lead { font-size: clamp(20px, 1.35vw, 27px); line-height: 1.35; }
+      .body { font-size: clamp(19px, 1.18vw, 24px); line-height: 1.4; }
+      .small { font-size: clamp(17px, .95vw, 21px); line-height: 1.35; }
+      .foot { font-size: 16px; line-height: 1.3; }
+      .route { gap: 12px; }
+      .route-card { min-height: 155px; padding: 16px; }
+      .route-card .n, .card-n, .stage-n { font-size: 17px; }
+      .route-card strong { font-size: 25px; }
+      .route-card span { font-size: 17px; line-height: 1.3; }
+      .section-title { gap: .8vh; }
+      .feature-layout, .feature-layout.reverse { gap: 3vw; }
+      .feature-copy { gap: 16px; }
+      .feature-copy li, .check-row { grid-template-columns: 32px 1fr; gap: 12px; padding: 10px 0; }
+      .feature-copy li b, .check-row b { font-size: 17px; padding-top: 2px; }
+      .feature-copy li strong, .check-row strong { font-size: 23px; }
+      .feature-copy li span, .check-row span { margin-top: 3px; font-size: 17px; line-height: 1.3; }
+      .visual, .graph-art { min-height: 275px; }
+      .visual img { min-height: 275px; padding: 18px; }
+      .visual-caption { left: 18px; bottom: 16px; font-size: 16px; padding: 6px 10px; }
+      .video-frame { border-radius: 18px; }
+      .video-frame::before, .video-label, .video-speed { font-size: 14px; }
+      .video-frame::before, .video-label { top: 12px; }
+      .video-speed { right: 14px; bottom: 12px; }
+      .video-frame .video-placeholder { min-height: 220px; padding: 30px; }
+      .video-placeholder strong { font-size: 27px; margin-bottom: 8px; }
+      .video-placeholder span { font-size: 18px; }
+      .ref-board { min-height: 330px; padding: 18px; }
+      .visual > .ref-board { margin: 14px !important; }
+      .ref-head { padding-bottom: 10px; }
+      .ref-head strong { font-size: 24px; }
+      .ref-status { font-size: 15px; }
+      .ref-row { grid-template-columns: 90px 1fr; gap: 12px; padding: 12px 0; }
+      .ref-token { font-size: 16px; }
+      .ref-value { font-size: 18px; line-height: 1.3; }
+      .ref-chips { gap: 6px; margin-top: 13px; }
+      .ref-chip { padding: 6px 8px; font-size: 14px; }
+      .distill { gap: 12px; }
+      .distill-card { min-height: 180px; padding: 16px; }
+      .distill-card h3 { margin: 18px 0 8px; font-size: 27px; }
+      .distill-card p { font-size: 17px; line-height: 1.35; }
+      .distill-card .big-arrow { right: -22px; font-size: 27px; }
+      .role-grid { gap: 11px; }
+      .role-card { min-height: 175px; padding: 15px; }
+      .role-icon { width: 42px; height: 42px; border-radius: 12px; font-size: 19px; }
+      .role-card strong { font-size: 24px; }
+      .role-card span { font-size: 16px; line-height: 1.3; }
+      .role-chain { padding: 12px; font-size: 17px; gap: 12px; }
+      .graph-node.main-node { width: 110px; height: 110px; font-size: 23px; }
+      .graph-node.n1, .graph-node.n2 { width: 72px; height: 72px; font-size: 17px; }
+      .graph-node.n3, .graph-node.n4 { width: 64px; height: 64px; font-size: 16px; }
+      .graph-art .visual-caption { font-size: 15px; }
+      .map-split { gap: 18px; }
+      .map-screen, .map-screen img { min-height: 315px; }
+      .map-screen .screen-label { left: 16px; top: 14px; padding: 5px 8px; font-size: 15px; }
+      .map-tool { grid-template-columns: 112px 1fr; gap: 12px; padding: 11px 0; }
+      .map-tool b { font-size: 15px; padding-top: 2px; }
+      .map-tool span { font-size: 17px; line-height: 1.3; }
+      .pipeline { gap: 0; }
+      .pipeline-step { min-height: 185px; padding: 15px 13px; gap: 10px; }
+      .pipeline-step strong { font-size: 24px; }
+      .pipeline-step span { font-size: 16px; line-height: 1.3; }
+      .pipeline-step em { font-size: 15px; }
+      .metrics { gap: 10px; }
+      .metric { min-height: 112px; padding: 14px; }
+      .metric strong { font-size: 43px; }
+      .metric span { font-size: 16px; line-height: 1.25; }
+      .agent-map { gap: 16px; }
+      .tool-stack { gap: 8px; }
+      .tool-card { padding: 12px 14px; }
+      .tool-card b { font-size: 15px; margin-bottom: 5px; }
+      .tool-card span { font-size: 16px; line-height: 1.3; }
+      .live-map { min-height: 310px; }
+      .live-map-label { left: 17px; top: 14px; font-size: 15px; }
+      .live-map-core strong { width: 130px; height: 76px; font-size: 23px; }
+      .ask-layout { gap: 3vw; }
+      .ask-card { padding: 19px; }
+      .ask-head { padding-bottom: 12px; }
+      .ask-head strong { font-size: 25px; }
+      .ask-head span { font-size: 15px; }
+      .ask-question { margin: 16px 0; padding: 14px; font-size: 25px; }
+      .ask-option { padding: 10px 13px; font-size: 18px; }
+      .human-loop { gap: 10px; }
+      .loop-step { grid-template-columns: 48px 1fr; gap: 12px; padding: 13px; }
+      .loop-number { width: 40px; height: 40px; font-size: 17px; }
+      .loop-step strong { font-size: 23px; }
+      .loop-step span { font-size: 17px; line-height: 1.3; }
+      .session-layout { gap: 3vw; }
+      .session-tree { min-height: 270px; padding: 17px; }
+      .session-tree h3 { font-size: 25px; margin-bottom: 12px; }
+      .session-row { padding: 10px 0; font-size: 18px; }
+      .session-row span { font-size: 15px; }
+      .session-flow { gap: 9px; }
+      .session-card { padding: 13px; grid-template-columns: 95px 1fr; gap: 12px; }
+      .session-card b { font-size: 16px; }
+      .session-card strong { font-size: 23px; }
+      .session-card span { font-size: 17px; line-height: 1.3; margin-top: 3px; }
+      .office-layout { gap: 3vw; }
+      .office-card { padding: 18px; min-height: 0; }
+      .office-card h3 { margin-bottom: 12px; font-size: 28px; }
+      .office-row { grid-template-columns: 32px 1fr; gap: 10px; padding: 10px 0; }
+      .office-row b { font-size: 17px; }
+      .office-row strong { font-size: 22px; }
+      .office-row span { font-size: 17px; line-height: 1.3; margin-top: 2px; }
+      .nav { right: 12px; bottom: 12px; gap: 9px; padding: 6px 9px; }
+      .nav button { width: 32px; height: 28px; font-size: 18px; }
+      .dots { gap: 5px; }
+      .dots .dot { width: 6px; height: 6px; }
+      .counter { min-width: 62px; font-size: 15px; }
+    }
+    @media (max-width: 1000px) { .feature-layout, .feature-layout.reverse, .hero-grid, .map-split, .agent-map, .ask-layout, .session-layout, .office-layout, .final-grid { grid-template-columns: 1fr; gap: 22px; } .visual, .visual img, .graph-art, .map-screen, .map-screen img { min-height: 260px; } .role-grid, .metrics, .route { grid-template-columns: repeat(2, 1fr); } .pipeline, .flow { grid-template-columns: repeat(3, 1fr); } .pipeline-step:nth-child(3n), .flow-step:nth-child(3n) { border-right: 0; } .index-grid { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <main id="deck" aria-label="规聚工程细节展示版">
+    <section class="slide tint active" data-title="规聚：12 个工程细节">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>Open Plan · 规聚</span><span class="top-meta">ENGINEERING DETAILS · 01 / 15</span></div>
+      <div class="main hero">
+        <div class="hero-grid" data-anim style="--i:1">
+          <div><span class="pill">工程细节展示版 · 1—12</span><h1 class="hero-title" style="margin-top:3vh">把 Agent<br><em>做进</em><br>工程里</h1><p class="lead" style="margin-top:4vh">从一次聊天，到一条可以引用、执行、回写、恢复的规划工作流。</p></div>
+          <div class="hero-note"><span class="mono accent">PROJECT NOTE / 2026</span><strong>12 个细节，拼出一个真正能工作的 Agent 工作台。</strong><span>这版不再按功能菜单展开，而是放大你在工程实现里的小心思：上下文、数据、地图、成果与人机协作。</span></div>
+        </div>
+        <p class="foot" data-anim style="--i:2">汇报建议：每页讲一个“为什么这样做”，再配一个可操作的画面。</p>
+      </div>
+    </section>
+
+    <section class="slide paper-2" data-title="12 个细节组成一条工作链">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>工程细节 · 总览</span><span class="top-meta">ROUTE · 02 / 15</span></div>
+      <div class="main">
+        <div class="section-title" data-anim style="--i:1"><span class="eyebrow">从功能清单，回到工程链路</span><h2>一个 Agent 工作台，靠 12 个细节真正落地</h2><p class="body" style="max-width:940px">这些细节共同回答一个问题：工程师如何让 Agent 理解项目、调用能力、留下过程，并把结果带回成果文件。</p></div>
+        <div class="route" data-anim style="--i:2"><div class="route-card"><span class="n">01—03</span><strong>任务与上下文</strong><span>执行记录、结构化引用、规范蒸馏。</span></div><div class="route-card"><span class="n">04—05</span><strong>角色与知识</strong><span>专业 Agent、知识图谱和关联关系。</span></div><div class="route-card"><span class="n">06—09</span><strong>地图与数据</strong><span>GIS、数据管线、专题分析、Agent 改图。</span></div><div class="route-card"><span class="n">10—12</span><strong>协作与成果</strong><span>主动询问、任务恢复、Office 回写。</span></div></div>
+        <div class="flow" data-anim style="--i:3"><div class="flow-step"><span class="mono">INPUT</span><strong>工程师提出任务</strong><span>目标、范围、文件和偏好进入任务。</span><span class="arrow">→</span></div><div class="flow-step"><span class="mono">CONTEXT</span><strong>引用知识与模板</strong><span>Agent 按 ID 读取真正需要的内容。</span><span class="arrow">→</span></div><div class="flow-step"><span class="mono">TOOLS</span><strong>调用专业能力</strong><span>Office、KB、Map 和工作流协同。</span><span class="arrow">→</span></div><div class="flow-step"><span class="mono">OUTPUT</span><strong>成果回写</strong><span>地图、报告、表格和演示材料继续编辑。</span><span class="arrow">→</span></div><div class="flow-step"><span class="mono">CONTROL</span><strong>过程可恢复</strong><span>有记录、有产物、有确认，也能回滚。</span><span class="arrow">✓</span></div></div>
+      </div>
+    </section>
+
+    <section class="slide blue" data-title="01｜每次任务都有执行记录">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 01 · 任务追踪</span><span class="top-meta">TRACEABILITY · 03 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">01 · TaskEnvelope / Run Manifest</span><h2>每次任务都有执行记录</h2><p class="body">Agent 不只是吐出一个答案，而是形成一条可以检查的执行链。</p></div>
+        <div class="feature-layout" data-anim style="--i:2"><div class="feature-copy"><ul><li><b>01</b><div><strong>记录任务目标</strong><span>把当前工作区、引用、工作流和输出要求放进 TaskEnvelope。</span></div></li><li><b>02</b><div><strong>记录工具过程</strong><span>每一次搜索、读取、改图和 Office 操作都有事件。</span></div></li><li><b>03</b><div><strong>记录成果变化</strong><span>识别新增、修改、删除，并保留小文件前后快照。</span></div></li><li><b>04</b><div><strong>必要时回滚</strong><span>工程师可以确认后恢复本轮修改，不必重新开始。</span></div></li></ul></div><div class="visual"><div class="ref-board" style="margin:28px"><div class="ref-head"><strong>本轮任务状态</strong><span class="ref-status">RUN · COMPLETED</span></div><div class="ref-row"><span class="ref-token">GOAL</span><span class="ref-value">整理交通规划汇报材料并补齐地图说明</span></div><div class="ref-row"><span class="ref-token">EVENTS</span><span class="ref-value">读取 3 项引用 · 调用 5 个工具 · 生成 2 个产物</span></div><div class="ref-row"><span class="ref-token">ARTIFACTS</span><span class="ref-value">修改 HTML · 新增 PNG · 前后快照可查看</span></div><div class="ref-chips"><span class="ref-chip">可追踪</span><span class="ref-chip">可继续</span><span class="ref-chip">可回滚</span></div></div><span class="visual-caption">任务 → 事件 → 产物</span></div></div>
+        <p class="foot" data-anim style="--i:3">工程师看到的不是“模型说了什么”，而是“这一轮具体做了什么”。</p></div>
+    </section>
+
+    <section class="slide tint" data-title="02｜@ 引用变成结构化上下文">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 02 · 结构化引用</span><span class="top-meta">CONTEXT · 04 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">02 · Reference / Context Read</span><h2>@ 引用变成结构化上下文</h2><p class="body">引用不再是写给人看的标记，而是 Agent 可以按需读取的上下文对象。</p></div>
+        <div class="feature-layout reverse" data-anim style="--i:2"><div class="ref-board"><div class="ref-head"><strong>本轮引用栏</strong><span class="ref-status">3 REFERENCES</span></div><div class="ref-row"><span class="ref-token">@文件</span><span class="ref-value">年度工作报告.docx</span></div><div class="ref-row"><span class="ref-token">@知识库</span><span class="ref-value">OD分析报告.md @ 交通规划资料库</span></div><div class="ref-row"><span class="ref-token">@文件</span><span class="ref-value">客流数据.xlsx · Sheet1!A1:H100</span></div><div class="ref-chips"><span class="ref-chip">mime</span><span class="ref-chip">mtime</span><span class="ref-chip">hash</span><span class="ref-chip">version</span></div></div><div class="feature-copy"><ul><li><b>01</b><div><strong>多种资料统一进入任务</strong><span>文件、目录、知识库、模板可以一次引用。</span></div></li><li><b>02</b><div><strong>支持精确范围</strong><span>页码、幻灯片、段落和 Excel 单元格都可以定位。</span></div></li><li><b>03</b><div><strong>读取有状态</strong><span>已解析、缺失、延迟解析和不支持格式都会被明确标记。</span></div></li></ul><p class="small">小突破：先解析引用，再让 Agent 通过 context_read 按需读取，避免把所有文件一次塞进上下文。</p></div></div>
+      </div>
+    </section>
+
+    <section class="slide paper-2" data-title="03｜把规划经验蒸馏成可调用规范">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 03 · 模板蒸馏</span><span class="top-meta">DISTILLATION · 05 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">03 · Template → Standard → Agent</span><h2>把规划经验蒸馏成 Agent 能调用的规范</h2><p class="body">模板库的价值，不只是“找一个文件”，而是把隐性的工程经验变成显性的执行标准。</p></div>
+        <div class="distill" data-anim style="--i:2"><div class="distill-card"><span class="card-n">01 · 案例材料</span><h3>先看真实成果</h3><p>从报告、PPT、案例和格式数据中提取结构、字体、图表和句式。</p><span class="big-arrow">→</span></div><div class="distill-card"><span class="card-n">02 · 规范蒸馏</span><h3>再形成标准</h3><p>章节骨架、编号层级、图表规范、表达习惯和交付边界被整理出来。</p><span class="big-arrow">→</span></div><div class="distill-card"><span class="card-n">03 · 可调用模板</span><h3>最后进入工作流</h3><p>工程师可以 @ 模板或模板目录，让 Agent 按规范生成和检查成果。</p></div></div>
+        <div class="feature-layout" data-anim style="--i:3"><div class="video-frame"><video controls preload="metadata" playsinline data-speed="5" data-persist-key="template-flow"><source src="视频/模版库、技能广场、智能体.webm" type="video/webm">当前浏览器不支持 WebM 视频。</video><span class="video-label">模板库 · 技能广场 · 智能体</span><span class="video-speed">建议 5×</span></div><div class="feature-copy"><ul><li><b>14</b><div><strong>交通规划详版模板</strong><span>覆盖工作报告、规划、可研、交评、汇报和 PPT 等场景。</span></div></li><li><b>106</b><div><strong>OpenDesign HTML 模板</strong><span>用于快速探索汇报材料、页面和视觉方向。</span></div></li><li><b>@</b><div><strong>模板可直接进入对话</strong><span>从“参考这个模板”继续走向“按这个规范完成任务”。</span></div></li></ul></div></div>
+      </div>
+    </section>
+
+    <section class="slide sage" data-title="04｜同一个 Agent，切换成不同专业角色">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 04 · 角色协作</span><span class="top-meta">ROLES · 06 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">04 · Agent Market / Workflow</span><h2>同一个 Agent，切换成不同专业角色</h2><p class="body">角色不是换一个头像，而是把任务目标、依赖技能和输出方式一起切换。</p></div>
+        <div class="role-grid" data-anim style="--i:2"><div class="role-card"><div class="role-icon" style="background:#d97757">文</div><strong>公文报告</strong><span>按规范编制、排版和输出规划成果。</span></div><div class="role-card"><div class="role-icon" style="background:#6679a7">图</div><strong>地图助手</strong><span>读取图层、调整样式、生成专题分析。</span></div><div class="role-card"><div class="role-icon" style="background:#9a88b7">审</div><strong>文本审查</strong><span>检查错别字、术语、格式和逻辑。</span></div><div class="role-card"><div class="role-icon" style="background:#2a8c82">数</div><strong>数据分析</strong><span>处理 Excel、OD、客流并生成图表。</span></div></div>
+        <div class="role-chain" data-anim style="--i:3"><span>工程师任务</span><b>→</b><span>@工作流[OD分析]</span><b>→</b><span>数据分析</span><b>→</b><span>地图分析</span><b>→</b><span>报告回写</span></div>
+        <p class="foot" data-anim style="--i:4">小突破：不依赖复杂的 subagent 内核，通过“角色指令 + 技能集合 + 工作流上下文”实现专业协作。</p>
+      </div>
+    </section>
+
+    <section class="slide paper-2" data-title="05｜知识库不只搜索，还能看到关系">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 05 · 知识关系</span><span class="top-meta">KNOWLEDGE GRAPH · 07 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">05 · Search / Links / Similarity</span><h2>知识库不只搜索，还能看到关系</h2><p class="body">从一篇文档出发，继续看到它引用了什么、被谁引用，以及哪些内容与它相似。</p></div>
+        <div class="feature-layout reverse" data-anim style="--i:2"><div class="video-frame"><video controls preload="metadata" playsinline data-speed="5" data-persist-key="knowledge-graph-flow"><source src="视频/知识图谱知识库.webm" type="video/webm">当前浏览器不支持 WebM 视频。</video><span class="video-label">知识图谱 · 反链 · 局部聚焦</span><span class="video-speed">建议 5×</span></div><div class="feature-copy"><div class="graph-art"><div class="graph-line gl1"></div><div class="graph-line gl2"></div><div class="graph-line gl3"></div><div class="graph-line gl4"></div><div class="graph-node main-node">交通<br>报告</div><div class="graph-node n1">规范</div><div class="graph-node n2">案例</div><div class="graph-node n3">标签</div><div class="graph-node n4">模板</div><span class="visual-caption">文档 · 标签 · 目录 · 相似</span></div><p class="small">关系的来源可以是双向链接、内容相似、标签和目录；当前文档还可以聚焦到 1-hop 局部图谱。</p></div></div>
+      </div>
+    </section>
+
+    <section class="slide blue" data-title="06｜GIS 从地图预览变成工程工作台">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 06 · GIS 工作台</span><span class="top-meta">GIS WORKBENCH · 08 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">06 · MapLibre / Vector Tiles / QGIS-like</span><h2>GIS 从地图预览变成工程工作台</h2><p class="body">地图里不只有底图，还有图层、属性、样式、分析工具和可以回写的结果。</p></div>
+        <div class="map-split" data-anim style="--i:2"><div class="map-screen"><img src="图片/GIS交通分析.png" alt="GIS 交通分析界面"><span class="screen-label">浙江省交通基础数据沙盘 · 图层 / 属性 / 分析</span></div><div class="map-tools"><div class="map-tool"><b>基础数据</b><span>11 个地市、90 个区县，以及高速、国省道、省道、收费站和枢纽。</span></div><div class="map-tool"><b>图层管理</b><span>分组、显隐、拖拽排序、样式编辑和图例预览。</span></div><div class="map-tool"><b>属性表</b><span>搜索、排序、分页、地图定位和 CSV 导出。</span></div><div class="map-tool"><b>工程工具</b><span>测距、测面、标绘点线面、导入 GeoJSON / SHP。</span></div></div></div>
+        <p class="foot" data-anim style="--i:3">小突破：让地图成为 Agent 可以读取、编辑和继续加工的工作区，而不是最后贴进报告的一张图片。</p>
+      </div>
+    </section>
+
+    <section class="slide tint" data-title="07｜数据进入地图前，先经过一套管线">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 07 · 数据工程</span><span class="top-meta">DATA PIPELINE · 09 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">07 · Import / Normalize / Tile / Tag</span><h2>数据进入地图前，先经过一套管线</h2><p class="body">你做的不是“把文件拖进地图”，而是把原始数据加工成可理解、可筛选、可复用的工程数据。</p></div>
+        <div class="pipeline" data-anim style="--i:2"><div class="pipeline-step"><em>01 / INPUT</em><strong>GeoJSON / SHP</strong><span>识别 .shp、.dbf、.prj、.cpg 和混合路网数据。</span></div><div class="pipeline-step"><em>02 / NORMALIZE</em><strong>字段归一</strong><span>自动识别路名、路线编号、道路类型和流量字段。</span></div><div class="pipeline-step"><em>03 / PREPARE</em><strong>分类与简化</strong><span>按高速、国省道、农村公路、设施点自动归类并抽稀几何。</span></div><div class="pipeline-step"><em>04 / INDEX</em><strong>行政打标</strong><span>道路中点匹配区县边界，补充 adcode、city_name 等属性。</span></div><div class="pipeline-step"><em>05 / OUTPUT</em><strong>矢量瓦片</strong><span>生成 PBF 瓦片，进入图层树，支持后续热更新和分析。</span></div></div>
+        <div class="metrics" data-anim style="--i:3"><div class="metric"><strong>11</strong><span>地市边界</span></div><div class="metric"><strong>90</strong><span>区县边界</span></div><div class="metric"><strong>2.85万</strong><span>高速公路要素</span></div><div class="metric"><strong>2.2万+</strong><span>地图瓦片文件</span></div></div>
+        <p class="foot" data-anim style="--i:4">工程师真正关心的不是“能不能显示”，而是“后面能不能按区域、路线和属性继续分析”。</p>
+      </div>
+    </section>
+
+    <section class="slide paper-2" data-title="08｜从基础地图走向专题分析">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 08 · 交通分析</span><span class="top-meta">ANALYSIS · 10 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">08 · OD / Route / Isochrone / Export</span><h2>从基础地图走向 OD、路径和等时圈分析</h2><p class="body">地图能力继续向交通规划专题分析延伸，临时结果可以查看，也可以固化成成果。</p></div>
+        <div class="feature-layout" data-anim style="--i:2"><div class="feature-copy"><ul><li><b>OD</b><div><strong>流量热力与期望线</strong><span>读取起点、终点、流量字段，统计 OD 数、总量和峰值。</span></div></li><li><b>R</b><div><strong>路径规划</strong><span>支持驾车、步行、骑行，结果包含路径、距离和时间。</span></div></li><li><b>ISO</b><div><strong>等时圈分析</strong><span>按时间或距离生成可达范围，可进行多档对比。</span></div></li><li><b>OUT</b><div><strong>结果固化</strong><span>输出地图分析结果，并生成 HTML / PNG / 报告图。</span></div></li></ul></div><div class="video-frame"><div class="video-placeholder"><div><strong>OD → 热力 → 期望线 → 出图</strong><span>视频流程位<br>建议录制一条 45 秒真实数据链路</span></div></div><span class="video-label">待补录 · 地图分析流程</span><span class="video-speed">原始比例 16:9</span></div></div>
+        <p class="foot" data-anim style="--i:3">建议演示只选一条链路：读取 OD → 生成热力图 → 只保留前 100 条 → 输出分析结果。</p>
+      </div>
+    </section>
+
+    <section class="slide sage" data-title="09｜Agent 可以直接协作修改地图">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 09 · Agent 改图</span><span class="top-meta">AGENT × MAP · 11 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">09 · map_read / map_edit / map_import</span><h2>Agent 可以直接协作修改地图</h2><p class="body">工程师只描述意图，Agent 读取地图状态，再把修改落到样式、图层和数据上。</p></div>
+        <div class="agent-map" data-anim style="--i:2"><div class="tool-stack"><div class="tool-card"><b>map_read</b><span>读取项目中心、底图、图层文件和当前样式。</span></div><div class="tool-card"><b>map_edit</b><span>修改显隐、颜色、线宽、透明度、图层顺序。</span></div><div class="tool-card"><b>map_import</b><span>导入工作区 GeoJSON，自动生成瓦片并加入图层树。</span></div><div class="tool-card" style="background:#f3dfd6;color:#a6533b;border-color:#e7b2a1"><b style="color:#a6533b">LIVE UPDATE</b><span style="color:#7f5447">样式或数据变化后，前端地图实时刷新。</span></div></div><div class="live-map"><span class="live-map-label">地图状态 · Agent 已完成修改</span><div class="live-map-core"><strong>规聚<br>协同层</strong></div></div></div>
+        <p class="foot" data-anim style="--i:3">这是一种更接近工程现场的协作：Agent 不只解释地图，而是和工程师一起改地图。</p>
+      </div>
+    </section>
+
+    <section class="slide blue" data-title="10｜不确定时先询问，把判断留给工程师">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 10 · 人机确认</span><span class="top-meta">ASK USER · 12 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">10 · Ask User / Memory Proposal</span><h2>不确定时先询问，把判断留给工程师</h2><p class="body">Agent 负责推进任务，但不替工程师做未经确认的关键决策。</p></div>
+        <div class="ask-layout" data-anim style="--i:2"><div class="ask-card"><div class="ask-head"><strong>需要你确认</strong><span>ASK_USER · PENDING</span></div><div class="ask-question">这份材料最终需要输出成哪一种成果？</div><div class="ask-options"><div class="ask-option active">A · 汇报 PPT + 口述稿</div><div class="ask-option">B · 正式规划报告</div><div class="ask-option">C · 地图分析 HTML + PNG</div></div></div><div class="human-loop"><div class="loop-step"><div class="loop-number">01</div><div><strong>发现信息缺口</strong><span>文档类型、受众、口径或范围不明确。</span></div></div><div class="loop-step"><div class="loop-number">02</div><div><strong>提出一个关键问题</strong><span>给出快捷选项，也允许工程师补充说明。</span></div></div><div class="loop-step"><div class="loop-number">03</div><div><strong>确认后继续执行</strong><span>用户回答进入同一条任务上下文。</span></div></div></div></div>
+        <p class="foot" data-anim style="--i:3">同样的原则也用于长期记忆：Agent 先提出记忆建议，用户确认后才写入。</p>
+      </div>
+    </section>
+
+    <section class="slide tint" data-title="11｜会话、工作区和任务可以继续">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 11 · 任务续接</span><span class="top-meta">RESUME · 13 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">11 · Session / Workspace / Fork</span><h2>会话、工作区和任务可以继续</h2><p class="body">一次任务没有做完，不需要重新解释；切换项目，也不会把上下文串在一起。</p></div>
+        <div class="session-layout" data-anim style="--i:2"><div class="session-tree"><h3>最近会话</h3><div class="session-row active"><strong>义乌 OD 流量分析</strong><span>当前</span></div><div class="session-row"><strong>规划报告模板整理</strong><span>2h</span></div><div class="session-row"><strong>省道网图层校验</strong><span>昨天</span></div><div class="session-row"><strong>红头会议通知生成</strong><span>3d</span></div><div class="session-row"><strong>＋ 新建会话</strong><span>fork</span></div></div><div class="session-flow"><div class="session-card"><b>工作区</b><div><strong>切换项目，重新建立 thread</strong><span>当前文件、地图项目和 Agent 上下文跟随工作区变化。</span></div></div><div class="session-card"><b>历史</b><div><strong>恢复原会话和引用</strong><span>会话历史保留任务、消息、引用和产物关联。</span></div></div><div class="session-card"><b>分支</b><div><strong>从历史任务 fork 新方向</strong><span>保留原始任务，同时尝试另一种模板、数据口径或地图方案。</span></div></div><div class="session-card"><b>状态</b><div><strong>刷新后继续工作</strong><span>文档 Tab、全屏模式、最后会话和界面状态可以恢复。</span></div></div></div></div>
+        <p class="foot" data-anim style="--i:3">这部分让规聚从一次性 Demo，走向可以长期使用的项目工作台。</p>
+      </div>
+    </section>
+
+    <section class="slide paper-2" data-title="12｜成果回到 Office，继续改、继续用">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>细节 12 · Office 成果</span><span class="top-meta">OFFICE LOOP · 14 / 15</span></div>
+      <div class="main"><div class="section-title" data-anim style="--i:1"><span class="eyebrow">12 · Office Viewer / OfficeCLI / Write Back</span><h2>成果回到 Office，继续改、继续用</h2><p class="body">最终成果不是停在聊天框里，而是回到 Word、PPT、Excel 和 HTML，成为下一轮工作的起点。</p></div>
+        <div class="office-layout" data-anim style="--i:2"><div class="office-card"><h3>从阅读，到精确修改</h3><div class="office-row"><b>01</b><div><strong>Word 批注定位</strong><span>点击批注，定位段落并高亮对应文本。</span></div></div><div class="office-row"><b>02</b><div><strong>修订与格式检查</strong><span>保留文档结构，按 Office 工具完成修改。</span></div></div><div class="office-row"><b>03</b><div><strong>Excel 单元格回写</strong><span>多 Sheet 查看、编辑并保存数据。</span></div></div><div class="office-row"><b>04</b><div><strong>HTML / PPT 继续编辑</strong><span>产物可以直接打开，继续完善和复用。</span></div></div></div><div class="video-frame"><video controls preload="metadata" playsinline data-speed="5" data-persist-key="office-review-flow"><source src="视频/文本审查，打开编辑.webm" type="video/webm">当前浏览器不支持 WebM 视频。</video><span class="video-label">文本审查 · 打开并编辑</span><span class="video-speed">建议 5×</span></div></div>
+        <p class="foot" data-anim style="--i:3">Office 是成果闭环的最后一公里：Agent 帮你做过程，工程师保留最终判断和编辑权。</p>
+      </div>
+    </section>
+
+    <section class="slide tint" data-title="让工程经验沉淀成可持续的工作系统">
+      <div class="topbar"><span class="brand"><i class="brand-mark"></i>规聚 · 工程细节</span><span class="top-meta">TAKEAWAY · 15 / 15</span></div>
+      <div class="main final"><div class="final-grid" data-anim style="--i:1"><div><span class="pill">PROJECT TAKEAWAY</span><div class="final-title" style="margin-top:3vh">让工程经验<br><em>越做越快</em><br>越做越懂</div><p class="lead" style="margin-top:3vh">规聚真正要沉淀的，不只是功能，而是工程师与 Agent 一起完成工作的方式。</p></div><div class="final-list"><div class="final-row"><b>01</b><span>把规范变成 Agent 能理解的行为边界。</span></div><div class="final-row"><b>02</b><span>把资料变成可引用、可关联的知识资产。</span></div><div class="final-row"><b>03</b><span>把地图、数据和 Office 变成同一条工作流。</span></div><div class="final-row"><b>04</b><span>把每次任务变成可以继续、可以复盘的过程。</span></div></div></div><p class="foot" data-anim style="--i:2">规聚 · 让规划工作从资料堆里回到任务里。</p></div>
+    </section>
+  </main>
+
+  <button class="index-button" id="indexButton" type="button">目录</button>
+  <nav class="nav" aria-label="幻灯片导航"><button id="prev" type="button" aria-label="上一页">←</button><div class="dots" id="dots"></div><span class="counter" id="counter">01 / 15</span><button id="next" type="button" aria-label="下一页">→</button></nav>
+  <div class="index-overlay" id="indexOverlay" aria-hidden="true"><div class="index-panel"><div class="index-head"><h2>工程细节目录</h2><button class="index-close" id="indexClose" type="button">关闭</button></div><div class="index-grid" id="indexGrid"></div></div></div>
+
+  <script>
+    (() => {
+      const deck = document.getElementById("deck");
+      const slides = [...document.querySelectorAll(".slide")];
+      const dots = document.getElementById("dots");
+      const counter = document.getElementById("counter");
+      const indexOverlay = document.getElementById("indexOverlay");
+      const indexGrid = document.getElementById("indexGrid");
+      const initialPage = Number(location.hash.slice(1));
+      let current = Math.max(0, Math.min(slides.length - 1, Number.isFinite(initialPage) && initialPage > 0 ? initialPage - 1 : 0));
+      let locked = false;
+
+      slides.forEach((slide, index) => {
+        const dot = document.createElement("button");
+        dot.className = "dot";
+        dot.type = "button";
+        dot.title = slide.dataset.title;
+        dot.setAttribute("aria-label", `第 ${index + 1} 页：${slide.dataset.title}`);
+        dot.addEventListener("click", () => go(index));
+        dots.appendChild(dot);
+        const item = document.createElement("button");
+        item.className = "index-item";
+        item.type = "button";
+        item.innerHTML = `<small>${String(index + 1).padStart(2, "0")} / ${slides.length}</small><strong>${slide.dataset.title}</strong>`;
+        item.addEventListener("click", () => { go(index); closeIndex(); });
+        indexGrid.appendChild(item);
+      });
+
+      function persistVideo(video) {
+        const key = `oaw-detail-video:${video.dataset.persistKey || video.currentSrc || "video"}`;
+        try { localStorage.setItem(key, String(video.currentTime || 0)); } catch {}
+      }
+      function restoreVideo(video) {
+        const key = `oaw-detail-video:${video.dataset.persistKey || video.currentSrc || "video"}`;
+        try {
+          const saved = Number(localStorage.getItem(key));
+          if (Number.isFinite(saved) && saved > 0) video.currentTime = saved;
+        } catch {}
+      }
+      function syncVideos() {
+        document.querySelectorAll("video").forEach((video) => {
+          const active = video.closest(".slide") === slides[current];
+          if (active) {
+            video.playbackRate = Number(video.dataset.speed || 1);
+            restoreVideo(video);
+          } else {
+            persistVideo(video);
+            video.pause();
+          }
+        });
+      }
+      document.querySelectorAll("video").forEach((video) => video.addEventListener("timeupdate", () => persistVideo(video)));
+      function go(index) {
+        current = Math.max(0, Math.min(slides.length - 1, index));
+        deck.style.transform = `translateX(-${current * 100}vw)`;
+        slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+        [...dots.children].forEach((dot, i) => dot.classList.toggle("active", i === current));
+        counter.textContent = `${String(current + 1).padStart(2, "0")} / ${slides.length}`;
+        history.replaceState(null, "", `#${current + 1}`);
+        syncVideos();
+      }
+      function step(delta) { go(current + delta); }
+      function closeIndex() { indexOverlay.classList.remove("open"); indexOverlay.setAttribute("aria-hidden", "true"); }
+      function openIndex() { indexOverlay.classList.add("open"); indexOverlay.setAttribute("aria-hidden", "false"); }
+      document.getElementById("prev").addEventListener("click", () => step(-1));
+      document.getElementById("next").addEventListener("click", () => step(1));
+      document.getElementById("indexButton").addEventListener("click", openIndex);
+      document.getElementById("indexClose").addEventListener("click", closeIndex);
+      indexOverlay.addEventListener("click", (event) => { if (event.target === indexOverlay) closeIndex(); });
+      window.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { closeIndex(); return; }
+        if (indexOverlay.classList.contains("open")) return;
+        if (["ArrowRight", "PageDown", " "].includes(event.key)) { event.preventDefault(); step(1); }
+        if (["ArrowLeft", "PageUp"].includes(event.key)) { event.preventDefault(); step(-1); }
+        if (event.key === "Home") go(0);
+        if (event.key === "End") go(slides.length - 1);
+        if (event.key.toLowerCase() === "b") document.body.classList.toggle("low-power");
+      });
+      window.addEventListener("wheel", (event) => {
+        if (indexOverlay.classList.contains("open") || locked || Math.abs(event.deltaY) < 18) return;
+        locked = true; step(event.deltaY > 0 ? 1 : -1); setTimeout(() => { locked = false; }, 650);
+      }, { passive: true });
+      let touchX = 0;
+      window.addEventListener("touchstart", (event) => { touchX = event.changedTouches[0].clientX; }, { passive: true });
+      window.addEventListener("touchend", (event) => { const dx = event.changedTouches[0].clientX - touchX; if (Math.abs(dx) > 50) step(dx < 0 ? 1 : -1); }, { passive: true });
+      window.addEventListener("hashchange", () => { const next = Number(location.hash.slice(1)); if (Number.isFinite(next) && next > 0) go(next - 1); });
+      go(current);
+    })();
+  </script>
+</body>
+</html>
