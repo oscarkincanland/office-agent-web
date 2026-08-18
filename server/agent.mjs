@@ -134,6 +134,15 @@ function resolvePendingAsk(clientId, answer, status = "answered") {
   return item;
 }
 
+function consumeRecoveredAnswers(clientId) {
+  const items = readPendingAsks();
+  const recovered = items.filter((x) => x.clientId === clientId && x.status === "queued" && x.answer);
+  if (!recovered.length) return [];
+  for (const item of recovered) { item.status = "consumed"; item.consumedAt = new Date().toISOString(); }
+  savePendingAsks(items);
+  return recovered;
+}
+
 /** Per-client agent sessions. Emits events to SSE subscribers. */
 class AgentManager extends EventEmitter {
   constructor() {
@@ -148,6 +157,13 @@ class AgentManager extends EventEmitter {
     const ask = this.pendingAsks.get(clientId);
     if (ask) this.pendingAsks.delete(clientId);
     return ask;
+  }
+
+  submitAnswer(clientId, answer) {
+    const live = this.askPending(clientId);
+    if (live) { live(String(answer || "")); return { ok: true, mode: "live" }; }
+    const recovered = resolvePendingAsk(clientId, String(answer || ""), "queued");
+    return recovered ? { ok: true, mode: "queued", questionId: recovered.id } : { ok: false };
   }
 
   memoryProposals(threadId = "") {
@@ -651,7 +667,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null };
+    entry = { session, channel, busy: false, loader, clientId, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -695,6 +711,10 @@ class AgentManager extends EventEmitter {
         const dyn = this.buildDynamicContext(entry.currentFile);
         if (dyn) text = dyn + "\n\n" + text;
       } catch {}
+      const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
+      if (recoveredAnswers.length) {
+        text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
+      }
       if (entry.references.length) {
         text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
       }

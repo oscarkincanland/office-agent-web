@@ -17,3 +17,7 @@ export function getWorkflow(id, skills = []) {
 export function workflowIdFromText(text = "") {
   return String(text).match(/@工作流\[([^\]]+)\]/)?.[1]?.trim() || null;
 }
+
+export function workflowSteps(workflow) {
+  return (workflow?.steps || []).map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null }));
+}

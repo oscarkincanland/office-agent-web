@@ -99,7 +99,7 @@ function saveRun(run) {
   return run;
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [] } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const before = snapshotWorkspace(cwd);
   copyBeforeBlobs(id, before);
@@ -112,6 +112,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     sessionId,
     cwd: before.root,
     task: task || null,
+    workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
+    steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
     events: [{ type: "run_started", at: new Date().toISOString() }],
     before,
@@ -119,6 +121,20 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     startedAt: new Date().toISOString(),
     finishedAt: null,
   };
+  return saveRun(run);
+}
+
+export function updateRunStep(id, stepId, patch = {}) {
+  const run = loadRun(id);
+  if (!run || !Array.isArray(run.steps)) return null;
+  const step = run.steps.find((item) => item.id === stepId || String(item.index) === String(stepId));
+  if (!step) return null;
+  const nextStatus = patch.status || step.status;
+  Object.assign(step, patch, { status: nextStatus });
+  if (nextStatus === "running") { step.startedAt ||= new Date().toISOString(); step.attempts = Number(step.attempts || 0) + 1; }
+  if (["completed", "failed", "skipped"].includes(nextStatus)) step.finishedAt = new Date().toISOString();
+  run.events = Array.isArray(run.events) ? run.events : [];
+  run.events.push({ type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
   return saveRun(run);
 }
 
@@ -133,8 +149,17 @@ export function recordRunEvent(id, type, data = {}) {
 function changedFiles(before, after) {
   const a = before?.files || {};
   const b = after?.files || {};
+  const deleted = [];
+  const added = [];
+  for (const rel of Object.keys(a)) if (!b[rel]) deleted.push({ path: rel, status: "deleted", before: a[rel], after: null });
+  for (const rel of Object.keys(b)) if (!a[rel]) added.push({ path: rel, status: "added", before: null, after: b[rel] });
+  const renames = [];
+  for (const oldItem of deleted) {
+    const match = added.find((item) => item.after?.hash && item.after.hash === oldItem.before?.hash && !renames.some((r) => r.from === oldItem.path || r.to === item.path));
+    if (match) renames.push({ from: oldItem.path, to: match.path });
+  }
   const paths = new Set([...Object.keys(a), ...Object.keys(b)]);
-  return [...paths].sort().flatMap((rel) => {
+  const changed = [...paths].sort().flatMap((rel) => {
     const oldItem = a[rel];
     const newItem = b[rel];
     if (!oldItem && newItem) return [{ path: rel, status: "added", before: null, after: newItem }];
@@ -142,6 +167,12 @@ function changedFiles(before, after) {
     if (oldItem.hash !== newItem.hash || oldItem.size !== newItem.size) return [{ path: rel, status: "modified", before: oldItem, after: newItem }];
     return [];
   });
+  for (const rename of renames) {
+    const oldItem = a[rename.from];
+    const newItem = b[rename.to];
+    changed.push({ path: rename.to, status: "renamed", from: rename.from, before: oldItem, after: newItem });
+  }
+  return changed.filter((item) => !renames.some((r) => (item.status === "deleted" && item.path === r.from) || (item.status === "added" && item.path === r.to))).sort((x, y) => x.path.localeCompare(y.path));
 }
 
 function copyAfterBlobs(run, artifacts, after) {
@@ -202,6 +233,12 @@ export function rollbackRun(id, paths = []) {
     const source = path.join(beforeDir, artifact.path);
     try {
       if (artifact.status === "added") fs.rmSync(target, { force: true });
+      else if (artifact.status === "renamed") {
+        fs.rmSync(target, { force: true });
+        const oldTarget = path.resolve(root, artifact.from || "");
+        const oldSource = path.join(beforeDir, artifact.from || "");
+        if (oldTarget !== root && oldTarget.startsWith(root + path.sep) && fs.existsSync(oldSource)) { ensureDir(path.dirname(oldTarget)); fs.copyFileSync(oldSource, oldTarget); }
+      }
       else if (fs.existsSync(source)) { ensureDir(path.dirname(target)); fs.copyFileSync(source, target); }
       else continue;
       restored.push(artifact.path);

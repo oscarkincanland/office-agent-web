@@ -10,9 +10,10 @@ import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
 import { createTaskEnvelope } from "./task.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
+import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -1021,6 +1022,24 @@ app.get("/api/workflows/:id/validate", (req, res) => {
   res.json({ ok: workflow.valid, workflow, message: workflow.valid ? "工作流依赖完整" : `缺少技能：${workflow.missing.join(", ")}` });
 });
 
+// ---------- 外部文件连接器 ----------
+app.get("/api/connectors", (_req, res) => res.json({ connectors: listConnectors() }));
+app.get("/api/connectors/:id", (req, res) => {
+  const connector = getConnector(req.params.id);
+  if (!connector) return res.status(404).json({ error: "connector not found" });
+  res.json({ connector });
+});
+app.post("/api/connectors/:id/auth/start", (req, res) => {
+  const result = beginConnectorAuth(req.params.id, req.body?.redirectUri);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+app.post("/api/connectors/:id/status", (req, res) => {
+  const result = setConnectorStatus(req.params.id, req.body || {});
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
 // POST /api/skills/export - 导出 skill（返回 base64 内容）
 app.post("/api/skills/export", (req, res) => {
   const { name } = req.body || {};
@@ -1144,6 +1163,12 @@ app.post("/api/runs/:id/rollback", (req, res) => {
   const result = rollbackRun(req.params.id, req.body?.paths);
   if (!result.ok) return res.status(400).json(result);
   res.json(result);
+});
+
+app.post("/api/runs/:id/steps/:stepId", (req, res) => {
+  const run = updateRunStep(req.params.id, req.params.stepId, req.body || {});
+  if (!run) return res.status(404).json({ error: "run or step not found" });
+  res.json({ ok: true, run: getRun(req.params.id) });
 });
 
 app.post("/api/sessions/:id/fork", (req, res) => {
@@ -1412,10 +1437,9 @@ app.get("/api/agent/pending", (req, res) => {
 app.post("/api/agent/answer", (req, res) => {
   const { client, thread, answer } = req.body || {};
   if (!client || !answer) return res.status(400).json({ error: "client and answer required" });
-  const done = agentManager.askPending(agentKey(client, thread));
-  if (!done) return res.status(404).json({ error: "no pending question" });
-  done(String(answer).slice(0, 2000));
-  res.json({ ok: true });
+  const result = agentManager.submitAnswer(agentKey(client, thread), String(answer).slice(0, 2000));
+  if (!result.ok) return res.status(404).json({ error: "no pending question" });
+  res.json(result);
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
@@ -1452,7 +1476,7 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-    run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved });
+    run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved, workflow });
     recordRunEvent(run.id, "prompt", { text: String(text).slice(0, 4000), workflowId, referenceCount: resolved.length });
     await agentManager.promptWithContext(key, text, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {

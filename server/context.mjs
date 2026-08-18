@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import JSZip from "jszip";
@@ -18,8 +19,14 @@ function idFor(ref) {
 function makeRef(kind, target, extra = {}) {
   let cleanTarget = String(target || "").trim();
   const cell = kind === "file" ? cleanTarget.match(/^(.*?)#([^!]+)!([A-Z]+\d+(?::[A-Z]+\d+)?)$/i) : null;
-  const range = cell ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] } : extra.range;
+  const locator = kind === "file" ? cleanTarget.match(/^(.*?)#(page|p|slide|paragraph)=(\d+)(?:-(\d+))?$/i) : null;
+  const range = cell
+    ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] }
+    : locator
+      ? { ...(extra.range || {}), [locator[2].toLowerCase() === "p" ? "page" : locator[2].toLowerCase()]: Number(locator[3]), ...(locator[4] ? { end: Number(locator[4]) } : {}) }
+      : extra.range;
   if (cell) cleanTarget = cell[1];
+  if (locator) cleanTarget = locator[1];
   const ref = { kind, target: cleanTarget, ...extra };
   if (range) ref.range = range;
   ref.id = idFor(ref);
@@ -144,7 +151,25 @@ async function extractPdf(file) {
     const { stdout } = await execFileAsync("pdftotext", [file, "-"], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
     return stdout;
   } catch {
-    return "[PDF 文本抽取工具不可用；可先安装 poppler 的 pdftotext，或使用文件预览。]";
+    if (process.env.OAW_ENABLE_OCR !== "1") return "[PDF 文本抽取工具不可用；可安装 poppler，或设置 OAW_ENABLE_OCR=1 启用可选 OCR。]";
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-pdf-"));
+    try {
+      const prefix = path.join(tmp, "page");
+      await execFileAsync("pdftoppm", ["-f", "1", "-l", "5", "-png", "-r", "150", file, prefix], { timeout: 60000 });
+      const pages = fs.readdirSync(tmp).filter((name) => name.endsWith(".png")).sort();
+      const chunks = [];
+      for (const page of pages) {
+        try {
+          const { stdout } = await execFileAsync("tesseract", [path.join(tmp, page), "stdout", "-l", process.env.OAW_OCR_LANG || "eng"], { timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
+          if (stdout.trim()) chunks.push(`${page}:\n${stdout.trim()}`);
+        } catch {}
+      }
+      return chunks.join("\n\n") || "[OCR 未识别到文本；请检查 tesseract 与语言包。]";
+    } catch {
+      return "[OCR 依赖不可用；请安装 pdftoppm 与 tesseract，或使用 PDF 文本层。]";
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 
@@ -173,6 +198,13 @@ async function extractFile(file, range = null) {
 
 function applyRange(text, range = {}) {
   let out = String(text || "");
+  if (range?.slide || range?.page || range?.paragraph) {
+    const n = Number(range.slide || range.page || range.paragraph);
+    const end = Number(range.end || n);
+    const lines = out.split(/\r?\n/);
+    if (range.slide) out = lines.filter((line) => { const m = line.match(/^(\d+)\./); return m && Number(m[1]) >= n && Number(m[1]) <= end; }).join("\n");
+    else out = lines.slice(Math.max(0, n - 1), Math.max(0, end)).join("\n");
+  }
   if (range?.startLine || range?.endLine) {
     const lines = out.split(/\r?\n/);
     const start = Math.max(1, Number(range.startLine || 1));
