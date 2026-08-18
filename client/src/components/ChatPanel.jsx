@@ -135,6 +135,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const streamingMsgIdRef = useRef(null);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
+  // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
+  const systemEventKeysRef = useRef(new Set());
 
   useEffect(() => {
     const found = parseReferenceMarkers(input);
@@ -166,6 +168,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       assistantIdRef.current = null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
+      systemEventKeysRef.current.clear();
     }
   }, [historyMessages]);
 
@@ -180,6 +183,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setReferences([]);
     setImages([]);
     setAttachments([]);
+    systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
   }, [onNewSession]);
 
@@ -300,6 +304,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     };
   }, [clientId, threadId]);
 
+  const acceptSystemEvent = useCallback((key) => {
+    const value = String(key || "");
+    if (!value) return true;
+    if (systemEventKeysRef.current.has(value)) return false;
+    systemEventKeysRef.current.add(value);
+    // 限制长期运行的浏览器标签页内存增长。
+    if (systemEventKeysRef.current.size > 600) {
+      const first = systemEventKeysRef.current.values().next().value;
+      if (first) systemEventKeysRef.current.delete(first);
+    }
+    return true;
+  }, []);
+
   function handleEvent(ev) {
     const { type, data } = ev;
     const aid = assistantIdRef.current;
@@ -410,7 +427,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         setRunState((s) => ({ ...s, status: "failed" }));
         break;
       case "steer":
-        pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`);
+        pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
         break;
       case "aborted":
         if (aid) patch(aid, (m) => ({
@@ -424,11 +441,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         setBusy(false);
         break;
       case "file_changed":
-        pushSystem(`文件已更新: ${(data.files || []).join(", ")}`);
+        {
+          const files = Array.isArray(data.files) ? data.files.filter(Boolean) : [];
+          const runKey = data.runId || runState.runId || "unknown";
+          pushSystem(`文件已更新: ${files.join(", ")}`, `file_changed:${runKey}:${files.join("|")}`);
+        }
         if (data.files?.length) onFileChanged(data.files);
         break;
       case "agent_summary":
         // 对话结束总结条
+        {
+          const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
+          if (!acceptSystemEvent(key)) break;
+        }
         if (data.products?.length) {
           setMessages((ms) => [...ms, {
             id: newId(),
@@ -439,6 +464,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             artifacts: data.artifacts || [],
             status: "done",
             summary: true,
+            createdAt: Date.now(),
           }]);
         }
         break;
@@ -447,8 +473,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, references: data.references || m.references, runStatus: data.status || "completed" } : m));
         break;
       case "memory_proposal":
-        if (data.proposal) {
-          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done" }]);
+        if (data.proposal && acceptSystemEvent(`memory_proposal:${data.proposal.id || JSON.stringify(data.proposal)}`)) {
+          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done", createdAt: Date.now() }]);
         }
         break;
       case "memory_proposal_resolved":
@@ -476,14 +502,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     }
   }, [patch]);
 
-  const pushSystem = useCallback((text) => {
+  const pushSystem = useCallback((text, key = text) => {
     if (!mountedRef.current) return;
-    setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done" }]);
-  }, []);
+    if (!acceptSystemEvent(key)) return;
+    setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
+  }, [acceptSystemEvent]);
 
   const send = async (overrideText) => {
-    const text = (overrideText ?? input).trim();
-    if (!text && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
+    const rawText = (overrideText ?? input).trim();
+    if (!rawText && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
+    const text = rawText || (images.length ? "（图片消息）" : "（附件消息）");
     const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
     const sendReferences = [...references, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
@@ -497,7 +525,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     const attachPrefix = attachments.length > 0
       ? `[已上传附件: ${attachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
       : "";
-    const fullText = contextPrefix + modePrefix + attachPrefix + text;
+    const fullText = contextPrefix + modePrefix + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
     
@@ -507,6 +535,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       attachments: attachments.map((a) => a.name),
       references: sendReferences,
       status: "done", currentDoc,
+      createdAt: Date.now(),
     }]);
     const aid = newId();
     assistantIdRef.current = aid;
@@ -515,6 +544,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setMessages((ms) => [...ms, {
       id: aid, role: "assistant", blocks: [],
       status: "streaming", images: [],
+      createdAt: Date.now(),
     }]);
     setInput("");
     setImages([]);
@@ -761,8 +791,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               onCompositionEnd={() => {}}
               onPaste={(e) => {
                 const items = e.clipboardData?.items;
-                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()));
+                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean));
               }}
+              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
+              onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
               onChange={(e) => setInput(e.target.value)}
             />
             <div className="input-send">
@@ -996,6 +1028,9 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
           </div>
         ) : (
           <>
+            {m.images?.length > 0 && (
+              <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
+            )}
             {/* 任务进度卡（Proma TaskProgressCard：聚合 - [x] 任务 + 进度条） */}
             {planTasks.length > 0 && <TaskProgressCard tasks={planTasks} />}
             {/* 独立条目流（pi-web BlockView 模型）：思考/工具调用/文本按原始顺序各自成条目，不包裹分组框 */}
