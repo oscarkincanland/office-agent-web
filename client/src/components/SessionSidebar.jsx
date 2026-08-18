@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback } from "react";
+import React, { useRef, useState, useCallback, useEffect } from "react";
 import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
