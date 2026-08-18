@@ -1959,6 +1959,35 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .att-remove:hover { color: var(--error); }
 
+.reference-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+}
+.reference-bar-label { color: var(--dim); font-size: 10px; }
+.reference-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  padding: 3px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 999px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel2-bg));
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reference-chip-kind { color: var(--accent); font-weight: 700; }
+.reference-chip button { border: 0; background: transparent; color: var(--dim); cursor: pointer; padding: 0 1px; line-height: 1; }
+.msg-references { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0 6px; }
+.msg-references span { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
+
 /* ===== 最近会话栏 ===== */
 .chat-recent {
   flex-shrink: 0;
@@ -4174,6 +4203,13 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .workspace-selector select { flex: 1; min-width: 0; }
 .sidebar-new-session { flex-shrink: 0; padding: 2px 6px; }
+.sidebar-root-btn { flex-shrink: 0; padding: 2px 5px; font-size: 9px; }
+.external-roots { display: block; }
+.external-root-form { display: flex; gap: 4px; }
+.external-root-form input { min-width: 0; }
+.external-root-item { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 4px; font-size: 10px; color: var(--text); }
+.external-root-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.external-root-empty { margin-top: 4px; color: var(--dim); font-size: 10px; }
 
 .sidebar-section-head {
   display: flex;
