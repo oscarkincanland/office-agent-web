@@ -46,4 +46,7 @@ Thumbs.db
 ._*
 
 .workspace-state.json
+
+# 运行时任务、产物和记忆建议清单
+.oaw/
 bin/

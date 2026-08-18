@@ -27,6 +27,9 @@
 - 对话需同时支持 Office 编辑（officecli）与创作模式。
 - 界面需保持暗/亮双主题（CSS 变量驱动）。
 - 涉及 agent 能力/新功能时，在对话末尾用简短条目更新本文件（保持 <80 行）。
+- 每次用户请求都应形成 TaskEnvelope：明确目标、当前文件、引用、工作流、输出格式和约束。
+- Agent 完成任务时固定总结：读取来源、修改文件、产物、假设、下一步；无法读取的引用必须明示。
+- 长期记忆先以“记忆建议”呈现，用户确认后才写入 `memory/MEMORY.md`。
 
 ## pi agent 能力边界（调研结论 v0.83）
 - 官方**不支持** subagent / plan mode；todo 列表已由前端"执行步骤"实现。
@@ -37,6 +40,7 @@
 - 并发 prompt：agent 收尾（compaction/post-run）时 `entry.busy` 已 false 但 pi 内部仍 isStreaming，直接 prompt 会抛 "Agent is already processing" → 已加竞态重试（走 steer）。
 - 创作模式产物必须写入工作区（`office-workspace`），否则 `snapshotWorkspace` 检测不到、产物不显示。已写入 agent 上下文约束。
 - 前端组件内 hooks 不得放在 `if (!open) return null` 之后（React 规则），曾导致技能弹窗白屏。
+- 运行记录保存在项目 `.oaw/runs/`（已加入 `.gitignore`），用于产物归属、审计和可选回滚，不应提交到 Git。
 
 ## pi 内核独立 app（调研结论，未实施）
 - pi 提供完整 SDK（`createAgentSession`/`ModelRuntime`/`setThinkingLevel`），现有 web 版已是嵌入式用法。

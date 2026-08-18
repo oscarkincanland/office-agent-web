@@ -16,7 +16,12 @@ function idFor(ref) {
 }
 
 function makeRef(kind, target, extra = {}) {
-  const ref = { kind, target: String(target || "").trim(), ...extra };
+  let cleanTarget = String(target || "").trim();
+  const cell = kind === "file" ? cleanTarget.match(/^(.*?)#([^!]+)!([A-Z]+\d+(?::[A-Z]+\d+)?)$/i) : null;
+  const range = cell ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] } : extra.range;
+  if (cell) cleanTarget = cell[1];
+  const ref = { kind, target: cleanTarget, ...extra };
+  if (range) ref.range = range;
   ref.id = idFor(ref);
   return ref;
 }
@@ -143,14 +148,24 @@ async function extractPdf(file) {
   }
 }
 
-async function extractFile(file) {
+async function extractFile(file, range = null) {
   const ext = path.extname(file).slice(1).toLowerCase();
   if (["md", "markdown", "txt", "html", "htm", "csv", "json"].includes(ext)) return fs.readFileSync(file, "utf8");
   if (ext === "docx") return extractDocx(file);
   if (ext === "pptx") return extractPptx(file);
   if (ext === "xlsx") {
     const wb = XLSX.readFile(file, { cellText: true, cellDates: true });
-    return wb.SheetNames.map((name) => `## ${name}\n${XLSX.utils.sheet_to_csv(wb.Sheets[name])}`).join("\n\n");
+    const names = range?.sheet && wb.SheetNames.includes(range.sheet) ? [range.sheet] : wb.SheetNames;
+    return names.map((name) => {
+      const sheet = wb.Sheets[name];
+      if (range?.cell && name === range.sheet) {
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        const decoded = XLSX.utils.decode_range(range.cell);
+        const selected = rows.slice(decoded.s.r, decoded.e.r + 1).map((row) => row.slice(decoded.s.c, decoded.e.c + 1).join("\t"));
+        return `## ${name}!${range.cell}\n${selected.join("\n")}`;
+      }
+      return `## ${name}\n${XLSX.utils.sheet_to_csv(sheet)}`;
+    }).join("\n\n");
   }
   if (ext === "pdf") return extractPdf(file);
   return "";
@@ -197,7 +212,7 @@ export async function readReference(input, query = "", range = null) {
   }
   if (resolved.kind === "template_dir") return { ...resolved, status: "deferred", message: "模板目录引用请先选择具体模板文件" };
   if (resolved.status !== "resolved" || resolved.metadata?.isDirectory) return { ...resolved, text: resolved.message || "目录引用需要逐个读取文件" };
-  const text = applyRange(await extractFile(resolved.metadata.path), range || resolved.range);
+  const text = applyRange(await extractFile(resolved.metadata.path, range || resolved.range), range || resolved.range);
   const q = String(query || "").trim();
   const result = q ? text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(q.toLowerCase())).join("\n") : text;
   return { ...resolved, text: result.slice(0, MAX_READ_CHARS), truncated: result.length > MAX_READ_CHARS };

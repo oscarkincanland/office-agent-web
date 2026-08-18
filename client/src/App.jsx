@@ -490,7 +490,7 @@ export default function App() {
         <SkillsManager
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
-          onAtMention={(skillName) => chatInputRef.current?.insertText(`@${skillName}`)}
+          onAtMention={(value) => chatInputRef.current?.insertText(String(value || "").startsWith("@") ? value : `@${value}`)}
         />
         <AgentMarket
           open={agentsOpen}
