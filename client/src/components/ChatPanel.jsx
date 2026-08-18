@@ -76,9 +76,40 @@ function appendThinkingBlock(blocks, text) {
   return arr;
 }
 
-export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+function referenceId(kind, target) {
+  let hash = 0;
+  for (const ch of `${kind}:${target}`) hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
+  return `ref_${Math.abs(hash).toString(36)}`;
+}
+
+function parseReferenceMarkers(text = "") {
+  const refs = [];
+  const seen = new Set();
+  const add = (kind, target, source) => {
+    const value = String(target || "").trim();
+    if (!value) return;
+    const id = referenceId(kind, value);
+    if (seen.has(id)) return;
+    seen.add(id);
+    refs.push({ id, kind, target: value, source });
+  };
+  for (const m of String(text).matchAll(/@知识库目录\[([^\]]+)\]/g)) add("knowledge_dir", m[1], m[0]);
+  for (const m of String(text).matchAll(/@知识库\[([^\]]+)\]/g)) add("knowledge", m[1], m[0]);
+  for (const m of String(text).matchAll(/@模板目录\[([^\]]+)\]/g)) add("template_dir", m[1], m[0]);
+  for (const m of String(text).matchAll(/@模板\[([^\]]+)\]/g)) add("template", m[1], m[0]);
+  for (const m of String(text).matchAll(/@文件\[([^\]]+)\]/g)) add("file", m[1], m[0]);
+  for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
+    const target = m[2].replace(/[),;。！？]+$/, "");
+    if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
+    if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
+  }
+  return refs;
+}
+
+export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+  const [references, setReferences] = useState([]);
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
@@ -103,6 +134,15 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   const streamingMsgIdRef = useRef(null);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
+
+  useEffect(() => {
+    const found = parseReferenceMarkers(input);
+    if (!found.length) return;
+    setReferences((prev) => {
+      const merged = [...found, ...prev.filter((r) => input.includes(r.source || `@${r.target}`))];
+      return merged.filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+    });
+  }, [input]);
 
   // 组件卸载时标记
   useEffect(() => {
@@ -136,6 +176,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
     setInput("");
+    setReferences([]);
     setImages([]);
     setAttachments([]);
     if (onNewSession) onNewSession();
@@ -144,6 +185,8 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
     insertText(text) {
+      const found = parseReferenceMarkers(text);
+      if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
       setInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
         return v + sep + text;
@@ -210,7 +253,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     setModel(id);
     applyModel(id);
     setModelMsg("切换中...");
-    try { await setAgentModel(clientId, id); setModelMsg("ok"); }
+    try { await setAgentModel(clientId, id, threadId); setModelMsg("ok"); }
     catch (e) { setModelMsg("失败: " + e.message); }
     setTimeout(() => setModelMsg(""), 2500);
   };
@@ -223,7 +266,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     const connect = () => {
       if (!mountedRef.current) return;
       
-      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}`);
+      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}`);
       
       es.onopen = () => {
         if (mountedRef.current) setConnected(true);
@@ -254,7 +297,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [clientId]);
+  }, [clientId, threadId]);
 
   function handleEvent(ev) {
     const { type, data } = ev;
@@ -426,6 +469,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
     if (!text && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
     const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
     const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
+    const sendReferences = [...references, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
 
     // 注入当前文件上下文
     const contextPrefix = currentDoc ? `[当前打开文件: ${currentDoc}]\n` : "";
@@ -444,6 +488,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       id: newId(), role: "user", text,
       images: images.map((i) => i.dataUrl),
       attachments: attachments.map((a) => a.name),
+      references: sendReferences,
       status: "done", currentDoc,
     }]);
     const aid = newId();
@@ -462,7 +507,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, text: fullText, images: imgs, attachments: atts, effort }),
+        body: JSON.stringify({ client: clientId, thread: threadId, text: fullText, images: imgs, attachments: atts, references: sendReferences, effort }),
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
@@ -487,7 +532,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
       await fetch("/api/agent/abort", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId }),
+        body: JSON.stringify({ client: clientId, thread: threadId }),
       });
     } catch {}
   };
@@ -584,7 +629,7 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -624,6 +669,17 @@ export default forwardRef(function ChatPanel({ clientId, onFileChanged, currentD
                   <Icon name="x" size={10} />
                 </button>
               </div>
+            ))}
+          </div>
+        )}
+        {references.length > 0 && (
+          <div className="reference-bar" aria-label="本轮引用">
+            <span className="reference-bar-label">引用</span>
+            {references.map((ref) => (
+              <span className="reference-chip" key={ref.id} title={ref.target}>
+                <span className="reference-chip-kind">@</span>{ref.target}
+                <button type="button" onClick={() => setReferences((prev) => prev.filter((r) => r.id !== ref.id))} aria-label={`移除引用 ${ref.target}`}>×</button>
+              </span>
             ))}
           </div>
         )}
@@ -766,7 +822,7 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole, clientId }) {
+function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
@@ -857,6 +913,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
               <div className="msg-images">{m.images.map((src, i) => <img key={i} src={src} alt="" />)}</div>
             )}
             {m.currentDoc && <div className="msg-context">当前文件: {m.currentDoc}</div>}
+            {m.references?.length > 0 && <div className="msg-references">{m.references.map((r) => <span key={r.id}>@{r.target}</span>)}</div>}
             {m.text && <div className="msg-text">{m.text}</div>}
           </div>
         ) : (
@@ -868,7 +925,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onResend, index, prevRole
               {blocks.map((b, i) => {
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
                 if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
-                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} />;
+                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
                     <SafeMarkdown text={b.text} />
@@ -951,7 +1008,7 @@ function ThinkingBlock({ text, startTime, streaming }) {
 }
 
 // ========== 主动提问卡片（ask_user：agent 遇不明确处询问用户） ==========
-function AskBlock({ block, clientId }) {
+function AskBlock({ block, clientId, threadId }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -963,7 +1020,7 @@ function AskBlock({ block, clientId }) {
       await fetch("/api/agent/answer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client: clientId, answer }),
+      body: JSON.stringify({ client: clientId, thread: threadId, answer }),
       });
       block.answer = answer;
       setInput("");
