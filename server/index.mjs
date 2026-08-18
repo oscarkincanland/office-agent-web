@@ -10,6 +10,7 @@ import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
 import * as cambodiaOD from "./柬埔寨OD.mjs";
+import { createDemoAnalysis } from "./地图演示.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1767,6 +1768,13 @@ app.get("/api/map/road-structure", (req, res) => {
 app.get("/api/demo/cambodia-od", (_req, res) => {
   const payload = cambodiaOD.getCambodiaOD();
   if (payload.error) return res.status(404).json(payload);
+  res.json(payload);
+});
+
+// 不依赖 Agent 的地图演示入口，供工具栏按钮和验收流程直接调用。
+app.get("/api/map/demo-analysis", (req, res) => {
+  const analysis = req.query.analysis === "isochrone" ? "isochrone" : "heatmap";
+  const payload = createDemoAnalysis({ analysis, region: String(req.query.region || "义乌市"), project: String(req.query.project || "zhejiang-map"), count: Number(req.query.count || 36) });
   res.json(payload);
 });
 
