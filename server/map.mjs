@@ -62,17 +62,99 @@ const GAODE_BASEMAPS = {
   },
 };
 
+// 公开免 Key 栅格底图。OpenFreeMap 的 Liberty/Bright/Fiord 是完整 MapLibre
+// 矢量样式，直接作为单个 raster source 会替换项目图层，因此不在此列表中。
+function noKeyBasemaps() {
+  return {
+    "osm-standard": {
+      name: "OSM 标准",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 19,
+      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    },
+    "carto-positron": {
+      name: "CARTO 浅色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-dark": {
+      name: "CARTO 暗色",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "carto-voyager": {
+      name: "CARTO Voyager",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 20,
+      tiles: ["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"],
+      attribution: '&copy; <a href="https://carto.com/attributions">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    opentopomap: {
+      name: "OpenTopoMap 地形",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 17,
+      tiles: [
+        "https://a.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://b.tile.opentopomap.org/{z}/{x}/{y}.png",
+        "https://c.tile.opentopomap.org/{z}/{x}/{y}.png",
+      ],
+      attribution: '&copy; <a href="https://opentopomap.org/">OpenTopoMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    "tencent-road": {
+      name: "腾讯路网（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt1.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt2.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+        "https://rt3.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+    "tencent-satellite": {
+      name: "腾讯卫星（GCJ-02）",
+      type: "raster",
+      tileSize: 256,
+      maxzoom: 18,
+      scheme: "tms",
+      tiles: [
+        "https://p0.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p1.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p2.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+        "https://p3.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg",
+      ],
+      attribution: '&copy; <a href="https://map.qq.com/">腾讯地图</a>（GCJ-02）',
+    },
+  };
+}
+
 // 底图设置（maps/settings.json）：各底图服务 Key
 const MAP_SETTINGS_PATH = path.join(MAPS_ROOT, "settings.json");
-const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", esriToken: "" } };
+// 密钥只写入 settings.local.json（被 .gitignore 忽略），避免误提交到仓库。
+const MAP_SETTINGS_LOCAL_PATH = path.join(MAPS_ROOT, "settings.local.json");
+const DEFAULT_MAP_SETTINGS = { basemaps: { tiandituKey: "", maptilerKey: "", geoapifyKey: "", esriToken: "" } };
 
 export function loadMapSettings() {
   const raw = readJson(MAP_SETTINGS_PATH, null);
-  if (!raw) return structuredClone(DEFAULT_MAP_SETTINGS);
+  const local = readJson(MAP_SETTINGS_LOCAL_PATH, null);
   return {
     basemaps: {
       ...DEFAULT_MAP_SETTINGS.basemaps,
-      ...(raw.basemaps || {}),
+      ...(raw?.basemaps || {}),
+      ...(local?.basemaps || {}),
     },
   };
 }
@@ -82,10 +164,11 @@ export function saveMapSettings(basemaps = {}) {
   cur.basemaps = {
     tiandituKey: String(basemaps.tiandituKey ?? cur.basemaps.tiandituKey ?? ""),
     maptilerKey: String(basemaps.maptilerKey ?? cur.basemaps.maptilerKey ?? ""),
+    geoapifyKey: String(basemaps.geoapifyKey ?? cur.basemaps.geoapifyKey ?? ""),
     esriToken: String(basemaps.esriToken ?? cur.basemaps.esriToken ?? ""),
   };
   fs.mkdirSync(MAPS_ROOT, { recursive: true });
-  fs.writeFileSync(MAP_SETTINGS_PATH, JSON.stringify(cur, null, 2));
+  fs.writeFileSync(MAP_SETTINGS_LOCAL_PATH, JSON.stringify({ basemaps: cur.basemaps }, null, 2));
   return cur;
 }
 
@@ -139,25 +222,27 @@ function tiandituBasemaps(key) {
 // MapTiler XYZ，需用户填 Key
 function maptilerBasemaps(key) {
   const k = encodeURIComponent(key);
+  const raster = (name, mapId, ext = "png") => ({
+    name,
+    type: "raster",
+    tileSize: 256,
+    tiles: [`https://api.maptiler.com/maps/${mapId}/{z}/{x}/{y}.${ext}?key=${k}`],
+    attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+  });
   return {
-    "maptiler-streets": {
-      name: "MapTiler 街道",
-      type: "raster",
-      tileSize: 256,
-      tiles: [`https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=${k}`],
-      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
+    "maptiler-streets": raster("MapTiler 街道", "streets-v2"),
+    "maptiler-satellite": {
+      ...raster("MapTiler 卫星", "satellite-v2", "jpg"),
+      tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${k}`],
     },
-    "maptiler-sat": {
-      name: "MapTiler 卫星",
-      type: "raster",
-      tileSize: 256,
-      tiles: [`https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=${k}`],
-      attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a>',
-    },
+    "maptiler-hybrid": raster("MapTiler 卫星混合注记", "hybrid", "jpg"),
+    "maptiler-outdoor": raster("MapTiler 户外地形", "outdoor-v2"),
+    "maptiler-winter": raster("MapTiler 冬季地形", "winter-v2"),
+    "maptiler-basic": raster("MapTiler 简洁底图", "basic-v2"),
   };
 }
 
-/** 按设置生成可用底图源（高德 + Esri 固定，天地图/MapTiler 填 Key 后启用） */
+/** 按设置生成可用底图源（免 Key 源固定，天地图/MapTiler 填 Key 后启用） */
 function markBasemap(s) {
   return { ...s, metadata: { ...(s.metadata || {}), basemap: true } };
 }
@@ -165,6 +250,7 @@ export function getBasemaps(settings = loadMapSettings()) {
   let b = {};
   b.blank = markBasemap({ name: "无底图", type: "raster", tileSize: 256, tiles: [], attribution: "" });
   for (const [id, s] of Object.entries(GAODE_BASEMAPS)) b[id] = markBasemap(s);
+  for (const [id, s] of Object.entries(noKeyBasemaps())) b[id] = markBasemap(s);
   for (const [id, s] of Object.entries(esriBasemaps())) b[id] = markBasemap(s);
   const tk = settings?.basemaps?.tiandituKey;
   if (tk) for (const [id, s] of Object.entries(tiandituBasemaps(tk))) b[id] = markBasemap(s);
@@ -301,6 +387,87 @@ function readJson(p, fallback = null) {
   try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; }
 }
 
+// 样式文件可能被提交到仓库，持久化时把底图服务凭证替换为占位符。
+// 运行时由 /api/map/data/:project/style.json 注入真实 URL，因此地图仍可正常加载。
+function redactBasemapCredentials(style) {
+  const out = { ...style, sources: { ...(style?.sources || {}) } };
+  for (const [id, source] of Object.entries(out.sources)) {
+    if (!source?.metadata?.basemap && !/^(maptiler|tianditu)-/.test(id)) continue;
+    out.sources[id] = {
+      ...source,
+      tiles: Array.isArray(source.tiles)
+        ? source.tiles.map((t) => String(t).replace(/([?&](?:key|tk)=)[^&]+/gi, "$1__MAP_SERVICE_KEY__"))
+        : source.tiles,
+    };
+  }
+  return out;
+}
+
+/** 将当前本地设置注入样式响应，不把凭证写回 tracked style.json。 */
+export function hydrateBasemapSources(style) {
+  const out = { ...style, sources: { ...(style?.sources || {}) } };
+  const runtime = getBasemaps();
+  for (const [id, source] of Object.entries(runtime)) out.sources[id] = source;
+
+  // 运行时保护：用户/Agent 手写的样式可能遗留非法 paint.line-cap，或引用了
+  // 尚未生成的矢量瓦片。修正/剔除后再交给 MapLibre，避免整份 style 加载失败。
+  const invalidSources = new Set();
+  for (const [id, source] of Object.entries(out.sources)) {
+    const tile = Array.isArray(source?.tiles) ? String(source.tiles[0] || "") : "";
+    const match = tile.match(/\/api\/map\/data\/([^/]+)\/tiles\/([^/]+)\//);
+    if (!match || source?.type !== "vector") continue;
+    const [, project, layer] = match;
+    const dir = projectDir(project);
+    if (!dir || !fs.existsSync(path.join(dir, "tiles", layer))) {
+      invalidSources.add(id);
+      continue;
+    }
+    // 用户绘制的小图层使用 GeoJSON 更稳健，不依赖旧的 PBF 产物。
+    const geojson = path.join(dir, "layers", `${layer}.geojson`);
+    if (layer.startsWith("drawn-") && fs.existsSync(geojson)) {
+      out.sources[id] = { type: "geojson", data: `/api/map/data/${project}/layers/${layer}.geojson` };
+      for (const l of out.layers || []) if (l.source === id) delete l["source-layer"];
+    }
+  }
+  if (invalidSources.size) {
+    for (const id of invalidSources) delete out.sources[id];
+    out.layers = (out.layers || []).filter((l) => !invalidSources.has(l.source));
+  }
+  out.layers = (out.layers || []).map((l) => {
+    if (l?.paint?.["line-cap"] === undefined) return l;
+    const { ["line-cap"]: cap, ...paint } = l.paint;
+    return { ...l, layout: { ...(l.layout || {}), "line-cap": cap }, paint };
+  });
+
+  // 兼容旧的 tracked style.json：新增免 Key 底图无需用户先保存一次设置，
+  // 也能在动态样式响应中直接出现。缺失的底图图层插入到第一个业务图层之前，
+  // 避免栅格覆盖道路、边界和分析图层。
+  const layers = Array.isArray(out.layers) ? [...out.layers] : [];
+  const baseIds = new Set(layers.filter((l) => String(l?.id || "").startsWith("basemap-")).map((l) => String(l.id).slice("basemap-".length)));
+  const visibleId = layers.find((l) => String(l?.id || "").startsWith("basemap-") && l.layout?.visibility === "visible")?.id?.slice("basemap-".length) || "gaode-road";
+  const missing = Object.keys(runtime).filter((id) => !baseIds.has(id));
+  if (missing.length) {
+    const insertAt = layers.findIndex((l) => !String(l?.id || "").startsWith("basemap-"));
+    const baseLayers = missing.map((id) => id === "blank"
+      ? {
+          id: "basemap-blank",
+          type: "background",
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "background-color": "rgba(0,0,0,0)" },
+        }
+      : {
+          id: `basemap-${id}`,
+          type: "raster",
+          source: id,
+          layout: { visibility: id === visibleId ? "visible" : "none" },
+          paint: { "raster-opacity": 1 },
+        });
+    layers.splice(insertAt < 0 ? layers.length : insertAt, 0, ...baseLayers);
+    out.layers = layers;
+  }
+  return out;
+}
+
 export function ensureProject(name = DEFAULT_PROJECT) {
   const dir = projectDir(name);
   if (!dir) return null;
@@ -308,7 +475,7 @@ export function ensureProject(name = DEFAULT_PROJECT) {
   const cfgPath = path.join(dir, "map.config.json");
   const stylePath = path.join(dir, "style.json");
   if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(defaultConfig(name), null, 2));
-  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(getDefaultStyle(name), null, 2));
+  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
   return dir;
 }
 
@@ -366,7 +533,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
 
   let style = readJson(stylePath, null);
   if (!style || typeof style !== "object" || !style.sources) {
-    fs.writeFileSync(stylePath, JSON.stringify(getDefaultStyle(name), null, 2));
+    fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
     return true;
   }
   // 保留非底图 sources（底图 source 带 metadata.basemap 标记）
@@ -433,7 +600,7 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
   }
   style.sources = sources;
   style.layers = [...baseLayers, ...keep];
-  fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
+  fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(style), null, 2));
   return true;
 }
 
@@ -454,6 +621,8 @@ export async function importLayer(name, layerId, geojson) {
   // 重建该图层瓦片（缺 def 时按通用参数）
   const def = LAYER_DEFS.find((d) => d.id === safeId) || { id: safeId, minzoom: 5, maxzoom: 13, tolerance: 0.0001 };
   const r = buildProjectTiles(dir, { layerIds: [safeId], force: true, defs: [def] });
+  // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
+  rebuildBasemapStyle(name);
   return { ok: true, layer: safeId, tiles: r[safeId] };
 }
 
@@ -523,10 +692,11 @@ export function deleteLayer(name, layerId) {
 
 /** 等时圈分析（高德 v5 isochrone）… */
 export async function isochrone({ location, mode = "driving", range = 30, rangeType = "time" }) {
+  const settings = loadMapSettings();
+  const geoapifyKey = settings?.basemaps?.geoapifyKey || process.env.GEOAPIFY_KEY || "";
+  if (geoapifyKey) return isochroneGeoapify({ location, mode, range, rangeType, key: geoapifyKey });
   const key = process.env.AMAP_KEY || process.env.GAODE_KEY || "";
-  if (!key) {
-    return { error: "未配置高德地图 Web 服务 Key（设置环境变量 AMAP_KEY 后重启服务），暂时无法进行等时圈分析" };
-  }
+  if (!key) return { error: "未配置 Geoapify 或高德等时圈 Key（可在设置中配置 Geoapify Key）" };
   const url = new URL("https://restapi.amap.com/v5/isochrone");
   url.searchParams.set("key", key);
   url.searchParams.set("location", String(location || ""));
@@ -545,6 +715,41 @@ export async function isochrone({ location, mode = "driving", range = 30, rangeT
     .map((p) => normalizePoints(p.points))
     .filter((pts) => pts && pts.length >= 3);
   return { error: null, center: data.result.center, cost: data.result.cost, polygons };
+}
+
+/** Geoapify Isoline API：返回 GeoJSON，统一转换为当前前端使用的外环点数组。 */
+async function isochroneGeoapify({ location, mode = "driving", range = 30, rangeType = "time", key }) {
+  const [lon, lat] = String(location || "").split(",").map(Number);
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return { error: "等时圈中心点坐标无效" };
+  const modeMap = { driving: "drive", walking: "walk", bicycling: "bicycle", transit: "transit", drive: "drive", walk: "walk", bicycle: "bicycle" };
+  const apiType = rangeType === "distance" ? "distance" : "time";
+  const numericRange = Number(range) || 30;
+  const apiRange = apiType === "distance" ? Math.round(numericRange * 1000) : Math.round(numericRange * 60);
+  const url = new URL("https://api.geoapify.com/v1/isoline");
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lon", String(lon));
+  url.searchParams.set("type", apiType);
+  url.searchParams.set("mode", modeMap[mode] || "drive");
+  url.searchParams.set("range", String(apiRange));
+  url.searchParams.set("apiKey", key);
+  let data;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(25000) });
+    data = await response.json();
+    if (!response.ok) return { error: data?.message || `Geoapify 等时圈请求失败（${response.status}）` };
+  } catch (e) {
+    return { error: "Geoapify 等时圈请求失败: " + e.message };
+  }
+  const polygons = [];
+  for (const feature of data?.features || []) {
+    const geometry = feature?.geometry;
+    if (geometry?.type === "Polygon" && geometry.coordinates?.[0]?.length >= 3) polygons.push(geometry.coordinates[0]);
+    if (geometry?.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates || []) if (polygon?.[0]?.length >= 3) polygons.push(polygon[0]);
+    }
+  }
+  if (!polygons.length) return { error: data?.message || "Geoapify 未返回有效等时圈多边形" };
+  return { error: null, provider: "geoapify", center: [lon, lat], cost: null, polygons };
 }
 
 /** 高德 points 可能是 [[lng,lat],...] 或 [{lng,lat},...] 或字符串 */

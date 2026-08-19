@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import JSZip from "jszip";
@@ -16,7 +17,18 @@ function idFor(ref) {
 }
 
 function makeRef(kind, target, extra = {}) {
-  const ref = { kind, target: String(target || "").trim(), ...extra };
+  let cleanTarget = String(target || "").trim();
+  const cell = kind === "file" ? cleanTarget.match(/^(.*?)#([^!]+)!([A-Z]+\d+(?::[A-Z]+\d+)?)$/i) : null;
+  const locator = kind === "file" ? cleanTarget.match(/^(.*?)#(page|p|slide|paragraph)=(\d+)(?:-(\d+))?$/i) : null;
+  const range = cell
+    ? { ...(extra.range || {}), sheet: cell[2], cell: cell[3] }
+    : locator
+      ? { ...(extra.range || {}), [locator[2].toLowerCase() === "p" ? "page" : locator[2].toLowerCase()]: Number(locator[3]), ...(locator[4] ? { end: Number(locator[4]) } : {}) }
+      : extra.range;
+  if (cell) cleanTarget = cell[1];
+  if (locator) cleanTarget = locator[1];
+  const ref = { kind, target: cleanTarget, ...extra };
+  if (range) ref.range = range;
   ref.id = idFor(ref);
   return ref;
 }
@@ -139,18 +151,46 @@ async function extractPdf(file) {
     const { stdout } = await execFileAsync("pdftotext", [file, "-"], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
     return stdout;
   } catch {
-    return "[PDF 文本抽取工具不可用；可先安装 poppler 的 pdftotext，或使用文件预览。]";
+    if (process.env.OAW_ENABLE_OCR !== "1") return "[PDF 文本抽取工具不可用；可安装 poppler，或设置 OAW_ENABLE_OCR=1 启用可选 OCR。]";
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-pdf-"));
+    try {
+      const prefix = path.join(tmp, "page");
+      await execFileAsync("pdftoppm", ["-f", "1", "-l", "5", "-png", "-r", "150", file, prefix], { timeout: 60000 });
+      const pages = fs.readdirSync(tmp).filter((name) => name.endsWith(".png")).sort();
+      const chunks = [];
+      for (const page of pages) {
+        try {
+          const { stdout } = await execFileAsync("tesseract", [path.join(tmp, page), "stdout", "-l", process.env.OAW_OCR_LANG || "eng"], { timeout: 60000, maxBuffer: 5 * 1024 * 1024 });
+          if (stdout.trim()) chunks.push(`${page}:\n${stdout.trim()}`);
+        } catch {}
+      }
+      return chunks.join("\n\n") || "[OCR 未识别到文本；请检查 tesseract 与语言包。]";
+    } catch {
+      return "[OCR 依赖不可用；请安装 pdftoppm 与 tesseract，或使用 PDF 文本层。]";
+    } finally {
+      try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 
-async function extractFile(file) {
+async function extractFile(file, range = null) {
   const ext = path.extname(file).slice(1).toLowerCase();
   if (["md", "markdown", "txt", "html", "htm", "csv", "json"].includes(ext)) return fs.readFileSync(file, "utf8");
   if (ext === "docx") return extractDocx(file);
   if (ext === "pptx") return extractPptx(file);
   if (ext === "xlsx") {
     const wb = XLSX.readFile(file, { cellText: true, cellDates: true });
-    return wb.SheetNames.map((name) => `## ${name}\n${XLSX.utils.sheet_to_csv(wb.Sheets[name])}`).join("\n\n");
+    const names = range?.sheet && wb.SheetNames.includes(range.sheet) ? [range.sheet] : wb.SheetNames;
+    return names.map((name) => {
+      const sheet = wb.Sheets[name];
+      if (range?.cell && name === range.sheet) {
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+        const decoded = XLSX.utils.decode_range(range.cell);
+        const selected = rows.slice(decoded.s.r, decoded.e.r + 1).map((row) => row.slice(decoded.s.c, decoded.e.c + 1).join("\t"));
+        return `## ${name}!${range.cell}\n${selected.join("\n")}`;
+      }
+      return `## ${name}\n${XLSX.utils.sheet_to_csv(sheet)}`;
+    }).join("\n\n");
   }
   if (ext === "pdf") return extractPdf(file);
   return "";
@@ -158,6 +198,13 @@ async function extractFile(file) {
 
 function applyRange(text, range = {}) {
   let out = String(text || "");
+  if (range?.slide || range?.page || range?.paragraph) {
+    const n = Number(range.slide || range.page || range.paragraph);
+    const end = Number(range.end || n);
+    const lines = out.split(/\r?\n/);
+    if (range.slide) out = lines.filter((line) => { const m = line.match(/^(\d+)\./); return m && Number(m[1]) >= n && Number(m[1]) <= end; }).join("\n");
+    else out = lines.slice(Math.max(0, n - 1), Math.max(0, end)).join("\n");
+  }
   if (range?.startLine || range?.endLine) {
     const lines = out.split(/\r?\n/);
     const start = Math.max(1, Number(range.startLine || 1));
@@ -197,7 +244,7 @@ export async function readReference(input, query = "", range = null) {
   }
   if (resolved.kind === "template_dir") return { ...resolved, status: "deferred", message: "模板目录引用请先选择具体模板文件" };
   if (resolved.status !== "resolved" || resolved.metadata?.isDirectory) return { ...resolved, text: resolved.message || "目录引用需要逐个读取文件" };
-  const text = applyRange(await extractFile(resolved.metadata.path), range || resolved.range);
+  const text = applyRange(await extractFile(resolved.metadata.path, range || resolved.range), range || resolved.range);
   const q = String(query || "").trim();
   const result = q ? text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(q.toLowerCase())).join("\n") : text;
   return { ...resolved, text: result.slice(0, MAX_READ_CHARS), truncated: result.length > MAX_READ_CHARS };

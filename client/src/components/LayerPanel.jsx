@@ -152,10 +152,21 @@ export default function LayerPanel({
 
   const layerPaint = useCallback((id) => style?.layers?.find((x) => x.id === id)?.paint || {}, [style]);
   const layerStyleType = useCallback((id) => style?.layers?.find((x) => x.id === id)?.type || "line", [style]);
-  const layerVisible = useCallback((id) => {
-    const l = style?.layers?.find((x) => x.id === id);
-    return !l || l.layout?.visibility !== "none";
+  const relatedLayers = useCallback((id) => {
+    const layers = style?.layers || [];
+    // 标签开关只控制标签本身；业务图层开关则同时控制同名 source
+    // 以及由该图层派生的样式/标签层。
+    if (id.endsWith("-label")) return layers.filter((x) => x.id === id);
+    return layers.filter((x) => (
+      x.id === id
+      || x.source === id
+      || x.id.startsWith(`${id}-`)
+    ));
   }, [style]);
+  const layerVisible = useCallback((id) => {
+    const layers = relatedLayers(id);
+    return !layers.length || layers.some((x) => x.layout?.visibility !== "none");
+  }, [relatedLayers]);
 
   // ---- 拖拽 ----
   const handleDrop = useCallback((targetId) => {

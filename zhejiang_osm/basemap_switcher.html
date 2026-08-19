@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>底图切换器 · 浙江省路网 / 等时圈项目</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root { --bg:#101418; --panel:#171d24; --ink:#e8edf2; --mut:#8b98a5; --acc:#4fc3f7; --line:#2a3440; }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; }
+  body { display:flex; font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--ink); }
+  #panel { width:300px; min-width:300px; height:100%; overflow-y:auto; background:var(--panel); border-right:1px solid var(--line); padding:16px 14px 24px; }
+  #panel h1 { font-size:16px; font-weight:700; margin-bottom:2px; }
+  #panel .sub { color:var(--mut); font-size:12px; margin-bottom:14px; }
+  .grp { margin-top:14px; }
+  .grp h2 { font-size:12px; color:var(--acc); letter-spacing:.06em; margin-bottom:6px; font-weight:600; }
+  .grp .note { color:var(--mut); font-size:11px; margin:-2px 0 6px; }
+  button.bm { display:flex; align-items:center; gap:8px; width:100%; text-align:left; padding:7px 10px; margin:3px 0;
+    background:#1d2530; border:1px solid var(--line); border-radius:8px; color:var(--ink); cursor:pointer; font-size:13px; }
+  button.bm:hover { border-color:var(--acc); }
+  button.bm.on { border-color:var(--acc); background:#12303f; box-shadow:inset 0 0 0 1px var(--acc); }
+  button.bm .kind { margin-left:auto; font-size:10px; color:var(--mut); border:1px solid var(--line); border-radius:4px; padding:1px 5px; white-space:nowrap; }
+  button.bm .gcj { color:#ffb74d; border-color:#5c4526; }
+  button.bm:disabled { opacity:.45; cursor:not-allowed; }
+  .keys { margin-top:18px; border-top:1px solid var(--line); padding-top:12px; }
+  .keys label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
+  .keys input { width:100%; background:#0d1218; color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 8px; font:12px monospace; }
+  #map { flex:1; height:100%; }
+  #coords { position:absolute; right:10px; bottom:10px; z-index:5; background:rgba(16,20,24,.82); color:var(--ink);
+    padding:4px 10px; border-radius:6px; font:12px monospace; pointer-events:none; }
+  #toast { position:absolute; left:50%; top:14px; transform:translateX(-50%); z-index:9; background:#3a2c1a; color:#ffd54f;
+    border:1px solid #6d5426; border-radius:8px; padding:6px 14px; font-size:13px; display:none; }
+  .maplibregl-ctrl-attrib { font-size:11px; }
+</style>
+</head>
+<body>
+<aside id="panel">
+  <h1>底图切换器</h1>
+  <div class="sub">浙江省路网 / 交通等时圈项目 · 2026-08-18</div>
+  <div id="groups"></div>
+  <div class="keys">
+    <label>Geoapify API Key（已内置，可换）</label>
+    <input id="geoapifyKey" spellcheck="false">
+    <label>天地图 tk（需自行申请，留空则禁用）</label>
+    <input id="tdtKey" placeholder="在 https://console.tianditu.gov.cn 免费申请" spellcheck="false">
+  </div>
+</aside>
+<div id="map"></div>
+<div id="coords"></div>
+<div id="toast"></div>
+
+<script>
+const GEOAPIFY_DEFAULT = "3ca5f7ef250c4a9b8d5b9a204545f92d";
+document.getElementById("geoapifyKey").value = GEOAPIFY_DEFAULT;
+
+// kind: raster | vector. tiles: URL templates. scheme tms = y 翻转. gcj = 火星坐标偏移提示
+const BASEMAPS = [
+ // ---------- 免 Key · 国际 ----------
+ {g:"免 Key · 国际", n:"OpenFreeMap · Liberty", kind:"vector", style:"https://tiles.openfreemap.org/styles/liberty", att:"© OpenFreeMap © OpenStreetMap"},
+ {g:"免 Key · 国际", n:"OpenFreeMap · Bright", kind:"vector", style:"https://tiles.openfreemap.org/styles/bright", att:"© OpenFreeMap © OpenStreetMap"},
+ {g:"免 Key · 国际", n:"OpenFreeMap · Fiord（暗色）", kind:"vector", style:"https://tiles.openfreemap.org/styles/fiord", att:"© OpenFreeMap © OpenStreetMap"},
+ {g:"免 Key · 国际", n:"OSM Standard", kind:"raster", tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], att:"© OpenStreetMap contributors", mz:19},
+ {g:"免 Key · 国际", n:"CARTO Positron（浅）", kind:"raster", tiles:["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"], att:"© CARTO © OpenStreetMap", mz:20},
+ {g:"免 Key · 国际", n:"CARTO Dark Matter（暗）", kind:"raster", tiles:["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"], att:"© CARTO © OpenStreetMap", mz:20},
+ {g:"免 Key · 国际", n:"CARTO Voyager", kind:"raster", tiles:["https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"], att:"© CARTO © OpenStreetMap", mz:20},
+ {g:"免 Key · 国际", n:"OpenTopoMap（地形）", kind:"raster", tiles:["https://a.tile.opentopomap.org/{z}/{x}/{y}.png","https://b.tile.opentopomap.org/{z}/{x}/{y}.png","https://c.tile.opentopomap.org/{z}/{x}/{y}.png"], att:"© OpenTopoMap © OpenStreetMap", mz:17},
+ {g:"免 Key · 国际", n:"Esri World Imagery（卫星）", kind:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], att:"© Esri, Maxar", mz:19},
+ {g:"免 Key · 国际", n:"Esri World Street Map", kind:"raster", tiles:["https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"], att:"© Esri", mz:19},
+ {g:"免 Key · 国际", n:"Google 卫星", kind:"raster", tiles:["https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}","https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}","https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}","https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}"], att:"© Google", mz:20},
+ {g:"免 Key · 国际", n:"Google 路网", kind:"raster", tiles:["https://mt0.google.com/vt/lyrs=m&hl=zh-CN&x={x}&y={y}&z={z}","https://mt1.google.com/vt/lyrs=m&hl=zh-CN&x={x}&y={y}&z={z}","https://mt2.google.com/vt/lyrs=m&hl=zh-CN&x={x}&y={y}&z={z}","https://mt3.google.com/vt/lyrs=m&hl=zh-CN&x={x}&y={y}&z={z}"], att:"© Google", mz:20},
+ // ---------- 免 Key · 国内（GCJ-02 偏移） ----------
+ {g:"免 Key · 国内（GCJ-02 偏移）", n:"高德 矢量", kind:"raster", gcj:1, tiles:["https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}","https://webrd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}","https://webrd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}","https://webrd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}"], att:"© 高德", mz:18},
+ {g:"免 Key · 国内（GCJ-02 偏移）", n:"高德 卫星", kind:"raster", gcj:1, tiles:["https://webst01.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}","https://webst02.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}","https://webst03.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}","https://webst04.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"], att:"© 高德", mz:18},
+ {g:"免 Key · 国内（GCJ-02 偏移）", n:"腾讯 矢量", kind:"raster", gcj:1, scheme:"tms", tiles:["https://rt0.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0","https://rt1.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0","https://rt2.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0","https://rt3.map.gtimg.com/tile?z={z}&x={x}&y={y}&type=vector&styleid=0"], att:"© 腾讯地图", mz:18},
+ {g:"免 Key · 国内（GCJ-02 偏移）", n:"腾讯 卫星", kind:"raster", gcj:1, scheme:"tms", tiles:["https://p0.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg","https://p1.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg","https://p2.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg","https://p3.map.gtimg.com/sateTiles/{z}/{x}/{y}.jpg"], att:"© 腾讯地图", mz:18},
+ // ---------- 需 Key ----------
+ {g:"需 Key · Geoapify（已内置）", n:"Geoapify Positron（浅）", kind:"raster", key:"geoapify", tiles:k=>[`https://maps.geoapify.com/v1/tile/positron/{z}/{x}/{y}.png?apiKey=${k}`], att:"© Geoapify © OpenStreetMap", mz:20},
+ {g:"需 Key · Geoapify（已内置）", n:"Geoapify Dark Matter（暗）", kind:"raster", key:"geoapify", tiles:k=>[`https://maps.geoapify.com/v1/tile/dark-matter/{z}/{x}/{y}.png?apiKey=${k}`], att:"© Geoapify © OpenStreetMap", mz:20},
+ {g:"需 Key · Geoapify（已内置）", n:"Geoapify OSM Bright", kind:"raster", key:"geoapify", tiles:k=>[`https://maps.geoapify.com/v1/tile/osm-bright/{z}/{x}/{y}.png?apiKey=${k}`], att:"© Geoapify © OpenStreetMap", mz:20},
+ {g:"需 Key · Geoapify（已内置）", n:"Geoapify Positron 矢量", kind:"vector", key:"geoapify", style:k=>`https://maps.geoapify.com/v1/styles/positron/style.json?apiKey=${k}`, att:"© Geoapify © OpenStreetMap"},
+ {g:"需 Key · Geoapify（已内置）", n:"Geoapify Dark 矢量", kind:"vector", key:"geoapify", style:k=>`https://maps.geoapify.com/v1/styles/dark-matter/style.json?apiKey=${k}`, att:"© Geoapify © OpenStreetMap"},
+ {g:"需 Key · 天地图（自填 tk）", n:"天地图 矢量 + 注记", kind:"raster", key:"tdt", tiles:k=>[...[0,1,2,3,4,5,6,7].map(i=>`https://t${i}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`), ...[0,1,2,3,4,5,6,7].map(i=>`https://t${i}.tianditu.gov.cn/cva_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cva&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`)], att:"© 天地图", mz:18},
+ {g:"需 Key · 天地图（自填 tk）", n:"天地图 影像 + 注记", kind:"raster", key:"tdt", tiles:k=>[...[0,1,2,3,4,5,6,7].map(i=>`https://t${i}.tianditu.gov.cn/img_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=img&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`), ...[0,1,2,3,4,5,6,7].map(i=>`https://t${i}.tianditu.gov.cn/cia_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=cia&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=${k}`)], att:"© 天地图", mz:18},
+];
+
+const BLANK = {version:8, sources:{}, layers:[{id:"bg", type:"background", paint:{"background-color":"#e9e5dc"}}]};
+const map = new maplibregl.Map({container:"map", style:BLANK, center:[120.1486,30.2505], zoom:10.6, maxZoom:19, hash:false});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+map.addControl(new maplibregl.ScaleControl({maxWidth:120}), "bottom-left");
+
+new maplibregl.Marker({color:"#e53935"})
+  .setLngLat([120.1486,30.2505])
+  .setPopup(new maplibregl.Popup().setText("西湖 · 等时圈分析原点"))
+  .addTo(map);
+
+map.on("mousemove", e => {
+  document.getElementById("coords").textContent =
+    `${e.lngLat.lng.toFixed(5)}, ${e.lngLat.lat.toFixed(5)}`;
+});
+
+let toastT;
+function toast(msg){ const t=document.getElementById("toast"); t.textContent=msg; t.style.display="block";
+  clearTimeout(toastT); toastT=setTimeout(()=>t.style.display="none", 3200); }
+
+function keyFor(bm){
+  if (bm.key === "geoapify") return document.getElementById("geoapifyKey").value.trim();
+  if (bm.key === "tdt") return document.getElementById("tdtKey").value.trim();
+  return "";
+}
+
+function apply(bm){
+  document.querySelectorAll("button.bm").forEach(b=>b.classList.remove("on"));
+  const btn = document.querySelector(`button.bm[data-n="${CSS.escape(bm.n)}"]`);
+  if (btn) btn.classList.add("on");
+
+  if (bm.kind === "vector"){
+    const url = typeof bm.style === "function" ? bm.style(keyFor(bm)) : bm.style;
+    map.setStyle(url);
+    map.once("styledata", ()=> setAttribution(bm.att));
+    return;
+  }
+  // raster
+  map.setStyle(BLANK);
+  map.once("styledata", ()=>{
+    const tiles = typeof bm.tiles === "function" ? bm.tiles(keyFor(bm)) : bm.tiles;
+    tiles.forEach((t,i)=>{
+      map.addSource(`rs${i}`, {type:"raster", tiles:[t], tileSize:256,
+        scheme: bm.scheme || "xyz", maxzoom: bm.mz || 20});
+      map.addLayer({id:`rl${i}`, type:"raster", source:`rs${i}`,
+        paint:{"raster-fade-duration":120}});
+    });
+    setAttribution(bm.att);
+  });
+}
+
+function setAttribution(text){
+  const el = document.querySelector(".maplibregl-ctrl-attrib");
+  if (el) el.innerHTML = text;
+}
+
+// build sidebar
+const groups = {};
+BASEMAPS.forEach(bm => (groups[bm.g] ||= []).push(bm));
+const wrap = document.getElementById("groups");
+for (const [g, items] of Object.entries(groups)){
+  const d = document.createElement("div"); d.className = "grp";
+  const h = document.createElement("h2"); h.textContent = g; d.appendChild(h);
+  if (g.includes("GCJ")){
+    const note = document.createElement("div"); note.className = "note";
+    note.textContent = "国内图商使用 GCJ-02 坐标，与 WGS84 标记约有数百米偏移，属正常现象。";
+    d.appendChild(note);
+  }
+  items.forEach(bm=>{
+    const b = document.createElement("button"); b.className = "bm"; b.dataset.n = bm.n;
+    const label = document.createElement("span"); label.textContent = bm.n; b.appendChild(label);
+    const kind = document.createElement("span"); kind.className = "kind" + (bm.gcj ? " gcj" : "");
+    kind.textContent = bm.kind === "vector" ? "矢量" : (bm.gcj ? "栅格·GCJ" : "栅格");
+    b.appendChild(kind);
+    b.onclick = ()=>{
+      if (bm.key === "tdt" && !keyFor(bm)){
+        toast("天地图需要 tk：请在左侧输入框填入后重试（console.tianditu.gov.cn 免费申请）");
+        document.getElementById("tdtKey").focus(); return;
+      }
+      apply(bm);
+    };
+    d.appendChild(b);
+  });
+  wrap.appendChild(d);
+}
+
+document.getElementById("geoapifyKey").addEventListener("change", ()=>{
+  const cur = BASEMAPS.find(b=>b.n === document.querySelector("button.bm.on")?.dataset.n);
+  if (cur && cur.key === "geoapify") apply(cur);
+});
+document.getElementById("tdtKey").addEventListener("change", ()=>{
+  const cur = BASEMAPS.find(b=>b.n === document.querySelector("button.bm.on")?.dataset.n);
+  if (cur && cur.key === "tdt" && keyFor(cur)) apply(cur);
+});
+
+apply(BASEMAPS[0]); // OpenFreeMap Liberty
+</script>
+</body>
+</html>

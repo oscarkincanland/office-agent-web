@@ -70,7 +70,7 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, onSelect, onDelete, onRename }) {
+export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
@@ -128,6 +128,7 @@ export function SessionList({ sessions, onSelect, onDelete, onRename }) {
           onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
           title="重命名"
         ><Icon name="penTool" size={12} /></button>
+        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
         <button
           className="btn-icon danger"
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
@@ -163,7 +164,7 @@ export function SessionList({ sessions, onSelect, onDelete, onRename }) {
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings

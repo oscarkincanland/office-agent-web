@@ -53,7 +53,7 @@ function geometryBounds(geometry) {
  */
 export default function MapPanel({
   onExit, onOpenFile,
-  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, sessions, onSelectSession,
+  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
   onSessionChange, onRefreshSessions,
 }) {
   const [projects, setProjects] = useState([]);
@@ -300,12 +300,19 @@ export default function MapPanel({
   // ---- 图层操作 ----
   const toggleLayer = useCallback((layerId, target) => {
     if (!style) return;
+    // 一个业务图层可能对应多个 MapLibre 样式层（例如 OD 主线、样式线和标签）。
+    // 只切换同名 layer 会留下其它关联层继续渲染，造成“取消勾选但地图仍显示”。
+    const related = style.layers.filter((l) => (
+      l.id === layerId
+      || l.source === layerId
+      || l.id.startsWith(`${layerId}-`)
+    ));
+    const cur = related.some((l) => l.layout?.visibility !== "none");
+    const vis = typeof target === "boolean" ? target : !cur;
     const next = {
       ...style,
       layers: style.layers.map((l) => {
-        if (l.id !== layerId) return l;
-        const cur = l.layout?.visibility !== "none";
-        const vis = typeof target === "boolean" ? target : !cur;
+        if (!related.includes(l)) return l;
         return { ...l, layout: { ...(l.layout || {}), visibility: vis ? "visible" : "none" } };
       }),
     };
@@ -651,12 +658,22 @@ export default function MapPanel({
   }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
     mapRef.current?.setBasemap(id);
+    // 同步写入 style 的底图显隐，避免轮询/Agent 热更新后恢复到旧的地形或卫星图层。
+    if (style?.layers) {
+      const nextStyle = {
+        ...style,
+        layers: style.layers.map((l) => String(l.id).startsWith("basemap-")
+          ? { ...l, layout: { ...(l.layout || {}), visibility: l.id === `basemap-${id}` ? "visible" : "none" } }
+          : l),
+      };
+      await saveStyle(nextStyle);
+    }
     setCfg((prev) => {
       const next = { ...(prev || {}), basemap: id };
       mapSaveConfig(project, next).catch(() => {});
       return next;
     });
-  }, [project]);
+  }, [project, style, saveStyle]);
 
   const handleRebuild = useCallback(async () => {
     setMsg("重建瓦片中…");
@@ -1326,7 +1343,7 @@ export default function MapPanel({
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
-            historyMessages={null}
+            historyMessages={historyMessages}
             onNewSession={onNewSession}
             onOpenFile={handleOpenFile}
             sessions={sessions}
@@ -1590,7 +1607,7 @@ export default function MapPanel({
                 </button>
               </div>
               <div className="mp-iso-hint">
-                使用高德地图 Web 服务（需在服务端配置环境变量 AMAP_KEY）。结果以临时图层叠加在地图上，不写入项目。
+                优先使用 Geoapify Isoline 服务（在设置中配置 Geoapify Key），未配置时回退服务端 AMAP_KEY。结果以临时图层叠加在地图上，不写入项目。
               </div>
               </>
             ) : (
