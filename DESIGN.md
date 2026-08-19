@@ -1,6 +1,6 @@
 # Office Agent Web - 前端设计文档
 
-当前稳定基线：**v0.8.31**（`develop`）；M2 宏观交通分析处于工作区未发布状态
+当前基线：**v0.8.34**（feature/phase1-safety-baseline）
 
 ## 架构概览
 
@@ -34,6 +34,8 @@
 │  ├─ /api/doc/:file*    raw/html/comments/watch/cells（正则路由）          │
 │  ├─ /api/office        officecli 操作                                   │
 │  ├─ /api/sessions*     会话历史(CRUD + ?file= 过滤)                      │
+│  ├─ /api/runs*         TaskEnvelope/run manifest/产物 diff/回滚           │
+│  ├─ /api/workflows*    声明式技能工作流与依赖校验                        │
 │  ├─ /api/models        模型列表 /api/agent/model 切换                    │
 │  ├─ /api/skills*       技能列表/导出/导入                                │
 │  ├─ /api/workspaces*   工作区管理(切换/校验)                             │
@@ -97,7 +99,9 @@ App.jsx
 | GET | /api/models | 模型列表（30+，含视觉标记） |
 | GET | /api/skills, /api/skills/export, /api/skills/import | 技能管理 |
 | GET | /api/workspaces, /api/workspace/switch, /api/workspace/validate | 工作区管理 |
-| GET/POST | /api/sessions, /api/sessions/:id, /rename | 会话历史 CRUD（?file= 过滤） |
+| GET/POST | /api/sessions, /api/sessions/:id, /rename, /fork | 会话历史 CRUD、分支（?file= 过滤） |
+| GET/POST | /api/runs, /api/runs/:id, /rollback | 执行记录、产物清单、显式回滚 |
+| GET | /api/workflows, /api/workflows/:id/validate | 工作流注册表与技能依赖校验 |
 | POST | /api/agent/prompt, /api/agent/abort, GET /api/agent/stream | agent 会话 |
 | **GET** | **/api/kb/status** | 知识库索引状态（roots/fileCount/ima配置） |
 | **POST/DELETE** | **/api/kb/roots** | 添加/移除知识库根目录 |
@@ -126,7 +130,7 @@ App.jsx
 ### 文件定位机制
 1. **当前文件注入**：用户打开文件后，发送消息时前端自动附加 `[当前打开文件: xxx.docx]`
 2. **officecli 工具**：agent 通过自定义 `officecli` 工具操作文档，文件名相对于 workspace 目录
-3. **agent 上下文**：agent.mjs 的 ResourceLoader 注入 workspace 指令 + AGENT.MD 长期记忆 + KB 使用说明
+3. **agent 上下文**：每轮注入 TaskEnvelope、当前工作区、分层记忆和 KB 使用说明；输出固定总结读取来源、修改文件、产物、假设和下一步
 
 ## 知识库设计（KnowledgeBase + KnowledgeGraph）
 

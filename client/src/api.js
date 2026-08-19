@@ -44,6 +44,8 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+export const listWorkflows = () => api("/api/workflows");
+export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
 export const exportSkill = (name) =>
   api("/api/skills/export", { method: "POST", body: JSON.stringify({ name }) });
 export const importSkill = (payload) =>
@@ -53,6 +55,16 @@ export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
+export const forkSession = (id, label) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label }) });
+export const listRuns = (thread) => api(`/api/runs${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
+export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
+export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
+export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
+export const listConnectors = () => api("/api/connectors");
+export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
+export const approveMemoryProposal = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) });
+export const listPendingQuestions = (client, thread) => api(`/api/agent/pending?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread)}`);
 
 export function getClientId() {
   let id = localStorage.getItem("oaw_client_id");
@@ -111,6 +123,11 @@ export const mapDemoAnalysis = (params = {}) => {
   const query = new URLSearchParams({ analysis: params.analysis || "heatmap", region: params.region || "义乌市", project: params.project || "zhejiang-map", count: String(params.count || 36) });
   return api(`/api/map/demo-analysis?${query.toString()}`);
 };
+export const mapCambodiaOD = (minFlow = 0) => api(`/api/demo/cambodia-od?minFlow=${encodeURIComponent(minFlow)}`);
+export const mapM3Routes = () => api("/api/m3/bus-routes");
+export const mapM3Stations = () => api("/api/m3/station-heatmap");
+export const mapM3OD = () => api("/api/m3/od-lines");
+export const mapM3Stats = () => api("/api/m3/network-stats");
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);
@@ -118,6 +135,38 @@ export const tplContent = (relPath) => api(`/api/templates/content?path=${encode
 export const tplRefresh = () => api("/api/templates/refresh", { method: "POST" });
 
 export function fileToBase64(file) {
+  // 大图先压缩，避免把高分辨率截图以超大 Base64 发送给视觉模型。
+  if (file?.type?.startsWith("image/") && file.size > 2 * 1024 * 1024 && typeof Image !== "undefined") {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      const cleanup = () => URL.revokeObjectURL(url);
+      img.onload = () => {
+        try {
+          const maxSide = 1800;
+          const scale = Math.min(1, maxSide / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+          canvas.height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            if (!blob) { cleanup(); reject(new Error("图片压缩失败")); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+              cleanup();
+              const dataUrl = reader.result;
+              const [head, b64] = dataUrl.split(",");
+              resolve({ mediaType: head.match(/data:(.*?);/)?.[1] || "image/jpeg", data: b64 });
+            };
+            reader.onerror = (e) => { cleanup(); reject(e); };
+            reader.readAsDataURL(blob);
+          }, "image/jpeg", 0.82);
+        } catch (e) { cleanup(); reject(e); }
+      };
+      img.onerror = (e) => { cleanup(); reject(e); };
+      img.src = url;
+    });
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {

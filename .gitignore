@@ -25,6 +25,7 @@ od-pipeline.cjs
 # 环境与临时文件
 .env
 *.local
+office-workspace/maps/settings.local.json
 _temp/
 _tmp/
 _verify*.mjs
@@ -46,5 +47,16 @@ Thumbs.db
 # macOS 资源文件
 ._*
 
+# 浙江 OSM 原始/计算缓存（本地分析输入，部分单文件超过 GitHub 100 MB 限制）
+zhejiang_osm/zhejiang-latest.osm.pbf
+zhejiang_osm/zhejiang_roads.geojson
+zhejiang_osm/zhejiang_nodes.csv
+zhejiang_osm/zhejiang_edges.csv
+zhejiang_osm/isochrone_reachable.geojson
+zhejiang_osm/_dijkstra_cache.pkl
+
 .workspace-state.json
+
+# 运行时任务、产物和记忆建议清单
+.oaw/
 bin/
