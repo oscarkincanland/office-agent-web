@@ -3,7 +3,7 @@
 ## 项目概述
 基于 Pi Agent SDK 和 officecli 的 Web 端 Office 文档查看/编辑 + AI Agent 协作工具，面向交通规划工程师的日常办公场景。
 
-原始需求基线：**v0.5.0**（本文件保留早期需求；当前实现状态以 README、变更日志和版本管理计划为准）
+当前基线：**v0.8.34**（feature/phase1-safety-baseline）
 
 ## 核心需求
 
@@ -93,3 +93,4 @@
 | v0.4.0 | 顶部工具栏(编辑/预览)/对话输入区重设计/批注可展开/文本编辑保存/历史兼容pi v3/批注精确定位 | feature/v0.4.0 WIP |
 | v0.5.0 | Office Viewer集成（docx-preview + pptxviewjs）/raw文件流接口/文档路由正则化修复 | 分支完成，待合并 |
 | v0.6.0 | 知识库全屏模式(Obsidian风格)/知识图谱(G6力导向)/本地索引+全文搜索/IMA云端集成/kb工具/@引用分析链路 | feature/knowledge-base 开发中 |
+| v0.8.34 | TaskEnvelope/run manifest/产物 diff 与回滚/历史 fork/声明式工作流/记忆建议确认/任务状态栏 | 本轮完成 |
