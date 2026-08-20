@@ -16,7 +16,29 @@ import { recordRunEvent } from "./runs.mjs";
 import { taskSummary } from "./task.mjs";
 import { createDemoAnalysis } from "./map-analysis.mjs";
 
-const SESSION_STORE = path.join(AGENT_DIR, "sessions");
+// Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
+// 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
+const SESSION_STORE = path.join(PROJECT_DIR, ".规聚会话");
+fs.mkdirSync(SESSION_STORE, { recursive: true });
+
+function isPathInside(filePath, directory) {
+  const relative = path.relative(path.resolve(directory), path.resolve(filePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** 将只读的旧 Pi 会话复制到工作台会话目录后再打开，保留原历史文件作为只读来源。 */
+function materializeSessionPath(sessionPath) {
+  if (!sessionPath) return sessionPath;
+  const source = path.resolve(String(sessionPath));
+  if (isPathInside(source, SESSION_STORE) || !fs.existsSync(source)) return source;
+  const target = path.join(SESSION_STORE, path.basename(source));
+  try {
+    fs.copyFileSync(source, target);
+    return target;
+  } catch (error) {
+    throw new Error(`无法将旧 Pi 会话迁移到项目内可写目录：${error.message}`);
+  }
+}
 
 function readJsonFile(file, fallback = {}) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
@@ -664,8 +686,9 @@ class AgentManager extends EventEmitter {
       },
     });
 
-    const sessionManager = options.sessionPath
-      ? SessionManager.open(options.sessionPath, SESSION_STORE, options.cwd || getWorkspace())
+    const writableSessionPath = materializeSessionPath(options.sessionPath);
+    const sessionManager = writableSessionPath
+      ? SessionManager.open(writableSessionPath, SESSION_STORE, options.cwd || getWorkspace())
       : SessionManager.create(options.cwd || getWorkspace(), SESSION_STORE);
     const { session } = await createAgentSession({
       cwd: PROJECT_DIR,
