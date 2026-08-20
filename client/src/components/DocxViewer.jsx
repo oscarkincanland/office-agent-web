@@ -80,6 +80,7 @@ export default function DocxViewer({ name }) {
   const [comments, setComments] = useState([]);
   const [activeComment, setActiveComment] = useState(null);
   const [zoom, setZoom] = useState(100); // 缩放比例
+  const [pageCount, setPageCount] = useState(0);
 
   // 渲染 docx
   const renderDoc = useCallback(async () => {
@@ -97,12 +98,14 @@ export default function DocxViewer({ name }) {
         className: "oaw-docx",
         inWrapper: true,
         breakPages: true,
-        ignoreLastRenderedPageBreak: true,
+        // 保留 Word 写入的 lastRenderedPageBreak，避免长文被压成一个连续大页面。
+        ignoreLastRenderedPageBreak: false,
         renderComments: showComments, // 批注显示跟随工具栏开关
         renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
         useBase64URL: false,          // 图片用 Blob URL（useBase64URL 的 FileReader 异步链路在部分文档下 src 落空）
       });
       buildOutline(host);
+      setPageCount(host.querySelectorAll("section.oaw-docx").length || 1);
       setDirty(false);
       // 加载批注数据
       loadComments();
@@ -146,16 +149,16 @@ export default function DocxViewer({ name }) {
     if (items.length === 0) {
       const paras = host.querySelectorAll("section.oaw-docx p");
       paras.forEach((el) => {
-        const st = el.style || {};
+        const st = window.getComputedStyle ? window.getComputedStyle(el) : el.style || {};
         const fs = parseFloat(st.fontSize) || 0;
         const bold = st.fontWeight === "bold" || parseInt(st.fontWeight, 10) >= 600;
         const text = el.textContent.trim();
-        // 标题特征：加粗 或 字号 >= 14pt，且文本较短（<60字）
-        if (text && (bold || fs >= 14) && text.length <= 60) {
-          let level = 3;
-          if (fs >= 22) level = 1;
+        // 标题特征：使用计算样式而不是 element.style，并兼容“ 一、 / （一） ”这类正式报告标题。
+        const numbered = /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、|[（(][一二三四五六七八九十百零\d]+[）)]|\d+[.)、])/.test(text);
+        if (text && (bold || fs >= 13 || numbered) && text.length <= 80) {
+          let level = numbered && /^[（(]/.test(text) ? 2 : 3;
+          if (fs >= 22 || /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、)/.test(text)) level = 1;
           else if (fs >= 18) level = 2;
-          else if (fs >= 14) level = 3;
           items.push({ level, text: text.slice(0, 100), el });
         }
       });
@@ -403,7 +406,7 @@ export default function DocxViewer({ name }) {
             </button>
           </>
         )}
-        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}</span>
+        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · ${pageCount} 页` : ""}</span>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}

@@ -106,6 +106,28 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
+function extractTodoTasks(messages = []) {
+  let latest = [];
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    const text = [
+      message.text || "",
+      ...(message.blocks || []).filter((block) => block.type === "text").map((block) => block.text || ""),
+    ].join("\n");
+    const tasks = [];
+    const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
+    let match;
+    while ((match = re.exec(text))) {
+      const taskText = match[2].trim();
+      if (taskText && !tasks.some((task) => task.text === taskText)) {
+        tasks.push({ text: taskText, done: match[1].toLowerCase() === "x" });
+      }
+    }
+    if (tasks.length) latest = tasks;
+  }
+  return latest;
+}
+
 export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -124,7 +146,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
-  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [] });
+  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -183,6 +205,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setReferences([]);
     setImages([]);
     setAttachments([]);
+    setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
   }, [onNewSession]);
@@ -588,7 +611,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       if (d.sessionId) onSessionChange?.(d.sessionId);
       if (d.runId) {
         patch(aid, (m) => ({ ...m, runId: d.runId, task: d.task || null, references: d.task?.references || sendReferences }));
-        setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences }));
+        setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences, task: d.task || s.task }));
       }
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
@@ -675,6 +698,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   }, [messages]);
 
   const hint = currentDoc || "未打开文件";
+  const todoTasks = useMemo(() => extractTodoTasks(messages), [messages]);
 
   return (
     <ErrorBoundary>
@@ -717,12 +741,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
         </div>
 
-        <div className="chat-body" ref={bodyRef} onScroll={() => {
-          const el = bodyRef.current;
-          if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
-            userScrolledUpRef.current = true;
-          }
-        }}>
+        <div className="chat-stream-shell">
+          <div className="chat-body" ref={bodyRef} onScroll={() => {
+            const el = bodyRef.current;
+            if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
+              userScrolledUpRef.current = true;
+            }
+          }}>
           {messages.length === 0 && (
             <div className="chat-empty">
               <div>发送消息给 agent</div>
@@ -746,9 +771,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             });
           }} />)}
           <div ref={bottomRef} />
+          </div>
+          {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
+          {loadSettings().showTimeline !== false && <ChatTimeline messages={messages} containerRef={bodyRef} />}
         </div>
-        {/* 会话消息目录栏：固定于聊天面板左侧（不随消息滚动），悬停展开；可在设置中关闭 */}
-        {loadSettings().showTimeline !== false && <ChatTimeline messages={messages} containerRef={bodyRef} />}
 
         {images.length > 0 && !modelVision && (
           <div className="vision-hint">当前模型可能不支持图片，建议切换 [V] 模型</div>
@@ -787,6 +813,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             ))}
           </div>
         )}
+        <TaskDock tasks={todoTasks} runState={runState} />
         <div className="chat-input">
           <div className="chat-input-row">
             <textarea
@@ -978,20 +1005,6 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
   const [copied, setCopied] = useState(false);
   const [waitSec, setWaitSec] = useState(0);
 
-  // 从文本块解析任务清单（- [ ] / - [x]）
-  const planTasks = useMemo(() => {
-    const tasks = [];
-    for (const b of blocks) {
-      if (!b.text) continue;
-      const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
-      let match;
-      while ((match = re.exec(b.text))) {
-        tasks.push({ text: match[2].trim(), done: match[1] !== " " });
-      }
-    }
-    return tasks;
-  }, [blocks]);
-
   // 等待首个内容块：显示"正在思考..." + 耗时计时
   useEffect(() => {
     if (!streaming || hasContent) return;
@@ -1041,8 +1054,6 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {/* 任务进度卡（Proma TaskProgressCard：聚合 - [x] 任务 + 进度条） */}
-            {planTasks.length > 0 && <TaskProgressCard tasks={planTasks} />}
             {/* 独立条目流（pi-web BlockView 模型）：思考/工具调用/文本按原始顺序各自成条目，不包裹分组框 */}
             <div className="msg-blocks">
               {blocks.map((b, i) => {
@@ -1207,7 +1218,47 @@ function AskBlock({ block, clientId, threadId }) {
   );
 }
 
-// ========== 任务进度卡（Proma TaskProgressCard：进度条 + 状态图标行） ==========
+// ========== 输入栏上方的执行步骤面板 ==========
+function TaskDock({ tasks = [], runState }) {
+  const [open, setOpen] = useState(true);
+  const running = runState?.status === "running" || runState?.status === "finishing";
+  if (!tasks.length && !running) return null;
+
+  const done = tasks.filter((task) => task.done).length;
+  const activeIndex = tasks.findIndex((task) => !task.done);
+  const statusText = runState?.status === "finishing" ? "整理产物" : runState?.status === "completed" ? "已完成" : running ? "执行中" : "待命";
+
+  return (
+    <div className={`todo-dock ${open ? "open" : ""}`} aria-live="polite">
+      <div className="todo-dock-head" onClick={() => setOpen((value) => !value)}>
+        <span className="todo-dock-chevron">{open ? "▾" : "▸"}</span>
+        <Icon name="list" size={13} />
+        <span className="todo-dock-title">执行步骤</span>
+        {tasks.length > 0 && <span className="todo-dock-progress">{done}/{tasks.length}</span>}
+        <span className={`todo-dock-status ${running ? "running" : ""}`}>{statusText}</span>
+      </div>
+      {open && (
+        <div className="todo-dock-body">
+          {tasks.length > 0 ? (
+            <>
+              <div className="todo-dock-bar"><span style={{ width: `${(done / tasks.length) * 100}%` }} /></div>
+              {tasks.map((task, index) => (
+                <div key={`${task.text}-${index}`} className={`todo-dock-item ${task.done ? "done" : ""} ${index === activeIndex && running ? "running" : ""}`}>
+                  <span className="todo-dock-check">{task.done ? <Icon name="check" size={11} /> : index === activeIndex && running ? <Icon name="loading" size={11} className="icon-loading" /> : <span />}</span>
+                  <span className="todo-dock-text">{task.text}</span>
+                </div>
+              ))}
+            </>
+          ) : (
+            <div className="todo-dock-empty">Agent 正在拆解任务，步骤清单会在规划后显示。</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== 旧版消息内任务卡（保留组件，兼容历史代码） ==========
 function TaskProgressCard({ tasks }) {
   const [open, setOpen] = useState(true);
   const done = tasks.filter((t) => t.done).length;
