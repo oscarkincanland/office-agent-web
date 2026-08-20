@@ -17,6 +17,7 @@ office-workspace/*
 # 矢量瓦片为生成产物（node scripts/build-vector-tiles.mjs 20s 重建，15k 文件不入库）
 office-workspace/maps/zhejiang-map/tiles/
 .sessions/
+.规聚会话/
 
 # agent 运行时产物（OD 分析 demo 等）
 OD*Demo-*/
