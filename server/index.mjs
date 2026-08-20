@@ -969,8 +969,10 @@ app.post("/api/agent/auth/remove", async (req, res) => {
 });
 
 // ---------- sessions ----------
-// 会话 JSONL 文件存放在 AGENT_DIR/sessions/ 目录下，遵循 pi SDK SessionManager 格式
-const SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
+// 新会话写入项目内可写目录；旧 Pi 全局目录只作为只读历史来源。
+const SESSIONS_DIR = path.join(PROJECT_DIR, ".规聚会话");
+const LEGACY_SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
+const SESSION_READ_DIRS = [SESSIONS_DIR, LEGACY_SESSIONS_DIR];
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 
 // ---------- skills ----------
@@ -1131,30 +1133,57 @@ app.post("/api/skills/import", (req, res) => {
   }
 });
 
-// 递归扫描 sessions 目录（含 cwd 分组子目录）下所有 .jsonl 文件
+function sessionBaseName(fileName) {
+  return String(fileName || "").replace(/\.(?:jsonl|json)$/i, "");
+}
+
+// 递归扫描工作台目录和旧 Pi 目录下的会话文件；工作台目录优先，避免迁移后重复显示。
 function listSessionFiles() {
-  if (!fs.existsSync(SESSIONS_DIR)) return [];
-  const out = [];
-  function walk(dir, depth) {
+  const candidates = [];
+  function walk(dir, depth, storeDir) {
     if (depth > 4) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
-        walk(full, depth + 1);
-      } else if (e.isFile() && e.name.endsWith(".jsonl")) {
-        const st = fs.statSync(full);
-        out.push({ fileName: e.name, fullPath: full, mtime: st.mtimeMs });
+        walk(full, depth + 1, storeDir);
+      } else if (e.isFile() && /\.(?:jsonl|json)$/i.test(e.name)) {
+        try {
+          const st = fs.statSync(full);
+          candidates.push({ fileName: e.name, fullPath: full, storeDir, mtime: st.mtimeMs });
+        } catch {}
       }
     }
   }
-  walk(SESSIONS_DIR, 0);
+  for (const dir of SESSION_READ_DIRS) walk(dir, 0, dir);
+  // 同一个会话迁移后可能同时存在于新旧目录；按 session id 去重，
+  // 但保留旧目录中不同子目录下同名的独立会话。
+  const preferred = candidates.sort((a, b) => {
+    const aCurrent = a.storeDir === SESSIONS_DIR ? 1 : 0;
+    const bCurrent = b.storeDir === SESSIONS_DIR ? 1 : 0;
+    return bCurrent - aCurrent || b.mtime - a.mtime;
+  });
+  const seenIds = new Set();
+  const out = [];
+  for (const f of preferred) {
+    let identity = `file:${f.fullPath}`;
+    try {
+      const firstLine = fs.readFileSync(f.fullPath, "utf8").split(/\r?\n/)[0];
+      const h = JSON.parse(firstLine);
+      if (h?.id || h?.sessionId) identity = `id:${h.id || h.sessionId}`;
+    } catch {}
+    if (seenIds.has(identity)) continue;
+    seenIds.add(identity);
+    out.push(f);
+  }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
 
-// 根据 id 查找对应的 .jsonl 文件（先按文件名匹配，再按 header.sessionId 匹配）
+// 根据 id 查找对应的会话文件（先按文件名匹配，再按首行 session id 匹配）
 function findSessionFile(id) {
   const files = listSessionFiles();
-  const byName = files.find((f) => f.fileName === id + ".jsonl" || f.fileName.startsWith(id));
+  const byName = files.find((f) => f.fileName === id + ".jsonl" || f.fileName === id + ".json" || f.fileName.startsWith(id));
   if (byName) return byName;
   for (const f of files) {
     try {
@@ -1166,6 +1195,17 @@ function findSessionFile(id) {
     } catch {}
   }
   return null;
+}
+
+function materializeWritableSession(found) {
+  if (!found || found.storeDir === SESSIONS_DIR) return found;
+  const target = path.join(SESSIONS_DIR, found.fileName);
+  try {
+    fs.copyFileSync(found.fullPath, target);
+    return { ...found, fullPath: target, storeDir: SESSIONS_DIR };
+  } catch (e) {
+    throw new Error(`无法将旧 Pi 会话迁移到项目内可写目录：${e.message}`);
+  }
 }
 
 // 解析 JSONL 文件所有行（每行一个 JSON 对象，跳过空行和解析失败的行）
@@ -1362,7 +1402,7 @@ app.get("/api/sessions", (req, res) => {
         if (!hasUserMessage && !h.label) continue;
         if (isBootstrapSessionTitle(title)) continue;
         sessions.push({
-          id: h.id || h.sessionId || path.basename(f.fileName, ".jsonl"),
+          id: h.id || h.sessionId || sessionBaseName(f.fileName),
           cwd: h.cwd || "",
           created: h.created || "",
           modified: f.mtime,
@@ -1433,7 +1473,7 @@ app.get("/api/sessions/:id", (req, res) => {
       tree,
       leafId,
       info: {
-        id: header.sessionId || header.id || path.basename(found.fileName, ".jsonl"),
+        id: header.sessionId || header.id || sessionBaseName(found.fileName),
         cwd: header.cwd || "",
         created: header.created || "",
         label: header.label || "",
@@ -1465,13 +1505,14 @@ app.post("/api/sessions/:id/rename", (req, res) => {
   if (!found) return res.status(404).json({ error: "not found" });
   try {
     const { label } = req.body || {};
-    const text = fs.readFileSync(found.fullPath, "utf8");
+    const writable = materializeWritableSession(found);
+    const text = fs.readFileSync(writable.fullPath, "utf8");
     const lines = text.split(/\r?\n/);
     if (!lines[0]) return res.status(400).json({ error: "empty file" });
     const header = JSON.parse(lines[0]);
     header.label = String(label || "");
     lines[0] = JSON.stringify(header);
-    fs.writeFileSync(found.fullPath, lines.join("\n"));
+    fs.writeFileSync(writable.fullPath, lines.join("\n"));
     res.json({ ok: true, label: header.label });
   } catch (e) {
     res.status(500).json({ error: e.message });
