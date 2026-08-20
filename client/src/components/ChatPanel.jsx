@@ -123,7 +123,25 @@ function extractTodoTasks(messages = []) {
         tasks.push({ text: taskText, done: match[1].toLowerCase() === "x" });
       }
     }
-    if (tasks.length) latest = tasks;
+    if (!tasks.length) continue;
+    if (!latest.length) {
+      latest = tasks;
+      continue;
+    }
+    // 连续对话时，Agent 常只回写刚完成的那一项；合并同名步骤，不能让
+    // 后一条局部清单把之前的 0/4 状态覆盖掉。
+    const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const latestByKey = new Map(latest.map((task) => [normalize(task.text), task]));
+    const overlap = tasks.some((task) => latestByKey.has(normalize(task.text)));
+    if (overlap) {
+      for (const task of tasks) {
+        const old = latestByKey.get(normalize(task.text));
+        if (old) old.done = task.done;
+        else latest.push(task);
+      }
+    } else {
+      latest = tasks;
+    }
   }
   return latest;
 }
@@ -136,6 +154,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [images, setImages] = useState([]);
   const [attachments, setAttachments] = useState([]); // 非图片附件
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [connected, setConnected] = useState(false);
   const [models, setModels] = useState(modelsProp || []);
   const [model, setModel] = useState("");
@@ -157,6 +176,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
+  const stoppingRef = useRef(false);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
@@ -189,6 +209,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     if (historyMessages) {
       setMessages(historyMessages);
       setBusy(false);
+      stoppingRef.current = false;
+      setStopping(false);
       assistantIdRef.current = null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
@@ -200,6 +222,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const handleNewSession = useCallback(() => {
     setMessages([]);
     setBusy(false);
+    stoppingRef.current = false;
+    setStopping(false);
     assistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
@@ -451,6 +475,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        stoppingRef.current = false;
+        setStopping(false);
         setRunState((s) => ({ ...s, status: "finishing" }));
         if (onAgentEnd) onAgentEnd();
         break;
@@ -460,21 +486,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
+        stoppingRef.current = false;
+        setStopping(false);
         setRunState((s) => ({ ...s, status: "failed" }));
         break;
       case "steer":
         pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
         break;
       case "aborted":
-        if (aid) patch(aid, (m) => ({
-          ...m,
-          status: "done",
-          stopped: true,
-        }));
-        assistantIdRef.current = null;
-        streamBufRef.current = null;
-        streamingMsgIdRef.current = null;
-        setBusy(false);
+        finalizeStopped();
         break;
       case "file_changed":
         {
@@ -554,7 +574,20 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
   }, [acceptSystemEvent]);
 
+  const finalizeStopped = useCallback(() => {
+    const id = assistantIdRef.current;
+    if (id) patch(id, (m) => ({ ...m, status: "done", stopped: true }));
+    assistantIdRef.current = null;
+    streamBufRef.current = null;
+    streamingMsgIdRef.current = null;
+    stoppingRef.current = false;
+    setStopping(false);
+    setBusy(false);
+    setRunState((s) => ({ ...s, status: "aborted" }));
+  }, [patch]);
+
   const send = async (overrideText) => {
+    if (stoppingRef.current) return;
     const rawText = (overrideText ?? input).trim();
     if (!rawText && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
     const text = rawText || (images.length ? "（图片消息）" : "（附件消息）");
@@ -642,13 +675,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
 
   // 中止当前 agent 运行
   const stop = async () => {
+    if (!busy || stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStopping(true);
     try {
-      await fetch("/api/agent/abort", {
+      const res = await fetch("/api/agent/abort", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ client: clientId, thread: threadId }),
       });
-    } catch {}
+      if (!res.ok) throw new Error(`请求失败（${res.status}）`);
+      // SSE 正常会收到 aborted；断线时也要让输入框恢复可用。
+      window.setTimeout(() => {
+        if (stoppingRef.current) finalizeStopped();
+      }, 1200);
+    } catch (e) {
+      stoppingRef.current = false;
+      setStopping(false);
+      pushSystem(`中断失败：${e.message || "网络错误"}`);
+    }
   };
 
   const handleMemoryApprove = async (id) => {
@@ -880,7 +925,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             />
             <div className="input-send">
               {busy ? (
-                <button className="btn danger stop-btn" onClick={stop} title="停止生成"><Icon name="stop" size={14} /></button>
+                <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
+                  <Icon name={stopping ? "loading" : "stop"} size={14} className={stopping ? "icon-loading" : ""} />
+                  <span>{stopping ? "中断中" : "中断"}</span>
+                </button>
               ) : (
                 <button className="btn primary send-btn" onClick={() => send()} title="发送 (Enter)"><Icon name="send" size={14} /></button>
               )}
@@ -1273,9 +1321,12 @@ function TaskDock({ tasks = [], runState }) {
   const running = runState?.status === "running" || runState?.status === "finishing";
   if (!tasks.length && !running) return null;
 
-  const done = tasks.filter((task) => task.done).length;
-  const activeIndex = tasks.findIndex((task) => !task.done);
-  const statusText = runState?.status === "finishing" ? "整理产物" : runState?.status === "completed" ? "已完成" : running ? "执行中" : "待命";
+  // Agent 有时完成任务后没有再次输出带 [x] 的整张清单；run_finished=completed
+  // 是可靠的回合完成信号，用它补齐最终进度，连续对话开始后仍会继续解析新清单。
+  const displayTasks = runState?.status === "completed" ? tasks.map((task) => ({ ...task, done: true })) : tasks;
+  const done = displayTasks.filter((task) => task.done).length;
+  const activeIndex = displayTasks.findIndex((task) => !task.done);
+  const statusText = runState?.status === "finishing" ? "整理产物" : runState?.status === "completed" ? "已完成" : runState?.status === "aborted" ? "已中断" : running ? "执行中" : "待命";
 
   return (
     <div className={`todo-dock ${open ? "open" : ""}`} aria-live="polite">
@@ -1283,15 +1334,15 @@ function TaskDock({ tasks = [], runState }) {
         <span className="todo-dock-chevron">{open ? "▾" : "▸"}</span>
         <Icon name="list" size={13} />
         <span className="todo-dock-title">执行步骤</span>
-        {tasks.length > 0 && <span className="todo-dock-progress">{done}/{tasks.length}</span>}
+        {displayTasks.length > 0 && <span className="todo-dock-progress">{done}/{displayTasks.length}</span>}
         <span className={`todo-dock-status ${running ? "running" : ""}`}>{statusText}</span>
       </div>
       {open && (
         <div className="todo-dock-body">
-          {tasks.length > 0 ? (
+          {displayTasks.length > 0 ? (
             <>
-              <div className="todo-dock-bar"><span style={{ width: `${(done / tasks.length) * 100}%` }} /></div>
-              {tasks.map((task, index) => (
+              <div className="todo-dock-bar"><span style={{ width: `${(done / displayTasks.length) * 100}%` }} /></div>
+              {displayTasks.map((task, index) => (
                 <div key={`${task.text}-${index}`} className={`todo-dock-item ${task.done ? "done" : ""} ${index === activeIndex && running ? "running" : ""}`}>
                   <span className="todo-dock-check">{task.done ? <Icon name="check" size={11} /> : index === activeIndex && running ? <Icon name="loading" size={11} className="icon-loading" /> : <span />}</span>
                   <span className="todo-dock-text">{task.text}</span>
