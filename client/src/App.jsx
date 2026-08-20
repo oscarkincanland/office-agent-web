@@ -254,71 +254,69 @@ export default function App() {
         getSession(session.id),
         listRuns(session.id).catch(() => ({ runs: [] })),
       ]);
-      const msgs = (d.entries || [])
-        .filter((e) => e.type === "message" && e.message)
-        .map((e) => {
-          const m = e.message;
-          let text = "";
-          const blocks = [];
-          const images = [];
-          if (typeof m.content === "string") text = m.content;
-          else if (Array.isArray(m.content)) {
-            for (const b of m.content) {
-              if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
-              else if (b.type === "image" || b.type === "input_image") {
-                const src = historyImageData(b);
-                if (src) images.push(src);
-              }
-              else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
-              else if (b.type === "toolCall") {
-                const input = typeof b.input === "string" ? b.input : JSON.stringify(b.input, null, 2);
-                blocks.push({
-                  type: "tool",
-                  id: histId(),
-                  name: b.toolName || b.name || "tool",
-                  input,
-                  output: "",
-                  result: "",
-                  done: true,
-                  isError: false,
-                  expanded: false,
-                  duration: null,
-                });
-              } else if (b.type === "toolResult" || b.type === "tool_result") {
-                const output = typeof b.content === "string" ? b.content : JSON.stringify(b.content || b.output || "", null, 2);
-                blocks.push({
-                  type: "tool",
-                  id: histId(),
-                  name: b.toolName || b.name || "tool result",
-                  input: "",
-                  output,
-                  result: output,
-                  done: true,
-                  isError: !!b.isError,
-                  expanded: false,
-                  duration: null,
-                });
-              }
+      // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
+      // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
+      const msgs = [];
+      const toolBlocks = new Map();
+      for (const e of (d.entries || [])) {
+        if (e.type !== "message" || !e.message) continue;
+        const m = e.message;
+        const role = m.role === "assistant" ? "assistant" : m.role === "user" ? "user" : m.role;
+        if (role === "toolResult" || role === "tool_result") {
+          const output = typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.filter((b) => b?.type === "text").map((b) => b.text || "").join("\n")
+              : JSON.stringify(m.content || m.output || "", null, 2);
+          const block = toolBlocks.get(m.toolCallId);
+          if (block) {
+            block.output = output;
+            block.result = output;
+            block.done = true;
+            block.isError = !!m.isError;
+          } else {
+            // 老会话可能没有可配对的 toolCallId：挂到最近一条 Agent 消息，仍不显示为用户消息。
+            const lastAssistant = [...msgs].reverse().find((item) => item.role === "assistant");
+            if (lastAssistant) lastAssistant.blocks.push({
+              type: "tool", id: histId(), name: m.toolName || "tool result", input: "",
+              output, result: output, done: true, isError: !!m.isError, expanded: false, duration: null,
+            });
+          }
+          continue;
+        }
+        if (role !== "assistant" && role !== "user") continue;
+        let text = "";
+        const blocks = [];
+        const images = [];
+        if (typeof m.content === "string") text = m.content;
+        else if (Array.isArray(m.content)) {
+          for (const b of m.content) {
+            if (b.type === "text" || b.type === "input_text") text += (text ? "\n" : "") + (b.text || b.content || "");
+            else if (b.type === "image" || b.type === "input_image") {
+              const src = historyImageData(b);
+              if (src) images.push(src);
+            } else if (b.type === "thinking") blocks.push({ type: "thinking", text: b.thinking || "" });
+            else if (b.type === "toolCall") {
+              const callId = b.id || b.toolCallId || histId();
+              const rawInput = b.input ?? b.arguments ?? b.params ?? "";
+              const input = typeof rawInput === "string" ? rawInput : JSON.stringify(rawInput, null, 2);
+              const block = {
+                type: "tool", id: callId, name: b.toolName || b.name || "tool", input,
+                output: "", result: "", done: false, isError: false, expanded: false, duration: null,
+              };
+              blocks.push(block);
+              toolBlocks.set(callId, block);
             }
           }
-          const isAssistant = m.role === "assistant";
-          // 若 assistant 有纯文本且没有 text block，追加为 text block
-          if (isAssistant && text && !blocks.some((b) => b.type === "text")) {
-            blocks.push({ type: "text", text });
-          }
-          const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
-          return {
-            id: e.id,
-            role: isAssistant ? "assistant" : "user",
-            text,
-            images,
-            blocks,
-            references: historyReferences(text),
-            currentDoc: currentDocMatch?.[1]?.trim() || null,
-            status: "done",
-            createdAt: entryCreatedAt(e, m),
-          };
+        }
+        // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
+        if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
+        const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
+        msgs.push({
+          id: e.id, role, text, images, blocks, references: historyReferences(text),
+          currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
         });
+      }
       const runMessages = (runData?.runs || [])
         .filter((run) => run?.status && (run.summary || run.artifacts?.length))
         .map((run) => ({

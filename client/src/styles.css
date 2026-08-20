@@ -261,6 +261,34 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-ext { color: var(--muted); font-size: 11px; display: flex; align-items: center; }
 .file-ext.dir { color: var(--accent); font-weight: 600; }
+/* 文件类型图标：让文件树一眼区分 Word / Excel / PPT / 数据文件 */
+.file-type-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.3px;
+  user-select: none;
+}
+.file-type-icon.small { width: 18px; height: 18px; flex-basis: 18px; font-size: 8px; }
+.file-type-icon.dir { background: transparent; color: var(--accent); }
+.file-type-icon.word { background: #2563a8; }
+.file-type-icon.excel { background: #198754; }
+.file-type-icon.powerpoint { background: #2563eb; }
+.file-type-icon.pdf { background: #c73535; font-size: 7px; }
+.file-type-icon.markdown { background: #6b5aa6; }
+.file-type-icon.csv { background: #0f766e; font-size: 7px; }
+.file-type-icon.json { background: #a16207; font-size: 8px; }
+.file-type-icon.html { background: #c2410c; font-size: 8px; }
+.file-type-icon.text { background: #64748b; font-size: 7px; }
+.file-type-icon.other { background: #64748b; }
 .crumb-bar {
   display: flex;
   align-items: center;
@@ -382,7 +410,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .conn { font-size: 11px; color: var(--muted); }
 .conn.on { color: var(--success); }
 .doc-hint { margin-left: auto; font-size: 11px; color: var(--dim); max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chat-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.chat-stream-shell { position: relative; flex: 1; min-height: 0; }
+.chat-body { height: 100%; box-sizing: border-box; overflow-y: auto; padding: 16px 34px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
 .chat-empty { color: var(--muted); text-align: center; padding: 40px 0; font-size: 13px; }
 .vision-hint { padding: 4px 12px; font-size: 11px; color: var(--warning); background: #2a2410; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 /* messages */
@@ -2374,9 +2403,26 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
   margin-bottom: 30px;
   color: black;
+  box-sizing: border-box;
 }
 .oaw-docx-host .oaw-docx-wrapper section.oaw-docx p {
   color: #000 !important;
+  line-height: 1.45 !important;
+}
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx [class*="heading"],
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h1,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h2,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h3,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h4,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h5,
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h6 {
+  line-height: 1.3 !important;
+  margin-top: 0.45em;
+  margin-bottom: 0.35em;
+}
+.oaw-docx-host .oaw-docx-wrapper table {
+  max-width: 100%;
+  border-collapse: collapse;
 }
 /* 亮色主题微调 */
 [data-theme="light"] .oaw-docx-host .oaw-docx-wrapper { background: #e8eaed; }
@@ -2410,10 +2456,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 20px;
 }
 .oaw-pptx-host canvas {
+  width: 100%;
+  height: auto;
   max-width: 100%;
-  max-height: 100%;
+  max-height: none;
   box-shadow: 0 4px 20px rgba(0,0,0,0.4);
   background: #fff;
+  object-fit: contain;
 }
 .oaw-pptx-count {
   font-size: 11px;
@@ -2421,6 +2470,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   font-variant-numeric: tabular-nums;
 }
 .oaw-pptx-jump { font-size: 10px; max-width: 100px; }
+.oaw-pptx-zoom { min-width: 34px; text-align: center; font-size: 10px; color: var(--muted); }
 
 /* ================= 知识库全屏模式 (KnowledgeBase) ================= */
 .kb {
@@ -4837,16 +4887,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 珠子时间线（pi web 风格） */
 .chat-timeline.beads {
   position: absolute;
-  left: 2px;
+  right: 2px;
   top: 0;
   bottom: 0;
-  width: 26px;
+  width: 22px;
   z-index: 5;
   pointer-events: none;
 }
 .timeline-rail {
   position: absolute;
-  left: 9px;
+  left: 10px;
   top: 8px;
   bottom: 8px;
   width: 2px;
@@ -4855,7 +4905,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .timeline-bead {
   position: absolute;
-  left: 0;
+  right: 0;
   transform: translateY(-50%);
   width: 20px;
   height: 20px;
@@ -4878,7 +4928,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .bead-dot.error { background: var(--error); box-shadow: 0 0 0 1px var(--error); }
 .bead-tip {
   position: absolute;
-  left: 24px;
+  right: 22px;
   top: 50%;
   transform: translateY(-50%);
   background: var(--panel-bg);
@@ -5315,6 +5365,44 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-top: 1px solid var(--border);
 }
 .chat-hist-list .session-list { padding: 2px 0; }
+
+/* ===== 输入栏上方执行步骤（复杂任务） ===== */
+.todo-dock {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--panel2-bg);
+  max-height: 176px;
+  overflow: hidden;
+}
+.todo-dock-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 4px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+}
+.todo-dock-head:hover { color: var(--text); background: var(--selected); }
+.todo-dock-chevron { width: 10px; color: var(--dim); font-family: monospace; }
+.todo-dock-title { font-weight: 700; }
+.todo-dock-progress { color: var(--accent); font-variant-numeric: tabular-nums; }
+.todo-dock-status { margin-left: auto; color: var(--dim); font-size: 10px; }
+.todo-dock-status.running { color: var(--accent); }
+.todo-dock-body { padding: 2px 12px 8px; max-height: 136px; overflow-y: auto; }
+.todo-dock-bar { height: 3px; margin: 0 0 5px 18px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.todo-dock-bar span { display: block; height: 100%; background: var(--success); border-radius: inherit; transition: width .25s ease; }
+.todo-dock-item { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 2px 4px; color: var(--text); font-size: 11px; border-radius: 4px; }
+.todo-dock-item.running { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.todo-dock-item.done { color: var(--muted); }
+.todo-dock-item.done .todo-dock-text { text-decoration: line-through; }
+.todo-dock-check { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--success); }
+.todo-dock-check > span { width: 7px; height: 7px; border: 1px solid var(--dim); border-radius: 50%; }
+.todo-dock-item.running .todo-dock-check { color: var(--accent); }
+.todo-dock-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-dock-empty { padding: 5px 0 3px 18px; color: var(--dim); font-size: 10px; }
 
 /* ===== 知识库引用悬浮预览（siyuan 式） ===== */
 .kb-wikilink {
