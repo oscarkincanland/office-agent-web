@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, deleteSession, renameSession, forkSession, approveMemoryProposal, rollbackRun } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rollbackRun } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -141,6 +141,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [model, setModel] = useState("");
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
+  const [modelCounts, setModelCounts] = useState({ available: 0, configured: 0 });
+  const [compacting, setCompacting] = useState(false);
   const [editMode, setEditMode] = useState("office"); // "office" | "agent"：office编辑模式 / 普通agent模式
   const [effort, setEffort] = useState("medium"); // 推理强度 low/medium/high
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
@@ -258,18 +260,26 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   // 同步外部 models
   useEffect(() => { if (modelsProp?.length) setModels(modelsProp); }, [modelsProp]);
 
-  // 初始化模型
+  // 初始化模型：等待真实列表后再选择，避免 App 首次传入空数组时选中失效模型。
   useEffect(() => {
+    let cancelled = false;
     (async () => {
+      let d = { models: modelsProp || [], default: defaultModel || "" };
       if (!modelsProp?.length) {
-        try { const d = await listModels(); setModels(d.models || []); defaultModel = d.default; } catch {}
+        try { d = await listModels(); } catch {}
       }
+      if (cancelled) return;
+      const nextModels = d.models || [];
+      setModels(nextModels);
+      if (d.counts) setModelCounts(d.counts);
       const saved = localStorage.getItem(MODEL_KEY);
-      const cur = saved || defaultModel || "";
+      const preferred = saved || d.default || "";
+      const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
-      applyModel(cur, modelsProp || models);
+      applyModel(cur, nextModels);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [modelsProp, defaultModel]);
 
   function applyModel(id, list) {
     const m = (list || models).find((x) => x.id === id);
@@ -430,6 +440,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "message_start":
         break;
       case "message_end":
+        break;
+      case "context_compacted":
+        pushSystem(`上下文已压缩${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`);
         break;
       case "agent_end":
         if (streamBufRef.current) flushNow(aid);
@@ -675,6 +688,38 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     }
     if (addedImgs.length) setImages((im) => [...im, ...addedImgs]);
     if (addedAtts.length) setAttachments((at) => [...at, ...addedAtts]);
+    const count = addedImgs.length + addedAtts.length;
+    if (count) {
+      setModelMsg(`已加入上下文 ${count} 个文件`);
+      setTimeout(() => setModelMsg(""), 2200);
+    }
+  };
+
+  const handleClipboardPaste = (e) => {
+    const files = Array.from(e.clipboardData?.items || [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    e.preventDefault();
+    handleFiles(files);
+  };
+
+  const compactContext = async () => {
+    if (busy || compacting) return;
+    setCompacting(true);
+    setModelMsg("正在压缩上下文…");
+    try {
+      const result = await compactAgentContext(clientId, threadId);
+      const before = result.tokensBefore ? `，压缩前约 ${result.tokensBefore.toLocaleString()} tokens` : "";
+      pushSystem(`上下文压缩完成${before}。后续对话将继续保留任务摘要。`);
+      setModelMsg("压缩完成");
+    } catch (e) {
+      setModelMsg(`压缩失败：${e.message}`);
+    } finally {
+      setCompacting(false);
+      setTimeout(() => setModelMsg(""), 2800);
+    }
   };
 
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
@@ -827,8 +872,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               }}
               onCompositionEnd={() => {}}
               onPaste={(e) => {
-                const items = e.clipboardData?.items;
-                if (items) handleFiles(Array.from(items).filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter(Boolean));
+                handleClipboardPaste(e);
               }}
               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
               onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
@@ -851,6 +895,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             </button>
             <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
               <Icon name="link" size={14} />
+            </button>
+            <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
+              <Icon name={compacting ? "loading" : "layers"} size={14} />
+              <span>压缩上下文</span>
             </button>
             <span className="ct-sep" />
             <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
@@ -882,9 +930,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                     autoFocus
                   />
                   <div className="ct-pop-list">
-                    <div className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models.map((id) => ({ id, provider: id.split("/")[0], name: id.split("/")[1] }))); setModelMsg(`已扫描 ${d.count} 个模型`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(" "), 2500); }} title="重新扫描模型（读取 models.json 配置）">
+                    <div className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
                       <Icon name="refresh" size={11} /> 重新扫描模型
                     </div>
+                    <div className="ct-model-meta">Pi Runtime：可用 {modelCounts.available || models.length} / 配置目录 {modelCounts.configured || "—"}</div>
                     {models
                       .filter((m) => !modelQ || m.id.toLowerCase().includes(modelQ.toLowerCase()))
                       .map((m) => (

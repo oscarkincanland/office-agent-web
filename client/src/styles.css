@@ -299,6 +299,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-bottom: 1px solid var(--border);
 }
 .crumb-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb-bar .btn-xs:first-child { color: var(--accent); }
 .mdview {
   flex: 1;
   min-height: 0;
@@ -2455,15 +2456,28 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   justify-content: center;
   padding: 20px;
 }
+.oaw-pptx-stage {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
 .oaw-pptx-host canvas {
-  width: 100%;
-  height: auto;
-  max-width: 100%;
-  max-height: none;
+  display: block;
   box-shadow: 0 4px 20px rgba(0,0,0,0.4);
   background: #fff;
   object-fit: contain;
 }
+.oaw-pptx-frame {
+  width: min(1440px, 100%);
+  min-width: 900px;
+  height: 100%;
+  min-height: 620px;
+  border: 0;
+  background: #fff;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+.oaw-pptx-high-fidelity { color: var(--accent); font-size: 10px; }
 .oaw-pptx-count {
   font-size: 11px;
   color: var(--text);
@@ -4487,6 +4501,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-top: 6px;
   flex-wrap: wrap;
 }
+.ct-context-btn {
+  width: auto;
+  padding: 0 8px;
+  gap: 5px;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ct-context-btn:disabled { opacity: 0.55; cursor: wait; }
+.ct-context-btn span { font-size: 10px; white-space: nowrap; }
 .ct-btn {
   display: inline-flex;
   align-items: center;
@@ -4537,6 +4561,12 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   outline: none;
+}
+.ct-model-meta {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 10px;
 }
 .ct-pop-list { max-height: 300px; overflow-y: auto; }
 .ct-pop-refresh {
