@@ -18,6 +18,48 @@ import { createDemoAnalysis } from "./map-analysis.mjs";
 
 const SESSION_STORE = path.join(AGENT_DIR, "sessions");
 
+function readJsonFile(file, fallback = {}) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
+}
+
+/** 本地 Pi 的模型来源：models-store + models.json + auth.json。 */
+function localModelProviders() {
+  const store = readJsonFile(path.join(AGENT_DIR, "models-store.json"), {});
+  const config = readJsonFile(path.join(AGENT_DIR, "models.json"), {});
+  const auth = readJsonFile(path.join(AGENT_DIR, "auth.json"), {});
+  return new Set([
+    ...Object.keys(store || {}),
+    ...Object.keys(config?.providers || {}),
+    ...Object.keys(auth || {}),
+  ]);
+}
+
+/**
+ * Pi SDK 默认的 auth storage 需要在 auth.json 旁创建锁目录；受限桌面进程只能读取该文件，
+ * 会导致 SDK 把本地凭据误判为不存在。这里提供同格式的只读/写入适配器，保持与 TUI 共用文件。
+ */
+function localCredentialStore() {
+  return {
+    read: async (provider) => readJsonFile(path.join(AGENT_DIR, "auth.json"), {})[provider],
+    list: async () => Object.entries(readJsonFile(path.join(AGENT_DIR, "auth.json"), {})).map(([providerId, value]) => ({ providerId, type: value?.type })),
+    modify: async (provider, fn) => {
+      const authPath = path.join(AGENT_DIR, "auth.json");
+      const auth = readJsonFile(authPath, {});
+      const next = await fn(auth[provider]);
+      if (next === undefined) return auth[provider];
+      auth[provider] = next;
+      fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n", "utf8");
+      return next;
+    },
+    delete: async (provider) => {
+      const authPath = path.join(AGENT_DIR, "auth.json");
+      const auth = readJsonFile(authPath, {});
+      delete auth[provider];
+      fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n", "utf8");
+    },
+  };
+}
+
 /** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
 function readMemoryLayers() {
   const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
@@ -187,7 +229,12 @@ class AgentManager extends EventEmitter {
 
   modelRuntime() {
     if (!this.modelRuntimePromise) {
-      this.modelRuntimePromise = ModelRuntime.create().catch((e) => {
+      this.modelRuntimePromise = ModelRuntime.create({
+        authPath: path.join(AGENT_DIR, "auth.json"),
+        modelsPath: path.join(AGENT_DIR, "models.json"),
+        modelsStorePath: path.join(AGENT_DIR, "models-store.json"),
+        credentials: localCredentialStore(),
+      }).catch((e) => {
         this.modelRuntimePromise = null;
         throw e;
       });
@@ -932,6 +979,7 @@ class AgentManager extends EventEmitter {
     const entry = await this.getOrCreate(clientId);
     if (entry.busy) throw new Error("agent busy — wait for the current task to finish");
     const [provider, id] = String(spec).split("/");
+    if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
     const model = mr.getModel(provider, id);
     if (!model) throw new Error("model not found: " + spec);
@@ -941,8 +989,9 @@ class AgentManager extends EventEmitter {
 
   async listModelCatalog() {
     const mr = await this.modelRuntime();
-    const configured = [...mr.getModels()];
-    const available = [...await mr.getAvailable()];
+    const providers = localModelProviders();
+    const configured = [...mr.getModels()].filter((m) => providers.has(m.provider));
+    const available = [...await mr.getAvailable()].filter((m) => providers.has(m.provider));
     const normalize = (m) => ({
       id: m.provider + "/" + m.id,
       provider: m.provider,
