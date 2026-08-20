@@ -424,10 +424,8 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
         {currentDir && (
           <div className="crumb-bar">
-            <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">← 根目录</button>
-            {currentDir.includes("/") && (
-              <button className="btn-xs" onClick={() => onDirChange && onDirChange(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">↑ 上一级</button>
-            )}
+            <button className="btn-xs" onClick={() => onDirChange && onDirChange(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">← 上一级</button>
+            <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">根目录</button>
             <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
         )}
