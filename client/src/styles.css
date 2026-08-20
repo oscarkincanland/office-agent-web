@@ -501,7 +501,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .send-btn { margin-left: auto; }
 .btn.danger { color: var(--error); border-color: var(--error); }
 .btn.danger:hover { background: var(--tool-error); }
-.stop-btn { margin-left: auto; }
+.stop-btn { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 58px; padding: 0 9px; }
+.stop-btn:disabled { opacity: 0.7; cursor: wait; }
 .img-preview-row { display: flex; gap: 6px; padding: 6px 12px 0; flex-shrink: 0; }
 .img-chip { position: relative; }
 .img-chip img { width: 56px; height: 42px; object-fit: cover; border-radius: 3px; border: 1px solid var(--border); }
@@ -4499,10 +4500,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 4px 2px 0;
   border-top: 1px dashed var(--border);
   margin-top: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  min-width: 0;
 }
-.ct-context-btn {
+.chat-toolbar > * { flex: 0 0 auto; }
+.ct-btn.ct-context-btn {
   width: auto;
+  min-width: 96px;
+  flex: 0 0 auto;
   padding: 0 8px;
   gap: 5px;
   color: var(--accent);
@@ -4535,7 +4542,12 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-radius: 50%;
   background: var(--accent);
 }
-.ct-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; }
+.ct-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; flex: 0 0 auto; }
+
+@media (max-width: 520px) {
+  .ct-btn.ct-context-btn { min-width: 28px; width: 28px; padding: 0; }
+  .ct-btn.ct-context-btn span { display: none; }
+}
 
 /* 浮层 */
 .ct-popwrap { position: relative; }
