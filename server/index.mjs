@@ -1647,14 +1647,14 @@ app.get("/api/agent/stream", async (req, res) => {
 
 function loadModelsStore() {
   try {
-    return JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".pi", "agent", "models-store.json"), "utf8"));
+    return JSON.parse(fs.readFileSync(path.join(AGENT_DIR, "models-store.json"), "utf8"));
   } catch {
     return {};
   }
 }
 function loadSettingsDefault() {
   try {
-    const s = JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".pi", "agent", "settings.json"), "utf8"));
+    const s = JSON.parse(fs.readFileSync(path.join(AGENT_DIR, "settings.json"), "utf8"));
     return (s.defaultProvider ? s.defaultProvider + "/" : "") + (s.defaultModel || "");
   } catch {
     return "";
