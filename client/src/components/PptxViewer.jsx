@@ -15,6 +15,7 @@ export default function PptxViewer({ name }) {
   const [error, setError] = useState("");
   const [total, setTotal] = useState(0);
   const [current, setCurrent] = useState(0);
+  const [zoom, setZoom] = useState(100);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,12 +76,17 @@ export default function PptxViewer({ name }) {
             <option key={n} value={n}>第 {n} 页</option>
           ))}
         </select>
+        <span className="toolbar-sep" />
+        <button className="btn-xs" onClick={() => setZoom((v) => Math.max(60, v - 10))} title="缩小幻灯片">−</button>
+        <span className="oaw-pptx-zoom">{zoom}%</span>
+        <button className="btn-xs" onClick={() => setZoom((v) => Math.min(160, v + 10))} title="放大幻灯片">＋</button>
+        <button className="btn-xs" onClick={() => setZoom(100)} title="适合窗口">适合窗口</button>
         <span className="oaw-pptx-hint">pptxviewjs 渲染</span>
       </div>
       {loading && <div className="oaw-pptx-loading"><div className="loading-spinner"></div><div>正在渲染幻灯片...</div></div>}
       {error && <div className="oaw-pptx-error"><Icon name="warning" size={14} /> {error}</div>}
       <div className="oaw-pptx-host" ref={hostRef}>
-        <canvas ref={canvasRef} />
+        <canvas ref={canvasRef} style={{ width: `${zoom}%`, maxWidth: zoom <= 100 ? "1280px" : "none" }} />
       </div>
     </div>
   );

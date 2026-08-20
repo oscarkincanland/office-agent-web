@@ -6,7 +6,25 @@ import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 
-const EXT_LABELS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", markdown: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", csv: "table", json: "code" };
+const FILE_TYPE_META = {
+  docx: { label: "W", className: "word", title: "Word 文档" },
+  xlsx: { label: "X", className: "excel", title: "Excel 工作簿" },
+  pptx: { label: "P", className: "powerpoint", title: "PowerPoint 演示文稿" },
+  pdf: { label: "PDF", className: "pdf", title: "PDF 文档" },
+  md: { label: "M", className: "markdown", title: "Markdown 文档" },
+  markdown: { label: "M", className: "markdown", title: "Markdown 文档" },
+  csv: { label: "CSV", className: "csv", title: "CSV 数据" },
+  json: { label: "{}", className: "json", title: "JSON 数据" },
+  html: { label: "<>" , className: "html", title: "HTML 页面" },
+  htm: { label: "<>" , className: "html", title: "HTML 页面" },
+  txt: { label: "TXT", className: "text", title: "文本文件" },
+};
+
+function FileTypeIcon({ file, size = "normal" }) {
+  if (file?.isDir) return <span className="file-type-icon dir" title="文件夹"><Icon name="folder" size={12} /></span>;
+  const meta = FILE_TYPE_META[String(file?.ext || "").toLowerCase()] || { label: "•", className: "other", title: "其他文件" };
+  return <span className={`file-type-icon ${meta.className} ${size}`} title={meta.title}>{meta.label}</span>;
+}
 const PIN_KEY = "oaw_pinned_sessions";
 
 function getPinnedSet() {
@@ -110,9 +128,13 @@ export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) 
           </div>
         ) : (
           <>
-            <span className="session-label" title={s.title || s.label || s.id}>
+            <span
+              className="session-label"
+              title={s.title || s.label || "未命名会话"}
+              onDoubleClick={(e) => { e.stopPropagation(); setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
+            >
               {pinned.has(s.id) && <Icon name="pin" size={10} className="pin-icon" />}
-              {s.title || s.label || "(空会话) " + s.id.slice(0, 8)}
+              {s.title || s.label || "未命名会话"}
             </span>
             <span className="session-time">{formatTime(s.modified)}</span>
           </>
@@ -439,7 +461,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                 onContextMenu={(e) => handleContextMenu(e, f)}
                 title={f.name}
               >
-                <span className={`file-ext ${f.isDir ? "dir" : ""}`}>{f.isDir ? <Icon name="folder" size={12} /> : <Icon name={EXT_LABELS[f.ext] || "file"} size={12} />}</span>
+                <FileTypeIcon file={f} />
                 <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
                 <span className="file-meta">
                   {f.isDir ? "▶" : formatSize(f.size)}
@@ -499,7 +521,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                       }}
                       title={f.name}
                     >
-                      <span className="file-ext"><Icon name={EXT_LABELS[f.ext] || "file"} size={12} /></span>
+                      <FileTypeIcon file={f} size="small" />
                       <span className="file-name">{f.name}</span>
                       <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
                         {formatTime(new Date(f.mtime).toISOString())}
