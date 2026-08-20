@@ -901,7 +901,8 @@ function agentKey(client, thread) {
 
 app.get("/api/models", async (_req, res) => {
   try {
-    const models = await agentManager.listModels();
+    const catalog = await agentManager.listModelCatalog();
+    const models = catalog.models;
     // enrich vision flags from models-store.json (input includes "image")
     const store = loadModelsStore();
     for (const m of models) {
@@ -909,7 +910,7 @@ app.get("/api/models", async (_req, res) => {
       const cfg = provCfg?.models?.find((x) => x.id === m.id.split("/")[1]);
       if (cfg) m.vision = (cfg.input || []).includes("image") || !!m.vision;
     }
-    res.json({ models, default: loadSettingsDefault() });
+    res.json({ ...catalog, models, default: loadSettingsDefault() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -919,7 +920,8 @@ app.get("/api/models", async (_req, res) => {
 app.post("/api/models/refresh", async (_req, res) => {
   try {
     const models = await agentManager.refreshModels();
-    res.json({ ok: true, count: models.length, models: models.map((m) => m.id) });
+    const catalog = await agentManager.listModelCatalog();
+    res.json({ ok: true, ...catalog, models, count: models.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1484,6 +1486,17 @@ app.post("/api/agent/abort", async (req, res) => {
     res.json(await agentManager.abort(agentKey(client, thread)));
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// 手动压缩当前会话上下文（对应 Pi SDK 的 session.compact）
+app.post("/api/agent/compact", async (req, res) => {
+  const { client, thread, instructions } = req.body || {};
+  if (!client) return res.status(400).json({ error: "client required" });
+  try {
+    res.json(await agentManager.compact(agentKey(client, thread), instructions));
+  } catch (e) {
+    res.status(409).json({ error: e.message });
   }
 });
 

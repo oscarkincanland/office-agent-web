@@ -827,6 +827,24 @@ class AgentManager extends EventEmitter {
     return { ok: true };
   }
 
+  /** 手动压缩当前会话上下文。压缩属于 pi session 能力，不通过伪造 /compact 文本实现。 */
+  async compact(clientId, customInstructions = "") {
+    const entry = await this.getOrCreate(clientId);
+    if (entry.busy || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
+      throw new Error("agent busy — wait for the current task to finish");
+    }
+    const result = await entry.session.compact(String(customInstructions || "").trim() || undefined);
+    emitChannelSafe(entry, "context_compacted", {
+      tokensBefore: result?.tokensBefore || 0,
+      estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+    });
+    return {
+      ok: true,
+      tokensBefore: result?.tokensBefore || 0,
+      estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+    };
+  }
+
   async newThread(clientId, threadId, cwd = getWorkspace()) {
     const old = this.sessions.get(clientId);
     if (old) {
@@ -921,15 +939,26 @@ class AgentManager extends EventEmitter {
     return { ok: true, model: spec };
   }
 
-  async listModels() {
+  async listModelCatalog() {
     const mr = await this.modelRuntime();
-    const avail = await mr.getAvailable();
-    return avail.map((m) => ({
+    const configured = [...mr.getModels()];
+    const available = [...await mr.getAvailable()];
+    const normalize = (m) => ({
       id: m.provider + "/" + m.id,
       provider: m.provider,
       name: m.name || m.id,
       vision: !!m.vision,
-    }));
+    });
+    return {
+      models: available.map(normalize),
+      configured: configured.map(normalize),
+      counts: { available: available.length, configured: configured.length },
+      source: "pi-model-runtime",
+    };
+  }
+
+  async listModels() {
+    return (await this.listModelCatalog()).models;
   }
 
   /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
@@ -939,13 +968,7 @@ class AgentManager extends EventEmitter {
     try {
       await mr.refresh({ allowNetwork: false });
     } catch {}
-    const avail = await mr.getAvailable();
-    return avail.map((m) => ({
-      id: m.provider + "/" + m.id,
-      provider: m.provider,
-      name: m.name || m.id,
-      vision: !!m.vision,
-    }));
+    return (await this.listModelCatalog()).models;
   }
 
   async disposeAll() {
