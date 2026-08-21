@@ -100,6 +100,8 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
   const lastSavedJsonRef = useRef("[]");
 
   const isHtmlKind = doc?.kind === "html" || doc?.kind === "htmlfile";
+  // DOCX/PPTX 使用各自的专用查看器；通用 HTML 工具栏对这两类文件不生效。
+  const isOfficePreview = doc?.kind === "html" && (doc.ext === "docx" || doc.ext === "pptx");
 
   const fetchComments = useCallback(async () => {
     if (!doc) return;
@@ -422,7 +424,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
     <>
       <div className="docview-head">
         <span className="doc-title">{doc.name}</span>
-        {doc.kind === "html" && (
+        {doc.kind === "html" && !isOfficePreview && (
           <>
             <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
             {!watchUrl && (
@@ -435,11 +437,12 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
             )}
           </>
         )}
+        {isOfficePreview && <span className="badge">专用预览工具栏</span>}
         {doc.kind === "xlsx" && <span className="badge">可编辑</span>}
         {doc.kind === "htmlfile" && <span className="badge">HTML 页面</span>}
         {doc.kind === "pdf" && <span className="badge">PDF</span>}
         {doc.kind === "text" && <span className="badge">{doc.ext === "md" || doc.ext === "markdown" ? "Markdown" : "文本"}</span>}
-        {isHtmlKind && (
+        {isHtmlKind && !isOfficePreview && (
           <button
             className={`btn-sm oa-anno-toggle ${annoMode ? "active" : ""}`}
             onClick={toggleAnnoMode}
@@ -449,7 +452,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
             {annoMode ? "退出标注" : "标注"}
           </button>
         )}
-        {(doc.kind === "html" || doc.kind === "text") && (
+        {(doc.kind === "text" || (doc.kind === "html" && !isOfficePreview)) && (
           <>
             <button
               className="btn-sm"
