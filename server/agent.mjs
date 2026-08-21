@@ -96,11 +96,28 @@ function readMemoryLayers() {
       for (const f of fs.readdirSync(memDir).filter((x) => x.endsWith(".md"))) {
         const content = read(path.join(memDir, f), 1800);
         if (!content) continue;
-        const key = f.toLowerCase();
-        if (key.includes("preference") || key.includes("用户偏好")) layers.preferences += `\n${content}`;
-        else if (key.includes("project") || key.includes("项目信息")) layers.project += `\n${content}`;
-        else if (key.includes("lesson") || key.includes("经验教训")) layers.lessons += `\n${content}`;
-        else layers.other.push({ file: f, content });
+        const add = (bucket, value) => { layers[bucket] += `\n${value}`; };
+        const sectionMatches = [...content.matchAll(/^##\s+(.+)\s*$/gm)];
+        if (sectionMatches.length > 0) {
+          sectionMatches.forEach((match, index) => {
+            const title = match[1].trim();
+            const start = match.index + match[0].length;
+            const end = sectionMatches[index + 1]?.index ?? content.length;
+            const body = content.slice(start, end).trim();
+            if (!body) return;
+            if (/规则|准则/i.test(title)) add("rules", `### ${title}\n${body}`);
+            else if (/偏好|preference/i.test(title)) add("preferences", `### ${title}\n${body}`);
+            else if (/项目信息|项目状态|project/i.test(title)) add("project", `### ${title}\n${body}`);
+            else if (/经验|教训|lesson/i.test(title)) add("lessons", `### ${title}\n${body}`);
+            else layers.other.push({ file: `${f} / ${title}`, content: body });
+          });
+        } else {
+          const key = f.toLowerCase();
+          if (key.includes("preference") || key.includes("用户偏好")) add("preferences", content);
+          else if (key.includes("project") || key.includes("项目信息")) add("project", content);
+          else if (key.includes("lesson") || key.includes("经验教训")) add("lessons", content);
+          else layers.other.push({ file: f, content });
+        }
       }
     }
   } catch {}
@@ -301,6 +318,7 @@ class AgentManager extends EventEmitter {
               "- **地图分析**: 用户说“在义乌生成热力图/等时圈”、要求 OD 期望线或公交分析时，优先使用 map_analyze 生成并显示临时结果；结果明确标记演示数据，用户确认后再保存为正式图层。",
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **复杂任务待办**: 预计超过两步的任务，先输出 2-6 项 Markdown 待办清单（格式 `- [ ] 步骤`）。每完成一项后，必须立即在下一段重新输出完整清单，并只把已完成项改为 `- [x] 步骤`；不要只在最终总结时一次性勾选，也不要把每个工具调用都拆成待办项。",
+              "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
@@ -616,10 +634,11 @@ class AgentManager extends EventEmitter {
       name: "memory_update",
       label: "记忆更新",
       description:
-        "提出一条可确认的长期记忆建议。默认不会直接写入；用户确认后由界面批准。section 取值：项目信息 / 用户偏好 / 经验教训。每条控制在 100 字以内。",
+        "提出一条可确认的长期记忆建议。默认不会直接写入；用户确认后由界面批准。section 取值：项目信息 / 工作规则 / 用户偏好 / 经验教训。每条控制在 100 字以内。",
       parameters: Type.Object({
         section: Type.Union([
           Type.Literal("项目信息"),
+          Type.Literal("工作规则"),
           Type.Literal("用户偏好"),
           Type.Literal("经验教训"),
         ]),
@@ -951,6 +970,7 @@ class AgentManager extends EventEmitter {
         "- 新建文件必须写入当前工作区绝对路径，禁止写入项目目录。",
         "- 任务完成时必须按‘读取来源 / 修改文件 / 产物 / 假设 / 下一步’五项给出简短总结；引用缺失或未读取时必须明确说明。",
         "- 复杂任务（预计超过两步）先输出 2-6 项 Markdown 待办清单（格式 `- [ ] 步骤`）。每完成一项后，必须在下一段重新输出完整清单，并只把已完成项改为 `- [x] 步骤`；不要只在最终总结时一次性勾选，也不要把工具调用拆成待办项。",
+        "- 本轮真正完成后，如果发现对后续任务仍有价值的新项目事实、工作规则、用户偏好或经验教训，主动调用一次 memory_update 提出一条待审核建议；没有稳定新信息时不要调用。不要记录临时状态、完整对话、敏感信息或大段原文。",
       ];
       if (memCtx) lines.push("- 工作区记忆（AGENTS.md + memory/*.md）:\n" + memCtx.slice(0, 2000));
       return lines.join("\n");

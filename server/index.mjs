@@ -1803,7 +1803,7 @@ app.post("/api/memory/init", (_req, res) => {
     }
     fs.mkdirSync(memDir, { recursive: true });
     if (!fs.existsSync(memMd)) {
-      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
+      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
     }
     startMemoryWatcher();
     res.json({ ok: true, files: listMemoryFiles() });
