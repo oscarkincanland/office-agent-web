@@ -177,6 +177,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
+  const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
+  const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
+  const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -186,6 +189,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const rafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
   const stoppingRef = useRef(false);
+  const queueRef = useRef([]);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
@@ -224,6 +228,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
       systemEventKeysRef.current.clear();
+      queueRef.current = [];
+      setQueuedMessages([]);
+      setInjectedContext([]);
     }
   }, [historyMessages]);
 
@@ -240,6 +247,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setReferences([]);
     setImages([]);
     setAttachments([]);
+    queueRef.current = [];
+    setQueuedMessages([]);
+    setInjectedContext([]);
     setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
@@ -254,6 +264,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         const sep = v && !v.endsWith(" ") ? " " : "";
         return v + sep + text;
       });
+    },
+    insertContext(text) {
+      const value = String(text || "").trim();
+      if (!value) return;
+      setInput((v) => {
+        const prefix = v && !v.endsWith("\n") ? "\n\n" : "";
+        return `${v}${prefix}[选区上下文]\n${value}\n[/选区上下文]`;
+      });
+      setModelMsg("已加入选区上下文，请补充指令后发送");
+      window.setTimeout(() => setModelMsg(""), 2600);
     },
   }));
 
@@ -488,6 +508,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         setStopping(false);
         setRunState((s) => ({ ...s, status: "finishing" }));
         if (onAgentEnd) onAgentEnd();
+        flushQueued(true);
         break;
       case "agent_error":
         if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText: data.message || "出错了" }));
@@ -595,36 +616,97 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setRunState((s) => ({ ...s, status: "aborted" }));
   }, [patch]);
 
-  const send = async (overrideText) => {
+  const send = async (overrideText, options = {}) => {
     if (stoppingRef.current) return;
-    const rawText = (overrideText ?? input).trim();
-    if (!rawText && images.length === 0 && attachments.length === 0) return; // busy 时也允许发送 = 打断插入新指令
-    const text = rawText || (images.length ? "（图片消息）" : "（附件消息）");
-    const imgs = images.map((i) => ({ mediaType: i.mediaType, data: i.data }));
-    const atts = attachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
-    const sendReferences = [...references, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+    const source = options.payload || {};
+    const sourceImages = source.images || images;
+    const sourceAttachments = source.attachments || attachments;
+    const sourceReferences = source.references || references;
+    const rawText = String(source.rawText ?? overrideText ?? input).trim();
+    if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
+    const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
+    const contextNotes = source.contextNotes || injectedContext;
+    const contextImages = contextNotes.flatMap((note) => note.images || []);
+    const contextAttachments = contextNotes.flatMap((note) => note.attachments || []);
+    const allImages = [...contextImages, ...sourceImages];
+    const allAttachments = [...contextAttachments, ...sourceAttachments];
+    const imgs = allImages.map((i) => ({ mediaType: i.mediaType, data: i.data }));
+    const atts = allAttachments.map((a) => ({ name: a.name, mediaType: a.mediaType, data: a.data }));
+    const sendReferences = [...sourceReferences, ...parseReferenceMarkers(text)].filter((r, i, arr) => arr.findIndex((x) => x.id === r.id) === i);
+
+    // 当前任务执行中：默认排队，另一种选择是只保存为下一轮上下文，不再隐式 steer 打断当前回复。
+    if (busy && !options.force) {
+      if (busyInputMode === "context") {
+        setInjectedContext((prev) => [...prev, { text, images: sourceImages, attachments: sourceAttachments }]);
+        setInput("");
+        setImages([]);
+        setAttachments([]);
+        pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
+        return;
+      }
+      const messageId = newId();
+      const item = {
+        messageId,
+        rawText,
+        images: sourceImages,
+        attachments: sourceAttachments,
+        references: sourceReferences,
+        contextNotes,
+        currentDoc,
+        editMode,
+        effort,
+      };
+      const nextQueue = [...queueRef.current, item];
+      queueRef.current = nextQueue;
+      setQueuedMessages(nextQueue);
+      setMessages((ms) => [...ms, {
+        id: messageId, role: "user", text,
+        images: sourceImages.map((i) => i.dataUrl).filter(Boolean),
+        attachments: sourceAttachments.map((a) => a.name),
+        references: sendReferences,
+        status: "queued", queued: true, currentDoc,
+        createdAt: Date.now(),
+      }]);
+      setInput("");
+      setImages([]);
+      setAttachments([]);
+      setInjectedContext([]);
+      pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
+      return;
+    }
 
     // 注入当前文件上下文
-    const contextPrefix = currentDoc ? `[当前打开文件: ${currentDoc}]\n` : "";
+    const selectedCurrentDoc = source.currentDoc ?? currentDoc;
+    const selectedEditMode = source.editMode ?? editMode;
+    const selectedEffort = source.effort ?? effort;
+    const contextPrefix = selectedCurrentDoc ? `[当前打开文件: ${selectedCurrentDoc}]\n` : "";
     // 按模式注入指令提示
-    const modePrefix = editMode === "office"
+    const modePrefix = selectedEditMode === "office"
       ? "[模式: Office编辑] 优先用 officecli 工具对当前文档做精准文本/样式修改，不要创建新文件。\n"
       : "[模式: 创作] 你可以调用所有 skills 和工具生成新文件（文档/HTML/PPT等），产物保存到当前工作区。\n";
-    const attachPrefix = attachments.length > 0
-      ? `[已上传附件: ${attachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
+    const contextPrefixText = contextNotes.length
+      ? `## 已注入上下文\n${contextNotes.map((note) => note.text).join("\n\n")}\n\n`
       : "";
-    const fullText = contextPrefix + modePrefix + attachPrefix + (rawText || text);
+    const attachPrefix = allAttachments.length > 0
+      ? `[已上传附件: ${allAttachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
+      : "";
+    const fullText = contextPrefix + modePrefix + contextPrefixText + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
-    
-    setMessages((ms) => [...ms, {
-      id: newId(), role: "user", text,
-      images: images.map((i) => i.dataUrl),
-      attachments: attachments.map((a) => a.name),
-      references: sendReferences,
-      status: "done", currentDoc,
-      createdAt: Date.now(),
-    }]);
+
+    const queuedMessageId = source.messageId;
+    if (queuedMessageId) {
+      patch(queuedMessageId, (m) => ({ ...m, status: "done", queued: false, references: sendReferences }));
+    } else {
+      setMessages((ms) => [...ms, {
+        id: newId(), role: "user", text,
+        images: sourceImages.map((i) => i.dataUrl).filter(Boolean),
+        attachments: sourceAttachments.map((a) => a.name),
+        references: sendReferences,
+        status: "done", currentDoc: selectedCurrentDoc,
+        createdAt: Date.now(),
+      }]);
+    }
     const aid = newId();
     assistantIdRef.current = aid;
     streamingMsgIdRef.current = aid;
@@ -637,6 +719,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setInput("");
     setImages([]);
     setAttachments([]);
+    setInjectedContext([]);
     setBusy(true);
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences });
     try {
@@ -650,11 +733,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           images: imgs,
           attachments: atts,
           references: sendReferences,
-          effort,
-          task: {
-            goal: text,
-            mode: editMode,
-            currentFile: currentDoc || null,
+           effort: selectedEffort,
+           task: {
+             goal: text,
+             mode: selectedEditMode,
+             currentFile: selectedCurrentDoc || null,
             references: sendReferences,
             workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
           },
@@ -703,6 +786,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       setStopping(false);
       pushSystem(`中断失败：${e.message || "网络错误"}`);
     }
+  };
+
+  // 当前回合结束后只启动一条队列消息，避免多个请求同时争抢同一个 Pi 会话。
+  const flushQueued = (force = false) => {
+    if (stoppingRef.current || (!force && busy) || !queueRef.current.length) return;
+    const [next, ...rest] = queueRef.current;
+    queueRef.current = rest;
+    setQueuedMessages(rest);
+    // agent_end 事件先于服务端 prompt finally 到达，留出收尾时间再发下一条，避免被误判为 steer。
+    window.setTimeout(() => send(undefined, { force: true, payload: next }), 450);
   };
 
   const handleMemoryApprove = async (id) => {
@@ -798,6 +891,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
 
   const hint = currentDoc || "未打开文件";
   const todoTasks = useMemo(() => extractTodoTasks(messages), [messages]);
+  const hasDraft = Boolean(input.trim() || images.length || attachments.length);
 
   return (
     <ErrorBoundary>
@@ -913,11 +1007,27 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           </div>
         )}
         <TaskDock tasks={todoTasks} runState={runState} />
+        {(queuedMessages.length > 0 || injectedContext.length > 0) && (
+          <div className="chat-pending-bar" aria-live="polite">
+            {queuedMessages.length > 0 && <span><Icon name="list" size={12} /> 待执行 {queuedMessages.length} 条</span>}
+            {injectedContext.length > 0 && <span><Icon name="layers" size={12} /> 待注入上下文 {injectedContext.length} 条</span>}
+            {queuedMessages.length > 0 && !busy && <button type="button" onClick={() => flushQueued()} title="继续执行队列">继续队列</button>}
+            {queuedMessages.length > 0 && <button type="button" onClick={() => { queueRef.current = []; setQueuedMessages([]); }} title="清空待执行消息">清空</button>}
+          </div>
+        )}
         <div className="chat-input">
+          {busy && (
+            <div className="busy-input-mode" role="group" aria-label="当前任务中的新输入处理方式">
+              <span>当前任务中新输入：</span>
+              <button type="button" className={busyInputMode === "queue" ? "active" : ""} onClick={() => setBusyInputMode("queue")}>排队执行</button>
+              <button type="button" className={busyInputMode === "context" ? "active" : ""} onClick={() => setBusyInputMode("context")}>注入上下文</button>
+              <small>{busyInputMode === "queue" ? "本轮完成后自动开始" : "保存到下一轮，不打断当前任务"}</small>
+            </div>
+          )}
           <div className="chat-input-row">
             <textarea
               value={input}
-              placeholder={busy ? "输入新指令可打断当前回复..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
+              placeholder={busy ? "输入后可排队执行，或仅注入下一轮上下文..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -934,10 +1044,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             />
             <div className="input-send">
               {busy ? (
-                <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
-                  <Icon name={stopping ? "loading" : "stop"} size={14} className={stopping ? "icon-loading" : ""} />
-                  <span>{stopping ? "中断中" : "中断"}</span>
-                </button>
+                <>
+                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
+                    <Icon name={busyInputMode === "queue" ? "list" : "layers"} size={13} />
+                    <span>{busyInputMode === "queue" ? "排队" : "注入"}</span>
+                  </button>}
+                  <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
+                    <Icon name={stopping ? "loading" : "stop"} size={14} className={stopping ? "icon-loading" : ""} />
+                    <span>{stopping ? "中断中" : "中断"}</span>
+                  </button>
+                </>
               ) : (
                 <button className="btn primary send-btn" onClick={() => send()} title="发送 (Enter)"><Icon name="send" size={14} /></button>
               )}

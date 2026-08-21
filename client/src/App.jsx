@@ -539,6 +539,7 @@ export default function App() {
               onOpenFile={open}
               loading={docLoading}
               onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
+              onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
             />
           </div>
         </div>

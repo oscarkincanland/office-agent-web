@@ -79,7 +79,7 @@ function selectionToContainerCoords(iframe, range) {
 }
 
 // 单文件内容渲染
-function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
+function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext }) {
   const [watchUrl, setWatchUrl] = useState(null);
   const [watchLoading, setWatchLoading] = useState(false);
   const [watchErr, setWatchErr] = useState("");
@@ -393,10 +393,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
         setAnnoToolbar(null);
         return;
       }
-      if (onSendToAgent) {
+      if (onInsertContext || onSendToAgent) {
         const msg = `在当前打开的 ${doc.name} 中，对选中内容「${annoInput.text}」做修改：${val}`;
         try {
-          onSendToAgent(msg);
+          (onInsertContext || onSendToAgent)(msg);
         } catch (e) {
           console.error("onSendToAgent 调用失败:", e);
         }
@@ -404,7 +404,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
     }
     setAnnoInput(null);
     setAnnoToolbar(null);
-  }, [annoInput, doc, onSendToAgent]);
+  }, [annoInput, doc, onInsertContext, onSendToAgent]);
 
   if (loading && !doc.kind) {
     return (
@@ -490,7 +490,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
       )}
       <div className="docview-body">
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} />
+          <DocxViewer name={doc.name} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
           <PptxViewer name={doc.name} />
@@ -695,7 +695,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent }) {
   );
 }
 
-export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent }) {
+export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
   const doc = tabs.find((t) => t.name === activeTab) || null;
   return (
     <div className="docview">
@@ -727,7 +727,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
           </div>
         </div>
       ) : (
-        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} />
+        <DocContent doc={doc} loading={loading} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
       )}
     </div>
   );
