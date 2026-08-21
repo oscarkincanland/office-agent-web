@@ -41,7 +41,7 @@ const HEADING_OPTIONS = [
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
 
-export default function DocxViewer({ name }) {
+export default function DocxViewer({ name, onInsertContext, onSendToAgent }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -82,6 +82,53 @@ export default function DocxViewer({ name }) {
   const [zoom, setZoom] = useState(100); // 缩放比例
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectionMenu, setSelectionMenu] = useState(null);
+  const [selectionNote, setSelectionNote] = useState("");
+
+  // 选中文档中的文字后显示 Codex 风格操作条：加入上下文、写批注或交给 Agent。
+  useEffect(() => {
+    const host = hostRef.current;
+    const wrap = host?.closest(".oaw-docx-wrap");
+    if (!host || !wrap) return undefined;
+    const handleMouseUp = () => {
+      const sel = window.getSelection?.();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !sel.toString().trim()) return;
+      const range = sel.getRangeAt(0);
+      if (!host.contains(range.commonAncestorContainer)) return;
+      const rect = range.getBoundingClientRect();
+      if (!rect.width && !rect.height) return;
+      setSelectionMenu({
+        text: sel.toString().replace(/\s+/g, " ").trim().slice(0, 6000),
+        left: Math.max(8, rect.left),
+        top: Math.max(8, rect.bottom + 6),
+      });
+      setSelectionNote("");
+    };
+    const clearOnDown = (event) => {
+      if (!event.target.closest(".doc-selection-popover")) setSelectionMenu(null);
+    };
+    host.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("mousedown", clearOnDown);
+    return () => {
+      host.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("mousedown", clearOnDown);
+    };
+  }, [renderKey, loading]);
+
+  const closeSelectionMenu = () => {
+    setSelectionMenu(null);
+    setSelectionNote("");
+    window.getSelection?.()?.removeAllRanges?.();
+  };
+
+  const sendSelectionToContext = (instruction = "") => {
+    if (!selectionMenu) return;
+    const text = instruction
+      ? `文件《${name}》选区：\n${selectionMenu.text}\n\n处理要求：${instruction}`
+      : `文件《${name}》选区：\n${selectionMenu.text}`;
+    onInsertContext?.(text);
+    closeSelectionMenu();
+  };
 
   // 渲染 docx
   const renderDoc = useCallback(async () => {
@@ -502,6 +549,37 @@ export default function DocxViewer({ name }) {
           </div>
           <span className="edit-sep" />
           <span className={`edit-save-msg ${saveMsg.includes("失败") ? "err" : ""}`}>{saveMsg}</span>
+        </div>
+      )}
+
+      {selectionMenu && (
+        <div
+          className="doc-selection-popover"
+          style={{ left: selectionMenu.left, top: selectionMenu.top }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {!selectionMenu.noteMode ? (
+            <>
+              <span className="doc-selection-count">已选 {selectionMenu.text.length} 字</span>
+              <button type="button" onClick={() => sendSelectionToContext()} title="把选中文本放入对话输入框">加入上下文</button>
+              <button type="button" onClick={() => setSelectionMenu((prev) => ({ ...prev, noteMode: true }))} title="写下批注并注入对话">批注并注入</button>
+              <button type="button" onClick={() => sendSelectionToContext("请分析这段内容并告诉我需要如何修改")}>交给 Agent</button>
+            </>
+          ) : (
+            <>
+              <textarea
+                autoFocus
+                value={selectionNote}
+                onChange={(event) => setSelectionNote(event.target.value)}
+                placeholder="写下对这段文字的批注或修改要求…"
+                onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendSelectionToContext(selectionNote.trim()); } }}
+              />
+              <div className="doc-selection-actions">
+                <button type="button" onClick={() => sendSelectionToContext(selectionNote.trim())} disabled={!selectionNote.trim()}>批注并注入</button>
+                <button type="button" className="muted" onClick={closeSelectionMenu}>取消</button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
