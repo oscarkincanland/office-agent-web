@@ -108,6 +108,12 @@ function parseReferenceMarkers(text = "") {
 
 function extractTodoTasks(messages = []) {
   let latest = [];
+  const normalize = (value) => String(value || "")
+    .replace(/[☐☑✅]/g, "")
+    .replace(/^\s*(?:\d+[.)、]|[（(][一二三四五六七八九十百零\d]+[）)]|[-*•])\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
   for (const message of messages) {
     if (message.role !== "assistant") continue;
     const text = [
@@ -115,12 +121,13 @@ function extractTodoTasks(messages = []) {
       ...(message.blocks || []).filter((block) => block.type === "text").map((block) => block.text || ""),
     ].join("\n");
     const tasks = [];
-    const re = /^\s*[-*]\s*\[( |x|X)\]\s*(.+)$/gm;
+    const re = /^\s*(?:[-*•]|\d+[.)、])\s*(?:\[( |x|X)\]|([☐☑✅]))\s*(.+)$/gm;
     let match;
     while ((match = re.exec(text))) {
-      const taskText = match[2].trim();
-      if (taskText && !tasks.some((task) => task.text === taskText)) {
-        tasks.push({ text: taskText, done: match[1].toLowerCase() === "x" });
+      const taskText = match[3].trim();
+      const taskKey = normalize(taskText);
+      if (taskText && !tasks.some((task) => normalize(task.text) === taskKey)) {
+        tasks.push({ text: taskText, done: match[1]?.toLowerCase() === "x" || Boolean(match[2] && match[2] !== "☐") });
       }
     }
     if (!tasks.length) continue;
@@ -130,13 +137,15 @@ function extractTodoTasks(messages = []) {
     }
     // 连续对话时，Agent 常只回写刚完成的那一项；合并同名步骤，不能让
     // 后一条局部清单把之前的 0/4 状态覆盖掉。
-    const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
     const latestByKey = new Map(latest.map((task) => [normalize(task.text), task]));
     const overlap = tasks.some((task) => latestByKey.has(normalize(task.text)));
     if (overlap) {
       for (const task of tasks) {
         const old = latestByKey.get(normalize(task.text));
-        if (old) old.done = task.done;
+        if (old) {
+          old.done = task.done;
+          if (task.text.length > old.text.length) old.text = task.text;
+        }
         else latest.push(task);
       }
     } else {
@@ -934,22 +943,27 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               )}
             </div>
           </div>
-          {/* 单行工具栏（pi-web 风格）：图片/附件 | 模式 | 模型/思考图标 | 新建会话 */}
+          {/* 工具栏按“上下文 / 工作模式 / Agent 设置 / 会话”分组，窄栏时整组换行 */}
           <div className="chat-toolbar">
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <button className="ct-btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>
-              <Icon name="image" size={14} />
-            </button>
-            <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
-              <Icon name="link" size={14} />
-            </button>
-            <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
-              <Icon name={compacting ? "loading" : "layers"} size={14} />
-              <span>压缩上下文</span>
-            </button>
+            <div className="chat-toolbar-group toolbar-context-group">
+              <span className="chat-toolbar-label">上下文</span>
+              <button className="ct-btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>
+                <Icon name="image" size={14} />
+              </button>
+              <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
+                <Icon name="link" size={14} />
+              </button>
+              <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
+                <Icon name={compacting ? "loading" : "layers"} size={14} />
+                <span>压缩</span>
+              </button>
+            </div>
             <span className="ct-sep" />
-            <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
+            <div className="chat-toolbar-group toolbar-mode-group">
+              <span className="chat-toolbar-label">模式</span>
+              <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
               <button
                 className={`mode-btn ${editMode === "office" ? "active" : ""}`}
                 onClick={() => setEditMode("office")}
@@ -960,9 +974,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                 onClick={() => setEditMode("agent")}
                 title="开发模式：生成新文件"
               ><Icon name="pen-tool" size={13} /></button>
+              </div>
             </div>
             <span className="ct-sep" />
             {/* 模型选择：图标 + 浮层 */}
+            <div className="chat-toolbar-group toolbar-agent-group">
+              <span className="chat-toolbar-label">Agent</span>
             <div className="ct-popwrap">
               <button className={`ct-btn ${modelOpen ? "active" : ""}`} onClick={() => { setModelOpen((v) => !v); setEffortOpen(false); }} title={model ? `模型: ${model}` : "选择模型"}>
                 <Icon name="robot" size={14} />
@@ -1022,10 +1039,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                 </div>
               )}
             </div>
-            <span style={{ flex: 1 }} />
-            <button className="ct-btn" onClick={handleNewSession} title="新建会话">
-              <Icon name="plus" size={14} />
-            </button>
+            </div>
+            <span className="chat-toolbar-spacer" />
+            <div className="chat-toolbar-group toolbar-session-group">
+              <button className="ct-btn" onClick={handleNewSession} title="新建会话">
+                <Icon name="plus" size={14} />
+              </button>
+            </div>
             {modelMsg && <span className="model-msg">{modelMsg}</span>}
           </div>
         </div>

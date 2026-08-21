@@ -81,6 +81,7 @@ export default function DocxViewer({ name }) {
   const [activeComment, setActiveComment] = useState(null);
   const [zoom, setZoom] = useState(100); // 缩放比例
   const [pageCount, setPageCount] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
 
   // 渲染 docx
   const renderDoc = useCallback(async () => {
@@ -104,8 +105,11 @@ export default function DocxViewer({ name }) {
         renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
         useBase64URL: false,          // 图片用 Blob URL（useBase64URL 的 FileReader 异步链路在部分文档下 src 落空）
       });
+      const pages = host.querySelectorAll("section.oaw-docx");
+      pages.forEach((page, index) => { page.dataset.page = String(index + 1); });
       buildOutline(host);
-      setPageCount(host.querySelectorAll("section.oaw-docx").length || 1);
+      setPageCount(pages.length || 1);
+      setCurrentPage(1);
       setDirty(false);
       // 加载批注数据
       loadComments();
@@ -143,7 +147,10 @@ export default function DocxViewer({ name }) {
       else if (/heading5/i.test(cls) || el.tagName === "H5") level = 5;
       else if (/heading6/i.test(cls) || el.tagName === "H6") level = 6;
       const text = el.textContent.trim();
-      if (text) items.push({ level, text: text.slice(0, 100), el });
+      if (text) {
+        const page = el.closest("section.oaw-docx");
+        items.push({ level, text: text.replace(/\s+/g, " ").trim().slice(0, 100), page: page ? Number(page.dataset.page || 1) : null, el });
+      }
     });
     // 2) 启发式：无 Heading 类时，提取加粗+较大字号的短段落作为标题
     if (items.length === 0) {
@@ -159,7 +166,8 @@ export default function DocxViewer({ name }) {
           let level = numbered && /^[（(]/.test(text) ? 2 : 3;
           if (fs >= 22 || /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、)/.test(text)) level = 1;
           else if (fs >= 18) level = 2;
-          items.push({ level, text: text.slice(0, 100), el });
+          const page = el.closest("section.oaw-docx");
+          items.push({ level, text: text.replace(/\s+/g, " ").trim().slice(0, 100), page: page ? Number(page.dataset.page || 1) : null, el });
         }
       });
     }
@@ -167,7 +175,17 @@ export default function DocxViewer({ name }) {
   };
 
   const jumpToHeading = (item) => {
+    if (item.page) setCurrentPage(item.page);
     item.el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const jumpToPage = (page) => {
+    const target = Math.max(1, Math.min(pageCount || 1, Number(page) || 1));
+    const el = hostRef.current?.querySelector(`section.oaw-docx[data-page="${target}"]`);
+    if (el) {
+      setCurrentPage(target);
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   };
 
   // ===== 编辑模式：contentEditable + execCommand（即时生效，零后端延迟） =====
@@ -394,6 +412,16 @@ export default function DocxViewer({ name }) {
           <Icon name="refresh" size={13} />
         </button>
         <span className="toolbar-sep" />
+        {pageCount > 0 && (
+          <div className="oaw-docx-page-nav" aria-label="Word 分页导航">
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage - 1)} disabled={currentPage <= 1} title="上一页">‹</button>
+            <select className="edit-select page-select" value={currentPage} onChange={(e) => jumpToPage(e.target.value)} title="跳转到页码">
+              {Array.from({ length: pageCount }, (_, i) => <option key={i + 1} value={i + 1}>第 {i + 1} 页</option>)}
+            </select>
+            <button className="toolbar-btn" onClick={() => jumpToPage(currentPage + 1)} disabled={currentPage >= pageCount} title="下一页">›</button>
+          </div>
+        )}
+        <span className="toolbar-sep" />
         {/* 缩放 */}
         <select className="edit-select zoom-select" value={zoom} onChange={(e) => applyZoom(Number(e.target.value))} title="缩放比例">
           {ZOOM_LEVELS.map((z) => <option key={z} value={z}>{z}%</option>)}
@@ -406,7 +434,7 @@ export default function DocxViewer({ name }) {
             </button>
           </>
         )}
-        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · ${pageCount} 页` : ""}</span>
+        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 页` : ""}</span>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}
@@ -488,7 +516,7 @@ export default function DocxViewer({ name }) {
               <button className="btn-xs" onClick={() => setOutlineOpen(false)}>×</button>
             </div>
             <div className="oaw-docx-outline-list">
-              {outline.map((item, i) => (
+                  {outline.map((item, i) => (
                 <div
                   key={i}
                   className="oaw-docx-outline-item"
@@ -496,7 +524,9 @@ export default function DocxViewer({ name }) {
                   onClick={() => jumpToHeading(item)}
                   title={item.text}
                 >
-                  {item.text}
+                  <span className="oaw-docx-outline-index">{i + 1}</span>
+                  <span className="oaw-docx-outline-text">{item.text}</span>
+                  {item.page && <span className="oaw-docx-outline-page">{item.page}</span>}
                 </div>
               ))}
             </div>

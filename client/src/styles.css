@@ -2403,24 +2403,22 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .oaw-docx-host .oaw-docx-wrapper > section.oaw-docx {
   background: white;
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
-  margin-bottom: 30px;
+  margin: 0 0 34px;
   color: black;
   box-sizing: border-box;
+  position: relative;
 }
 .oaw-docx-host .oaw-docx-wrapper section.oaw-docx p {
   color: #000 !important;
-  line-height: 1.45 !important;
 }
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx [class*="heading"],
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h1,
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h2,
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h3,
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h4,
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h5,
-.oaw-docx-host .oaw-docx-wrapper section.oaw-docx h6 {
-  line-height: 1.3 !important;
-  margin-top: 0.45em;
-  margin-bottom: 0.35em;
+.oaw-docx-host .oaw-docx-wrapper section.oaw-docx::before {
+  content: "第 " attr(data-page) " 页";
+  position: absolute;
+  left: 0;
+  bottom: -23px;
+  color: #7b8490;
+  font: 10px/1.2 "Segoe UI", "Microsoft YaHei", sans-serif;
+  letter-spacing: .04em;
 }
 .oaw-docx-host .oaw-docx-wrapper table {
   max-width: 100%;
@@ -3001,19 +2999,40 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 4px 0;
 }
 .oaw-docx-outline-item {
-  padding: 4px 10px;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-height: 28px;
+  padding: 5px 8px 5px 10px;
   font-size: 11px;
   color: var(--muted);
   cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   transition: all 0.1s;
 }
 .oaw-docx-outline-item:hover {
   background: var(--selected);
   color: var(--text);
   border-left: 2px solid var(--accent);
+}
+.oaw-docx-outline-index {
+  flex: 0 0 17px;
+  color: var(--dim);
+  font-size: 9px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.oaw-docx-outline-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oaw-docx-outline-page {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ================= 知识库 v0.6.0 布局重构 ================= */
@@ -3483,6 +3502,20 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .zoom-select {
   max-width: 80px;
   font-size: 10px;
+}
+.oaw-docx-page-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.oaw-docx-page-nav .toolbar-btn:disabled {
+  opacity: .35;
+  cursor: default;
+}
+.page-select {
+  min-width: 66px;
+  max-width: 78px;
 }
 .heading-select {
   max-width: 100px;
@@ -4500,17 +4533,36 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 4px 2px 0;
   border-top: 1px dashed var(--border);
   margin-top: 6px;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  flex-wrap: wrap;
+  overflow: visible;
   min-width: 0;
 }
 .chat-toolbar > * { flex: 0 0 auto; }
+.chat-toolbar-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 30px;
+  padding: 1px 3px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel2-bg) 55%, transparent);
+  flex: 0 0 auto;
+}
+.chat-toolbar-label {
+  padding: 0 4px 0 3px;
+  color: var(--dim);
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+}
+.chat-toolbar-spacer { flex: 1 1 12px !important; min-width: 8px; }
 .ct-btn.ct-context-btn {
   width: auto;
-  min-width: 96px;
+  min-width: 58px;
   flex: 0 0 auto;
-  padding: 0 8px;
+  padding: 0 7px;
   gap: 5px;
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
@@ -4545,6 +4597,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ct-sep { width: 1px; height: 16px; background: var(--border); margin: 0 2px; flex: 0 0 auto; }
 
 @media (max-width: 520px) {
+  .chat-toolbar-label { display: none; }
+  .chat-toolbar-group { padding: 1px; }
   .ct-btn.ct-context-btn { min-width: 28px; width: 28px; padding: 0; }
   .ct-btn.ct-context-btn span { display: none; }
 }
@@ -4914,6 +4968,34 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .mp-body, .kb-body, .tpl-body { position: relative; }
 
 /* docx 目录宽度拖拽 */
+.oaw-docx-outline-item {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-height: 28px;
+  padding: 5px 8px 5px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.oaw-docx-outline-index {
+  flex: 0 0 17px;
+  color: var(--dim);
+  font-size: 9px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.oaw-docx-outline-text {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oaw-docx-outline-page {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
 .oaw-docx-outline { position: relative; }
 .oaw-docx-outline-resizer {
   position: absolute;
