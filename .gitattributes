@@ -1,1 +1,5 @@
+*.webm filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text
+*.pptx filter=lfs diff=lfs merge=lfs -text
+*.docx filter=lfs diff=lfs merge=lfs -text
 office-workspace/maps/zhejiang-map/layers/gis_osm_roads_free_1.geojson filter=lfs diff=lfs merge=lfs -text

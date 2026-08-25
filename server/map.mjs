@@ -433,6 +433,11 @@ export function hydrateBasemapSources(style) {
     for (const id of invalidSources) delete out.sources[id];
     out.layers = (out.layers || []).filter((l) => !invalidSources.has(l.source));
   }
+  // 样式文件可能只剩下图层引用，而数据源已经被 Agent/用户删除。
+  // MapLibre 对这种悬空 source 引用会直接阻断样式加载，前端只能永久显示“地图加载中”。
+  // 运行时剔除悬空图层，保留其余可用图层正常渲染；真正需要的数据可通过重新导入图层恢复。
+  const sourceIds = new Set(Object.keys(out.sources || {}));
+  out.layers = (out.layers || []).filter((l) => !l?.source || sourceIds.has(l.source));
   out.layers = (out.layers || []).map((l) => {
     if (l?.paint?.["line-cap"] === undefined) return l;
     const { ["line-cap"]: cap, ...paint } = l.paint;

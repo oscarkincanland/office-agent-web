@@ -54,7 +54,7 @@ function geometryBounds(geometry) {
 export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
-  onSessionChange, onRefreshSessions,
+  onSessionChange, onRefreshSessions, hideChat = false, bridgeRef,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -1033,6 +1033,10 @@ export default function MapPanel({
       return;
     }
     setActiveAnalysis(action);
+    if (action.region) {
+      const matched = regionOptions.find((r) => r.name === action.region || r.label?.includes(action.region));
+      if (matched) selectRegion(matched.value);
+    }
     // Agent 事件可能先于 MapLibre style 完成，短暂重试只等待地图就绪，不重建地图。
     let attempts = 0;
     const render = () => {
@@ -1042,11 +1046,7 @@ export default function MapPanel({
     };
     const timer = setInterval(render, 250);
     render();
-    if (action.region) {
-      const matched = regionOptions.find((r) => r.name === action.region || r.label?.includes(action.region));
-      if (matched) selectRegion(matched.value);
-    }
-    const title = action.title || (action.analysis === "isochrone" ? "等时圈" : "热力图");
+    const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : "热力图");
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
   }, [project, regionOptions, selectRegion, flash]);
@@ -1066,9 +1066,9 @@ export default function MapPanel({
     }
   }, [activeAnalysis, project, loadProject, flash]);
 
-  const runDemoAnalysis = useCallback(async (analysis) => {
+  const runDemoAnalysis = useCallback(async (analysis, region = "义乌市") => {
     try {
-      const action = await mapDemoAnalysis({ analysis, region: "义乌市", project });
+      const action = await mapDemoAnalysis({ analysis, region, project });
       handleMapAction(action);
       setDemoOpen(false);
     } catch (e) {
@@ -1080,16 +1080,24 @@ export default function MapPanel({
     setTimeout(() => {
       loadProject(project);
     }, 300);
-    onAgentEnd?.();
-  }, [project, loadProject, onAgentEnd]);
+    if (!hideChat) onAgentEnd?.();
+  }, [project, loadProject, onAgentEnd, hideChat]);
 
   const handleOpenFile = useCallback((name) => {
     onExit?.();
     onOpenFile?.(name);
   }, [onExit, onOpenFile]);
 
+  useEffect(() => {
+    if (!bridgeRef) return undefined;
+    bridgeRef.current = { onMapAction: handleMapAction, onFileChanged: handleFileChanged, onAgentEnd: handleAgentEnd, onOpenFile: handleOpenFile };
+    return () => {
+      if (bridgeRef.current?.onMapAction === handleMapAction) bridgeRef.current = null;
+    };
+  }, [bridgeRef, handleMapAction, handleFileChanged, handleAgentEnd, handleOpenFile]);
+
   return (
-    <div className="mp">
+    <div className={`mp ${hideChat ? "mp-shared-chat" : ""}`}>
       {/* 顶栏：工具栏 */}
       <div className="mp-topbar">
         <Icon name="map" size={14} />
@@ -1144,6 +1152,7 @@ export default function MapPanel({
             <div className="mp-demo-menu">
               <button onClick={() => runDemoAnalysis("heatmap")}><Icon name="locate" size={13} /> 义乌点位热力图</button>
               <button onClick={() => runDemoAnalysis("isochrone")}><Icon name="history" size={13} /> 义乌可达性等时圈</button>
+              <button onClick={() => runDemoAnalysis("od", "玉环市")}><Icon name="flow" size={13} /> 玉环—台州县市区 OD</button>
               <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setActiveAnalysis(null); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
               <button onClick={() => { mapRef.current?.undoAnalysis("agent-analysis"); setDemoOpen(false); flash("已撤销上一次临时分析"); }}><Icon name="back" size={13} /> 撤销上一次结果</button>
               <button disabled={!activeAnalysis} onClick={() => { saveAnalysis(); setDemoOpen(false); }}><Icon name="download" size={13} /> 保存当前结果</button>
@@ -1332,26 +1341,26 @@ export default function MapPanel({
           )}
         </div>
 
-        {/* 右栏：agent 对话 */}
-        <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
+        {/* 右栏：agent 对话；地图模式可由 App 提供同一个常驻 ChatPanel，避免切换地图时丢失消息流。 */}
+        {!hideChat && <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
-            clientId={clientId}
-            threadId={threadId}
-            onFileChanged={handleFileChanged}
-            onMapAction={handleMapAction}
-            currentDoc={`地图项目:${project}`}
-            models={models}
-            defaultModel={defaultModel}
-            onAgentEnd={handleAgentEnd}
-            historyMessages={historyMessages}
-            onNewSession={onNewSession}
-            onOpenFile={handleOpenFile}
-            sessions={sessions}
-            onSelectSession={onSelectSession}
-            onSessionChange={onSessionChange}
-            onRefreshSessions={onRefreshSessions}
-          />
-        </div>
+              clientId={clientId}
+              threadId={threadId}
+              onFileChanged={handleFileChanged}
+              onMapAction={handleMapAction}
+              currentDoc={`地图项目:${project}`}
+              models={models}
+              defaultModel={defaultModel}
+              onAgentEnd={handleAgentEnd}
+              historyMessages={historyMessages}
+              onNewSession={onNewSession}
+              onOpenFile={handleOpenFile}
+              sessions={sessions}
+              onSelectSession={onSelectSession}
+              onSessionChange={onSessionChange}
+              onRefreshSessions={onRefreshSessions}
+            />
+        </div>}
         <div className="mp-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整右栏宽度" />
       </div>
 

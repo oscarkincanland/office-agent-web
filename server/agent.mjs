@@ -44,6 +44,13 @@ function readJsonFile(file, fallback = {}) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
 }
 
+function assistantText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((part) => part?.type === "text").map((part) => String(part.text || "")).join("");
+}
+
 /** 本地 Pi 的模型来源：models-store + models.json + auth.json。 */
 function localModelProviders() {
   const store = readJsonFile(path.join(AGENT_DIR, "models-store.json"), {});
@@ -574,9 +581,9 @@ class AgentManager extends EventEmitter {
       name: "map_analyze",
       label: "地图分析结果",
       description:
-        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘把分析结果显示在地图中间’时使用。支持 heatmap 和 isochrone 两种演示分析；结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
       parameters: Type.Object({
-        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("isochrone")]),
+        analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("od"), Type.Literal("isochrone")]),
         region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
         project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
@@ -733,7 +740,7 @@ class AgentManager extends EventEmitter {
       channel.history.push(ev);
       if (channel.history.length > 2000) channel.history.shift();
       channel.emitter.emit("event", ev);
-      if (entry?.activeRunId && ["tool_start", "tool_end", "ask_user", "agent_error", "agent_end"].includes(type)) {
+      if (entry?.activeRunId && ["tool_start", "tool_end", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end"].includes(type)) {
         try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
       }
     };
@@ -776,6 +783,12 @@ class AgentManager extends EventEmitter {
           emit("message_start", {});
           break;
         case "message_end":
+          if (entry && ev.message?.role === "assistant") {
+            entry.lastAssistantText = assistantText(ev.message);
+            if (ev.message.errorMessage || ev.message.stopReason === "error") {
+              entry.lastAgentError = ev.message.errorMessage || "模型调用失败";
+            }
+          }
           emit("message_end", {});
           break;
         case "usage":
@@ -795,7 +808,15 @@ class AgentManager extends EventEmitter {
           }
           break;
         case "agent_end":
-          emit("agent_end", {});
+          {
+            const messages = Array.isArray(ev.messages) ? ev.messages : [];
+            const message = [...messages].reverse().find((item) => item?.role === "assistant");
+            entry.lastAssistantText = assistantText(message) || entry.lastAssistantText || "";
+            if (message) entry.lastAgentError = message.errorMessage || (message.stopReason === "error" ? "模型调用失败" : null);
+            if (ev.willRetry) {
+              emit("agent_retry", { message: entry.lastAgentError || "模型连接异常", willRetry: true });
+            }
+          }
           // 若 ev 包含 usage 信息，emit stats 事件
           if (ev.usage) {
             const u = ev.usage;
@@ -810,6 +831,13 @@ class AgentManager extends EventEmitter {
             });
           }
           break;
+        case "agent_settled":
+          if (entry.lastAgentError) emit("agent_error", { message: entry.lastAgentError });
+          if (entry.lastAssistantText) emit("assistant_final", { text: entry.lastAssistantText });
+          emit("agent_end", {});
+          entry.lastAgentError = null;
+          entry.lastAssistantText = "";
+          break;
         case "error":
           emit("agent_error", { message: ev.error?.message || String(ev.error || "") });
           break;
@@ -818,7 +846,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null };
+    entry = { session, channel, busy: false, loader, clientId, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null, lastAgentError: null, lastAssistantText: "" };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -840,6 +868,8 @@ class AgentManager extends EventEmitter {
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
     entry.task = runContext?.task || null;
+    entry.lastAgentError = null;
+    entry.lastAssistantText = "";
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}

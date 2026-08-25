@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "maptiler-streets",
+  "basemap": "carto-positron",
   "layers": [
     {
       "id": "boundary-city",
@@ -65,24 +65,6 @@
     {
       "id": "roads-province",
       "name": "省道",
-      "type": "road",
-      "group": "公路网",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13
-    },
-    {
-      "id": "drawn-msvbd6cu",
-      "name": "drawn-msvbd6cu",
-      "type": "point",
-      "group": "设施点",
-      "visible": true,
-      "minzoom": 5,
-      "maxzoom": 13
-    },
-    {
-      "id": "yiwu-od-lines",
-      "name": "yiwu-od-lines",
       "type": "road",
       "group": "公路网",
       "visible": true,
