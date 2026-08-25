@@ -106,56 +106,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-function extractTodoTasks(messages = []) {
-  let latest = [];
-  const normalize = (value) => String(value || "")
-    .replace(/[☐☑✅]/g, "")
-    .replace(/^\s*(?:\d+[.)、]|[（(][一二三四五六七八九十百零\d]+[）)]|[-*•])\s*/, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    const text = [
-      message.text || "",
-      ...(message.blocks || []).filter((block) => block.type === "text").map((block) => block.text || ""),
-    ].join("\n");
-    const tasks = [];
-    const re = /^\s*(?:[-*•]|\d+[.)、])\s*(?:\[( |x|X)\]|([☐☑✅]))\s*(.+)$/gm;
-    let match;
-    while ((match = re.exec(text))) {
-      const taskText = match[3].trim();
-      const taskKey = normalize(taskText);
-      if (taskText && !tasks.some((task) => normalize(task.text) === taskKey)) {
-        tasks.push({ text: taskText, done: match[1]?.toLowerCase() === "x" || Boolean(match[2] && match[2] !== "☐") });
-      }
-    }
-    if (!tasks.length) continue;
-    if (!latest.length) {
-      latest = tasks;
-      continue;
-    }
-    // 连续对话时，Agent 常只回写刚完成的那一项；合并同名步骤，不能让
-    // 后一条局部清单把之前的 0/4 状态覆盖掉。
-    const latestByKey = new Map(latest.map((task) => [normalize(task.text), task]));
-    const overlap = tasks.some((task) => latestByKey.has(normalize(task.text)));
-    if (overlap) {
-      for (const task of tasks) {
-        const old = latestByKey.get(normalize(task.text));
-        if (old) {
-          old.done = task.done;
-          if (task.text.length > old.text.length) old.text = task.text;
-        }
-        else latest.push(task);
-      }
-    } else {
-      latest = tasks;
-    }
-  }
-  return latest;
-}
-
-export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -697,6 +648,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     const selectedEditMode = source.editMode ?? editMode;
     const selectedEffort = source.effort ?? effort;
     const contextPrefix = selectedCurrentDoc ? `[当前打开文件: ${selectedCurrentDoc}]\n` : "";
+    const mapContextPrefix = mapContext?.center
+      ? `[当前地图视图: 中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}]\n`
+      : "";
     // 按模式注入指令提示
     const modePrefix = selectedEditMode === "office"
       ? "[模式: Office编辑] 优先用 officecli 工具对当前文档做精准文本/样式修改，不要创建新文件。\n"
@@ -707,7 +661,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     const attachPrefix = allAttachments.length > 0
       ? `[已上传附件: ${allAttachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
       : "";
-    const fullText = contextPrefix + modePrefix + contextPrefixText + attachPrefix + (rawText || text);
+    const fullText = contextPrefix + mapContextPrefix + modePrefix + contextPrefixText + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
 
@@ -887,6 +841,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     }
   };
 
+  const injectMapContext = () => {
+    if (!mapContext?.center) return;
+    const text = `当前地图视图：中心 ${mapContext.center[0]},${mapContext.center[1]}，缩放 ${mapContext.zoom}，可视范围 ${mapContext.bounds?.join(",") || "未知"}。`;
+    setInjectedContext((prev) => [...prev, { text }]);
+    pushSystem("已将当前地图视图加入待注入上下文。", `map_context:${mapContext.updatedAt || text}`);
+  };
+
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const bodyRef = useRef(null);
@@ -908,7 +869,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   }, [messages]);
 
   const hint = currentDoc || "未打开文件";
-  const todoTasks = useMemo(() => extractTodoTasks(messages), [messages]);
   const hasDraft = Boolean(input.trim() || images.length || attachments.length);
 
   return (
@@ -1024,7 +984,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             ))}
           </div>
         )}
-        <TaskDock tasks={todoTasks} runState={runState} />
         {(queuedMessages.length > 0 || injectedContext.length > 0) && (
           <div className="chat-pending-bar" aria-live="polite">
             {queuedMessages.length > 0 && <span><Icon name="list" size={12} /> 待执行 {queuedMessages.length} 条</span>}
@@ -1081,7 +1040,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           <div className="chat-toolbar">
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
-            <div className="chat-toolbar-group toolbar-context-group">
+            <div className="chat-toolbar-group toolbar-context-group" title="上下文工具">
               <span className="chat-toolbar-label">上下文</span>
               <button className="ct-btn" title="上传图片" onClick={() => fileInputRef.current?.click()}>
                 <Icon name="image" size={14} />
@@ -1089,13 +1048,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               <button className="ct-btn" title="上传附件（docx/xlsx/pdf/md/txt 等）" onClick={() => attInputRef.current?.click()}>
                 <Icon name="link" size={14} />
               </button>
+              {mapContext?.center && <button className="ct-btn" title="将当前地图视图加入下一轮上下文" onClick={injectMapContext}>
+                <Icon name="locate" size={14} />
+              </button>}
               <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
                 <Icon name={compacting ? "loading" : "layers"} size={14} />
                 <span>压缩</span>
               </button>
             </div>
             <span className="ct-sep" />
-            <div className="chat-toolbar-group toolbar-mode-group">
+            <div className="chat-toolbar-group toolbar-mode-group" title="工作模式：Office 编辑 / 创作生成">
               <span className="chat-toolbar-label">模式</span>
               <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
               <button
@@ -1107,12 +1069,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                 className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
                 onClick={() => setEditMode("agent")}
                 title="开发模式：生成新文件"
-              ><Icon name="pen-tool" size={13} /></button>
+              ><Icon name="penTool" size={13} /></button>
               </div>
             </div>
             <span className="ct-sep" />
             {/* 模型选择：图标 + 浮层 */}
-            <div className="chat-toolbar-group toolbar-agent-group">
+            <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型 / 思考程度">
               <span className="chat-toolbar-label">Agent</span>
             <div className="ct-popwrap">
               <button className={`ct-btn ${modelOpen ? "active" : ""}`} onClick={() => { setModelOpen((v) => !v); setEffortOpen(false); }} title={model ? `模型: ${model}` : "选择模型"}>
@@ -1464,49 +1426,6 @@ function AskBlock({ block, clientId, threadId }) {
             </button>
           </div>
         </>
-      )}
-    </div>
-  );
-}
-
-// ========== 输入栏上方的执行步骤面板 ==========
-function TaskDock({ tasks = [], runState }) {
-  const [open, setOpen] = useState(true);
-  const running = runState?.status === "running" || runState?.status === "finishing";
-  if (!tasks.length && !running) return null;
-
-  // Agent 有时完成任务后没有再次输出带 [x] 的整张清单；run_finished=completed
-  // 是可靠的回合完成信号，用它补齐最终进度，连续对话开始后仍会继续解析新清单。
-  const displayTasks = runState?.status === "completed" ? tasks.map((task) => ({ ...task, done: true })) : tasks;
-  const done = displayTasks.filter((task) => task.done).length;
-  const activeIndex = displayTasks.findIndex((task) => !task.done);
-  const statusText = runState?.status === "finishing" ? "整理产物" : runState?.status === "completed" ? "已完成" : runState?.status === "aborted" ? "已中断" : running ? "执行中" : "待命";
-
-  return (
-    <div className={`todo-dock ${open ? "open" : ""}`} aria-live="polite">
-      <div className="todo-dock-head" onClick={() => setOpen((value) => !value)}>
-        <span className="todo-dock-chevron">{open ? "▾" : "▸"}</span>
-        <Icon name="list" size={13} />
-        <span className="todo-dock-title">执行步骤</span>
-        {displayTasks.length > 0 && <span className="todo-dock-progress">{done}/{displayTasks.length}</span>}
-        <span className={`todo-dock-status ${running ? "running" : ""}`}>{statusText}</span>
-      </div>
-      {open && (
-        <div className="todo-dock-body">
-          {displayTasks.length > 0 ? (
-            <>
-              <div className="todo-dock-bar"><span style={{ width: `${(done / displayTasks.length) * 100}%` }} /></div>
-              {displayTasks.map((task, index) => (
-                <div key={`${task.text}-${index}`} className={`todo-dock-item ${task.done ? "done" : ""} ${index === activeIndex && running ? "running" : ""}`}>
-                  <span className="todo-dock-check">{task.done ? <Icon name="check" size={11} /> : index === activeIndex && running ? <Icon name="loading" size={11} className="icon-loading" /> : <span />}</span>
-                  <span className="todo-dock-text">{task.text}</span>
-                </div>
-              ))}
-            </>
-          ) : (
-            <div className="todo-dock-empty">Agent 正在拆解任务，步骤清单会在规划后显示。</div>
-          )}
-        </div>
       )}
     </div>
   );

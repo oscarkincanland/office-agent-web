@@ -11,6 +11,7 @@ import MapPanel from "./components/MapPanel.jsx";
 import CommandPalette from "./components/CommandPalette.jsx";
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
+import TaskCenter from "./components/任务中心.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, listModels, listSessions, listRuns, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
@@ -108,6 +109,8 @@ export default function App() {
     localStorage.setItem("oaw_thread_id", id);
     return id;
   });
+  const [mapContexts, setMapContexts] = useState({});
+  const currentMapContext = mapContexts[threadId] || null;
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [workspaces, setWorkspaces] = useState([]);
@@ -138,6 +141,7 @@ export default function App() {
     setActiveTab(null);
     setCurrentDir("");
     setCurrentSessionId(null);
+    setMapContexts((prev) => ({ ...prev, [next]: null }));
     lastSessionIdRef.current = null;
     try {
       const d = await createAgentThread(clientId, next, workspace || undefined);
@@ -436,7 +440,7 @@ export default function App() {
   }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
   const sharedChatPanel = (
-    <ChatPanel
+      <ChatPanel
       ref={chatInputRef}
       clientId={clientId}
       threadId={threadId}
@@ -446,6 +450,7 @@ export default function App() {
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
       currentDoc={mapMode ? "地图模块" : current?.name}
+      mapContext={mapMode ? currentMapContext : null}
       models={models}
       defaultModel={defaultModel}
       onAgentEnd={() => {
@@ -513,6 +518,16 @@ export default function App() {
             onRefreshSessions={refreshSessions}
             hideChat
             bridgeRef={mapBridgeRef}
+            onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+          />
+        )}
+        {mapMode && (
+          <Resizer
+            className="map-chat-resizer"
+            side="right"
+            min={300}
+            max={620}
+            cssVar="--map-chat-w"
           />
         )}
         {!kbMode && !tplMode && !mapMode && (
@@ -562,6 +577,7 @@ export default function App() {
             <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
             <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
             <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图（GIS 项目）"><Icon name="map" size={14} /> 地图</button>
+              <TaskCenter />
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer
