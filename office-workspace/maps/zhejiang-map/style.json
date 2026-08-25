@@ -58,13 +58,6 @@
       ],
       "maxzoom": 13
     },
-    "drawn-msvbd6cu": {
-      "type": "vector",
-      "tiles": [
-        "/api/map/data/zhejiang-map/tiles/drawn-msvbd6cu/{z}/{x}/{y}.pbf"
-      ],
-      "maxzoom": 13
-    },
     "blank": {
       "name": "无底图",
       "type": "raster",
@@ -316,13 +309,6 @@
       "metadata": {
         "basemap": true
       }
-    },
-    "yiwu-od-lines": {
-      "type": "vector",
-      "tiles": [
-        "/api/map/data/zhejiang-map/tiles/yiwu-od-lines/{z}/{x}/{y}.pbf"
-      ],
-      "maxzoom": 13
     }
   },
   "layers": [
@@ -385,7 +371,7 @@
       "type": "raster",
       "source": "carto-positron",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -473,7 +459,7 @@
       "type": "raster",
       "source": "maptiler-streets",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -539,7 +525,7 @@
       "source": "boundary-city",
       "source-layer": "boundary-city",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -575,7 +561,7 @@
       "source": "highways",
       "source-layer": "highways",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -594,7 +580,7 @@
       "type": "line",
       "paint": {
         "line-color": "#ff0fa7",
-        "line-width": 2.5,
+        "line-width": 3,
         "line-opacity": 0.85
       }
     },
@@ -647,7 +633,7 @@
       "source": "junctions",
       "source-layer": "junctions",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
@@ -663,7 +649,7 @@
       "source": "roads-province",
       "source-layer": "roads-province",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "type": "line",
       "paint": {
@@ -723,7 +709,8 @@
           "Noto Sans Regular"
         ],
         "text-rotation-alignment": "map",
-        "text-allow-overlap": false
+        "text-allow-overlap": false,
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -768,7 +755,8 @@
           "Noto Sans Regular"
         ],
         "text-rotation-alignment": "map",
-        "text-allow-overlap": false
+        "text-allow-overlap": false,
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -813,7 +801,8 @@
           "Noto Sans Regular"
         ],
         "text-rotation-alignment": "map",
-        "text-allow-overlap": false
+        "text-allow-overlap": false,
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -838,28 +827,13 @@
           1.4
         ],
         "text-anchor": "bottom",
-        "text-allow-overlap": false
+        "text-allow-overlap": false,
+        "visibility": "visible"
       },
       "paint": {
         "text-color": "#2d3142",
         "text-halo-color": "#ffffff",
         "text-halo-width": 1.5
-      }
-    },
-    {
-      "id": "drawn-msvbd6cu",
-      "source": "drawn-msvbd6cu",
-      "source-layer": "drawn-msvbd6cu",
-      "layout": {
-        "visibility": "visible"
-      },
-      "type": "circle",
-      "paint": {
-        "circle-radius": 8,
-        "circle-color": "#9467bd",
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 3,
-        "circle-opacity": 0.9
       }
     },
     {
@@ -909,79 +883,6 @@
           6.5
         ],
         "line-opacity": 0.95
-      }
-    },
-    {
-      "id": "yiwu-od-lines",
-      "source": "yiwu-od-lines",
-      "source-layer": "yiwu-od-lines",
-      "layout": {
-        "visibility": "none"
-      },
-      "type": "line",
-      "paint": {
-        "line-color": "#ff7f0e",
-        "line-width": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          5,
-          0.8,
-          10,
-          1.8,
-          13,
-          3.2
-        ],
-        "line-opacity": 0.85
-      }
-    },
-    {
-      "id": "yiwu-od-lines-label",
-      "type": "symbol",
-      "source": "yiwu-od-lines",
-      "source-layer": "yiwu-od-lines",
-      "minzoom": 7,
-      "layout": {
-        "symbol-placement": "line",
-        "text-field": [
-          "coalesce",
-          [
-            "get",
-            "ref"
-          ],
-          [
-            "get",
-            "name"
-          ],
-          ""
-        ],
-        "text-size": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          8,
-          10,
-          13,
-          12
-        ],
-        "text-font": [
-          "Noto Sans Regular"
-        ],
-        "text-rotation-alignment": "map",
-        "text-allow-overlap": false
-      },
-      "paint": {
-        "text-color": "#ffffff",
-        "text-halo-color": "rgba(0,0,0,0.75)",
-        "text-halo-width": 1.2
       }
     }
   ],
