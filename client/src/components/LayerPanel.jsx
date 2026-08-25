@@ -58,22 +58,29 @@ export default function LayerPanel({
   onToggleLayer, onSetPaint, onSetOpacity, onMoveLayerTo,
   onRenameLayer, onDuplicateLayer, onDeleteLayer, onZoomToLayer, onOpenAttribute,
   onSetLayout,
-  onSetLabel,
+  onSetLabel, onCreateGroup, onMoveLayerToGroup,
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
   const [dragId, setDragId] = useState(null);
+  const dragIdRef = useRef(null);
   const [ctx, setCtx] = useState(null);                    // 右键菜单 {x,y,layerId}
   const [editing, setEditing] = useState(null);            // 重命名 {layerId, name}
   const [legend, setLegend] = useState({});                // {layerId: {count, fields}}
   const [fieldData, setFieldData] = useState(null);        // {layerId, fields, numFields, props}
   const [renderMode, setRenderMode] = useState(null);      // {layerId, mode, field, palette, classes}
+  const [newGroupName, setNewGroupName] = useState("");
+  const [newGroupOpen, setNewGroupOpen] = useState(false);
   const panelRef = useRef(null);
 
   // ---- 分组：组内图层按 style.layers 顺序（视觉逆序=顶部最上层） ----
   const groups = useMemo(() => {
     const styleOrder = new Map((style?.layers || []).map((l, i) => [l.id, i]));
     const map = new Map();
+    for (const g of cfg?.groups || []) {
+      const name = String(g || "").trim();
+      if (name && !map.has(name)) map.set(name, []);
+    }
     for (const meta of cfg?.layers || []) {
       const g = meta.group || GROUP_FALLBACK[meta.type] || "其他";
       if (!map.has(g)) map.set(g, []);
@@ -169,10 +176,32 @@ export default function LayerPanel({
   }, [relatedLayers]);
 
   // ---- 拖拽 ----
-  const handleDrop = useCallback((targetId) => {
-    if (dragId && dragId !== targetId) onMoveLayerTo(dragId, targetId);
+  const readDragId = useCallback((event) => (
+    event?.dataTransfer?.getData("application/x-open-plan-layer")
+      || event?.dataTransfer?.getData("text/plain")
+      || dragIdRef.current
+      || dragId
+  ), [dragId]);
+
+  const clearDrag = useCallback(() => {
+    dragIdRef.current = null;
     setDragId(null);
-  }, [dragId, onMoveLayerTo]);
+  }, []);
+
+  const handleDrop = useCallback((event, targetId) => {
+    const sourceId = readDragId(event);
+    if (sourceId && sourceId !== targetId) onMoveLayerTo(sourceId, targetId);
+    clearDrag();
+  }, [clearDrag, onMoveLayerTo, readDragId]);
+
+  const submitNewGroup = useCallback((e) => {
+    e.preventDefault();
+    const name = newGroupName.trim();
+    if (!name) return;
+    onCreateGroup?.(name);
+    setNewGroupName("");
+    setNewGroupOpen(false);
+  }, [newGroupName, onCreateGroup]);
 
   // ---- 样式编辑器（选中图层） ----
   const selectedMeta = cfg?.layers?.find((l) => l.id === selected);
@@ -251,6 +280,20 @@ export default function LayerPanel({
 
   return (
     <div className="lp" ref={panelRef}>
+      <div className="lp-toolbar">
+        <span><Icon name="layers" size={11} /> 图层组</span>
+        {!newGroupOpen ? (
+          <button className="lp-add-group" type="button" onClick={() => setNewGroupOpen(true)} title="新建图层组">
+            <Icon name="plus" size={11} /> 新建组
+          </button>
+        ) : (
+          <form className="lp-new-group" onSubmit={submitNewGroup}>
+            <input autoFocus value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} placeholder="组名称" />
+            <button type="submit" title="保存"><Icon name="check" size={11} /></button>
+            <button type="button" onClick={() => { setNewGroupOpen(false); setNewGroupName(""); }} title="取消"><Icon name="close" size={11} /></button>
+          </form>
+        )}
+      </div>
       <div className="lp-list">
         {groups.length === 0 && <div className="mp-empty">暂无图层，点地图右上角「导入」添加 GeoJSON / SHP</div>}
         {groups.map(([gname, ids]) => {
@@ -258,7 +301,19 @@ export default function LayerPanel({
           const gVisible = groupAllVisible(ids);
           return (
             <div key={gname} className="lp-group">
-              <div className="lp-group-head" onClick={() => setCollapsed((p) => ({ ...p, [gname]: !p[gname] }))}>
+              <div
+                className="lp-group-head"
+                onClick={() => setCollapsed((p) => ({ ...p, [gname]: !p[gname] }))}
+                onDragOver={(e) => { if (dragIdRef.current || dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const sourceId = readDragId(e);
+                  if (sourceId) onMoveLayerToGroup?.(sourceId, gname);
+                  clearDrag();
+                }}
+                title="将图层拖到此组"
+              >
                 <span className="lp-caret">{isCollapsed ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
                 <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={gVisible ? "隐藏整组" : "显示整组"}>
                   <input type="checkbox" checked={gVisible} onChange={() => toggleGroup(ids)} />
@@ -282,10 +337,16 @@ export default function LayerPanel({
                         draggable
                         onClick={() => onSelect(id)}
                         onContextMenu={(e) => openCtx(e, id)}
-                        onDragStart={(e) => { setDragId(id); e.dataTransfer.effectAllowed = "move"; }}
-                        onDragOver={(e) => e.preventDefault()}
-                        onDrop={(e) => { e.preventDefault(); handleDrop(id); }}
-                        onDragEnd={() => setDragId(null)}
+                        onDragStart={(e) => {
+                          dragIdRef.current = id;
+                          setDragId(id);
+                          e.dataTransfer.effectAllowed = "move";
+                          e.dataTransfer.setData("application/x-open-plan-layer", id);
+                          e.dataTransfer.setData("text/plain", id);
+                        }}
+                        onDragOver={(e) => { if (dragIdRef.current || dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+                        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, id); }}
+                        onDragEnd={clearDrag}
                       >
                         <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={vis ? "隐藏" : "显示"}>
                           <input type="checkbox" checked={vis} onChange={() => onToggleLayer(id)} />
@@ -361,6 +422,16 @@ export default function LayerPanel({
             <Icon name="penTool" size={12} /> 重命名
           </button>
           <button onClick={ctxAction(() => onDuplicateLayer(ctx.layerId))}><Icon name="copy" size={12} /> 复制图层</button>
+          <div className="lp-ctx-group">
+            <span>移动到组</span>
+            <select
+              value={cfg?.layers?.find((l) => l.id === ctx.layerId)?.group || "其他"}
+              onChange={(e) => { onMoveLayerToGroup?.(ctx.layerId, e.target.value); setCtx(null); }}
+              title="选择目标图层组"
+            >
+              {groups.map(([name]) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
           <div className="lp-ctx-sep" />
           <button className="danger" onClick={ctxAction(() => onDeleteLayer(ctx.layerId))}><Icon name="trash" size={12} /> 删除图层</button>
         </div>

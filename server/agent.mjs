@@ -529,6 +529,7 @@ class AgentManager extends EventEmitter {
           style.layers.push(base);
         }
         fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
+        emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/style.json`] });
         const vis = style.layers.find((x) => x.id === layerId)?.layout?.visibility;
         return {
           content: [{ type: "text", text: `已更新样式图层 ${layerId}（${params.action}${vis ? ", 可见性=" + vis : ""}），前端地图已实时刷新。` }],
@@ -570,6 +571,7 @@ class AgentManager extends EventEmitter {
         const name = params.project || map.DEFAULT_PROJECT;
         const r = await map.importLayer(name, layerId, geojson);
         const count = geojson.features?.length || 0;
+        emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/layers/${layerId}.geojson`] });
         return {
           content: [{ type: "text", text: `已导入图层 ${layerId}（${count} 个要素，${r.tiles?.count || 0} 个瓦片）到项目 ${name}，前端地图已实时刷新。` }],
           details: {},
@@ -1146,6 +1148,9 @@ function emitChannelSafe(entry, type, data) {
     entry.channel.history.push(ev);
     if (entry.channel.history.length > 2000) entry.channel.history.shift();
     entry.channel.emitter.emit("event", ev);
+    if (entry.activeRunId) {
+      try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
+    }
   } catch {}
 }
 

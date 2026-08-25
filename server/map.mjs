@@ -219,26 +219,27 @@ function tiandituBasemaps(key) {
   };
 }
 
-// MapTiler XYZ，需用户填 Key
+// MapTiler XYZ，需用户填 Key。
+// 当前项目统一使用无标注参数，避免底图自带地名与项目中文标注重复。
 function maptilerBasemaps(key) {
   const k = encodeURIComponent(key);
   const raster = (name, mapId, ext = "png") => ({
     name,
     type: "raster",
     tileSize: 256,
-    tiles: [`https://api.maptiler.com/maps/${mapId}/{z}/{x}/{y}.${ext}?key=${k}`],
+    tiles: [`https://api.maptiler.com/maps/${mapId}/{z}/{x}/{y}.${ext}?key=${k}&language=none`],
     attribution: '&copy; <a href="https://www.maptiler.com/">MapTiler</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
   });
   return {
-    "maptiler-streets": raster("MapTiler 街道", "streets-v2"),
+    "maptiler-streets": raster("MapTiler 街道（无标注）", "streets-v2"),
     "maptiler-satellite": {
-      ...raster("MapTiler 卫星", "satellite-v2", "jpg"),
-      tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${k}`],
+      ...raster("MapTiler 卫星（无标注）", "satellite-v2", "jpg"),
+      tiles: [`https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=${k}&language=none`],
     },
-    "maptiler-hybrid": raster("MapTiler 卫星混合注记", "hybrid", "jpg"),
-    "maptiler-outdoor": raster("MapTiler 户外地形", "outdoor-v2"),
-    "maptiler-winter": raster("MapTiler 冬季地形", "winter-v2"),
-    "maptiler-basic": raster("MapTiler 简洁底图", "basic-v2"),
+    "maptiler-hybrid": raster("MapTiler 卫星混合（无标注）", "hybrid", "jpg"),
+    "maptiler-outdoor": raster("MapTiler 户外地形（无标注）", "outdoor-v2"),
+    "maptiler-winter": raster("MapTiler 冬季地形（无标注）", "winter-v2"),
+    "maptiler-basic": raster("MapTiler 简洁底图（无标注）", "basic-v2"),
   };
 }
 
@@ -345,7 +346,7 @@ function getDefaultStyle(project) {
 
 function defaultConfig(project) {
   return {
-    name: project === "zhejiang-map" ? "浙江省交通基础数据沙盘" : project,
+    name: project === "zhejiang-map" ? "浙江省交通路网与区划图" : project,
     project,
     center: [120.0, 29.2],
     zoom: 7,
