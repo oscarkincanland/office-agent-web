@@ -50,6 +50,8 @@ const MapViewer = forwardRef(function MapViewer(
   const roadLayerIdsRef = useRef([]);
   const drillRef = useRef(null);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [retryToken, setRetryToken] = useState(0);
   const [basemap, setBasemap] = useState(() => normalizeBasemap(config?.basemap));
   const [cursor, setCursor] = useState({ lng: null, lat: null, zoom: null });
   const [importing, setImporting] = useState(false);
@@ -81,9 +83,13 @@ const MapViewer = forwardRef(function MapViewer(
             "text-field": ["coalesce", ["get", "name"], ["get", "名称"], ""],
             "text-size": ["interpolate", ["linear"], ["zoom"], minzoom, size - 1, maxzoom, size + 2],
             "text-font": ["Noto Sans Regular"],
+            "symbol-placement": "point",
             "text-anchor": "center",
+            "text-padding": 14,
+            "text-max-width": 8,
             "text-allow-overlap": false,
             "text-ignore-placement": false,
+            "symbol-z-order": "source",
           },
           paint: {
             "text-color": color,
@@ -136,6 +142,68 @@ const MapViewer = forwardRef(function MapViewer(
         paint: { "line-color": "#f59e0b", "line-width": 3, "line-opacity": 0.95 },
       });
     } catch {}
+  };
+
+  const regionFieldCandidates = (source) => {
+    const fixed = source === "roads-province"
+      ? ["XZQDM"]
+      : source === "roads-trunk"
+        ? ["区划编码", "区划编�", "XZQDM"]
+        : [];
+    return [...fixed, "city_code", "county_code", "adcode", "行政区划代码", "行政区划编码"];
+  };
+
+  const getRegionFilter = (map, layer, d) => {
+    if (!map || !layer?.source || !d?.code) return null;
+    const source = String(layer.source);
+    const candidates = regionFieldCandidates(source);
+    if (!candidates.length) return null;
+    let features = [];
+    try {
+      features = map.querySourceFeatures(source, layer["source-layer"] ? { sourceLayer: layer["source-layer"] } : undefined);
+    } catch {}
+    const props = features.map((f) => f.properties || {});
+    const keys = [...new Set(props.flatMap((p) => Object.keys(p)))];
+    const fuzzy = keys.find((key) => /区划|行政区划|adcode|city_code|county_code|XZQDM/i.test(key));
+    const field = candidates.find((key) => props.some((p) => p[key] !== undefined && p[key] !== null && p[key] !== ""))
+      || (fuzzy && (source === "roads-province" || source === "roads-trunk") ? fuzzy : null)
+      || (source === "roads-province" ? "XZQDM" : source === "roads-trunk" ? "区划编�" : null);
+    if (!field) return null;
+    const code = String(d.code);
+    if (d.level === "county") return ["==", ["to-string", ["get", field]], code];
+    const cityCode = code.slice(0, 4);
+    return ["==", ["slice", ["to-string", ["get", field]], 0, 4], cityCode];
+  };
+
+  const applyDrillFilters = (map, d) => {
+    if (!map || !d?.code) return;
+    for (const id of roadLayerIdsRef.current) {
+      const layer = map.getLayer(id);
+      if (!layer) continue;
+      const filter = getRegionFilter(map, layer, d);
+      // OSM 高速公路没有行政区字段，保留全省数据，缩放到区域后仍能显示区域内道路。
+      if (filter) map.setFilter(id, filter);
+      else if (d.level === "city" || d.level === "county") map.setFilter(id, null);
+    }
+  };
+
+  const applyDrillState = (map, d) => {
+    if (!map || !d?.code || !map.isStyleLoaded?.()) return false;
+    ensureRuntimeLayers(map);
+    clearRegionHighlight(map);
+    restoreRegionHighlight(map, d);
+    applyDrillFilters(map, d);
+    // 下钻时只保留当前地市/县市区范围内的行政区名称，避免沿海多岛和底图标签叠加造成重复。
+    const cityLabel = map.getLayer("boundary-city-label");
+    const countyLabel = map.getLayer("boundary-county-label");
+    const code = String(d.code);
+    if (cityLabel) map.setFilter("boundary-city-label", ["==", ["to-string", ["get", "adcode"]], d.level === "city" ? code : code.slice(0, 4) + "00"]);
+    if (countyLabel) {
+      map.setFilter("boundary-county-label", d.level === "county"
+        ? ["==", ["to-string", ["get", "adcode"]], code]
+        : ["match", ["slice", ["to-string", ["get", "adcode"]], 0, 4], [code.slice(0, 4)], true, false]);
+    }
+    return true;
   };
 
   const geometryBounds = (geojson) => {
@@ -239,6 +307,8 @@ const MapViewer = forwardRef(function MapViewer(
   // 初始化地图
   useEffect(() => {
     if (!containerRef.current) return undefined;
+    setLoaded(false);
+    setLoadError("");
   const map = new MapLibreMap({
       container: containerRef.current,
       style: STYLE_PATH(project),
@@ -249,25 +319,13 @@ const MapViewer = forwardRef(function MapViewer(
     mapRef.current = map;
     map.addControl(new NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
-    map.on("error", (event) => {
-      const detail = event?.error?.message || event?.error?.statusText || String(event?.error || "地图资源加载失败");
-      console.error("[MapLibre]", detail);
-    });
-    // 从 style 提取底图/路网图层 id（下钻过滤与底图切换用）
-    const syncLayerRefs = (s) => {
-      if (!s?.layers) return;
-      const ids = s.layers
-        .filter((l) => String(l.id).startsWith("basemap-"))
-        .map((l) => String(l.id).slice("basemap-".length));
-      if (ids.length) basemapIdsRef.current = ids;
-      roadLayerIdsRef.current = s.layers
-        .filter((l) => l.type === "line" && !["boundary-city", "boundary-county"].includes(l.id))
-        .map((l) => l.id)
-        .concat(
-          s.layers.filter((l) => l.type === "symbol" && String(l.id).endsWith("-label")).map((l) => l.id)
-        );
-    };
-    map.on("load", () => {
+    let ready = false;
+    let fallbackTimer;
+    const markReady = () => {
+      if (ready || mapRef.current !== map) return;
+      ready = true;
+      window.clearTimeout(fallbackTimer);
+      setLoadError("");
       setLoaded(true);
       ensureRuntimeLayers(map);
       // 立即同步图层列表（避免加载后第一时间下钻时 ref 为空）
@@ -280,17 +338,47 @@ const MapViewer = forwardRef(function MapViewer(
           setBasemap(selected);
         })
         .catch(() => {});
+    };
+    map.on("error", (event) => {
+      const detail = event?.error?.message || event?.error?.statusText || String(event?.error || "地图资源加载失败");
+      console.error("[MapLibre]", detail);
     });
+    // 从 style 提取底图/路网图层 id（下钻过滤与底图切换用）
+    const syncLayerRefs = (s) => {
+      if (!s?.layers) return;
+      const ids = s.layers
+        .filter((l) => String(l.id).startsWith("basemap-"))
+        .map((l) => String(l.id).slice("basemap-".length));
+      if (ids.length) basemapIdsRef.current = ids;
+      roadLayerIdsRef.current = s.layers
+        .filter((l) => l.source && !["boundary-city", "boundary-county"].includes(l.source)
+          && (l.type === "line" || (l.type === "symbol" && String(l.id).endsWith("-label"))))
+        .map((l) => l.id);
+    };
+    map.on("load", () => {
+      markReady();
+    });
+    // 样式主体已经可用时，个别字体/瓦片请求失败不应阻塞整个地图界面。
+    map.once("idle", () => {
+      if (map.isStyleLoaded?.()) markReady();
+    });
+    // 最后的兜底：避免第三方底图或字体服务异常导致“地图加载中”永久遮罩。
+    fallbackTimer = window.setTimeout(() => {
+      if (mapRef.current !== map || ready) return;
+      if (map.isStyleLoaded?.() || map.loaded?.()) markReady();
+      else setLoadError("地图样式加载失败，请重试");
+    }, 2500);
     map.on("move", () => {
       const c = map.getCenter();
       setCursor({ lng: c.lng.toFixed(5), lat: c.lat.toFixed(5), zoom: map.getZoom().toFixed(2) });
     });
     return () => {
       try { map.remove(); } catch {}
+      window.clearTimeout(fallbackTimer);
       mapRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project]);
+  }, [project, retryToken]);
 
   // 项目配置加载/切换后同步底图；配置是持久化选择的唯一来源，避免热更新时回到样式文件中的旧默认值。
   useEffect(() => {
@@ -381,24 +469,16 @@ const MapViewer = forwardRef(function MapViewer(
     if (ids.length) basemapIdsRef.current = ids;
     // 记录路网图层（下钻过滤目标）
     roadLayerIdsRef.current = (style?.layers || [])
-      .filter((l) => l.type === "line" && !["boundary-city", "boundary-county"].includes(l.id))
-      .map((l) => l.id)
-      .concat(
-        (style?.layers || [])
-          .filter((l) => l.type === "symbol" && String(l.id).endsWith("-label"))
-          .map((l) => l.id)
-      );
+      .filter((l) => l.source && !["boundary-city", "boundary-county"].includes(l.source)
+        && (l.type === "line" || (l.type === "symbol" && String(l.id).endsWith("-label"))))
+      .map((l) => l.id);
     // 重放下钻状态（style 重载后恢复过滤与高亮；setStyle 异步，需等 style 渲染完成）
     if (drillRef.current) {
       const d = drillRef.current;
-      const field = d.level === "city" ? "city_code" : "adcode";
       const restoreDrill = () => {
         const m = mapRef.current;
         if (!m || !drillRef.current) return;
-        restoreRegionHighlight(m, d);
-        for (const id of roadLayerIdsRef.current) {
-          if (m.getLayer(id)) m.setFilter(id, ["==", field, d.code]);
-        }
+        applyDrillState(m, d);
       };
       map.once("idle", restoreDrill);
       // 兜底：idle 若长时间不触发（无交互时不触发？MapLibre idle 在渲染稳定后触发）
@@ -452,14 +532,11 @@ const MapViewer = forwardRef(function MapViewer(
     drillTo: (d) => {
       const map = mapRef.current;
       if (!map || !d?.code) return;
-      ensureRuntimeLayers(map);
-      clearRegionHighlight(map);
-      const field = d.level === "city" ? "city_code" : "adcode";
-      restoreRegionHighlight(map, d);
-      for (const id of roadLayerIdsRef.current) {
-        if (map.getLayer(id)) map.setFilter(id, ["==", field, d.code]);
-      }
       drillRef.current = d;
+      if (!applyDrillState(map, d)) map.once("idle", () => applyDrillState(map, d));
+      window.setTimeout(() => {
+        if (mapRef.current === map && drillRef.current?.code === d.code) applyDrillState(map, d);
+      }, 900);
     },
     /** 清除下钻 */
     clearDrill: () => {
@@ -467,6 +544,9 @@ const MapViewer = forwardRef(function MapViewer(
       if (!map) return;
       clearRegionHighlight(map);
       for (const id of roadLayerIdsRef.current) {
+        if (map.getLayer(id)) map.setFilter(id, null);
+      }
+      for (const id of runtimeLabelLayers) {
         if (map.getLayer(id)) map.setFilter(id, null);
       }
       drillRef.current = null;
@@ -848,7 +928,16 @@ const MapViewer = forwardRef(function MapViewer(
   return (
     <div className="map-viewer">
       <div ref={containerRef} className="map-canvas" />
-      {!loaded && <div className="map-loading">地图加载中…</div>}
+      {!loaded && (
+        <div className="map-loading">
+          {loadError ? (
+            <div className="map-load-error">
+              <span>{loadError}</span>
+              <button type="button" className="btn-sm" onClick={() => setRetryToken((v) => v + 1)}>重新加载</button>
+            </div>
+          ) : "地图加载中…"}
+        </div>
+      )}
 
       {/* 顶部工具条 */}
       <div className="map-toolbar">

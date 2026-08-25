@@ -119,6 +119,7 @@ export default function App() {
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
+  const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const { theme, toggleTheme } = useTheme();
 
   // @ 按钮：把文件/文件夹路径插入到对话输入框
@@ -434,6 +435,36 @@ export default function App() {
     });
   }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
+  const sharedChatPanel = (
+    <ChatPanel
+      ref={chatInputRef}
+      clientId={clientId}
+      threadId={threadId}
+      onFileChanged={(changed) => {
+        handleFileChanged(changed);
+        mapBridgeRef.current?.onFileChanged?.(changed);
+      }}
+      onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
+      currentDoc={mapMode ? "地图模块" : current?.name}
+      models={models}
+      defaultModel={defaultModel}
+      onAgentEnd={() => {
+        handleAgentEnd();
+        mapBridgeRef.current?.onAgentEnd?.();
+      }}
+      historyMessages={historyMessages}
+      onNewSession={handleNewSession}
+      onOpenFile={(name) => {
+        if (mapMode) mapBridgeRef.current?.onOpenFile?.(name);
+        else open(name);
+      }}
+      sessions={sessions}
+      onSelectSession={handleSelectSession}
+      onSessionChange={handleSessionChange}
+      onRefreshSessions={refreshSessions}
+    />
+  );
+
   return (
     <AppErrorBoundary>
       <div className="app">
@@ -480,6 +511,8 @@ export default function App() {
             onSelectSession={handleSelectSession}
             onSessionChange={handleSessionChange}
             onRefreshSessions={refreshSessions}
+            hideChat
+            bridgeRef={mapBridgeRef}
           />
         )}
         {!kbMode && !tplMode && !mapMode && (
@@ -544,23 +577,6 @@ export default function App() {
           </div>
         </div>
         <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
-        <ChatPanel
-          ref={chatInputRef}
-          clientId={clientId}
-          threadId={threadId}
-          onFileChanged={handleFileChanged}
-          currentDoc={current?.name}
-          models={models}
-          defaultModel={defaultModel}
-          onAgentEnd={handleAgentEnd}
-          historyMessages={historyMessages}
-          onNewSession={handleNewSession}
-          onOpenFile={open}
-          sessions={sessions}
-          onSelectSession={handleSelectSession}
-              onSessionChange={handleSessionChange}
-              onRefreshSessions={refreshSessions}
-        />
         <SkillsManager
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
@@ -573,6 +589,7 @@ export default function App() {
         />
         </>
         )}
+        {!kbMode && !tplMode && <div className={`app-chat-slot ${mapMode ? "map" : ""}`}>{sharedChatPanel}</div>}
         <CommandPalette
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}

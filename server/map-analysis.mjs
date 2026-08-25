@@ -8,8 +8,20 @@ const CENTERS = {
   "金华市": [119.647, 29.079],
   "杭州市": [120.155, 30.274],
   "新昌县": [120.903, 29.499],
+  "台州市": [121.4208, 28.6564],
+  "玉环市": [121.2323, 28.1284],
+  "椒江区": [121.444, 28.673],
+  "黄岩区": [121.262, 28.65],
+  "路桥区": [121.372, 28.58],
+  "三门县": [121.395, 29.104],
+  "天台县": [121.008, 29.144],
+  "仙居县": [120.735, 28.849],
+  "温岭市": [121.385, 28.372],
+  "临海市": [121.114, 28.858],
   "暹粒市": [103.856, 13.363],
 };
+
+const TAIZHOU_COUNTIES = ["椒江区", "黄岩区", "路桥区", "三门县", "天台县", "仙居县", "温岭市", "临海市", "玉环市"];
 
 const centerOf = (region = "义乌市") => CENTERS[region] || CENTERS["义乌市"];
 const point = (lon, lat, properties = {}) => ({ type: "Feature", properties, geometry: { type: "Point", coordinates: [lon, lat] } });
@@ -17,6 +29,35 @@ const line = (a, b, properties = {}) => ({ type: "Feature", properties, geometry
 
 export function createDemoAnalysis({ analysis = "heatmap", region = "义乌市", project = "zhejiang-map", count = 36 } = {}) {
   const center = centerOf(region);
+  if (analysis === "od") {
+    const targets = region === "玉环市" || region === "台州市" ? TAIZHOU_COUNTIES.filter((name) => name !== region) : ["台州市"];
+    const origin = centerOf(region);
+    const lines = targets.map((name, index) => line(origin, centerOf(name), {
+      origin: region,
+      destination: name,
+      flow: 180 + ((index * 97) % 620),
+      direction: "outbound",
+    }));
+    const points = [point(origin[0], origin[1], { name: region, role: "origin", value: 0 })]
+      .concat(targets.map((name, index) => {
+        const c = centerOf(name);
+        return point(c[0], c[1], { name, role: "destination", value: lines[index].properties.flow });
+      }));
+    return {
+      action: "show_analysis",
+      analysis: "od",
+      type: "od",
+      id: "agent-od-analysis",
+      project,
+      region,
+      source: "demo",
+      title: `${region}—台州市各县市区出行 OD`,
+      fitBounds: true,
+      geojson: { type: "FeatureCollection", features: points },
+      lines: { type: "FeatureCollection", features: lines },
+      stats: { demo: true, region, targetCount: targets.length, totalFlow: lines.reduce((sum, f) => sum + f.properties.flow, 0) },
+    };
+  }
   if (analysis === "isochrone") {
     const ranges = [15, 30, 45];
     const features = ranges.map((range, index) => {

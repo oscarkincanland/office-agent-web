@@ -3,15 +3,48 @@ const CENTERS = {
   "金华市": [119.647, 29.079],
   "杭州市": [120.155, 30.274],
   "新昌县": [120.903, 29.499],
+  "台州市": [121.420, 28.656],
+  "玉环市": [121.232, 28.136],
+  "椒江区": [121.444, 28.673],
+  "黄岩区": [121.262, 28.650],
+  "路桥区": [121.372, 28.582],
+  "三门县": [121.395, 29.104],
+  "天台县": [121.008, 29.144],
+  "仙居县": [120.735, 28.849],
+  "温岭市": [121.385, 28.372],
+  "临海市": [121.114, 28.858],
   "暹粒市": [103.856, 13.363],
 };
+
+const TAIZHOU_COUNTIES = ["椒江区", "黄岩区", "路桥区", "三门县", "天台县", "仙居县", "温岭市", "临海市", "玉环市"];
 
 /** 生成可直接交给 MapViewer 的确定性演示分析结果。 */
 export function createDemoAnalysis({ analysis = "heatmap", region = "义乌市", project = "zhejiang-map", count = 36 } = {}) {
   const center = CENTERS[region] || CENTERS["义乌市"];
   let geojson;
   let title;
-  if (analysis === "isochrone") {
+  if (analysis === "od") {
+    const destinations = TAIZHOU_COUNTIES.filter((name) => name !== region);
+    const origin = { type: "Feature", properties: { name: region, role: "origin", value: 1000 }, geometry: { type: "Point", coordinates: center } };
+    const targetFeatures = destinations.map((name, index) => ({
+      type: "Feature",
+      properties: { name, role: "destination", value: 180 + index * 35 },
+      geometry: { type: "Point", coordinates: CENTERS[name] },
+    }));
+    const lines = destinations.map((name, index) => ({
+      type: "Feature",
+      properties: { origin: region, destination: name, flow: 180 + index * 35, direction: "outbound" },
+      geometry: { type: "LineString", coordinates: [center, CENTERS[name]] },
+    }));
+    geojson = { type: "FeatureCollection", features: [origin, ...targetFeatures] };
+    title = `${region}—台州市各县市区出行 OD`;
+    return {
+      action: "show_analysis", analysis, type: analysis, id: "agent-od-analysis", project, region,
+      source: "demo", title, fitBounds: true, geojson,
+      lines: { type: "FeatureCollection", features: lines },
+      stats: { demo: true, region, destinations: destinations.length, totalFlow: lines.reduce((sum, item) => sum + item.properties.flow, 0) },
+    };
+  } else if (analysis === "isochrone") {
     const ranges = [15, 30, 45];
     geojson = {
       type: "FeatureCollection",

@@ -1557,7 +1557,7 @@ app.post("/api/agent/answer", (req, res) => {
 });
 
 app.post("/api/agent/prompt", async (req, res) => {
-  const { client, thread, text, images, attachments, references, effort, task: taskInput } = req.body || {};
+  const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput } = req.body || {};
   const hasImages = Array.isArray(images) && images.some((img) => img?.data);
   const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
   if (!client || (!String(text || "").trim() && !hasImages && !hasAttachments)) {
@@ -1565,6 +1565,13 @@ app.post("/api/agent/prompt", async (req, res) => {
   }
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
   const key = agentKey(client, thread);
+  if (requestedModel) {
+    try {
+      await agentManager.setModel(key, String(requestedModel));
+    } catch (e) {
+      return res.status(409).json({ error: `模型同步失败：${e.message}` });
+    }
+  }
   const before = snapshotWorkspace();
   let run = null;
   let resolved = [];
@@ -2011,7 +2018,7 @@ app.get("/api/demo/cambodia-od", (req, res) => {
 
 // 不依赖 Agent 的地图演示入口，供工具栏按钮和验收流程直接调用。
 app.get("/api/map/demo-analysis", (req, res) => {
-  const analysis = req.query.analysis === "isochrone" ? "isochrone" : "heatmap";
+  const analysis = ["heatmap", "od", "isochrone"].includes(req.query.analysis) ? req.query.analysis : "heatmap";
   const payload = createDemoAnalysis({ analysis, region: String(req.query.region || "义乌市"), project: String(req.query.project || "zhejiang-map"), count: Number(req.query.count || 36) });
   res.json(payload);
 });

@@ -194,6 +194,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const mountedRef = useRef(true);
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
   const systemEventKeysRef = useRef(new Set());
+  const syncedModelRef = useRef("");
 
   useEffect(() => {
     const found = parseReferenceMarkers(input);
@@ -330,9 +331,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       applyModel(cur, nextModels);
+      const syncKey = `${clientId}:${threadId || ""}:${cur}`;
+      if (cur && syncKey !== syncedModelRef.current) {
+        syncedModelRef.current = syncKey;
+        try { await setAgentModel(clientId, cur, threadId); }
+        catch (e) { if (mountedRef.current) setModelMsg(`模型同步失败：${e.message}`); }
+      }
     })();
     return () => { cancelled = true; };
-  }, [modelsProp, defaultModel]);
+  }, [modelsProp, defaultModel, clientId, threadId]);
 
   function applyModel(id, list) {
     const m = (list || models).find((x) => x.id === id);
@@ -493,6 +500,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "message_start":
         break;
       case "message_end":
+        break;
+      case "agent_retry":
+        pushSystem(`模型连接异常，正在重试：${data.message || "请稍候"}`, `agent_retry:${data.message || "retry"}`);
+        break;
+      case "assistant_final":
+        if (aid && data.text) patch(aid, (m) => {
+          const blocks = [...(m.blocks || [])];
+          const hasText = blocks.some((block) => block.type === "text" && String(block.text || "").trim());
+          return hasText ? m : { ...m, blocks: appendTextBlock(blocks, data.text) };
+        });
         break;
       case "context_compacted":
         pushSystem(`上下文已压缩${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`);
@@ -733,6 +750,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
           images: imgs,
           attachments: atts,
           references: sendReferences,
+          model,
            effort: selectedEffort,
            task: {
              goal: text,

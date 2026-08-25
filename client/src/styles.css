@@ -129,6 +129,30 @@ body.resizing { cursor: col-resize; user-select: none; }
   background: var(--panel-bg);
   height: 100vh;
 }
+.app-chat-slot {
+  width: var(--chat-w);
+  min-width: var(--chat-min);
+  max-width: var(--chat-max);
+  height: 100vh;
+  flex: 0 0 var(--chat-w);
+  display: flex;
+  min-height: 0;
+}
+.app-chat-slot > .chat { width: 100%; max-width: none; min-width: 0; height: 100%; }
+.app-chat-slot.map {
+  position: fixed;
+  z-index: 220;
+  top: 43px;
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  min-width: 300px;
+  max-width: 520px;
+  height: auto;
+  flex: none;
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 26px rgba(0, 0, 0, .2);
+}
 /* shared */
 .btn {
   font-family: inherit; font-size: 11px; padding: 3px 10px;
@@ -3594,10 +3618,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+  min-height: 43px;
+  box-sizing: border-box;
   border-bottom: 1px solid var(--border);
   background: var(--panel-bg);
   flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
+.mp-topbar > * { flex-shrink: 0; }
 .mp-title { font-weight: 700; font-size: 14px; margin-right: 2px; }
 .mp-project-select {
   background: var(--panel2-bg);
@@ -3752,6 +3782,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex-direction: column;
   background: var(--body-bg);
 }
+.mp-shared-chat .mp-body { padding-right: 360px; }
 .cambodia-overlay {
   position: absolute;
   z-index: 18;
@@ -3917,6 +3948,12 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   color: var(--muted);
   background: var(--body-bg);
   z-index: 1;
+}
+.map-load-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--danger, #c2410c);
 }
 .map-toolbar {
   position: absolute;
