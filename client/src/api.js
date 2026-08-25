@@ -59,7 +59,7 @@ export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const forkSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label }) });
-export const listRuns = (thread) => api(`/api/runs${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
+export const listRuns = (thread, limit = 50) => api(`/api/runs?${thread ? `thread=${encodeURIComponent(thread)}&` : ""}limit=${encodeURIComponent(limit)}`);
 export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
 export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });

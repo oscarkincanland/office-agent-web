@@ -1,12 +1,12 @@
 {
-  "name": "浙江省交通基础数据沙盘",
+  "name": "浙江省交通路网与区划图",
   "project": "zhejiang-map",
   "center": [
     120,
     29.2
   ],
   "zoom": 7,
-  "basemap": "carto-positron",
+  "basemap": "maptiler-outdoor",
   "layers": [
     {
       "id": "boundary-city",
@@ -71,5 +71,8 @@
       "minzoom": 5,
       "maxzoom": 13
     }
+  ],
+  "groups": [
+    "测试demo"
   ]
 }

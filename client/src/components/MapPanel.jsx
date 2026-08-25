@@ -4,6 +4,7 @@ import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
+import TaskCenter from "./任务中心.jsx";
 import M2Analysis from "./M2宏观分析.jsx";
 import M3Analysis from "./M3公交分析.jsx";
 import CambodiaODPanel from "./柬埔寨OD面板.jsx";
@@ -54,7 +55,7 @@ function geometryBounds(geometry) {
 export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
-  onSessionChange, onRefreshSessions, hideChat = false, bridgeRef,
+  onSessionChange, onRefreshSessions, hideChat = false, bridgeRef, onViewportChange,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -65,12 +66,15 @@ export default function MapPanel({
   const [drill, setDrill] = useState(null); // 下钻状态 {source, code, name, level}
   const [regionOptions, setRegionOptions] = useState([{ value: "", label: "全省 / 全部区域" }]);
   const [regionCode, setRegionCode] = useState("");
+  const [layerScope, setLayerScope] = useState("region"); // 当前区域 / 当前地市 / 全省
   const [regionQuery, setRegionQuery] = useState("");
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
   const [m2Tab, setM2Tab] = useState(null); // M2 宏观分析标签
   const [m3Tab, setM3Tab] = useState(null); // M3 公交分析标签
   const [cambodiaOpen, setCambodiaOpen] = useState(false);
   const [demoOpen, setDemoOpen] = useState(false);
+  const [analysisMenuOpen, setAnalysisMenuOpen] = useState(false);
+  const [globeMode, setGlobeMode] = useState(false);
   const [activeAnalysis, setActiveAnalysis] = useState(null);
   const [msg, setMsg] = useState("");
   const [selectedLayer, setSelectedLayer] = useState(null);
@@ -250,8 +254,10 @@ export default function MapPanel({
           level: "city",
           source: "boundary-city",
           code: String(f.properties?.adcode || ""),
+          geometry: f.geometry,
           bbox: geometryBounds(f.geometry),
         })).filter((x) => x.value && x.bbox);
+        const cityByCode = new Map(cityOptions.map((city) => [city.value, city]));
         const countyOptions = (counties?.features || []).map((f) => ({
           value: String(f.properties?.adcode || ""),
           label: `县市区 · ${f.properties?.name || f.properties?.adcode || "未命名"}`,
@@ -259,7 +265,10 @@ export default function MapPanel({
           level: "county",
           source: "boundary-county",
           code: String(f.properties?.adcode || ""),
+          geometry: f.geometry,
           bbox: geometryBounds(f.geometry),
+          cityCode: `${String(f.properties?.adcode || "").slice(0, 4)}00`,
+          cityGeometry: cityByCode.get(`${String(f.properties?.adcode || "").slice(0, 4)}00`)?.geometry,
         })).filter((x) => x.value && x.bbox);
         setRegionOptions([{ value: "", label: "全省 / 全部区域" }, ...cityOptions, ...countyOptions]);
       })
@@ -276,12 +285,27 @@ export default function MapPanel({
       flash("已恢复全省视图");
       return;
     }
-    const next = { source: item.source, code: item.code, name: item.name, level: item.level };
+    const next = {
+      source: item.source,
+      code: item.code,
+      name: item.name,
+      level: item.level,
+      geometry: item.geometry,
+      cityCode: item.cityCode || (item.level === "city" ? item.code : `${String(item.code).slice(0, 4)}00`),
+      cityGeometry: item.cityGeometry || (item.level === "city" ? item.geometry : undefined),
+    };
+    mapRef.current?.focusBounds(item.bbox, { maxZoom: item.level === "county" ? 13 : 11 });
     setDrill(next);
     mapRef.current?.drillTo(next);
-    mapRef.current?.focusBounds(item.bbox, { maxZoom: item.level === "county" ? 13 : 11 });
     flash(`已切换到${item.name}`);
   }, [regionOptions, flash]);
+
+  const changeLayerScope = useCallback((value) => {
+    const next = ["region", "city", "province"].includes(value) ? value : "region";
+    setLayerScope(next);
+    mapRef.current?.setCoverageMode(next);
+    flash(next === "province" ? "已显示全省道路与设施" : next === "city" ? "已显示当前地市道路与设施" : "已显示当前区域道路与设施");
+  }, [flash]);
 
   // 初始化：项目列表 + 默认项目
   useEffect(() => {
@@ -289,6 +313,24 @@ export default function MapPanel({
     loadProject(project);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
+
+  // 临时分析只属于当前对话；切换会话时清理运行时图层，但保留共享基础图层和正式文件图层。
+  useEffect(() => {
+    mapRef.current?.clearAllAnalysis?.();
+    mapRef.current?.clearDrill?.();
+    setActiveAnalysis(null);
+    setDrill(null);
+    setRegionCode("");
+    setLayerScope("region");
+    mapRef.current?.setCoverageMode("region");
+    setAnalysisMenuOpen(false);
+    setDemoOpen(false);
+    setOdOpen(false);
+    setIsoOpen(false);
+    setM2Tab(null);
+    setM3Tab(null);
+    setCambodiaOpen(false);
+  }, [threadId]);
 
   // 保存 style.json 并热更新地图
   const saveStyle = useCallback(async (nextStyle) => {
@@ -419,6 +461,24 @@ export default function MapPanel({
     const next = { ...cfg, layers: (cfg.layers || []).map((l) => (l.id === layerId ? { ...l, name } : l)) };
     setCfg(next);
     try { await mapSaveConfig(project, next); } catch (e) { flash("重命名保存失败: " + e.message); }
+  }, [cfg, project, flash]);
+
+  // 图层组管理：组名写入 map.config.json，导入图层和后续拖动都可复用。
+  const createLayerGroup = useCallback(async (name) => {
+    const group = String(name || "").trim();
+    if (!group || !cfg) return;
+    const groups = [...new Set([...(cfg.groups || []), group])];
+    const next = { ...cfg, groups };
+    setCfg(next);
+    try { await mapSaveConfig(project, next); flash(`已新建图层组：${group}`); } catch (e) { flash("新建图层组失败: " + e.message); }
+  }, [cfg, project, flash]);
+
+  const moveLayerToGroup = useCallback(async (layerId, group) => {
+    if (!cfg || !layerId || !group) return;
+    const groups = [...new Set([...(cfg.groups || []), group])];
+    const next = { ...cfg, groups, layers: (cfg.layers || []).map((l) => l.id === layerId ? { ...l, group } : l) };
+    setCfg(next);
+    try { await mapSaveConfig(project, next); flash(`已将图层移动到“${group}”`); } catch (e) { flash("移动图层失败: " + e.message); }
   }, [cfg, project, flash]);
 
   // 复制图层（新 id + 瓦片重建）
@@ -997,6 +1057,13 @@ export default function MapPanel({
     return () => document.removeEventListener("click", close);
   }, [toolMenu]);
 
+  useEffect(() => {
+    if (!analysisMenuOpen) return undefined;
+    const close = () => setAnalysisMenuOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [analysisMenuOpen]);
+
   const startTool = useCallback((type, kind) => {
     setToolMenu(null);
     if (draw) {
@@ -1022,6 +1089,24 @@ export default function MapPanel({
     loadProject(project);
     mapRef.current?.reloadStyle();
   }, [project, loadProject]);
+
+  const refreshMap = useCallback(async () => {
+    setMsg("刷新地图与图层中…");
+    await loadProject(project);
+    const ok = await mapRef.current?.reloadStyle?.();
+    flash(ok === false ? "地图刷新失败，请稍后重试" : "地图与图层已刷新");
+  }, [project, loadProject, flash]);
+
+  const toggleGlobe = useCallback(() => {
+    const next = !globeMode;
+    const ok = mapRef.current?.setProjection?.(next ? "globe" : "mercator");
+    if (ok === false) {
+      flash("当前地图引擎不支持地球视图");
+      return;
+    }
+    setGlobeMode(next);
+    flash(next ? "已切换为地球视图" : "已切换为平面地图");
+  }, [globeMode, flash]);
 
   // Agent 地图动作只更新临时分析图层，避免对话结束时再次整体 reloadStyle。
   const handleMapAction = useCallback((action) => {
@@ -1102,6 +1187,7 @@ export default function MapPanel({
       <div className="mp-topbar">
         <Icon name="map" size={14} />
         <span className="mp-title">地图</span>
+        <TaskCenter />
         <select
           className="mp-project-select"
           value={project}
@@ -1138,21 +1224,40 @@ export default function MapPanel({
         <button className="btn-sm" onClick={() => setImportOpen(true)} title="导入路网数据（批量 GeoJSON 或目录一键生成）">
           <Icon name="upload" size={13} /> 导入数据
         </button>
-        <button className={`btn-sm ${odOpen ? "active" : ""}`} onClick={() => setOdOpen((v) => !v)} title="OD 出行热力图和流向线（上传 CSV）">
-          <Icon name="locate" size={13} /> OD出行
+        <button className="btn-sm" onClick={refreshMap} title="重新读取地图项目、图层和样式">
+          <Icon name="refresh" size={13} /> 刷新地图
         </button>
-        <button className={`btn-sm ${cambodiaOpen ? "active" : ""}`} onClick={() => setCambodiaOpen((v) => !v)} title="打开柬埔寨暹粒 OD 演示仪表盘">
-          <Icon name="flow" size={13} /> 暹粒OD
+        <div className="mp-analysis-wrap">
+          <button
+            className={`btn-sm ${analysisMenuOpen || odOpen || isoOpen || m2Tab || m3Tab || cambodiaOpen ? "active" : ""}`}
+            onClick={(e) => { e.stopPropagation(); setAnalysisMenuOpen((v) => !v); }}
+            title="打开地图分析工具"
+          >
+            <Icon name="chart" size={13} /> 分析工具
+          </button>
+          {analysisMenuOpen && (
+            <div className="mp-analysis-menu" onClick={(e) => e.stopPropagation()}>
+              <div className="mp-analysis-menu-label">地图分析</div>
+              <button onClick={() => { setOdOpen(true); setAnalysisMenuOpen(false); }}><Icon name="flow" size={13} /> OD 出行热力与流向</button>
+              <button onClick={() => { setIsoOpen(true); setAnalysisMenuOpen(false); }}><Icon name="history" size={13} /> 可达性与路径规划</button>
+              <button onClick={() => { setM2Tab("traffic"); setAnalysisMenuOpen(false); }}><Icon name="road" size={13} /> 道路运行分析</button>
+              <button onClick={() => { setM3Tab("routes"); setAnalysisMenuOpen(false); }}><Icon name="route" size={13} /> 公交线网分析</button>
+              <div className="mp-analysis-menu-sep" />
+              <button className="secondary" onClick={() => { setCambodiaOpen(true); setAnalysisMenuOpen(false); }}><Icon name="flow" size={13} /> 暹粒公交演示</button>
+            </div>
+          )}
+        </div>
+        <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈与路径规划分析">
+          <Icon name="history" size={13} /> 可达性
         </button>
         <div className="mp-demo-wrap">
           <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="打开浙江地图演示分析">
-            <Icon name="chart" size={13} /> 演示
+            <Icon name="chart" size={13} /> 示例数据
           </button>
           {demoOpen && (
             <div className="mp-demo-menu">
               <button onClick={() => runDemoAnalysis("heatmap")}><Icon name="locate" size={13} /> 义乌点位热力图</button>
               <button onClick={() => runDemoAnalysis("isochrone")}><Icon name="history" size={13} /> 义乌可达性等时圈</button>
-              <button onClick={() => runDemoAnalysis("od", "玉环市")}><Icon name="flow" size={13} /> 玉环—台州县市区 OD</button>
               <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setActiveAnalysis(null); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
               <button onClick={() => { mapRef.current?.undoAnalysis("agent-analysis"); setDemoOpen(false); flash("已撤销上一次临时分析"); }}><Icon name="back" size={13} /> 撤销上一次结果</button>
               <button disabled={!activeAnalysis} onClick={() => { saveAnalysis(); setDemoOpen(false); }}><Icon name="download" size={13} /> 保存当前结果</button>
@@ -1162,22 +1267,8 @@ export default function MapPanel({
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
-        <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈分析（外部 API）">
-          <Icon name="history" size={13} /> 可达性
-        </button>
-        <button
-          className={`btn-sm m2-tab-btn ${m2Tab ? "active" : ""}`}
-          onClick={() => setM2Tab(m2Tab === "traffic" ? null : "traffic")}
-          title="道路与区域交通分析（流量/OD/交换量）"
-        >
-          <Icon name="chart" size={13} /> 道路分析
-        </button>
-        <button
-          className={`btn-sm m2-tab-btn m3-tab-btn ${m3Tab ? "active" : ""}`}
-          onClick={() => setM3Tab(m3Tab === "routes" ? null : "routes")}
-          title="公交线网与客流分析（线路/站点/OD/统计）"
-        >
-          <Icon name="route" size={13} /> 公交分析
+        <button className={`btn-sm ${globeMode ? "active" : ""}`} onClick={toggleGlobe} title="切换平面地图 / 地球视图">
+          <Icon name="globe" size={13} /> {globeMode ? "平面" : "地球"}
         </button>
         <select
           className="mp-project-select mp-region-select"
@@ -1186,6 +1277,16 @@ export default function MapPanel({
           title="切换浙江省地市和县市区"
         >
           {regionOptions.filter((r) => !regionQuery.trim() || !r.value || r.name?.includes(regionQuery.trim()) || r.label?.includes(regionQuery.trim())).map((r) => <option key={r.value || "all"} value={r.value}>{r.label}</option>)}
+        </select>
+        <select
+          className="mp-project-select mp-scope-select"
+          value={layerScope}
+          onChange={(e) => changeLayerScope(e.target.value)}
+          title="道路与设施显示范围"
+        >
+          <option value="region">范围：当前区域</option>
+          <option value="city">范围：当前地市</option>
+          <option value="province">范围：全省</option>
         </select>
         <input className="mp-region-search" value={regionQuery} onChange={(e) => setRegionQuery(e.target.value)} placeholder="搜索区域" title="按名称筛选地市和县市区" />
         <button
@@ -1299,6 +1400,8 @@ export default function MapPanel({
             onZoomToLayer={zoomToLayer}
             onOpenAttribute={openAttribute}
             onSetLabel={setLayerLabel}
+            onCreateGroup={createLayerGroup}
+            onMoveLayerToGroup={moveLayerToGroup}
           />
         </div>
         <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
@@ -1309,11 +1412,19 @@ export default function MapPanel({
             ref={mapRef}
             project={project}
             config={cfg}
+            onViewportChange={onViewportChange}
             onLayerTilesChanged={() => loadProject(project)}
             onDrillDown={(d) => {
-              setDrill(d);
-              setRegionCode(String(d.code || ""));
-              mapRef.current?.drillTo(d);
+              const matched = regionOptions.find((item) => item.value === String(d.code || ""));
+              const resolved = matched ? {
+                ...d,
+                geometry: matched.geometry || d.geometry,
+                cityCode: matched.cityCode || (matched.level === "city" ? matched.code : `${String(matched.code).slice(0, 4)}00`),
+                cityGeometry: matched.cityGeometry || (matched.level === "city" ? matched.geometry : undefined),
+              } : d;
+              setDrill(resolved);
+              setRegionCode(String(resolved.code || ""));
+              mapRef.current?.drillTo(resolved);
             }}
           />
           {/* 测量/绘制提示条 */}

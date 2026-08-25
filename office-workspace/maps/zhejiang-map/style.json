@@ -239,11 +239,11 @@
       }
     },
     "maptiler-streets": {
-      "name": "MapTiler 街道",
+      "name": "MapTiler 街道（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -251,11 +251,11 @@
       }
     },
     "maptiler-satellite": {
-      "name": "MapTiler 卫星",
+      "name": "MapTiler 卫星（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -263,11 +263,11 @@
       }
     },
     "maptiler-hybrid": {
-      "name": "MapTiler 卫星混合注记",
+      "name": "MapTiler 卫星混合（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -275,11 +275,11 @@
       }
     },
     "maptiler-outdoor": {
-      "name": "MapTiler 户外地形",
+      "name": "MapTiler 户外地形（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/maps/outdoor-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/maps/outdoor-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -287,11 +287,11 @@
       }
     },
     "maptiler-winter": {
-      "name": "MapTiler 冬季地形",
+      "name": "MapTiler 冬季地形（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/maps/winter-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/maps/winter-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -299,11 +299,11 @@
       }
     },
     "maptiler-basic": {
-      "name": "MapTiler 简洁底图",
+      "name": "MapTiler 简洁底图（无标注）",
       "type": "raster",
       "tileSize": 256,
       "tiles": [
-        "https://api.maptiler.com/maps/basic-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__"
+        "https://api.maptiler.com/maps/basic-v2/{z}/{x}/{y}.png?key=__MAP_SERVICE_KEY__&language=none"
       ],
       "attribution": "&copy; <a href=\"https://www.maptiler.com/\">MapTiler</a> &copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a>",
       "metadata": {
@@ -371,7 +371,7 @@
       "type": "raster",
       "source": "carto-positron",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -492,7 +492,7 @@
       "type": "raster",
       "source": "maptiler-outdoor",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -530,7 +530,7 @@
       "type": "line",
       "paint": {
         "line-color": "#e4572e",
-        "line-width": 2,
+        "line-width": 3,
         "line-opacity": 0.9,
         "line-dasharray": [
           2,
@@ -539,21 +539,19 @@
       }
     },
     {
-      "id": "boundary-county",
-      "source": "boundary-county",
-      "source-layer": "boundary-county",
+      "id": "junctions",
+      "source": "junctions",
+      "source-layer": "junctions",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
-      "type": "line",
+      "type": "circle",
       "paint": {
-        "line-color": "#b8b8c8",
-        "line-width": 0.8,
-        "line-opacity": 0.9,
-        "line-dasharray": [
-          2,
-          1.2
-        ]
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
       }
     },
     {
@@ -567,7 +565,23 @@
       "paint": {
         "line-color": "#ff7f00",
         "line-width": 5.5,
-        "line-opacity": 0.55
+        "line-opacity": 1
+      }
+    },
+    {
+      "id": "toll-stations",
+      "source": "toll-stations",
+      "source-layer": "toll-stations",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4,
+        "circle-color": "#2ca02c",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
       }
     },
     {
@@ -579,8 +593,8 @@
       },
       "type": "line",
       "paint": {
-        "line-color": "#ff0fa7",
-        "line-width": 3,
+        "line-color": "#f2079c",
+        "line-width": 2,
         "line-opacity": 0.85
       }
     },
@@ -613,35 +627,21 @@
       }
     },
     {
-      "id": "toll-stations",
-      "source": "toll-stations",
-      "source-layer": "toll-stations",
+      "id": "boundary-county",
+      "source": "boundary-county",
+      "source-layer": "boundary-county",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
-      "type": "circle",
+      "type": "line",
       "paint": {
-        "circle-radius": 4,
-        "circle-color": "#2ca02c",
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 1,
-        "circle-opacity": 0.9
-      }
-    },
-    {
-      "id": "junctions",
-      "source": "junctions",
-      "source-layer": "junctions",
-      "layout": {
-        "visibility": "none"
-      },
-      "type": "circle",
-      "paint": {
-        "circle-radius": 4.5,
-        "circle-color": "#9467bd",
-        "circle-stroke-color": "#ffffff",
-        "circle-stroke-width": 1,
-        "circle-opacity": 0.9
+        "line-color": "#b8b8c8",
+        "line-width": 0.8,
+        "line-opacity": 0.9,
+        "line-dasharray": [
+          2,
+          1.2
+        ]
       }
     },
     {

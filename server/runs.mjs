@@ -95,8 +95,71 @@ function loadRun(id) {
 }
 
 function saveRun(run) {
+  run.updatedAt = new Date().toISOString();
   safeJsonWrite(runFile(run.id), run);
   return run;
+}
+
+function stepTitleForTool(name) {
+  const labels = {
+    read: "读取资料",
+    grep: "检索项目内容",
+    find: "查找文件",
+    ls: "检查工作区",
+    officecli: "处理 Office 文档",
+    map_read: "读取地图项目",
+    map_edit: "修改地图样式",
+    map_import: "导入地图数据",
+    map_analyze: "生成地图分析",
+    map_save_analysis: "保存地图分析",
+    map_clear_analysis: "清理地图分析",
+    kb_search: "检索知识库",
+    kb_read: "读取知识内容",
+    context_read: "读取上下文",
+    memory_update: "整理记忆建议",
+  };
+  return labels[name] || (name ? `执行 ${name}` : "执行 Agent 任务");
+}
+
+function ensureStep(run, stepId, name, status = "pending") {
+  run.steps = Array.isArray(run.steps) ? run.steps : [];
+  let step = run.steps.find((item) => item.id === stepId);
+  if (!step) {
+    step = {
+      id: stepId || `${run.id}:event-${run.steps.length + 1}`,
+      index: run.steps.length,
+      name: name || "执行 Agent 任务",
+      status,
+      attempts: 0,
+      startedAt: null,
+      finishedAt: null,
+      error: null,
+    };
+    run.steps.push(step);
+  }
+  return step;
+}
+
+function updateStepFromEvent(run, type, data = {}) {
+  const toolName = data.name || data.toolName;
+  const stepId = data.stepId || (toolName ? `${run.id}:tool:${toolName}` : null);
+  if (type === "step_started" || type === "tool_start") {
+    const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "running");
+    step.status = "running";
+    step.startedAt ||= new Date().toISOString();
+    step.attempts = Number(step.attempts || 0) + 1;
+    run.currentStepId = step.id;
+  } else if (type === "step_finished" || type === "tool_end") {
+    const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "completed");
+    step.status = data.isError ? "failed" : (data.status || "completed");
+    step.error = data.isError ? String(data.error || data.result || "工具执行失败").slice(0, 500) : null;
+    step.finishedAt = new Date().toISOString();
+  } else if (type === "agent_error") {
+    const step = run.currentStepId ? ensureStep(run, run.currentStepId) : ensureStep(run, null, "执行 Agent 任务", "failed");
+    step.status = "failed";
+    step.error = String(data.message || "Agent 执行失败").slice(0, 500);
+    step.finishedAt = new Date().toISOString();
+  }
 }
 
 export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null } = {}) {
@@ -115,12 +178,17 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
     steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
-    events: [{ type: "run_started", at: new Date().toISOString() }],
+    events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
     before,
     artifacts: [],
     startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     finishedAt: null,
   };
+  if (!run.steps.length) {
+    run.steps.push({ id: `${id}:main`, index: 0, name: "执行 Agent 任务", status: "running", attempts: 1, startedAt: run.startedAt, finishedAt: null, error: null });
+    run.currentStepId = `${id}:main`;
+  }
   return saveRun(run);
 }
 
@@ -134,7 +202,9 @@ export function updateRunStep(id, stepId, patch = {}) {
   if (nextStatus === "running") { step.startedAt ||= new Date().toISOString(); step.attempts = Number(step.attempts || 0) + 1; }
   if (["completed", "failed", "skipped"].includes(nextStatus)) step.finishedAt = new Date().toISOString();
   run.events = Array.isArray(run.events) ? run.events : [];
-  run.events.push({ type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
+  const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
   return saveRun(run);
 }
 
@@ -142,7 +212,10 @@ export function recordRunEvent(id, type, data = {}) {
   const run = loadRun(id);
   if (!run) return null;
   run.events = Array.isArray(run.events) ? run.events : [];
-  if (run.events.length < 800) run.events.push({ type, data, at: new Date().toISOString() });
+  updateStepFromEvent(run, type, data);
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
   return saveRun(run);
 }
 
@@ -203,7 +276,16 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件` : "本轮未产生文件变更");
   run.finishedAt = new Date().toISOString();
   run.events = Array.isArray(run.events) ? run.events : [];
-  run.events.push({ type: "run_finished", data: { status, artifacts: artifacts.length }, at: run.finishedAt });
+  run.steps = Array.isArray(run.steps) ? run.steps : [];
+  for (const step of run.steps) {
+    if (step.status === "running" || step.status === "ready") {
+      step.status = status === "completed" ? "completed" : (status === "cancelled" ? "cancelled" : "failed");
+      step.finishedAt = run.finishedAt;
+    }
+  }
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "run_finished", data: { status, artifacts: artifacts.length }, at: run.finishedAt });
   return saveRun(run);
 }
 
@@ -211,12 +293,19 @@ export function getRun(id) {
   const run = loadRun(id);
   if (!run) return null;
   const { before, after, ...publicRun } = run;
-  return { ...publicRun, workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length } };
+  const steps = Array.isArray(publicRun.steps) ? publicRun.steps : [];
+  const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
+  return {
+    ...publicRun,
+    progress: { completed, total: steps.length, running: steps.filter((step) => step.status === "running").length },
+    currentStep: steps.find((step) => step.id === publicRun.currentStepId) || steps.find((step) => step.status === "running") || null,
+    workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
+  };
 }
 
 export function listRuns({ threadId = "", limit = 50 } = {}) {
   ensureDir(RUNS_DIR);
-  return fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => loadRun(path.basename(n, ".json"))).filter(Boolean).filter((r) => !threadId || r.threadId === threadId).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).slice(0, Math.max(1, Math.min(200, limit))).map(getRun);
+  return fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => loadRun(path.basename(n, ".json"))).filter(Boolean).filter((r) => !threadId || r.threadId === threadId).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).slice(0, Math.max(1, Math.min(200, limit))).map((run) => getRun(run.id)).filter(Boolean);
 }
 
 export function rollbackRun(id, paths = []) {
