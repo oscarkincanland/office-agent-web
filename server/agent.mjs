@@ -10,10 +10,10 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace } from "./workspace.mjs";
+import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent } from "./runs.mjs";
-import { taskSummary } from "./task.mjs";
+import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 import { createDemoAnalysis } from "./map-analysis.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
@@ -21,16 +21,15 @@ import { createDemoAnalysis } from "./map-analysis.mjs";
 const SESSION_STORE = path.join(PROJECT_DIR, ".规聚会话");
 fs.mkdirSync(SESSION_STORE, { recursive: true });
 
-function isPathInside(filePath, directory) {
-  const relative = path.relative(path.resolve(directory), path.resolve(filePath));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
 /** 将只读的旧 Pi 会话复制到工作台会话目录后再打开，保留原历史文件作为只读来源。 */
 function materializeSessionPath(sessionPath) {
   if (!sessionPath) return sessionPath;
   const source = path.resolve(String(sessionPath));
-  if (isPathInside(source, SESSION_STORE) || !fs.existsSync(source)) return source;
+  if (!fs.existsSync(source)) throw new Error(`会话文件不存在：${source}`);
+  let stat;
+  try { stat = fs.statSync(source); } catch (error) { throw new Error(`无法读取会话路径：${error.message}`); }
+  if (!stat.isFile()) throw new Error(`会话路径必须是 JSONL 文件，不能是目录：${source}`);
+  if (isInside(SESSION_STORE, source)) return source;
   const target = path.join(SESSION_STORE, path.basename(source));
   try {
     fs.copyFileSync(source, target);
@@ -51,6 +50,48 @@ function assistantText(message) {
   return content.filter((part) => part?.type === "text").map((part) => String(part.text || "")).join("");
 }
 
+function eventValueText(value) {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+const APP_PROMPT_RETRY_DELAYS = [2000, 5000];
+const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
+const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
+
+function rawAgentErrorMessage(error) {
+  if (typeof error === "string") return error;
+  return String(error?.message || error?.cause?.message || error || "模型连接失败");
+}
+
+function safeAgentErrorMessage(message) {
+  return String(message || "模型连接失败")
+    .replace(/(api[_-]?key|authorization|bearer|access[_-]?token|refresh[_-]?token)([\s=:]+)[^\s,;]+/gi, "$1$2[已隐藏]")
+    .slice(0, 1200);
+}
+
+/** 将 SDK/网关错误归一化，供有限重试和诊断日志复用。 */
+export function classifyAgentError(error) {
+  const message = rawAgentErrorMessage(error);
+  const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status ?? 0) || null;
+  const terminal = TERMINAL_AGENT_ERROR_PATTERN.test(message);
+  const retryable = !terminal && Boolean(
+    (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
+      || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
+  );
+  return {
+    message: safeAgentErrorMessage(message),
+    code: error?.code ? String(error.code) : null,
+    status,
+    retryable,
+  };
+}
+
+function waitForAgentRetry(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
 /** 本地 Pi 的模型来源：models-store + models.json + auth.json。 */
 function localModelProviders() {
   const store = readJsonFile(path.join(AGENT_DIR, "models-store.json"), {});
@@ -61,6 +102,24 @@ function localModelProviders() {
     ...Object.keys(config?.providers || {}),
     ...Object.keys(auth || {}),
   ]);
+}
+
+/**
+ * 读取 Pi 的本地动态模型目录。
+ * 某些 Pi SDK 版本会因内置目录时间戳较新而忽略 models-store overlay，
+ * 但 TUI 仍然会直接使用这份缓存。工作台需要与 TUI 保持同一份目录。
+ */
+function localStoredModels(providers = localModelProviders()) {
+  const store = readJsonFile(path.join(AGENT_DIR, "models-store.json"), {});
+  const models = [];
+  for (const [provider, entry] of Object.entries(store || {})) {
+    if (!providers.has(provider) || !Array.isArray(entry?.models)) continue;
+    for (const model of entry.models) {
+      if (!model || typeof model !== "object" || !String(model.id || "").trim()) continue;
+      models.push({ ...model, provider: model.provider || provider });
+    }
+  }
+  return models;
 }
 
 /**
@@ -90,10 +149,11 @@ function localCredentialStore() {
 }
 
 /** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
-function readMemoryLayers() {
+function readMemoryLayers(workspace = getWorkspace()) {
   const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
   try {
-    const ws = getWorkspace();
+    const ws = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
+    if (!ws) return layers;
     const read = (file, max = 1800) => {
       try { return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().slice(0, max) : ""; } catch { return ""; }
     };
@@ -131,8 +191,8 @@ function readMemoryLayers() {
   return layers;
 }
 
-function readMemoryContext() {
-  const layers = readMemoryLayers();
+function readMemoryContext(workspace = getWorkspace()) {
+  const layers = readMemoryLayers(workspace);
   return [
     layers.rules && `## 工作区准则（AGENTS.md）\n${layers.rules}`,
     layers.project && `## 项目信息\n${layers.project.slice(0, 1400)}`,
@@ -143,8 +203,10 @@ function readMemoryContext() {
 }
 
 /** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制）——写入当前工作区 */
-function writeMemorySection(section, content) {
-  const memDir = path.join(getWorkspace(), "memory");
+function writeMemorySection(section, content, workspace = getWorkspace()) {
+  const ws = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
+  if (!ws) return { ok: false, error: "工作区不存在或不是文件夹" };
+  const memDir = path.join(ws, "memory");
   fs.mkdirSync(memDir, { recursive: true });
   const memFile = path.join(memDir, "MEMORY.md");
   const maxLen = 1200;
@@ -184,9 +246,9 @@ function saveMemoryProposals(items) {
   fs.mkdirSync(path.dirname(PROPOSALS_FILE), { recursive: true });
   fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(items.slice(-200), null, 2) + "\n", "utf8");
 }
-function createMemoryProposal(threadId, section, content) {
+function createMemoryProposal(threadId, section, content, workspace = getWorkspace()) {
   const items = readMemoryProposals();
-  const proposal = { id: `memory_${crypto.randomUUID()}`, threadId, section, content: String(content || "").trim().slice(0, 1200), status: "pending", createdAt: new Date().toISOString() };
+  const proposal = { id: `memory_${crypto.randomUUID()}`, threadId, workspace: normalizeWorkspace(workspace), section, content: String(content || "").trim().slice(0, 1200), status: "pending", createdAt: new Date().toISOString() };
   items.push(proposal);
   saveMemoryProposals(items);
   return proposal;
@@ -196,7 +258,7 @@ function approveMemoryProposal(id) {
   const proposal = items.find((x) => x.id === id);
   if (!proposal) return { ok: false, error: "proposal not found" };
   if (proposal.status !== "approved") {
-    const result = writeMemorySection(proposal.section, proposal.content);
+    const result = writeMemorySection(proposal.section, proposal.content, proposal.workspace);
     proposal.status = result.ok ? "approved" : "failed";
     proposal.approvedAt = new Date().toISOString();
   }
@@ -304,9 +366,11 @@ class AgentManager extends EventEmitter {
 
   async _create(clientId, options = {}) {
     const modelRuntime = await this.modelRuntime();
+    const workspace = normalizeWorkspace(options.cwd) || normalizeWorkspace(getWorkspace());
+    if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     let entry; // 在下方创建，供 officeTool 闭包引用
     const loader = new DefaultResourceLoader({
-      cwd: PROJECT_DIR,
+      cwd: workspace,
       agentDir: AGENT_DIR,
       agentsFilesOverride: (current) => ({
         agentsFiles: [
@@ -351,9 +415,8 @@ class AgentManager extends EventEmitter {
       }),
       execute: async (_toolCallId, params) => {
         const { runOfficecli } = await import("./office.mjs");
-        const { getWorkspace } = await import("./workspace.mjs");
         const args = parseArgs(params.args);
-        const r = await runOfficecli(args, { cwd: getWorkspace() });
+        const r = await runOfficecli(args, { cwd: entry.workspace });
         const body = r.stdout + (r.stderr || "");
         const hint = entry.currentFile
           ? `\n[当前工作文件: ${entry.currentFile}]`
@@ -427,8 +490,14 @@ class AgentManager extends EventEmitter {
         const refs = entry.references || [];
         const ref = refs.find((r) => r.id === params.refId);
         if (!ref) return { content: [{ type: "text", text: `未找到引用 ${params.refId}。当前引用：\n${contextSummary(refs) || "（无）"}` }], details: {} };
-        const result = await readReference(ref, params.query, params.range);
-        return { content: [{ type: "text", text: result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}` }], details: { reference: result } };
+        try {
+          const result = await readReference(ref, params.query, params.range, entry.workspace);
+          return { content: [{ type: "text", text: result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}` }], details: { reference: result } };
+        } catch (error) {
+          const message = String(error?.message || error || "读取失败").slice(0, 800);
+          const failed = { ...ref, status: "read_error", message, readAt: new Date().toISOString() };
+          return { content: [{ type: "text", text: `引用 ${ref.id} 读取失败：${message}。请检查文件是否完整、格式是否受支持，必要时换用可读取的文本版本。` }], details: { reference: failed } };
+        }
       },
     });
 
@@ -550,13 +619,12 @@ class AgentManager extends EventEmitter {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const { getWorkspace } = await import("./workspace.mjs");
         const fs = (await import("node:fs")).default;
         const path = (await import("node:path")).default;
-        const ws = getWorkspace();
+        const ws = entry.workspace;
         const rel = String(params.file || "");
         const fp = path.resolve(ws, rel);
-        if (!fp.startsWith(path.resolve(ws))) {
+        if (!isInside(ws, fp)) {
           return { content: [{ type: "text", text: "file 必须在工作区内" }], details: {} };
         }
         if (!fs.existsSync(fp)) {
@@ -656,11 +724,11 @@ class AgentManager extends EventEmitter {
       }),
       execute: async (_toolCallId, params) => {
         if (!params.approved) {
-          const proposal = createMemoryProposal(clientId, params.section, params.content);
+          const proposal = createMemoryProposal(clientId, params.section, params.content, entry.workspace);
           emitChannelSafe(entry, "memory_proposal", { proposal });
           return { content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户确认后写入。` }], details: { proposal } };
         }
-        const r = writeMemorySection(params.section, params.content);
+        const r = writeMemorySection(params.section, params.content, entry.workspace);
         return {
           content: [{ type: "text", text: `已更新记忆（${params.section}），后续任务会自动读取。${r.ok ? "" : "写入失败"}` }],
           details: { ...r },
@@ -716,10 +784,10 @@ class AgentManager extends EventEmitter {
 
     const writableSessionPath = materializeSessionPath(options.sessionPath);
     const sessionManager = writableSessionPath
-      ? SessionManager.open(writableSessionPath, SESSION_STORE, options.cwd || getWorkspace())
-      : SessionManager.create(options.cwd || getWorkspace(), SESSION_STORE);
+      ? SessionManager.open(writableSessionPath, SESSION_STORE, workspace)
+      : SessionManager.create(workspace, SESSION_STORE);
     const { session } = await createAgentSession({
-      cwd: PROJECT_DIR,
+      cwd: workspace,
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
@@ -750,6 +818,7 @@ class AgentManager extends EventEmitter {
       // forward interesting events
       switch (ev.type) {
         case "message_update":
+          if (entry) entry.turnStarted = true;
           if (ev.assistantMessageEvent.type === "text_delta") {
             emit("token", { text: ev.assistantMessageEvent.delta });
           }
@@ -759,29 +828,35 @@ class AgentManager extends EventEmitter {
           }
           break;
         case "tool_execution_start":
+          if (entry) entry.turnStarted = true;
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
+            toolCallId: ev.toolCallId || null,
             name: ev.toolName,
             input: typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args || "", null, 2),
           });
           break;
         case "tool_execution_update":
           // 工具执行过程中的输出流
-          if (ev.output || ev.delta) {
+          if (ev.partialResult !== undefined || ev.output || ev.delta) {
             emit("tool_output", {
+              toolCallId: ev.toolCallId || null,
               name: ev.toolName,
-              output: ev.output || ev.delta || "",
+              output: eventValueText(ev.partialResult ?? ev.output ?? ev.delta),
+              replace: ev.partialResult !== undefined,
             });
           }
           break;
         case "tool_execution_end":
           emit("tool_end", {
+            toolCallId: ev.toolCallId || null,
             name: ev.toolName,
             isError: ev.isError,
-            result: ev.result || ev.output || "",
+            result: eventValueText(ev.result ?? ev.output),
           });
           break;
         case "message_start":
+          if (entry) entry.turnStarted = true;
           emit("message_start", {});
           break;
         case "message_end":
@@ -815,9 +890,6 @@ class AgentManager extends EventEmitter {
             const message = [...messages].reverse().find((item) => item?.role === "assistant");
             entry.lastAssistantText = assistantText(message) || entry.lastAssistantText || "";
             if (message) entry.lastAgentError = message.errorMessage || (message.stopReason === "error" ? "模型调用失败" : null);
-            if (ev.willRetry) {
-              emit("agent_retry", { message: entry.lastAgentError || "模型连接异常", willRetry: true });
-            }
           }
           // 若 ev 包含 usage 信息，emit stats 事件
           if (ev.usage) {
@@ -832,6 +904,25 @@ class AgentManager extends EventEmitter {
               cost: ev.cost ?? u.cost ?? 0,
             });
           }
+          break;
+        case "auto_retry_start":
+          // Pi SDK 已经判断这是可重试的完整模型回合；仅向前端播报，不能在这里再次手动 prompt。
+          emit("agent_retry", {
+            message: ev.errorMessage || "模型连接异常",
+            attempt: ev.attempt,
+            maxAttempts: ev.maxAttempts,
+            delayMs: ev.delayMs,
+            source: "pi-sdk",
+            willRetry: true,
+          });
+          break;
+        case "auto_retry_end":
+          emit("agent_retry_end", {
+            success: Boolean(ev.success),
+            attempt: ev.attempt,
+            message: ev.success ? "模型连接已恢复" : (ev.finalError || "模型重试失败"),
+            source: "pi-sdk",
+          });
           break;
         case "agent_settled":
           if (entry.lastAgentError) emit("agent_error", { message: entry.lastAgentError });
@@ -848,7 +939,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null, lastAgentError: null, lastAssistantText: "" };
+    entry = { session, channel, busy: false, loader, clientId, workspace, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastAssistantText: "", turnStarted: false };
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -870,13 +961,38 @@ class AgentManager extends EventEmitter {
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
     entry.task = runContext?.task || null;
+    entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
     entry.lastAgentError = null;
     entry.lastAssistantText = "";
+    // 只有尚未收到本轮模型/工具事件时，才允许对抛出的传输异常重放 prompt。
+    // 一旦已经开始工具调用，绝不重复提交，避免副作用被执行两次。
+    if (!isStreaming) entry.turnStarted = false;
     try {
       // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
       try { await entry.loader.reload(); } catch {}
+      // 按本轮模式收缩 Pi 的可用工具集合。该策略必须在 prompt 前应用，
+      // Chat/Office 发生异常时直接中止，避免以更宽权限继续执行。
+      const modePolicy = toolPolicyForMode(entry.mode);
+      try {
+        entry.session.setActiveToolsByName(modePolicy.tools);
+        entry.modePolicy = modePolicy;
+        emitChannelSafe(entry, "mode_policy", {
+          runId: entry.activeRunId,
+          mode: modePolicy.mode,
+          label: modePolicy.label,
+          description: modePolicy.description,
+          tools: modePolicy.tools,
+        });
+      } catch (error) {
+        entry.modePolicy = null;
+        emitChannelSafe(entry, "agent_error", {
+          message: `无法应用${modeLabel(entry.mode)}模式的工具边界：${error?.message || String(error)}`,
+          code: "MODE_POLICY_APPLY_FAILED",
+        });
+        throw error;
+      }
       // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
-      this.writeContextFile(entry.currentFile);
+      this.writeContextFile(entry, entry.currentFile);
       // 应用推理强度（low/medium/high → pi thinking level）
       if (effort) {
         try { entry.session.setThinkingLevel(effort); } catch {}
@@ -891,7 +1007,7 @@ class AgentManager extends EventEmitter {
       // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
       // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
       try {
-        const dyn = this.buildDynamicContext(entry.currentFile);
+        const dyn = this.buildDynamicContext(entry, entry.currentFile);
         if (dyn) text = dyn + "\n\n" + text;
       } catch {}
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
@@ -901,7 +1017,7 @@ class AgentManager extends EventEmitter {
       if (entry.references.length) {
         text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
       }
-      if (entry.task) text = `${taskSummary(entry.task)}\n\n${text}`;
+      if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -917,16 +1033,35 @@ class AgentManager extends EventEmitter {
         emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
         await entry.session.prompt(text, opts);
       } else {
-        try {
-          await entry.session.prompt(text, opts);
-        } catch (e) {
-          // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
-          // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列
-          if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
-            emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
-            await entry.session.prompt(text, { ...opts, streamingBehavior: "steer" });
-          } else {
-            throw e;
+        let transportAttempt = 0;
+        while (true) {
+          try {
+            await entry.session.prompt(text, opts);
+            break;
+          } catch (e) {
+            // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
+            // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列。
+            if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
+              emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
+              await entry.session.prompt(text, { ...opts, streamingBehavior: "steer" });
+              break;
+            }
+
+            const info = classifyAgentError(e);
+            const canReplay = info.retryable && !entry.turnStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
+            if (!canReplay) throw e;
+
+            const delayMs = APP_PROMPT_RETRY_DELAYS[transportAttempt];
+            transportAttempt += 1;
+            emitChannelSafe(entry, "agent_retry", {
+              message: info.message,
+              attempt: transportAttempt,
+              maxAttempts: APP_PROMPT_RETRY_DELAYS.length,
+              delayMs,
+              source: "workbench-transport",
+              willRetry: true,
+            });
+            await waitForAgentRetry(delayMs);
           }
         }
       }
@@ -967,33 +1102,39 @@ class AgentManager extends EventEmitter {
   }
 
   async newThread(clientId, threadId, cwd = getWorkspace()) {
+    const workspace = normalizeWorkspace(cwd) || normalizeWorkspace(getWorkspace());
+    if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
+      if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
       try { old.session.dispose(); } catch {}
       this.sessions.delete(clientId);
     }
-    const entry = await this._create(clientId, { cwd, threadId });
-    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
+    const entry = await this._create(clientId, { cwd: workspace, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd: workspace };
   }
 
   async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
+    const workspace = normalizeWorkspace(cwd) || normalizeWorkspace(getWorkspace());
+    if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
+      if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
       try { old.session.dispose(); } catch {}
       this.sessions.delete(clientId);
     }
-    const entry = await this._create(clientId, { cwd, sessionPath, threadId });
-    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd };
+    const entry = await this._create(clientId, { cwd: workspace, sessionPath, threadId });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd: workspace };
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
   /**
    * 构建每次对话前注入的动态上下文文本（当前工作区绝对路径 + 当前文件 + 记忆摘要）
    */
-  buildDynamicContext(file) {
+  buildDynamicContext(entry, file) {
     try {
-      const ws = getWorkspace();
-      const memCtx = readMemoryContext();
+      const ws = entry?.workspace || getWorkspace();
+      const memCtx = readMemoryContext(ws);
       const lines = [
         "[动态上下文]",
         `- 当前工作区（绝对路径）: ${ws}`,
@@ -1012,13 +1153,13 @@ class AgentManager extends EventEmitter {
   }
 
   /**
-   * 写入 .agent-context.md（项目根，agent 的 read cwd 可读）——每次对话前刷新：
+   * 写入当前工作区的 .agent-context.md——每次对话前刷新：
    * 当前工作区路径（跟随 setWorkspace 动态变化）+ 当前工作文件 + 工作区记忆摘要
    */
-  writeContextFile(file) {
+  writeContextFile(entry, file) {
     try {
-      const ws = getWorkspace();
-      const memCtx = readMemoryContext();
+      const ws = entry?.workspace || getWorkspace();
+      const memCtx = readMemoryContext(ws);
       const ctx = [
         "# Open Plan（规聚）Workspace",
         "",
@@ -1038,7 +1179,7 @@ class AgentManager extends EventEmitter {
         "",
         "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
       ].join("\n");
-      fs.writeFileSync(path.join(PROJECT_DIR, ".agent-context.md"), ctx, "utf8");
+      fs.writeFileSync(path.join(ws, ".agent-context.md"), ctx, "utf8");
     } catch {}
   }
 
@@ -1046,7 +1187,7 @@ class AgentManager extends EventEmitter {
     let entry = this.sessions.get(clientId);
     if (!entry) entry = await this.getOrCreate(clientId);
     entry.currentFile = file || null;
-    this.writeContextFile(entry.currentFile);
+    this.writeContextFile(entry, entry.currentFile);
     return { ok: true, currentFile: entry.currentFile };
   }
 
@@ -1056,7 +1197,9 @@ class AgentManager extends EventEmitter {
     const [provider, id] = String(spec).split("/");
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
-    const model = mr.getModel(provider, id);
+    // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，
+    // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
+    const model = mr.getModel(provider, id) || localStoredModels().find((item) => item.provider === provider && item.id === id);
     if (!model) throw new Error("model not found: " + spec);
     await entry.session.setModel(model);
     return { ok: true, model: spec };
@@ -1065,19 +1208,44 @@ class AgentManager extends EventEmitter {
   async listModelCatalog() {
     const mr = await this.modelRuntime();
     const providers = localModelProviders();
-    const configured = [...mr.getModels()].filter((m) => providers.has(m.provider));
+    const stored = localStoredModels(providers);
+    const runtimeModels = [...mr.getModels()].filter((m) => providers.has(m.provider));
+    const configured = [...runtimeModels];
     const available = [...await mr.getAvailable()].filter((m) => providers.has(m.provider));
+    const availableKeys = new Set(available.map((m) => `${m.provider}/${m.id}`));
     const normalize = (m) => ({
       id: m.provider + "/" + m.id,
       provider: m.provider,
       name: m.name || m.id,
       vision: !!m.vision,
+      available: availableKeys.has(`${m.provider}/${m.id}`),
     });
+    const merged = new Map();
+    for (const model of configured) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    // Pi TUI 读取 models-store 中的动态目录；放在 Runtime 后合并，
+    // 让本地缓存中的新名称、能力和计费信息覆盖旧内置条目。
+    for (const model of stored) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    for (const model of available) merged.set(`${model.provider}/${model.id}`, normalize(model));
+    const configuredCatalog = [...new Map([
+      ...configured.map((model) => [`${model.provider}/${model.id}`, normalize(model)]),
+      ...stored.map((model) => [`${model.provider}/${model.id}`, normalize(model)]),
+    ]).values()];
+    // 过滤已知无效/无订阅的模型，避免被误选后触发 400 报错（连接稳定性）
+    const DENY_MODELS = new Set([
+      "new-provider/step-3.7-flash",        // stepfun 无有效订阅
+      "xiaomi-token-plan-cn/mimo-v2.5-pro", // 端点不支持 -pro 变种
+    ]);
+    const DENY_PROVIDERS = new Set(["new-provider"]);
+    const isDenied = (m) => DENY_MODELS.has(`${m.provider}/${m.id}`) || DENY_PROVIDERS.has(m.provider);
+    const models = [...merged.values()].filter((m) => !isDenied(m));
+    const configuredFiltered = configuredCatalog.filter((m) => !isDenied(m));
     return {
-      models: available.map(normalize),
-      configured: configured.map(normalize),
-      counts: { available: available.length, configured: configured.length },
-      source: "pi-model-runtime",
+      // 下拉框展示 Pi 已配置目录中的全部模型；available 只表示当前运行时已确认可用。
+      models,
+      configured: configuredFiltered,
+      available: available.map(normalize).filter((m) => !isDenied(m)),
+      counts: { available: available.length, configured: configuredFiltered.length, stored: stored.length, listed: models.length },
+      source: "pi-model-runtime+models-store",
     };
   }
 
@@ -1089,9 +1257,19 @@ class AgentManager extends EventEmitter {
   async refreshModels() {
     this.modelRuntimePromise = null;
     const mr = await this.modelRuntime();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
     try {
-      await mr.refresh({ allowNetwork: false });
-    } catch {}
+      // 与 Pi TUI 的目录刷新保持一致：优先从供应商更新 models-store，
+      // 网络不可达时由 SDK 恢复本地缓存，不能阻塞模型选择和离线功能。
+      await mr.refresh({ allowNetwork: true, signal: controller.signal });
+    } catch (error) {
+      if (error?.name !== "AbortError") {
+        console.warn("[models] 远程目录刷新失败，继续使用 Pi 本地缓存：", error?.message || error);
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
     return (await this.listModelCatalog()).models;
   }
 

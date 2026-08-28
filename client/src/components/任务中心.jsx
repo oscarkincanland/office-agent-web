@@ -1,15 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { getRun, listRuns } from "../api.js";
+import { cancelRun, getRun, listRuns, resumeRun, retryRun } from "../api.js";
 import Icon from "./Icon.jsx";
 
-const ACTIVE = new Set(["running", "queued"]);
+const ACTIVE = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 const statusText = {
   running: "执行中",
   queued: "排队中",
+  waiting_user: "等待回答",
+  recovering: "恢复中",
+  cancel_requested: "正在中断",
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",
+  aborted: "已中断",
 };
+
+function modeText(run) {
+  const mode = run?.task?.mode;
+  return mode === "chat" ? "Chat" : mode === "office" ? "Office" : mode === "agent" ? "Agent" : "未标记";
+}
 
 function taskTitle(run) {
   return String(run?.task?.goal || run?.task?.title || run?.summary || "未命名任务")
@@ -36,29 +45,30 @@ function TaskCard({ run, selected, onSelect }) {
       <span className={`task-center-dot ${status}`} />
       <span className="task-center-item-main">
         <span className="task-center-item-title">{taskTitle(run)}</span>
-        <span className="task-center-item-meta">{statusText[status] || status} · {progressText(run)}</span>
+        <span className="task-center-item-meta">{modeText(run)} · {statusText[status] || status} · {progressText(run)}</span>
       </span>
       <Icon name="chevronRight" size={12} />
     </button>
   );
 }
 
-export default function TaskCenter() {
+export default function TaskCenter({ sessions = [], currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
+  const [action, setAction] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const result = await listRuns("", 30);
+      const result = await listRuns("", 30, { cwd: currentWorkspace });
       setRuns(Array.isArray(result.runs) ? result.runs.filter(Boolean) : []);
       setError("");
     } catch (e) {
       setError(e.message || "任务状态暂不可用");
     }
-  }, []);
+  }, [currentWorkspace, eventVersion]);
 
   useEffect(() => {
     refresh();
@@ -72,7 +82,7 @@ export default function TaskCenter() {
     const load = async () => {
       try {
         const result = await getRun(selectedId);
-        if (!cancelled) setDetail(result);
+        if (!cancelled) setDetail(result.run || result);
       } catch (e) {
         if (!cancelled) setError(e.message || "任务详情加载失败");
       }
@@ -80,27 +90,67 @@ export default function TaskCenter() {
     load();
     const timer = window.setInterval(load, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [selectedId]);
+  }, [selectedId, eventVersion]);
+
+  const runAction = useCallback(async (type) => {
+    if (!detail?.id || action) return;
+    setAction(type);
+    setError("");
+    try {
+      if (type === "cancel") await cancelRun(detail.id);
+      else if (type === "resume") await resumeRun(detail.id);
+      else await retryRun(detail.id);
+      await refresh();
+      const result = await getRun(detail.id);
+      setDetail(result.run || result);
+    } catch (e) {
+      setError(e.message || "任务操作失败");
+    } finally {
+      setAction("");
+    }
+  }, [detail, action, refresh]);
 
   const counts = useMemo(() => runs.filter(Boolean).reduce((acc, run) => {
     const status = run.status || "completed";
     acc[status] = (acc[status] || 0) + 1;
     return acc;
   }, {}), [runs]);
-  const activeCount = (counts.running || 0) + (counts.queued || 0);
+  const activeCount = [...ACTIVE].reduce((total, status) => total + (counts[status] || 0), 0);
   const visibleRuns = runs.filter(Boolean).slice(0, 12);
+
+  const openRunConversation = useCallback((run) => {
+    const session = sessions.find((item) => item?.id && (
+      item.id === run?.sessionId || item.id === run?.threadId
+    ));
+    if (session) {
+      onSelectSession?.(session);
+      setOpen(false);
+      setSelectedId(null);
+      setDetail(null);
+      return;
+    }
+    // 运行中的任务在 session 文件尚未刷新时通常只有 threadId；
+    // 如果正好是当前对话，直接聚焦即可。
+    if (run?.threadId && (run.threadId === currentThreadId || run.sessionId === currentSessionId)) {
+      onFocusRun?.(run);
+      setOpen(false);
+      setSelectedId(null);
+      setDetail(null);
+    }
+  }, [sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun]);
 
   return (
     <div className="task-center-wrap">
       <button
         className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
         onClick={() => { setOpen((value) => !value); setSelectedId(null); setDetail(null); }}
-        title={`并行任务：执行中 ${counts.running || 0}，排队中 ${counts.queued || 0}，已完成 ${counts.completed || 0}`}
+        title={`任务：执行中 ${counts.running || 0}，恢复中 ${counts.recovering || 0}，已完成 ${counts.completed || 0}`}
         aria-expanded={open}
       >
         <span className="task-center-trigger-icon"><Icon name="list" size={14} /></span>
         <span className="task-center-trigger-label">任务</span>
         {activeCount > 0 && <span className="task-center-badge">{activeCount}</span>}
+        {unreadCount > 0 && <span className="task-center-unread" title="后台会话有新的任务状态">{unreadCount > 99 ? "99+" : unreadCount}</span>}
       </button>
       {open && (
         <div className="task-center-panel">
@@ -116,13 +166,21 @@ export default function TaskCenter() {
           {error && <div className="task-center-error">{error}</div>}
           {!detail ? (
             <div className="task-center-list">
-              {visibleRuns.length ? visibleRuns.map((run) => <TaskCard key={run.id} run={run} onSelect={setSelectedId} />) : <div className="task-center-empty">暂无任务记录</div>}
+              {visibleRuns.length ? visibleRuns.map((run) => <TaskCard key={run.id} run={run} onSelect={(id) => {
+                setSelectedId(id);
+              }} />) : <div className="task-center-empty">暂无任务记录</div>}
             </div>
           ) : (
             <div className="task-center-detail">
               <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
-              <div className="task-center-detail-meta">{statusText[detail.status] || detail.status} · {progressText(detail)}</div>
+              <div className="task-center-detail-meta">{modeText(detail)} · {statusText[detail.status] || detail.status} · {progressText(detail)}</div>
+              <button className="btn-xs task-center-open-chat" onClick={() => openRunConversation(detail)}>打开对应对话</button>
+              <div className="task-center-actions">
+                {detail.actions?.canCancel && <button className="btn-xs danger" onClick={() => runAction("cancel")} disabled={!!action}>{action === "cancel" ? "取消中…" : "取消任务"}</button>}
+                {detail.actions?.canResume && <button className="btn-xs" onClick={() => runAction("resume")} disabled={!!action}>{action === "resume" ? "继续中…" : "继续任务"}</button>}
+                {detail.actions?.canRetry && <button className="btn-xs" onClick={() => runAction("retry")} disabled={!!action}>{action === "retry" ? "重试中…" : "重试任务"}</button>}
+              </div>
               <div className="task-center-steps">
                 {(detail.steps || []).map((step) => (
                   <div className={`task-center-step ${step.status}`} key={step.id}>

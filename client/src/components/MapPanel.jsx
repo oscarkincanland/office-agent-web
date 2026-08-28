@@ -8,6 +8,7 @@ import TaskCenter from "./任务中心.jsx";
 import M2Analysis from "./M2宏观分析.jsx";
 import M3Analysis from "./M3公交分析.jsx";
 import CambodiaODPanel from "./柬埔寨OD面板.jsx";
+import shp from "shpjs";
 import {
   mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
@@ -43,6 +44,25 @@ function geometryBounds(geometry) {
   return b[0] === Infinity ? null : b;
 }
 
+async function parseShapefile(shpjs, shpFile, selected) {
+  const stem = shpFile.name.replace(/\.shp$/i, "");
+  const companion = (ext) => selected.find((x) => (
+    x.name.replace(new RegExp("\\." + ext + "$", "i"), "").toLowerCase() === stem.toLowerCase()
+  ));
+  const dbfFile = companion("dbf");
+  const prjFile = companion("prj");
+  const cpgFile = companion("cpg");
+  const [shpBuffer, dbfBuffer, prjText, cpgText] = await Promise.all([
+    shpFile.arrayBuffer(),
+    dbfFile?.arrayBuffer(),
+    prjFile?.text(),
+    cpgFile?.text(),
+  ]);
+  const geometries = shpjs.parseShp(shpBuffer, prjText || false);
+  const properties = dbfBuffer ? shpjs.parseDbf(dbfBuffer, cpgText || undefined) : undefined;
+  return shpjs.combine([geometries, properties]);
+}
+
 /**
  * 地图全屏模式（GIS 项目，与知识库/模版库同款布局）
  *
@@ -54,8 +74,8 @@ function geometryBounds(geometry) {
  */
 export default function MapPanel({
   onExit, onOpenFile,
-  clientId, threadId, models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, onSelectSession,
-  onSessionChange, onRefreshSessions, hideChat = false, bridgeRef, onViewportChange,
+  clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
+  onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, bridgeRef, onViewportChange,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -574,18 +594,19 @@ export default function MapPanel({
   // 图例符号绘制（线/点/面色块）
   const drawLegendSymbol = (ctx, x, y, styleType, paint) => {
     const c = paint?.["line-color"] || paint?.["fill-color"] || paint?.["circle-color"] || "#8abeb7";
+    const number = (value, fallback) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
     ctx.strokeStyle = c;
     ctx.fillStyle = c;
-    ctx.lineWidth = Math.min(6, paint?.["line-width"] ?? 2);
+    ctx.lineWidth = Math.min(7, number(paint?.["line-width"], 2));
     if (styleType === "circle") {
-      ctx.beginPath(); ctx.arc(x + 12, y + 6, Math.min(7, paint?.["circle-radius"] ?? 5), 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + 15, y + 9, Math.min(9, number(paint?.["circle-radius"], 6)), 0, Math.PI * 2); ctx.fill();
     } else if (styleType === "fill") {
       ctx.fillStyle = paint?.["fill-color"] || c;
-      ctx.globalAlpha = paint?.["fill-opacity"] ?? 0.5;
-      ctx.fillRect(x + 2, y, 20, 12);
+      ctx.globalAlpha = number(paint?.["fill-opacity"], 0.5);
+      ctx.fillRect(x + 2, y + 2, 26, 16);
       ctx.globalAlpha = 1;
     } else {
-      ctx.beginPath(); ctx.moveTo(x + 2, y + 6); ctx.lineTo(x + 22, y + 6); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x + 2, y + 9); ctx.lineTo(x + 30, y + 9); ctx.stroke();
     }
   };
 
@@ -596,8 +617,8 @@ export default function MapPanel({
     const W = exp.size === "custom" ? Math.max(400, Math.min(4000, exp.customW)) : size.w;
     const H = exp.size === "custom" ? Math.max(300, Math.min(4000, exp.customH)) : size.h;
     const scale = size.scale || 2;
-    const titleH = exp.title ? 90 : 0;
-    const legendH = exp.legend ? 110 : 0;
+    const titleH = exp.title ? 100 : 0;
+    const legendH = exp.legend ? 160 : 0;
     const pad = 40;
     const mapH = H - titleH - legendH - pad;
     if (mapH < 200) return flash("画布太小，请调大尺寸");
@@ -605,7 +626,22 @@ export default function MapPanel({
     try {
       const prevRatio = m.getPixelRatio();
       m.setPixelRatio(scale);
-      await new Promise((r) => setTimeout(r, 400)); // 等待高分辨率重绘
+      m.resize();
+      await new Promise((resolve) => {
+        let finished = false;
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          m.off("render", finish);
+          m.off("idle", finish);
+          requestAnimationFrame(() => requestAnimationFrame(resolve));
+        };
+        const timer = setTimeout(finish, 1800);
+        m.once("render", finish);
+        m.once("idle", finish);
+        m.triggerRepaint();
+      });
       const mapCanvas = m.getCanvas();
       const mw = mapCanvas.width, mh = mapCanvas.height;
       const canvas = document.createElement("canvas");
@@ -618,7 +654,11 @@ export default function MapPanel({
       let sw, sh, sx = 0, sy = 0;
       if (mapRatio > boxRatio) { sh = mh; sw = mh * boxRatio; sx = (mw - sw) / 2; }
       else { sw = mw; sh = mw / boxRatio; sy = (mh - sh) / 2; }
-      ctx.drawImage(mapCanvas, sx, sy, sw, sh, 0, titleH, W, mapH);
+      // 先把 WebGL canvas 转成普通图片，避免部分浏览器在合成时拿到空的绘制缓冲。
+      const mapImage = new Image();
+      mapImage.src = mapCanvas.toDataURL("image/png");
+      await mapImage.decode().catch(() => {});
+      ctx.drawImage(mapImage, sx, sy, sw, sh, 0, titleH, W, mapH);
       // 标题
       if (exp.title) {
         ctx.fillStyle = "#222";
@@ -652,20 +692,26 @@ export default function MapPanel({
       ctx.fillText(dist >= 1000 ? dist / 1000 + " km" : dist + " m", 50 + barLen / 2 - 20, by - 10);
       // 图例
       if (exp.legend) {
-        const ly = H - legendH + 20;
-        ctx.font = "13px 'PingFang SC', sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#555";
+        const ly = H - legendH + 28;
+        ctx.strokeStyle = "#d6dce5"; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(40, H - legendH); ctx.lineTo(W - 40, H - legendH); ctx.stroke();
+        ctx.font = "bold 18px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+        ctx.textAlign = "left"; ctx.fillStyle = "#243447";
         ctx.fillText("图例", 50, ly);
         let lx = 50, row = 0;
+        ctx.font = "17px 'PingFang SC', 'Microsoft YaHei', sans-serif";
         const entries = (style?.layers || [])
-          .filter((l) => !l.id.startsWith("basemap") && !l.id.endsWith("-label") && !l.id.startsWith("iso-") && !l.id.startsWith("draw-"))
-          .slice(0, 12);
-        for (const l of entries) {
-          const name = cfg?.layers?.find((x) => x.id === l.id)?.name || l.id;
-          const textW = ctx.measureText(name).width + 34;
+          .filter((l) => l.layout?.visibility !== "none" && !l.id.startsWith("basemap") && !l.id.endsWith("-label") && !l.id.startsWith("iso-") && !l.id.startsWith("draw-"))
+          .map((l) => ({ layer: l, name: cfg?.layers?.find((x) => x.id === l.id)?.name || l.id }))
+          .filter((entry, index, all) => all.findIndex((item) => item.name === entry.name) === index)
+          .slice(0, 16);
+        for (const entry of entries) {
+          const { layer: l, name } = entry;
+          const textW = ctx.measureText(name).width + 48;
           if (lx + textW > W - 40) { lx = 50; row++; }
-          drawLegendSymbol(ctx, lx, ly + 18 + row * 26, l.type, l.paint);
+          drawLegendSymbol(ctx, lx, ly + 18 + row * 36, l.type, l.paint);
           ctx.fillStyle = "#333";
-          ctx.fillText(name, lx + 30, ly + 24 + row * 26);
+          ctx.fillText(name, lx + 40, ly + 24 + row * 36);
           lx += textW;
         }
       }
@@ -687,15 +733,40 @@ export default function MapPanel({
     setImpMsg("解析并导入中…");
     try {
       const items = [];
-      for (const f of [...files].filter((x) => /\\.(geojson|json)$/i.test(x.name))) {
-        const text = await f.text();
-        const geojson = JSON.parse(text);
-        items.push({ layerId: f.name.replace(/\.(geojson|json)$/i, "").replace(/[^\w-]/g, "_"), geojson });
+      const selected = [...files];
+      const addParsed = (baseName, parsed) => {
+        const collections = Array.isArray(parsed) ? parsed : [parsed];
+        collections
+          .filter((geojson) => geojson?.type === "FeatureCollection")
+          .forEach((geojson, index) => {
+            const suffix = collections.length > 1 ? "-" + (index + 1) : "";
+            items.push({
+              layerId: (baseName + suffix).replace(/[^\w-]/g, "_"),
+              geojson,
+            });
+          });
+      };
+      for (const f of selected.filter((x) => /\.(geojson|json)$/i.test(x.name))) {
+        addParsed(f.name.replace(/\.(geojson|json)$/i, ""), JSON.parse(await f.text()));
       }
-      if (!items.length) { setImpMsg("请选择 .geojson / .json 文件"); return; }
+      for (const f of selected.filter((x) => /\.zip$/i.test(x.name))) {
+        setImpMsg("正在解析 " + f.name + "…");
+        addParsed(f.name.replace(/\.zip$/i, ""), await shp(await f.arrayBuffer()));
+      }
+      for (const f of selected.filter((x) => /\.shp$/i.test(x.name))) {
+        setImpMsg("正在解析 " + f.name + "…");
+        addParsed(f.name.replace(/\.shp$/i, ""), await parseShapefile(shp, f, selected));
+      }
+      if (!items.length) { setImpMsg("请选择 GeoJSON、SHP（可同时选择 DBF/PRJ/CPG）或 ZIP 文件"); return; }
       const r = await mapImportBatch(project, items);
+      const failed = Object.entries(r.layers || {}).filter(([, result]) => !result?.ok || !result?.tiles?.count);
+      if (failed.length) {
+        const detail = failed.map(([id, result]) => `${id}: ${result?.error || "没有生成瓦片，请检查坐标是否为 WGS84/EPSG:4326"}`).join("；");
+        throw new Error(detail);
+      }
       await loadProject(project);
-      mapRef.current?.reloadStyle();
+      await mapRef.current?.reloadStyle?.();
+      await zoomToLayer(items[0]?.layerId);
       const names = Object.keys(r.layers || {}).join(", ");
       setImpMsg(`已导入 ${items.length} 个图层（${names}），瓦片已重建`);
     } catch (e) {
@@ -1088,7 +1159,7 @@ export default function MapPanel({
   const handleFileChanged = useCallback(() => {
     loadProject(project);
     mapRef.current?.reloadStyle();
-  }, [project, loadProject]);
+  }, [project, loadProject, zoomToLayer]);
 
   const refreshMap = useCallback(async () => {
     setMsg("刷新地图与图层中…");
@@ -1187,17 +1258,25 @@ export default function MapPanel({
       <div className="mp-topbar">
         <Icon name="map" size={14} />
         <span className="mp-title">地图</span>
-        <TaskCenter />
-        <select
-          className="mp-project-select"
-          value={project}
-          onChange={(e) => setProject(e.target.value)}
-          title="地图项目"
-        >
-          {projects.map((p) => (
-            <option key={p.project || p.name} value={p.project || p.name}>{p.name}</option>
-          ))}
-        </select>
+        <TaskCenter
+          sessions={sessions}
+          currentThreadId={threadId}
+          currentSessionId={currentSessionId}
+          onSelectSession={onSelectSession}
+          onFocusRun={onFocusRun}
+        />
+        {projects.length > 1 && (
+          <select
+            className="mp-project-select"
+            value={project}
+            onChange={(e) => setProject(e.target.value)}
+            title="地图项目"
+          >
+            {projects.map((p) => (
+              <option key={p.project || p.name} value={p.project || p.name}>{p.name}</option>
+            ))}
+          </select>
+        )}
         <select
           className="mp-project-select mp-basemap-select"
           value={cfg?.basemap || "gaode-road"}
@@ -1413,7 +1492,11 @@ export default function MapPanel({
             project={project}
             config={cfg}
             onViewportChange={onViewportChange}
-            onLayerTilesChanged={() => loadProject(project)}
+            onLayerTilesChanged={async (layerIds = []) => {
+              await loadProject(project);
+              await mapRef.current?.reloadStyle?.();
+              if (layerIds[0]) await zoomToLayer(layerIds[0]);
+            }}
             onDrillDown={(d) => {
               const matched = regionOptions.find((item) => item.value === String(d.code || ""));
               const resolved = matched ? {
@@ -1457,6 +1540,7 @@ export default function MapPanel({
           <ChatPanel
               clientId={clientId}
               threadId={threadId}
+              workspace={workspace}
               onFileChanged={handleFileChanged}
               onMapAction={handleMapAction}
               currentDoc={`地图项目:${project}`}
@@ -1560,11 +1644,11 @@ export default function MapPanel({
               {impTab === "files" ? (
                 <>
                   <div className="mp-iso-hint" style={{ border: "none", padding: 0, marginBottom: 10 }}>
-                    选择多个 GeoJSON 文件（文件名含 高速/国省道/农村公路/收费站/枢纽 会自动归类分组），批量导入并重建瓦片。
+                    选择多个 GeoJSON、SHP（可同时选择同名 DBF/PRJ/CPG）或 ZIP 文件，批量导入并重建瓦片。
                   </div>
                   <div className="mp-iso-actions">
                     <button className="btn primary" onClick={() => impFileRef.current?.click()}>选择文件…</button>
-                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
+                    <input ref={impFileRef} type="file" multiple accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg" style={{ display: "none" }} onChange={(e) => { handleBatchImport(e.target.files); e.target.value = ""; }} />
                   </div>
                 </>
               ) : (

@@ -16,6 +16,26 @@ const normalizeBasemap = (id) => {
   const value = String(id || "").trim();
   return LEGACY_BASEMAP[value] || value || "gaode-road";
 };
+const styleHash = (text) => text.length + ":" + text.slice(0, 200);
+
+async function parseShapefile(shpjs, shpFile, selected) {
+  const stem = shpFile.name.replace(/\.shp$/i, "");
+  const companion = (ext) => selected.find((x) => (
+    x.name.replace(new RegExp("\\." + ext + "$", "i"), "").toLowerCase() === stem.toLowerCase()
+  ));
+  const dbfFile = companion("dbf");
+  const prjFile = companion("prj");
+  const cpgFile = companion("cpg");
+  const [shpBuffer, dbfBuffer, prjText, cpgText] = await Promise.all([
+    shpFile.arrayBuffer(),
+    dbfFile?.arrayBuffer(),
+    prjFile?.text(),
+    cpgFile?.text(),
+  ]);
+  const geometries = shpjs.parseShp(shpBuffer, prjText || false);
+  const properties = dbfBuffer ? shpjs.parseDbf(dbfBuffer, cpgText || undefined) : undefined;
+  return shpjs.combine([geometries, properties]);
+}
 
 function setBasemapVisibility(map, ids, desired) {
   if (!map) return desired;
@@ -258,22 +278,20 @@ const MapViewer = forwardRef(function MapViewer(
     const cityLayer = map.getLayer("boundary-city");
     const countyLayer = map.getLayer("boundary-county");
     const mode = coverageModeRef.current;
-    if (mode !== "city") {
+    const cityCode = coverageCityCode(d);
+    // 选择地市时，即使道路范围仍是“当前区域”，也要把该地市及下辖区县边界固定下来。
+    // 之前只有切换到“当前地市”模式才过滤边界，导致选择杭州后边界要么全省混杂，要么视觉上不可见。
+    if (!cityCode || (d.level !== "city" && d.level !== "county" && mode !== "city")) {
       if (cityLayer) map.setFilter("boundary-city", null);
       if (countyLayer) map.setFilter("boundary-county", null);
       return;
     }
-    const cityCode = coverageCityCode(d);
-    if (!cityCode) return;
     if (cityLayer) map.setFilter("boundary-city", ["==", ["to-string", ["get", "adcode"]], cityCode]);
     if (countyLayer) {
-      map.setFilter("boundary-county", [
-        "match",
-        ["slice", ["to-string", ["get", "adcode"]], 0, 4],
-        [cityCode.slice(0, 4)],
-        true,
-        false,
-      ]);
+      const countyFilter = d.level === "county" && mode !== "city"
+        ? ["==", ["to-string", ["get", "adcode"]], String(d.code)]
+        : ["match", ["slice", ["to-string", ["get", "adcode"]], 0, 4], [cityCode.slice(0, 4)], true, false];
+      map.setFilter("boundary-county", countyFilter);
     }
   };
 
@@ -410,6 +428,8 @@ const MapViewer = forwardRef(function MapViewer(
       style: STYLE_PATH(project),
       center: config?.center || [120.0, 29.2],
       zoom: config?.zoom || 7,
+      // 导出依赖 WebGL canvas 内容，避免默认的绘制缓冲在下一帧被清空。
+      preserveDrawingBuffer: true,
       attributionControl: { compact: true },
     });
     mapRef.current = map;
@@ -430,8 +450,10 @@ const MapViewer = forwardRef(function MapViewer(
       }).catch(() => {});
       // 立即同步图层列表（避免加载后第一时间下钻时 ref 为空）
       fetch(STYLE_PATH(project))
-        .then((r) => r.json())
-        .then((s) => {
+        .then((r) => r.text())
+        .then((text) => {
+          styleHashRef.current = styleHash(text);
+          const s = JSON.parse(text);
           syncLayerRefs(s);
           const selected = setBasemapVisibility(map, basemapIdsRef.current, basemapRef.current);
           basemapRef.current = selected;
@@ -458,6 +480,10 @@ const MapViewer = forwardRef(function MapViewer(
     map.on("load", () => {
       markReady();
     });
+    map.on("styledata", () => {
+      // styledata 比 load 更早到达，先让界面解除遮罩；瓦片继续异步加载。
+      if (map.getStyle?.()?.layers?.length) markReady();
+    });
     // 样式主体已经可用时，个别字体/瓦片请求失败不应阻塞整个地图界面。
     map.once("idle", () => {
       if (map.isStyleLoaded?.()) markReady();
@@ -465,9 +491,9 @@ const MapViewer = forwardRef(function MapViewer(
     // 最后的兜底：避免第三方底图或字体服务异常导致“地图加载中”永久遮罩。
     fallbackTimer = window.setTimeout(() => {
       if (mapRef.current !== map || ready) return;
-      if (map.isStyleLoaded?.() || map.loaded?.()) markReady();
+      if (map.isStyleLoaded?.() || map.loaded?.() || map.getStyle?.()?.layers?.length) markReady();
       else setLoadError("地图样式加载失败，请重试");
-    }, 2500);
+    }, 10000);
     const publishViewport = () => {
       if (viewportTimerRef.current) window.clearTimeout(viewportTimerRef.current);
       viewportTimerRef.current = window.setTimeout(() => {
@@ -567,7 +593,7 @@ const MapViewer = forwardRef(function MapViewer(
       try {
         const res = await fetch(STYLE_PATH(project));
         const text = await res.text();
-        const hash = text.length + ":" + text.slice(0, 200);
+        const hash = styleHash(text);
         if (hash !== styleHashRef.current) {
           styleHashRef.current = hash;
           applyStyle(JSON.parse(text));
@@ -651,8 +677,9 @@ const MapViewer = forwardRef(function MapViewer(
     reloadStyle: async () => {
       try {
         const res = await fetch(STYLE_PATH(project));
-        const style = await res.json();
-        styleHashRef.current = res.status + ":" + JSON.stringify(style).slice(0, 200);
+        const text = await res.text();
+        styleHashRef.current = styleHash(text);
+        const style = JSON.parse(text);
         applyStyle(style);
         return true;
       } catch { return false; }
@@ -1050,30 +1077,36 @@ const MapViewer = forwardRef(function MapViewer(
     try {
       const geoFiles = [...files].filter((f) => /\.(geojson|json)$/i.test(f.name));
       const shpSet = [...files].filter((f) => /\.(shp|dbf|prj|cpg)$/i.test(f.name));
+      const zipFile = [...files].find((f) => /\.zip$/i.test(f.name));
       if (geoFiles.length) {
         const f = geoFiles[0];
         const text = await f.text();
         const geojson = JSON.parse(text);
         const layerId = f.name.replace(/\.(geojson|json)$/i, "").replace(/[^\w-]/g, "_");
         const r = await mapImportLayer(project, layerId, geojson);
+        if (!r?.ok || !r.tiles?.count) throw new Error(r?.error || "导入完成但没有生成瓦片，请检查坐标是否为 WGS84/EPSG:4326");
         setMsg(`已导入 ${layerId}（${geojson.features?.length || "?"} 要素，${r.tiles?.count || 0} 瓦片）`);
-        onLayerTilesChanged?.();
+        await onLayerTilesChanged?.([layerId]);
+      } else if (zipFile) {
+        const parsed = await shp(await zipFile.arrayBuffer());
+        const geojson = Array.isArray(parsed) ? parsed.find((item) => item?.type === "FeatureCollection") : parsed;
+        if (!geojson) throw new Error("ZIP 中没有找到可识别的 SHP 图层");
+        const layerId = zipFile.name.replace(/\.zip$/i, "").replace(/[^\w-]/g, "_");
+        const r = await mapImportLayer(project, layerId, geojson);
+        if (!r?.ok || !r.tiles?.count) throw new Error(r?.error || "导入完成但没有生成瓦片，请检查坐标是否为 WGS84/EPSG:4326");
+        setMsg("已导入 " + layerId + "（" + (geojson.features?.length || "?") + " 要素，" + (r.tiles?.count || 0) + " 瓦片）");
+        await onLayerTilesChanged?.([layerId]);
       } else if (shpSet.length) {
         const shpFile = shpSet.find((f) => /\.shp$/i.test(f.name));
         if (!shpFile) { setMsg("缺少 .shp 文件"); setImporting(false); return; }
-        const toBuf = async (f) => (f ? (await f.arrayBuffer()) : undefined);
-        const geojson = await shp({
-          shp: await toBuf(shpFile),
-          dbf: await toBuf(shpSet.find((f) => /\.dbf$/i.test(f.name))),
-          prj: await toBuf(shpSet.find((f) => /\.prj$/i.test(f.name))),
-          cpg: await toBuf(shpSet.find((f) => /\.cpg$/i.test(f.name))),
-        });
+        const geojson = await parseShapefile(shp, shpFile, [...files]);
         const layerId = shpFile.name.replace(/\.shp$/i, "").replace(/[^\w-]/g, "_");
         const r = await mapImportLayer(project, layerId, geojson);
+        if (!r?.ok || !r.tiles?.count) throw new Error(r?.error || "导入完成但没有生成瓦片，请检查坐标是否为 WGS84/EPSG:4326");
         setMsg(`已导入 ${layerId}（${geojson.features?.length || "?"} 要素，${r.tiles?.count || 0} 瓦片）`);
-        onLayerTilesChanged?.();
+        await onLayerTilesChanged?.([layerId]);
       } else {
-        setMsg("请选择 .geojson / .json，或 .shp+.dbf(+.prj) 文件");
+        setMsg("请选择 .geojson / .json、.zip，或 .shp+.dbf(+.prj) 文件");
       }
     } catch (e) {
       setMsg("导入失败: " + e.message);
@@ -1109,7 +1142,7 @@ const MapViewer = forwardRef(function MapViewer(
             ref={fileInputRef}
             type="file"
             multiple
-            accept=".geojson,.json,.shp,.dbf,.prj,.cpg"
+            accept=".geojson,.json,.zip,.shp,.dbf,.prj,.cpg"
             style={{ display: "none" }}
             onChange={(e) => handleImportFiles(e.target.files)}
           />

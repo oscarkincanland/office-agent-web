@@ -1,0 +1,63 @@
+<h2>项目工作区与任务中心放在哪里？</h2>
+<p class="subtitle">地图、对话、TodoList 和并行任务都保留在同一个项目上下文内。请选择你更习惯的任务查看方式。</p>
+
+<div class="cards">
+  <div class="card" data-choice="right-dock" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="margin:0">
+        <div class="mockup-header">A · 右侧任务中心（推荐）</div>
+        <div class="mockup-body" style="padding:0;background:#f7f8fa">
+          <div class="mock-nav">项目：义乌十五五物流　地图　知识库　文件</div>
+          <div style="display:flex;height:180px">
+            <div class="mock-sidebar" style="width:25%;font-size:11px">图层<br><br>基础路网<br>会话分析层<br>我的草稿</div>
+            <div class="mock-content" style="width:48%;font-size:11px;text-align:center;padding-top:62px">地图画布<br><small>当前会话视角与临时图层</small></div>
+            <div class="mock-sidebar" style="width:27%;font-size:11px;background:#eef6f5">任务中心<br><br>● 写交通报告<br>　执行中 2/4<br><br>○ 生成玉环 OD<br>　排队中</div>
+          </div>
+          <div style="padding:8px;border-top:1px solid #d6dbe3;font-size:11px">对话输入　　排队　注入上下文　发送</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>右侧固定任务中心</h3><p>最接近 Codex：对话下方显示当前任务，点击任务可切换事件流、TodoList 和产物。</p></div>
+  </div>
+
+  <div class="card" data-choice="left-project" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="margin:0">
+        <div class="mockup-header">B · 左侧项目工作区</div>
+        <div class="mockup-body" style="padding:0;background:#f7f8fa">
+          <div class="mock-nav">项目：义乌十五五物流　地图　知识库　文件</div>
+          <div style="display:flex;height:180px">
+            <div class="mock-sidebar" style="width:30%;font-size:11px;background:#eef6f5">项目工作区<br><br>任务<br>● 写交通报告<br>○ 生成玉环 OD<br><br>产物<br>报告 / 地图</div>
+            <div class="mock-content" style="width:70%;font-size:11px;text-align:center;padding-top:62px">地图或文档主画布<br><small>任务详情从左侧切换</small></div>
+          </div>
+          <div style="padding:8px;border-top:1px solid #d6dbe3;font-size:11px">对话输入　　发送</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>左侧项目工作区</h3><p>项目、任务和产物集中管理，适合长期项目，但地图图层树需要和任务栏竞争左侧空间。</p></div>
+  </div>
+
+  <div class="card" data-choice="bottom-board" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup" style="margin:0">
+        <div class="mockup-header">C · 底部任务看板</div>
+        <div class="mockup-body" style="padding:0;background:#f7f8fa">
+          <div class="mock-nav">项目：义乌十五五物流　地图　知识库　文件</div>
+          <div class="mock-content" style="height:126px;width:100%;font-size:11px;text-align:center;padding-top:48px">地图 / 文档主画布</div>
+          <div style="padding:8px;border-top:1px solid #d6dbe3;background:#eef6f5;font-size:11px">任务看板：　● 写报告 2/4　　○ 玉环 OD 排队　　✓ 素材整理</div>
+          <div style="padding:8px;border-top:1px solid #d6dbe3;font-size:11px">对话输入　　发送</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body"><h3>底部任务看板</h3><p>地图和文档空间最大，但任务细节需要展开，适合大屏，不太适合窄窗口。</p></div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>共同的交互规则</h3>
+  <ul>
+    <li>每个任务都有独立会话、事件流、TodoList、地图临时层和产物。</li>
+    <li>基础地图图层只读共享；保存分析结果时才写入正式项目。</li>
+    <li>点击任务即可切换上下文，不会把其他任务的消息或地图状态混进来。</li>
+  </ul>
+</div>

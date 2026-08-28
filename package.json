@@ -1,12 +1,12 @@
 {
   "name": "open-plan",
-  "version": "0.9.21",
+  "version": "0.9.27",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
   "scripts": {
-    "start": "node server/index.mjs",
-    "dev": "node server/index.mjs",
+    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
+    "dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
     "build": "cd client && npm run build",
     "verify": "node scripts/验证脚本.mjs",
     "test:phase5-9": "node scripts/阶段五九测试.mjs",
@@ -19,7 +19,7 @@
     "setup": "node scripts/install-officecli.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
     "docx": "^9.7.1",
     "express": "^5.2.1",
     "geojson-vt": "^4.0.2",

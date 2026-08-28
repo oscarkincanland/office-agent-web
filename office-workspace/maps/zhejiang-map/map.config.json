@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "maptiler-outdoor",
+  "basemap": "maptiler-winter",
   "layers": [
     {
       "id": "boundary-city",
@@ -65,6 +65,24 @@
     {
       "id": "roads-province",
       "name": "省道",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "gis_osm_railways_free_1",
+      "name": "铁路",
+      "type": "road",
+      "group": "公路网",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
+    },
+    {
+      "id": "gis_osm_roads_free_1",
+      "name": "gis_osm_roads_free_1",
       "type": "road",
       "group": "公路网",
       "visible": true,
