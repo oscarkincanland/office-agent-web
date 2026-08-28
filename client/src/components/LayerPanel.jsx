@@ -71,6 +71,7 @@ export default function LayerPanel({
   const [renderMode, setRenderMode] = useState(null);      // {layerId, mode, field, palette, classes}
   const [newGroupName, setNewGroupName] = useState("");
   const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [editorCollapsed, setEditorCollapsed] = useState(false);
   const panelRef = useRef(null);
 
   // ---- 分组：组内图层按 style.layers 顺序（视觉逆序=顶部最上层） ----
@@ -444,8 +445,17 @@ export default function LayerPanel({
             <LegendSymbol styleType={selectedStyleType} paint={selectedPaint} />
             <span className="lp-editor-title">{selectedMeta.name || selected} 样式</span>
             <span className="lp-editor-id">{selected}</span>
+            <button
+              type="button"
+              className="lp-editor-toggle"
+              onClick={() => setEditorCollapsed((value) => !value)}
+              title={editorCollapsed ? "展开样式设置" : "折叠样式设置"}
+              aria-label={editorCollapsed ? "展开样式设置" : "折叠样式设置"}
+            >
+              <Icon name={editorCollapsed ? "chevronRight" : "chevronDown"} size={11} />
+            </button>
           </div>
-          <div className="lp-editor-body">
+          {!editorCollapsed && <div className="lp-editor-body">
             {paintKeys.length === 0 && <div className="lp-ed-hint">该图层暂无可用样式属性</div>}
             {paintColor && colorRow("颜色", paintKeys.find((k) => k === "line-color" || k === "fill-color" || k === "circle-color"), paintColor)}
             {strokeColor && colorRow("描边色", "circle-stroke-color", strokeColor)}
@@ -684,7 +694,7 @@ export default function LayerPanel({
               </div>
             )}
             <div className="lp-ed-note">样式保存到 style.json，agent 与地图实时同步</div>
-          </div>
+          </div>}
         </div>
       )}
     </div>

@@ -58,6 +58,13 @@
       ],
       "maxzoom": 13
     },
+    "gis_osm_railways_free_1": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/gis_osm_railways_free_1/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
+    },
     "blank": {
       "name": "无底图",
       "type": "raster",
@@ -309,6 +316,13 @@
       "metadata": {
         "basemap": true
       }
+    },
+    "gis_osm_roads_free_1": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/gis_osm_roads_free_1/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
     }
   },
   "layers": [
@@ -492,7 +506,7 @@
       "type": "raster",
       "source": "maptiler-outdoor",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -503,7 +517,7 @@
       "type": "raster",
       "source": "maptiler-winter",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -555,25 +569,11 @@
       }
     },
     {
-      "id": "highways",
-      "source": "highways",
-      "source-layer": "highways",
-      "layout": {
-        "visibility": "visible"
-      },
-      "type": "line",
-      "paint": {
-        "line-color": "#ff7f00",
-        "line-width": 5.5,
-        "line-opacity": 1
-      }
-    },
-    {
       "id": "toll-stations",
       "source": "toll-stations",
       "source-layer": "toll-stations",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
@@ -627,6 +627,34 @@
       }
     },
     {
+      "id": "gis_osm_roads_free_1",
+      "source": "gis_osm_roads_free_1",
+      "source-layer": "gis_osm_roads_free_1",
+      "layout": {
+        "visibility": "none"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff7f0e",
+        "line-width": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          5,
+          0.8,
+          10,
+          1.8,
+          13,
+          3.2
+        ],
+        "line-opacity": 0.85
+      }
+    },
+    {
       "id": "boundary-county",
       "source": "boundary-county",
       "source-layer": "boundary-county",
@@ -635,8 +663,8 @@
       },
       "type": "line",
       "paint": {
-        "line-color": "#b8b8c8",
-        "line-width": 0.8,
+        "line-color": "#64748b",
+        "line-width": 1.5,
         "line-opacity": 0.9,
         "line-dasharray": [
           2,
@@ -883,6 +911,220 @@
           6.5
         ],
         "line-opacity": 0.95
+      }
+    },
+    {
+      "id": "drawn-mt9payyw-label",
+      "type": "symbol",
+      "source": "drawn-mt9payyw",
+      "source-layer": "drawn-mt9payyw",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "highways",
+      "source": "highways",
+      "source-layer": "highways",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#ff7f00",
+        "line-width": 5.5,
+        "line-opacity": 1
+      }
+    },
+    {
+      "id": "gis_osm_railways_free_1",
+      "source": "gis_osm_railways_free_1",
+      "source-layer": "gis_osm_railways_free_1",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "line",
+      "paint": {
+        "line-color": "#595754",
+        "line-width": 2.5,
+        "line-opacity": 0.8,
+        "line-dasharray": [
+          1,
+          0.5
+        ]
+      }
+    },
+    {
+      "id": "gis_osm_railways_free_1-label",
+      "type": "symbol",
+      "source": "gis_osm_railways_free_1",
+      "source-layer": "gis_osm_railways_free_1",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false,
+        "visibility": "visible"
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "gis_osm_roads_free_1-label",
+      "type": "symbol",
+      "source": "gis_osm_roads_free_1",
+      "source-layer": "gis_osm_roads_free_1",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false,
+        "visibility": "none"
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "__codex_shp_test__-label",
+      "type": "symbol",
+      "source": "__codex_shp_test__",
+      "source-layer": "__codex_shp_test__",
+      "minzoom": 7,
+      "layout": {
+        "symbol-placement": "line",
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "ref"
+          ],
+          [
+            "get",
+            "name"
+          ],
+          ""
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          8,
+          10,
+          13,
+          12
+        ],
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-rotation-alignment": "map",
+        "text-allow-overlap": false
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "rgba(0,0,0,0.75)",
+        "text-halo-width": 1.2
       }
     }
   ],

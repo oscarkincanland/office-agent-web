@@ -1,0 +1,41 @@
+<h2>并行任务总览：看见每个 Agent 在做什么</h2>
+<p class="subtitle">这是任务级总览，不是当前任务的 TodoList。点击任意任务后，右侧/下方切换到该任务自己的事件流和产物。</p>
+
+<div class="mockup" style="margin-bottom:18px">
+  <div class="mockup-header">现有界面中的可折叠任务总览</div>
+  <div class="mockup-body" style="padding:0;background:#f7f8fa">
+    <div class="mock-nav">Open Plan　项目：义乌十五五物流　地图　知识库　文件</div>
+    <div style="display:flex;height:330px">
+      <div class="mock-sidebar" style="width:22%;font-size:11px">文件 / 图层<br><br>基础路网<br>行政区<br>分析图层</div>
+      <div class="mock-content" style="width:48%;font-size:11px;text-align:center;padding-top:130px">当前地图或文档画布</div>
+      <div style="width:30%;background:white;border-left:1px solid #d8dee8;display:flex;flex-direction:column">
+        <div style="padding:9px 10px;border-bottom:1px solid #d8dee8;font-size:12px;display:flex;justify-content:space-between"><b>对话</b><span style="color:#218c83">● 已连接</span></div>
+        <div style="flex:1;padding:10px;font-size:11px;color:#667085">当前选中：生成玉环 OD<br><br>地图分析事件<br>工具调用<br>Agent 回复<br><br>（切换任务不会丢失其他任务）</div>
+        <div style="border-top:1px solid #cfd8e3;background:#eef6f5;padding:8px 10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px"><b>▾ 并行任务　2 执行中 · 1 排队</b><span>收起</span></div>
+          <div style="margin-top:7px;border:1px solid #8cc9c2;background:#f0fbf9;border-radius:6px;padding:7px;cursor:pointer"><b>● 生成玉环—台州 OD</b><br><span style="color:#218c83">执行中 · 2/4 步 · 地图分析</span></div>
+          <div style="margin-top:6px;border:1px solid #d8dee8;border-radius:6px;padding:7px;cursor:pointer"><b>● 编写义乌物流报告</b><br><span style="color:#886b19">执行中 · 1/5 步 · 读取资料</span></div>
+          <div style="margin-top:6px;border:1px solid #d8dee8;border-radius:6px;padding:7px;cursor:pointer"><b>○ 整理汇报视频</b><br><span style="color:#7b8491">排队中 · 等待资源</span></div>
+        </div>
+        <div style="padding:8px;border-top:1px solid #d8dee8;font-size:11px">输入新任务…　　　　　　　　　➤</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>点击任务后的行为</h3>
+  <div class="pros-cons">
+    <div class="pros"><h4>任务详情</h4><ul><li>独立对话消息</li><li>实时工具事件流</li><li>独立 TodoList</li><li>本任务产生的文件和地图临时层</li></ul></div>
+    <div class="cons"><h4>不会发生</h4><ul><li>不会把其他任务的消息混进来</li><li>不会切换全局地图基础层</li><li>不会丢失正在运行的后台任务</li><li>不会强制占用整个工作区</li></ul></div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="task-overview" onclick="toggleSelect(this)">
+    <div class="letter">A</div><div class="content"><h3>任务总览 + 点击切换详情（推荐）</h3><p>总览一直可见，点击任务后复用当前对话区域查看该任务。</p></div>
+  </div>
+  <div class="option" data-choice="task-window" onclick="toggleSelect(this)">
+    <div class="letter">B</div><div class="content"><h3>任务总览 + 独立详情浮层</h3><p>点击任务打开浮层，主对话保持不动，但同时查看多个任务更方便。</p></div>
+  </div>
+</div>

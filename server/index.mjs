@@ -3,9 +3,9 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath } from "./workspace.mjs";
-import { runOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { agentManager, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
+import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
+import { agentManager, classifyAgentError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -13,10 +13,14 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun } from "./runs.mjs";
-import { createTaskEnvelope } from "./task.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation } from "./runs.mjs";
+import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
+import { createTaskEnvelope, planTaskCapabilities } from "./task.mjs";
+import { validateArtifacts } from "./产物验证.mjs";
+import { listPublishedArtifacts, publishArtifact } from "./成果管理.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
+import * as projectManager from "./项目管理.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -24,8 +28,31 @@ const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3001;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
+const AGENT_DIAGNOSTIC_LOG = path.join(process.env.TEMP || PROJECT_DIR, "open-plan-agent连接诊断.log");
 
-app.use(express.json({ limit: "60mb" }));
+const recoveredRunIds = recoverActiveRuns();
+if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+
+app.use(express.json({ limit: "256mb" }));
+
+function recordAgentDiagnostic(req, details = {}) {
+  const info = details.error ? classifyAgentError(details.error) : details;
+  const record = {
+    time: new Date().toISOString(),
+    requestId: req?.requestId || null,
+    clientId: details.client || null,
+    threadId: details.thread || null,
+    runId: details.runId || null,
+    model: details.model || null,
+    providerStatus: info.status || null,
+    errorCode: info.code || null,
+    retryable: Boolean(info.retryable),
+    message: info.message || "模型连接失败",
+  };
+  try { fs.appendFileSync(AGENT_DIAGNOSTIC_LOG, JSON.stringify(record) + "\n", "utf8"); } catch {}
+  console.error("[agent] prompt failed", record);
+  return record;
+}
 
 // ---------- request boundary / local API authentication ----------
 // The app is intended to run locally. Keep the default listener on loopback and
@@ -420,7 +447,8 @@ app.post("/api/map/import", async (req, res) => {
     if (!r) return res.status(400).json({ error: "import failed" });
     res.json(r);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    const clientError = /没有可导入|无效坐标|坐标不在|没有有效几何/.test(String(e.message || ""));
+    res.status(clientError ? 400 : 500).json({ error: e.message });
   }
 });
 
@@ -552,8 +580,9 @@ function mimeForExt(ext) {
 // ---------- structured references / external file roots ----------
 app.post("/api/context/resolve", (req, res) => {
   try {
-    const { references, text } = req.body || {};
-    const resolved = resolveReferences(references, text);
+    const { references, text, workspace, cwd } = req.body || {};
+    const currentWorkspace = normalizeWorkspace(workspace || cwd || getWorkspace()) || getWorkspace();
+    const resolved = resolveReferences(references, text, currentWorkspace);
     const publicRefs = resolved.map((ref) => {
       const metadata = ref.metadata ? { ...ref.metadata } : ref.metadata;
       if (metadata?.path) delete metadata.path;
@@ -568,10 +597,11 @@ app.post("/api/context/resolve", (req, res) => {
 
 app.post("/api/context/read", async (req, res) => {
   try {
-    const { reference, references, refId, query, range } = req.body || {};
+    const { reference, references, refId, query, range, workspace, cwd } = req.body || {};
     const ref = reference || (Array.isArray(references) ? references.find((r) => r?.id === refId) : null);
     if (!ref) return res.status(400).json({ error: "reference or refId required", requestId: req.requestId });
-    const result = await readReference(ref, query, range);
+    const currentWorkspace = normalizeWorkspace(workspace || cwd || getWorkspace()) || getWorkspace();
+    const result = await readReference(ref, query, range, currentWorkspace);
     if (result.status !== "resolved") return res.status(404).json({ ...result, requestId: req.requestId });
     const metadata = result.metadata ? { ...result.metadata } : result.metadata;
     if (metadata?.path) delete metadata.path;
@@ -933,6 +963,7 @@ app.post("/api/agent/model", async (req, res) => {
   try {
     res.json(await agentManager.setModel(agentKey(client, thread), model));
   } catch (e) {
+    recordAgentDiagnostic(req, { client, thread, model: String(model), error: e });
     res.status(500).json({ error: e.message });
   }
 });
@@ -1042,9 +1073,51 @@ function scanSkills() {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function preflightSkill(name, skills = scanSkills()) {
+  const cleanName = String(name || "").trim();
+  const skill = skills.find((item) => item.name === cleanName);
+  if (!skill) return { name: cleanName, ok: false, status: "missing", message: "未找到该 skill" };
+  const skillFile = path.join(skill.path, "SKILL.md");
+  const checks = { directory: false, file: false, readable: false, nonEmpty: false };
+  try {
+    checks.directory = fs.statSync(skill.path).isDirectory();
+    checks.file = fs.statSync(skillFile).isFile();
+    if (checks.file) {
+      const content = fs.readFileSync(skillFile, "utf8");
+      checks.readable = true;
+      checks.nonEmpty = Boolean(content.trim());
+    }
+  } catch {}
+  const ok = checks.directory && checks.file && checks.readable && checks.nonEmpty;
+  return { name: cleanName, ok, status: ok ? "ready" : "invalid", path: skill.path, checks, message: ok ? "SKILL.md 可读取" : "SKILL.md 不存在、不可读取或为空" };
+}
+
+function preflightSkills({ workflowId = null, requestedSkills = [], skills = scanSkills() } = {}) {
+  const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
+  const requested = Array.isArray(requestedSkills) ? requestedSkills : [];
+  const names = [...new Set([...(workflow?.skills || []), ...requested].map((name) => String(typeof name === "object" ? name?.name : name || "").trim()).filter(Boolean))];
+  const checks = names.map((name) => preflightSkill(name, skills));
+  const workflowMissing = workflowId && !workflow ? [`工作流不存在：${workflowId}`] : (workflow?.missing || []);
+  const ok = !workflowMissing.length && checks.every((item) => item.ok);
+  return {
+    ok,
+    workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid } : (workflowId ? { id: workflowId, valid: false } : null),
+    required: names,
+    checks,
+    missing: [...new Set([...workflowMissing, ...checks.filter((item) => !item.ok).map((item) => item.name)])],
+    message: ok ? "Skills 预检通过" : `Skills 预检未通过：${[...new Set([...workflowMissing, ...checks.filter((item) => !item.ok).map((item) => item.name)])].join("、")}`,
+  };
+}
+
 // GET /api/skills - 列出所有 skills
 app.get("/api/skills", (_req, res) => {
   res.json({ skills: scanSkills() });
+});
+
+// POST /api/skills/preflight - 在 Agent 调用前检查工作流依赖和 SKILL.md 可读性
+app.post("/api/skills/preflight", (req, res) => {
+  const result = preflightSkills({ workflowId: req.body?.workflowId || null, requestedSkills: req.body?.skills || [] });
+  res.status(result.ok ? 200 : 409).json(result);
 });
 
 // 声明式工作流注册表：返回技能依赖、可用性和执行步骤，供前端与 Agent 共用。
@@ -1221,15 +1294,92 @@ function parseJsonl(text) {
   return out;
 }
 
+function annotateSessionThread(sessionId, threadId) {
+  if (!sessionId || !threadId) return;
+  const found = findSessionFile(sessionId);
+  if (!found) return;
+  try {
+    const writable = materializeWritableSession(found);
+    const lines = fs.readFileSync(writable.fullPath, "utf8").split(/\r?\n/);
+    if (!lines[0]) return;
+    const header = JSON.parse(lines[0]);
+    if (header.threadId === threadId) return;
+    header.threadId = threadId;
+    lines[0] = JSON.stringify(header);
+    fs.writeFileSync(writable.fullPath, lines.join("\n"), "utf8");
+  } catch {}
+}
+
 // ---------- 任务执行（run）与产物清单 ----------
 app.get("/api/runs", (req, res) => {
-  res.json({ runs: listRuns({ threadId: String(req.query.thread || ""), limit: parseInt(req.query.limit, 10) || 50 }) });
+  const rawCwd = String(req.query.cwd || "");
+  const cwd = rawCwd ? (normalizeWorkspace(rawCwd) || "__invalid_workspace__") : "";
+  res.json({ runs: listRuns({ threadId: String(req.query.thread || ""), sessionId: String(req.query.session || ""), cwd, limit: parseInt(req.query.limit, 10) || 50 }) });
+});
+
+// 根级持久事件流：跨所有 thread 订阅当前 client 的可恢复状态事件。
+app.get("/api/agent/events", (req, res) => {
+  const clientId = String(req.query.client || "").trim();
+  if (!clientId) return res.status(400).end();
+  const threadId = String(req.query.thread || "").trim();
+  const queryCursor = Number(req.query.after || 0) || 0;
+  const headerCursor = Number(req.headers["last-event-id"] || 0) || 0;
+  const after = Math.max(queryCursor, headerCursor);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  let lastSent = after;
+  const matches = (event) => event.clientId === clientId && (!threadId || event.threadId === threadId);
+  const send = (event) => {
+    if (!event || !matches(event) || Number(event.seq) <= lastSent) return;
+    lastSent = Number(event.seq);
+    try { res.write(`id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`); } catch {}
+  };
+  const unsubscribe = subscribeEvents(send);
+  const replay = listEvents({ after, clientId, threadId, limit: 2000 });
+  for (const event of replay.events) send(event);
+  try { res.write(`event: open\ndata: ${JSON.stringify({ cursor: lastSent, latest: replay.latest, earliest: replay.earliest, truncated: replay.truncated })}\n\n`); } catch {}
+  req.on("close", unsubscribe);
+});
+
+app.get("/api/agent/events/state", (req, res) => {
+  const clientId = String(req.query.client || "").trim();
+  if (!clientId) return res.status(400).json({ error: "client required" });
+  res.json({ ...eventStoreInfo(), readCursor: getReadCursor(clientId) });
+});
+
+app.post("/api/agent/events/read", (req, res) => {
+  const { client, seq } = req.body || {};
+  if (!client) return res.status(400).json({ error: "client and seq required" });
+  res.json(markReadCursor(String(client), seq));
 });
 
 app.get("/api/runs/:id", (req, res) => {
   const run = getRun(req.params.id);
   if (!run) return res.status(404).json({ error: "run not found" });
   res.json({ run });
+});
+
+app.post("/api/runs/:id/cancel", async (req, res) => {
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ error: "run not found" });
+  if (!run.actions?.canCancel) return res.status(409).json({ error: `任务当前状态不可取消：${run.status}`, run });
+  const pending = requestRunCancellation(run.id, String(req.body?.reason || "用户请求取消"));
+  const key = agentKey(run.clientId, run.threadId);
+  const live = agentManager.sessions?.get(key);
+  try {
+    if (live?.busy) {
+      await agentManager.abort(key);
+    } else {
+      finishRun(run.id, { status: "cancelled", sessionId: run.sessionId, error: "任务在恢复前被取消", summary: "任务已取消" });
+    }
+    res.json({ ok: true, run: getRun(run.id), previous: pending });
+  } catch (error) {
+    res.status(409).json({ error: error.message, run: getRun(run.id) });
+  }
 });
 
 app.post("/api/runs/:id/rollback", (req, res) => {
@@ -1243,6 +1393,70 @@ app.post("/api/runs/:id/steps/:stepId", (req, res) => {
   const run = updateRunStep(req.params.id, req.params.stepId, req.body || {});
   if (!run) return res.status(404).json({ error: "run or step not found" });
   res.json({ ok: true, run: getRun(req.params.id) });
+});
+
+app.get("/api/artifacts", (req, res) => {
+  const cwd = req.query.cwd ? (normalizeWorkspace(req.query.cwd) || "__invalid_workspace__") : "";
+  res.json({ artifacts: listPublishedArtifacts({ cwd, projectId: String(req.query.projectId || ""), limit: parseInt(req.query.limit, 10) || 200 }) });
+});
+
+app.post("/api/runs/:id/artifacts/:artifactId/publish", (req, res) => {
+  const result = publishArtifact(req.params.id, req.params.artifactId);
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+// ---------- 项目管理：兼容现有 workspace，并为会话/Run 提供统一归属 ----------
+app.get("/api/projects", (req, res) => {
+  try {
+    // 只自动登记当前工作区。历史 Pi 会话可能指向临时目录或用户目录，不能把它们批量污染项目列表。
+    projectManager.ensureProjectForWorkspace(getWorkspace());
+    const runs = listRuns({ limit: 200 });
+    const proposals = agentManager.memoryProposals();
+    const sessions = listSessionFiles().map((file) => {
+      try {
+        const header = JSON.parse(fs.readFileSync(file.fullPath, "utf8").split(/\r?\n/)[0]);
+        return { cwd: header.cwd || "", id: header.id || header.sessionId || "" };
+      } catch { return null; }
+    }).filter(Boolean);
+    const projects = projectManager.listProjects().map((project) => ({
+      ...project,
+      sessionCount: sessions.filter((session) => session.cwd === project.rootPath).length,
+      runCount: runs.filter((run) => run.cwd === project.rootPath).length,
+      artifactCount: runs.filter((run) => run.cwd === project.rootPath).reduce((count, run) => count + (run.artifacts?.length || 0), 0),
+      unresolvedRunCount: runs.filter((run) => run.cwd === project.rootPath && ["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(run.status)).length,
+      pendingMemoryCount: proposals.filter((item) => item.workspace === project.rootPath && item.status === "pending").length,
+      approvedMemoryCount: proposals.filter((item) => item.workspace === project.rootPath && item.status === "approved").length,
+      lastMemoryAt: proposals.filter((item) => item.workspace === project.rootPath).map((item) => item.approvedAt || item.createdAt).sort().pop() || null,
+    }));
+    res.json({ projects, types: projectManager.listProjectTypes(), statuses: projectManager.listProjectStatuses() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/projects", (req, res) => {
+  const result = projectManager.createProject(req.body || {});
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
+});
+
+app.patch("/api/projects/:id", (req, res) => {
+  const result = projectManager.updateProject(req.params.id, req.body || {});
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
+app.post("/api/projects/:id/archive", (req, res) => {
+  const result = projectManager.archiveProject(req.params.id, req.body?.archived !== false);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
+app.post("/api/projects/:id/pin", (req, res) => {
+  const result = projectManager.updateProject(req.params.id, { pinned: req.body?.pinned !== false });
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
 });
 
 app.post("/api/sessions/:id/fork", (req, res) => {
@@ -1264,6 +1478,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
 
 // GET /api/workspaces - 列出已知工作区目录
 app.get("/api/workspaces", (_req, res) => {
+  const hidden = new Set(getHiddenWorkspaces().map((p) => fs.existsSync(p) ? fs.realpathSync(p) : p));
   const workspaces = [{ name: "默认工作区", path: WORKSPACE_DIR }];
   // 从会话历史里收集其他 cwd（存在 office 文件的工作区）
   const seen = new Set([WORKSPACE_DIR]);
@@ -1282,7 +1497,26 @@ app.get("/api/workspaces", (_req, res) => {
       }
     } catch {}
   }
-  res.json({ workspaces });
+  // 过滤用户已删除（隐藏）的工作区路径
+  const filtered = workspaces.filter((w) => {
+    const rp = fs.existsSync(w.path) ? fs.realpathSync(w.path) : w.path;
+    return !hidden.has(rp);
+  });
+  res.json({ workspaces: filtered });
+});
+
+// POST /api/workspace/delete - 从下拉列表中移除工作区路径（隐藏，不破坏会话历史）
+app.post("/api/workspace/delete", (req, res) => {
+  const { path: dir } = req.body || {};
+  if (!dir) return res.status(400).json({ error: "path required" });
+  hideWorkspace(dir);
+  // 若删除的是当前工作区，则回退到默认工作区
+  let workspace = getWorkspace();
+  if (workspace === dir || (fs.existsSync(dir) && fs.existsSync(workspace) && fs.realpathSync(workspace) === fs.realpathSync(dir))) {
+    setWorkspace(WORKSPACE_DIR);
+    workspace = getWorkspace();
+  }
+  res.json({ ok: true, workspace });
 });
 
 // POST /api/workspace/switch - 切换当前工作区
@@ -1367,6 +1601,7 @@ app.get("/api/sessions", (req, res) => {
   const fileFilter = String(req.query.file || "").trim();
   try {
     const files = listSessionFiles();
+    const recentRuns = listRuns({ limit: 200 });
     const sessions = [];
     for (const f of files) {
       try {
@@ -1376,7 +1611,8 @@ app.get("/api/sessions", (req, res) => {
         const h = JSON.parse(firstLine);
         // 只显示工作台相关会话。全局 Pi TUI 的 cwd 是 SESSIONS_DIR，不能混入工作台历史。
         const cwd = h.cwd || "";
-        const isOaw = cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
+        const isProjectSession = path.resolve(f.storeDir) === path.resolve(SESSIONS_DIR);
+        const isOaw = isProjectSession || cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
         if (!isOaw) continue;
         // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
         if (fileFilter && !text.includes(fileFilter)) continue;
@@ -1398,11 +1634,20 @@ app.get("/api/sessions", (req, res) => {
         }
         // 用户手动命名优先于自动标题；否则重命名后刷新列表又会被首条指令覆盖。
         if (h.label) title = String(h.label).trim();
-        // 不展示只有 header 的空草稿，避免刷新应用时不断出现“空会话”。
-        if (!hasUserMessage && !h.label) continue;
+        // 项目内会话即使尚未发送首条消息也保留，前端才能显示“准备中/运行中”的会话，
+        // 也不会因为切换页面而把用户刚创建的对话丢掉。
+        if (!hasUserMessage && !h.label && !isProjectSession) continue;
         if (isBootstrapSessionTitle(title)) continue;
+        const id = h.id || h.sessionId || sessionBaseName(f.fileName);
+        const latestRun = recentRuns.find((run) => run.sessionId === id);
+        const project = projectManager.getProjectForWorkspace(cwd || getWorkspace());
         sessions.push({
-          id: h.id || h.sessionId || sessionBaseName(f.fileName),
+          id,
+          threadId: h.threadId || latestRun?.threadId || id,
+          projectId: project?.id || null,
+          projectName: project?.name || "",
+          projectType: project?.type || "",
+          projectStatus: project?.status || "",
           cwd: h.cwd || "",
           created: h.created || "",
           modified: f.mtime,
@@ -1410,6 +1655,11 @@ app.get("/api/sessions", (req, res) => {
           parentSessionId: h.parentSessionId || null,
           fileName: f.fileName,
           title,
+          runStatus: latestRun?.status || "idle",
+          runId: latestRun?.id || null,
+          mode: latestRun?.task?.mode || "",
+          lastRunAt: latestRun?.finishedAt || latestRun?.startedAt || null,
+          artifactCount: latestRun?.artifacts?.length || 0,
         });
       } catch {}
     }
@@ -1423,18 +1673,19 @@ app.get("/api/sessions", (req, res) => {
 app.post("/api/sessions", (req, res) => {
   try {
     const { cwd } = req.body || {};
+    const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
     const id = crypto.randomUUID();
     const created = new Date().toISOString();
     const header = {
       type: "header",
       sessionId: id,
-      cwd: cwd || process.cwd(),
+      cwd: workspace,
       created,
       label: "",
     };
     const fileName = id + ".jsonl";
     fs.writeFileSync(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n");
-    res.json({ id, fileName, cwd: header.cwd, created });
+    res.json({ id, fileName, cwd: header.cwd, created, status: "idle" });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1524,7 +1775,10 @@ app.post("/api/agent/abort", async (req, res) => {
   const { client, thread } = req.body || {};
   if (!client) return res.status(400).json({ error: "client required" });
   try {
-    res.json(await agentManager.abort(agentKey(client, thread)));
+    const key = agentKey(client, thread);
+    const live = agentManager.sessions?.get(key);
+    if (live?.activeRunId) requestRunCancellation(live.activeRunId, "用户在对话栏请求中断");
+    res.json(await agentManager.abort(key));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1565,31 +1819,61 @@ app.post("/api/agent/prompt", async (req, res) => {
   }
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
   const key = agentKey(client, thread);
+  const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
+  let entry;
+  try {
+    entry = await agentManager.getOrCreate(key, { threadId: thread, cwd: requestedWorkspace });
+  } catch (e) {
+    const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
+    return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
+  }
+  const runWorkspace = entry.workspace || requestedWorkspace;
   if (requestedModel) {
     try {
       await agentManager.setModel(key, String(requestedModel));
     } catch (e) {
-      return res.status(409).json({ error: `模型同步失败：${e.message}` });
+      const diagnostic = recordAgentDiagnostic(req, { client, thread, model: String(requestedModel), error: e });
+      return res.status(409).json({ error: `模型同步失败：${diagnostic.message}`, requestId: req.requestId, retryable: diagnostic.retryable });
     }
   }
-  const before = snapshotWorkspace();
+  const before = snapshotWorkspace(runWorkspace);
   let run = null;
   let resolved = [];
   let task = null;
+  let capabilityPlan = null;
+  let preflight = null;
   // 保存上传的附件到工作区（agent 可读取）
   if (Array.isArray(attachments) && attachments.length) {
     for (const att of attachments) {
       try {
         const safe = safeName(att.name);
         if (!safe) continue;
-        fs.writeFileSync(path.join(getWorkspace(), safe), Buffer.from(att.data, "base64"));
+        fs.writeFileSync(path.join(runWorkspace, safe), Buffer.from(att.data, "base64"));
       } catch {}
     }
   }
   try {
-    resolved = resolveReferences(references, normalizedText);
+    resolved = resolveReferences(references, normalizedText, runWorkspace);
     const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
-    const workflow = workflowId ? getWorkflow(workflowId, scanSkills()) : null;
+    const skills = scanSkills();
+    const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
+    const requestedSkills = [...new Set([...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
+    const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
+    preflight = preflightSkills({ workflowId, requestedSkills, skills });
+    capabilityPlan = planTaskCapabilities({ text: normalizedText, task: { ...(taskInput || {}), workflowId }, references: resolved, attachments });
+    if (capabilityPlan.routing.officecli === "preferred") {
+      capabilityPlan.officecli = await checkOfficecli();
+      if (!capabilityPlan.officecli.available) {
+        const error = new Error(`Office CLI 预检失败：${capabilityPlan.officecli.message}`);
+        error.code = "OFFICE_PREFLIGHT_FAILED";
+        throw error;
+      }
+    }
+    if ((workflowId || requestedSkills.length) && !preflight.ok) {
+      const error = new Error(preflight.message);
+      error.code = "SKILL_PREFLIGHT_FAILED";
+      throw error;
+    }
     task = createTaskEnvelope({
       ...(taskInput || {}),
       text: normalizedText,
@@ -1597,19 +1881,36 @@ app.post("/api/agent/prompt", async (req, res) => {
       currentFile: taskInput?.currentFile || null,
       references: resolved,
       workflowId,
+      capabilityPlan,
       constraints: [
         ...(taskInput?.constraints || []),
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-    run = beginRun({ clientId: client, threadId: thread || null, cwd: getWorkspace(), task, references: resolved, workflow });
+    const project = projectManager.getProjectForWorkspace(runWorkspace);
+    run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan });
     recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
+    recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
+    emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
     await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
-    const entry = agentManager.sessions.get(key);
-    if (entry) emitChannel(entry, "agent_error", { message: e.message });
+    if (e?.code === "SKILL_PREFLIGHT_FAILED" || e?.code === "OFFICE_PREFLIGHT_FAILED") {
+      emitChannel(entry, "agent_error", { message: e.message, code: e.code, preflight });
+      res.status(409).json({ error: e.message, code: e.code, preflight, capabilityPlan, requestId: req.requestId });
+      return;
+    }
+    const currentModel = entry?.session?.model;
+    const diagnostic = recordAgentDiagnostic(req, {
+      client,
+      thread,
+      runId: run?.id || null,
+      model: requestedModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
+      error: e,
+    });
+    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = await waitForFlush(before);
+    const changed = await waitForFlush(before, runWorkspace);
+    const validations = validateArtifacts(changed, runWorkspace);
     if (changed.length) {
       if (entry) {
         emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
@@ -1622,17 +1923,21 @@ app.post("/api/agent/prompt", async (req, res) => {
       }
     }
     if (run) {
-      const failed = finishRun(run.id, { status: "failed", error: e.message, summary: "Agent 执行失败" });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: "failed" });
+      const cancelled = getRun(run.id)?.status === "cancel_requested";
+      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
     }
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
   }
   // officecli keeps files in a resident process — disk writes flush asynchronously.
   // Poll until the workspace snapshot stabilizes, then diff.
-  const changed = await waitForFlush(before);
-  const entry = agentManager.sessions.get(key);
-  const completed = run ? finishRun(run.id, { status: "completed", sessionId: entry?.session?.sessionId || null, summary: changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件` : "本轮对话完成，未检测到文件变更" }) : null;
+  const changed = await waitForFlush(before, runWorkspace);
+  const validations = validateArtifacts(changed, runWorkspace);
+  const verificationNote = validations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : validations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
+  const cancelled = run && getRun(run.id)?.status === "cancel_requested";
+  const finalStatus = cancelled ? "cancelled" : "completed";
+  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations }) : null;
   if (entry) {
     if (changed.length) {
       emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
@@ -1644,17 +1949,159 @@ app.post("/api/agent/prompt", async (req, res) => {
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: "completed" });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
   }
   // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
-  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
+  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], validations, verificationStatus: completed?.verificationStatus || "not_checked", status: finalStatus, task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
 });
+
+const CONTINUABLE_RUN_STATUSES = new Set(["recovering", "failed", "cancelled", "aborted"]);
+
+function continuationPrompt(task, action) {
+  const goal = String(task?.goal || "").trim();
+  if (action === "retry") {
+    return `请重新执行原任务，遇到上次失败原因时先检查并修正，再完成任务。原任务目标：${goal}`;
+  }
+  return `请从原任务上次中断的位置继续执行，先检查已经完成的步骤和当前文件状态，不要重复已经成功且无必要重复的副作用操作。原任务目标：${goal}`;
+}
+
+async function ensureContinuationAgent(run) {
+  const key = agentKey(run.clientId, run.threadId);
+  const live = agentManager.sessions?.get(key);
+  if (live?.busy) throw new Error("对应对话正在执行其他任务，请等待或先取消当前任务");
+  const sessionId = run.sessionId || run.threadId;
+  const found = sessionId ? findSessionFile(sessionId) : null;
+  // 当前内存会话如果就是该 Run 的 Pi 会话，直接复用；否则优先恢复磁盘会话。
+  if (live && (!found || live.session?.sessionId === run.sessionId)) return { key, entry: live };
+  if (found) {
+    const entry = await agentManager.resumeThread(key, run.threadId, found.fullPath, run.cwd || getWorkspace());
+    annotateSessionThread(entry.sessionId, run.threadId);
+    return { key, entry };
+  }
+  return { key, entry: await agentManager.getOrCreate(key, { threadId: run.threadId, cwd: run.cwd || getWorkspace() }) };
+}
+
+async function executeContinuation({ key, entry, run, task, references, workflow }) {
+  const before = snapshotWorkspace(entry.workspace || run.cwd || getWorkspace());
+  try {
+    await agentManager.promptWithContext(key, continuationPrompt(task, task.recoveryAction), [], undefined, references, { runId: run.id, task, workflow });
+    const changed = await waitForFlush(before, entry.workspace || run.cwd || getWorkspace());
+    const validations = validateArtifacts(changed, entry.workspace || run.cwd || getWorkspace());
+    const cancelled = getRun(run.id)?.status === "cancel_requested";
+    const status = cancelled ? "cancelled" : "completed";
+    const finished = finishRun(run.id, {
+      status,
+      sessionId: entry.session?.sessionId || run.sessionId,
+      summary: status === "cancelled" ? "恢复任务已取消" : (changed.length ? `恢复任务完成，共处理 ${changed.length} 个文件` : "恢复任务完成，未检测到文件变更"),
+      validations,
+    });
+    if (changed.length) {
+      emitChannel(entry, "file_changed", { files: changed, runId: run.id });
+      emitChannel(entry, "agent_summary", {
+        products: changed,
+        summary: `恢复任务完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        runId: run.id,
+        artifacts: finished?.artifacts || [],
+        references,
+      });
+    }
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status, verificationStatus: finished?.verificationStatus || "not_checked" });
+    return finished;
+  } catch (error) {
+    const cancelled = getRun(run.id)?.status === "cancel_requested";
+    const message = classifyAgentError(error).message;
+    emitChannel(entry, "agent_error", { message, runId: run.id, retryable: !cancelled });
+    const finished = finishRun(run.id, {
+      status: cancelled ? "cancelled" : "failed",
+      sessionId: entry.session?.sessionId || run.sessionId,
+      error: message,
+      summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
+    });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked" });
+    return finished;
+  }
+}
+
+async function startContinuation(sourceRun, action) {
+  if (!CONTINUABLE_RUN_STATUSES.has(sourceRun.status)) throw new Error(`任务当前状态不可${action === "retry" ? "重试" : "继续"}：${sourceRun.status}`);
+  if (!sourceRun.task?.goal) throw new Error("原任务缺少可恢复的目标文本");
+  const { key, entry } = await ensureContinuationAgent(sourceRun);
+  const oldTask = sourceRun.task;
+  const goal = String(oldTask.goal || "").trim();
+  const references = resolveReferences(oldTask.references || sourceRun.references || [], goal, entry.workspace || sourceRun.cwd || getWorkspace());
+  const workflowId = oldTask.workflowId || null;
+  const skills = scanSkills();
+  const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
+  const preflight = preflightSkills({ workflowId, requestedSkills: [], skills });
+  if ((workflowId || oldTask.workflowId) && !preflight.ok) {
+    const error = new Error(preflight.message);
+    error.code = "SKILL_PREFLIGHT_FAILED";
+    throw error;
+  }
+  const capabilityPlan = planTaskCapabilities({ text: goal, task: { ...oldTask, mode: oldTask.mode, workflowId }, references });
+  if (capabilityPlan.routing.officecli === "preferred") {
+    capabilityPlan.officecli = await checkOfficecli();
+    if (!capabilityPlan.officecli.available) {
+      const error = new Error(`Office CLI 预检失败：${capabilityPlan.officecli.message}`);
+      error.code = "OFFICE_PREFLIGHT_FAILED";
+      throw error;
+    }
+  }
+  const task = createTaskEnvelope({
+    ...oldTask,
+    id: undefined,
+    goal,
+    text: goal,
+    threadId: sourceRun.threadId,
+    references,
+    workflowId,
+    capabilityPlan,
+    recoveryOf: sourceRun.id,
+    recoveryAction: action,
+    constraints: [...(oldTask.constraints || []), `${action === "retry" ? "重试" : "继续"}自 Run ${sourceRun.id}`],
+  });
+  const project = projectManager.getProjectForWorkspace(entry.workspace || sourceRun.cwd || getWorkspace());
+  const run = beginRun({
+    clientId: sourceRun.clientId,
+    threadId: sourceRun.threadId,
+    sessionId: entry.session?.sessionId || sourceRun.sessionId,
+    cwd: entry.workspace || sourceRun.cwd || getWorkspace(),
+    task,
+    references,
+    workflow,
+    projectId: project?.id || sourceRun.projectId || null,
+    capabilityPlan,
+  });
+  recordRunEvent(run.id, "run_recovery_started", { sourceRunId: sourceRun.id, action, preflight });
+  void executeContinuation({ key, entry, run, task: { ...task, recoveryAction: action }, references, workflow });
+  return run;
+}
+
+async function handleContinuation(req, res, action) {
+  const sourceRun = getRun(req.params.id);
+  if (!sourceRun) return res.status(404).json({ error: "run not found" });
+  const allowed = action === "retry" ? sourceRun.actions?.canRetry : sourceRun.actions?.canResume;
+  if (!allowed) return res.status(409).json({ error: `任务当前状态不可${action === "retry" ? "重试" : "继续"}：${sourceRun.status}`, run: sourceRun });
+  try {
+    const run = await startContinuation(sourceRun, action);
+    res.status(202).json({ ok: true, run: getRun(run.id), sourceRunId: sourceRun.id });
+  } catch (error) {
+    const status = ["SKILL_PREFLIGHT_FAILED", "OFFICE_PREFLIGHT_FAILED"].includes(error?.code) ? 409 : 500;
+    res.status(status).json({ error: error.message, code: error.code || "RUN_RECOVERY_FAILED", sourceRunId: sourceRun.id });
+  }
+}
+
+app.post("/api/runs/:id/resume", (req, res) => handleContinuation(req, res, "resume"));
+app.post("/api/runs/:id/retry", (req, res) => handleContinuation(req, res, "retry"));
 
 app.post("/api/agent/new", async (req, res) => {
   const { client, thread, cwd } = req.body || {};
   if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
   try {
-    res.json(await agentManager.newThread(agentKey(client, thread), thread, cwd || getWorkspace()));
+    const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
+    const result = await agentManager.newThread(agentKey(client, thread), thread, workspace);
+    annotateSessionThread(result.sessionId, thread);
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1664,7 +2111,10 @@ app.post("/api/agent/resume", async (req, res) => {
   const found = findSessionFile(sessionId);
   if (!found) return res.status(404).json({ error: "session not found" });
   try {
-    res.json(await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, cwd || getWorkspace()));
+    const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
+    const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace);
+    annotateSessionThread(result.sessionId, thread);
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1673,7 +2123,8 @@ app.get("/api/agent/stream", async (req, res) => {
   const client = String(req.query.client || "");
   const thread = String(req.query.thread || "");
   if (!client) return res.status(400).end();
-  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread });
+  const workspace = normalizeWorkspace(req.query.cwd || getWorkspace()) || getWorkspace();
+  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread, cwd: workspace });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -1818,7 +2269,12 @@ app.post("/api/memory/init", (_req, res) => {
 });
 
 app.get("/api/memory/proposals", (req, res) => {
-  res.json({ proposals: agentManager.memoryProposals(req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "") });
+  const threadId = req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "";
+  const workspace = req.query.workspace ? normalizeWorkspace(req.query.workspace) : "";
+  const status = String(req.query.status || "").trim();
+  const proposals = agentManager.memoryProposals(threadId).filter((item) =>
+    (!workspace || item.workspace === workspace) && (!status || item.status === status));
+  res.json({ proposals });
 });
 
 app.post("/api/memory/proposals/:id/approve", (req, res) => {
@@ -2096,9 +2552,9 @@ function walkSnapshot(dir, root) {
   }
   return out;
 }
-function snapshotWorkspace() {
-  const ws = getWorkspace();
-  const top = listWorkspace().map((f) => `${f.name}|${f.mtime}|${f.size}`);
+function snapshotWorkspace(workspace = getWorkspace()) {
+  const ws = normalizeWorkspace(workspace) || getWorkspace();
+  const top = listWorkspace(ws).map((f) => `${f.name}|${f.mtime}|${f.size}`);
   // 地图项目位于工作区子目录，递归快照以便检测 layers/tiles/style 变化
   const mapRoot = path.join(ws, "maps");
   const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, ws) : [];
@@ -2108,11 +2564,11 @@ function diffWorkspace(before, after) {
   const b = new Set(before);
   return after.filter((x) => !b.has(x)).map((x) => x.split("|")[0]);
 }
-async function waitForFlush(before) {
+async function waitForFlush(before, workspace = getWorkspace()) {
   let last = before;
   for (let i = 0; i < 6; i++) {
     await new Promise((r) => setTimeout(r, 1500));
-    const snap = snapshotWorkspace();
+    const snap = snapshotWorkspace(workspace);
     if (JSON.stringify(snap) === JSON.stringify(last)) break;
     last = snap;
   }
@@ -2124,6 +2580,11 @@ function emitChannel(entry, type, data) {
   entry.channel.history.push(ev);
   if (entry.channel.history.length > 2000) entry.channel.history.shift();
   entry.channel.emitter.emit("event", ev);
+  // capability_plan/run_finished 已由 recordRunEvent/finishRun 写入 Store，
+  // 其余由 HTTP 层补发的摘要/错误/文件事件在这里进入根级事件流。
+  if (! ["capability_plan", "run_finished"].includes(type)) {
+    appendEvent({ clientId: entry.clientId, threadId: entry.threadId, runId: data?.runId || entry.activeRunId || null, type, data });
+  }
 }
 
 // 在文件管理器中打开文件/文件夹
@@ -2204,10 +2665,24 @@ if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
   console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
 }
 
-app.listen(PORT, HOST, () => {
+process.on("uncaughtException", (error) => {
+  console.error("[fatal] 未捕获异常：", error?.stack || error);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[fatal] 未处理的 Promise 异常：", reason?.stack || reason);
+});
+
+const httpServer = app.listen(PORT, HOST, () => {
   console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
   if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
+});
+httpServer.on("error", (error) => {
+  console.error(`[server] 监听 ${HOST}:${PORT} 失败：`, error?.stack || error);
+  if (error?.code === "EADDRINUSE") {
+    console.error(`[server] ${HOST}:${PORT} 已被其他 Open Plan 实例占用；本重复实例将退出，请使用现有服务。`);
+    setImmediate(() => process.exit(1));
+  }
 });
 
 process.on("SIGINT", async () => {

@@ -3,12 +3,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
+import { appendEvent } from "./事件存储.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = path.join(PROJECT_DIR, ".oaw", "runs");
 const MAX_FILES = 1200;
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
+const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -142,7 +144,8 @@ function ensureStep(run, stepId, name, status = "pending") {
 
 function updateStepFromEvent(run, type, data = {}) {
   const toolName = data.name || data.toolName;
-  const stepId = data.stepId || (toolName ? `${run.id}:tool:${toolName}` : null);
+  const toolCallId = data.toolCallId || data.id || "";
+  const stepId = data.stepId || (toolName ? `${run.id}:tool:${toolCallId || toolName}` : null);
   if (type === "step_started" || type === "tool_start") {
     const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "running");
     step.status = "running";
@@ -162,7 +165,7 @@ function updateStepFromEvent(run, type, data = {}) {
   }
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const before = snapshotWorkspace(cwd);
   copyBeforeBlobs(id, before);
@@ -173,8 +176,10 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     clientId: clientId || null,
     threadId: threadId || null,
     sessionId,
+    projectId: projectId || null,
     cwd: before.root,
     task: task || null,
+    capabilityPlan: capabilityPlan || task?.capabilityPlan || null,
     workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
     steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
@@ -189,7 +194,9 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     run.steps.push({ id: `${id}:main`, index: 0, name: "执行 Agent 任务", status: "running", attempts: 1, startedAt: run.startedAt, finishedAt: null, error: null });
     run.currentStepId = `${id}:main`;
   }
-  return saveRun(run);
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_started", data: { status: run.status, task: run.task, projectId: run.projectId } });
+  return saved;
 }
 
 export function updateRunStep(id, stepId, patch = {}) {
@@ -205,7 +212,9 @@ export function updateRunStep(id, stepId, patch = {}) {
   const seq = Number(run.eventSeq || run.events.length || 0) + 1;
   run.eventSeq = seq;
   run.events.push({ seq, type: "step_updated", data: { stepId: step.id, status: step.status }, at: new Date().toISOString() });
-  return saveRun(run);
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "step_updated", data: { stepId: step.id, status: step.status } });
+  return saved;
 }
 
 export function recordRunEvent(id, type, data = {}) {
@@ -216,7 +225,9 @@ export function recordRunEvent(id, type, data = {}) {
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
   if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
-  return saveRun(run);
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type, data });
+  return saved;
 }
 
 function changedFiles(before, after) {
@@ -262,7 +273,7 @@ function copyAfterBlobs(run, artifacts, after) {
   }
 }
 
-export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null } = {}) {
+export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null, validations = [] } = {}) {
   const run = loadRun(id);
   if (!run) return null;
   const after = snapshotWorkspace(run.cwd);
@@ -273,7 +284,25 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   run.status = status;
   run.error = error;
   if (sessionId) run.sessionId = sessionId;
-  run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件` : "本轮未产生文件变更");
+  const validationMap = new Map((Array.isArray(validations) ? validations : []).map((item) => [String(item?.path || "").replace(/\\/g, "/"), item]));
+  for (const artifact of artifacts) {
+    artifact.artifactId = `artifact_${crypto.randomUUID()}`;
+    artifact.runId = run.id;
+    artifact.sessionId = run.sessionId || null;
+    artifact.projectId = run.projectId || null;
+    artifact.validation = validationMap.get(String(artifact.path || "").replace(/\\/g, "/")) || null;
+    artifact.verificationStatus = artifact.validation?.status || "not_checked";
+  }
+  run.validations = Array.isArray(validations) ? validations : [];
+  run.verificationStatus = run.validations.some((item) => item.status === "failed")
+    ? "failed"
+    : run.validations.some((item) => item.status === "warning")
+      ? "warning"
+      : run.validations.length
+        ? "passed"
+        : "not_checked";
+  const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
+  run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
   run.finishedAt = new Date().toISOString();
   run.events = Array.isArray(run.events) ? run.events : [];
   run.steps = Array.isArray(run.steps) ? run.steps : [];
@@ -285,8 +314,51 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   }
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
-  run.events.push({ seq, type: "run_finished", data: { status, artifacts: artifacts.length }, at: run.finishedAt });
-  return saveRun(run);
+  run.events.push({ seq, type: "run_finished", data: { status, artifacts: artifacts.length, verificationStatus: run.verificationStatus }, at: run.finishedAt });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status, artifacts: artifacts.length, verificationStatus: run.verificationStatus } });
+  return saved;
+}
+
+/**
+ * 服务重启后，磁盘上仍为活动态的 Run 不可能继续持有旧进程内存，
+ * 先标记为 recovering，交给任务中心显式继续，避免假装仍在执行。
+ */
+export function recoverActiveRuns() {
+  ensureDir(RUNS_DIR);
+  const recovered = [];
+  for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
+    const run = loadRun(path.basename(name, ".json"));
+    if (!run || !ACTIVE_RUN_STATUSES.has(run.status) || run.status === "recovering") continue;
+    run.status = "recovering";
+    run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };
+    run.events = Array.isArray(run.events) ? run.events : [];
+    const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    run.events.push({ seq, type: "run_recovered", data: { status: "recovering" }, at: run.recovery.detectedAt });
+    saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_recovered", data: { status: "recovering", reason: run.recovery.reason } });
+    recovered.push(run.id);
+  }
+  return recovered;
+}
+
+export function requestRunCancellation(id, reason = "用户请求中断") {
+  const run = loadRun(id);
+  if (!run) return null;
+  if (!ACTIVE_RUN_STATUSES.has(run.status)) return getRun(id);
+  if (run.status !== "cancel_requested") {
+    run.status = "cancel_requested";
+    run.cancelRequestedAt = new Date().toISOString();
+    run.cancelReason = String(reason || "用户请求中断");
+    run.events = Array.isArray(run.events) ? run.events : [];
+    const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    run.events.push({ seq, type: "run_cancel_requested", data: { reason: run.cancelReason }, at: run.cancelRequestedAt });
+    saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_cancel_requested", data: { reason: run.cancelReason, status: run.status } });
+  }
+  return getRun(id);
 }
 
 export function getRun(id) {
@@ -297,15 +369,28 @@ export function getRun(id) {
   const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
   return {
     ...publicRun,
+    actions: {
+      canCancel: ["running", "queued", "waiting_user", "recovering"].includes(publicRun.status),
+      canResume: ["recovering", "failed", "cancelled", "aborted"].includes(publicRun.status),
+      canRetry: ["failed", "cancelled", "aborted"].includes(publicRun.status),
+    },
     progress: { completed, total: steps.length, running: steps.filter((step) => step.status === "running").length },
     currentStep: steps.find((step) => step.id === publicRun.currentStepId) || steps.find((step) => step.status === "running") || null,
     workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
   };
 }
 
-export function listRuns({ threadId = "", limit = 50 } = {}) {
+export function listRuns({ threadId = "", sessionId = "", cwd = "", limit = 50 } = {}) {
   ensureDir(RUNS_DIR);
-  return fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => loadRun(path.basename(n, ".json"))).filter(Boolean).filter((r) => !threadId || r.threadId === threadId).sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt))).slice(0, Math.max(1, Math.min(200, limit))).map((run) => getRun(run.id)).filter(Boolean);
+  return fs.readdirSync(RUNS_DIR)
+    .filter((n) => n.endsWith(".json"))
+    .map((n) => loadRun(path.basename(n, ".json")))
+    .filter(Boolean)
+    .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || path.resolve(r.cwd || "") === path.resolve(cwd)))
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .slice(0, Math.max(1, Math.min(200, limit)))
+    .map((run) => getRun(run.id))
+    .filter(Boolean);
 }
 
 export function rollbackRun(id, paths = []) {

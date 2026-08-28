@@ -22,6 +22,7 @@ export const agentAuthRemove = (provider) =>
   api("/api/agent/auth/remove", { method: "POST", body: JSON.stringify({ provider }) });
 
 export const listModels = () => api("/api/models");
+export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
 export const setAgentModel = (client, model, thread) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
 export const setAgentModelForThread = (client, thread, model) =>
@@ -34,11 +35,16 @@ export const resumeAgentThread = (client, thread, sessionId, cwd) =>
   api("/api/agent/resume", { method: "POST", body: JSON.stringify({ client, thread, sessionId, cwd }) });
 
 export const listSessions = (file) => api(`/api/sessions${file ? `?file=${encodeURIComponent(file)}` : ""}`);
+export const listProjects = () => api("/api/projects");
+export const updateProject = (id, patch) => api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
+export const pinProject = (id, pinned = true) => api(`/api/projects/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
 export const listWorkspaces = () => api("/api/workspaces");
 export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
 export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
+export const deleteWorkspace = (path) =>
+  api("/api/workspace/delete", { method: "POST", body: JSON.stringify({ path }) });
 export const listFileRoots = () => api("/api/file-roots");
 export const addFileRoot = (path, label) => api("/api/file-roots", { method: "POST", body: JSON.stringify({ path, label }) });
 export const removeFileRoot = (id) => api(`/api/file-roots/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -46,6 +52,7 @@ export const resolveContext = (references, text) => api("/api/context/resolve", 
 export const readContext = (reference, query, range) => api("/api/context/read", { method: "POST", body: JSON.stringify({ reference, query, range }) });
 
 export const listSkills = () => api("/api/skills");
+export const preflightSkills = (workflowId, skills = []) => api("/api/skills/preflight", { method: "POST", body: JSON.stringify({ workflowId, skills }) });
 export const listWorkflows = () => api("/api/workflows");
 export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
 export const exportSkill = (name) =>
@@ -59,13 +66,37 @@ export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const forkSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label }) });
-export const listRuns = (thread, limit = 50) => api(`/api/runs?${thread ? `thread=${encodeURIComponent(thread)}&` : ""}limit=${encodeURIComponent(limit)}`);
+export const listRuns = (thread = "", limit = 50, options = {}) => {
+  const params = new URLSearchParams();
+  if (thread) params.set("thread", thread);
+  if (options.sessionId) params.set("session", options.sessionId);
+  if (options.cwd) params.set("cwd", options.cwd);
+  params.set("limit", String(limit));
+  return api(`/api/runs?${params.toString()}`);
+};
 export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
+export const cancelRun = (id, reason = "用户请求取消") => api(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+export const resumeRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/resume`, { method: "POST", body: JSON.stringify({}) });
+export const retryRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/retry`, { method: "POST", body: JSON.stringify({}) });
+export const markAgentEventsRead = (client, seq) => api("/api/agent/events/read", { method: "POST", body: JSON.stringify({ client, seq }) });
+export const listPublishedArtifacts = (cwd, projectId = "") => {
+  const params = new URLSearchParams();
+  if (cwd) params.set("cwd", cwd);
+  if (projectId) params.set("projectId", projectId);
+  return api(`/api/artifacts?${params.toString()}`);
+};
+export const publishArtifact = (runId, artifactId) => api(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/publish`, { method: "POST", body: JSON.stringify({}) });
 export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
 export const listConnectors = () => api("/api/connectors");
 export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
 export const approveMemoryProposal = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) });
+export const listMemoryProposals = (workspace = "", status = "") => {
+  const params = new URLSearchParams();
+  if (workspace) params.set("workspace", workspace);
+  if (status) params.set("status", status);
+  return api(`/api/memory/proposals?${params.toString()}`);
+};
 export const listPendingQuestions = (client, thread) => api(`/api/agent/pending?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread)}`);
 
 export function getClientId() {

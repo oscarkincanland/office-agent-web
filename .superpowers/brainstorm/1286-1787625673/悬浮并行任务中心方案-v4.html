@@ -1,0 +1,58 @@
+<h2>独立的并行任务中心</h2>
+<p class="subtitle">任务不进入对话流，只在顶部保留一个入口。悬停看摘要，点击打开任务列表与详情。</p>
+
+<div class="mockup" style="margin-bottom:18px">
+  <div class="mockup-header">推荐位置：顶部全局工具栏</div>
+  <div class="mockup-body" style="padding:0;background:#f7f8fa">
+    <div class="mock-nav" style="display:flex;align-items:center;gap:10px">
+      <b>◉ Open Plan</b><span>技能</span><span>智能体</span><span>知识库</span><span>模板库</span><span>地图</span><span style="margin-left:auto">◔ 历史</span><span style="background:#218c83;color:white;padding:4px 8px;border-radius:6px;position:relative">▣ 任务 <i style="font-style:normal;background:#ef6c5b;border-radius:10px;padding:1px 5px;font-size:9px;position:absolute;top:-7px;right:-7px">3</i></span><span>⚙</span>
+    </div>
+    <div style="height:230px;padding:15px;font-size:11px;color:#667085">
+      <div style="border:1px solid #d8dee8;border-radius:8px;background:white;height:100%;text-align:center;padding-top:94px">现有地图 / 文档 / 对话界面<br><small>不被任务中心占用空间</small></div>
+    </div>
+  </div>
+</div>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">鼠标悬停：轻量摘要</div>
+    <div class="mockup-body" style="padding:18px;background:#f7f8fa;min-height:210px">
+      <div style="margin-left:auto;width:205px;background:#243447;color:white;border-radius:8px;padding:12px;font-size:11px;box-shadow:0 8px 24px #0002">
+        <b>并行任务</b><br><br>
+        <span style="color:#73d2c7">● 2 个执行中</span><br>
+        <span style="color:#f2c879">● 1 个排队中</span><br>
+        <span style="color:#aeb9c8">✓ 3 个已完成</span><br><br>
+        <small>点击打开任务中心</small>
+      </div>
+    </div>
+  </div>
+  <div class="mockup">
+    <div class="mockup-header">点击：独立任务面板</div>
+    <div class="mockup-body" style="padding:12px;background:#f7f8fa;min-height:210px">
+      <div style="background:white;border:1px solid #d8dee8;border-radius:8px;padding:11px;font-size:11px;box-shadow:0 8px 24px #0002">
+        <div style="display:flex;justify-content:space-between"><b>项目任务中心</b><span>×</span></div>
+        <div style="margin-top:10px;border:1px solid #8cc9c2;background:#f0fbf9;border-radius:6px;padding:7px"><b>● 生成玉环—台州 OD</b><br><span style="color:#218c83">执行中 · 2/4 步 · 地图分析</span><br><small>查看任务详情　地图临时层　3 个事件</small></div>
+        <div style="margin-top:6px;border:1px solid #d8dee8;border-radius:6px;padding:7px"><b>● 编写义乌物流报告</b><br><span style="color:#886b19">执行中 · 1/5 步 · 读取资料</span></div>
+        <div style="margin-top:6px;border:1px solid #d8dee8;border-radius:6px;padding:7px"><b>○ 整理汇报视频</b><br><span style="color:#7b8491">排队中 · 等待资源</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>任务详情打开方式</h3>
+  <ul>
+    <li>点击任务卡的“查看任务详情”，打开独立详情页或浮层，不改变当前对话。</li>
+    <li>详情页显示该任务的消息、工具事件、TodoList、地图临时层和产物。</li>
+    <li>关闭详情后回到原来的地图/文档/对话位置，后台任务继续执行。</li>
+</ul>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="topbar-task" onclick="toggleSelect(this)">
+    <div class="letter">A</div><div class="content"><h3>顶部任务图标（推荐）</h3><p>和历史、地图、知识库同级，最容易找到，也不占用内容区。</p></div>
+  </div>
+  <div class="option" data-choice="edge-task" onclick="toggleSelect(this)">
+    <div class="letter">B</div><div class="content"><h3>右侧边缘悬浮图标</h3><p>更隐蔽，但容易和滚动条、对话操作区域混淆。</p></div>
+  </div>
+</div>

@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Icon from "./Icon.jsx";
+import { approveMemoryProposal, listMemoryProposals } from "../api.js";
 
-export default function MemoryTab() {
+export default function MemoryTab({ workspace = "" }) {
   const [files, setFiles] = useState([]);
   const [active, setActive] = useState(null); // rel path
   const [content, setContent] = useState("");
@@ -9,15 +10,21 @@ export default function MemoryTab() {
   const [dirty, setDirty] = useState(false);
   const [changes, setChanges] = useState([]); // {file, preview, time}
   const [loading, setLoading] = useState(false);
+  const [proposals, setProposals] = useState([]);
+  const [proposalLoading, setProposalLoading] = useState(false);
   const saveTimer = useRef(null);
 
   const refresh = useCallback(async () => {
     try {
-      const r = await fetch("/api/memory");
+      const [r, p] = await Promise.all([
+        fetch("/api/memory"),
+        listMemoryProposals(workspace, "pending").catch(() => ({ proposals: [] })),
+      ]);
       const d = await r.json();
       setFiles(d.files || []);
+      setProposals(p.proposals || []);
     } catch {}
-  }, []);
+  }, [workspace]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -86,6 +93,17 @@ export default function MemoryTab() {
     setChanges((prev) => prev.filter((c) => c.file !== file));
   };
 
+  const handleApproveProposal = async (id) => {
+    if (proposalLoading) return;
+    setProposalLoading(true);
+    try {
+      await approveMemoryProposal(id);
+      setProposals((prev) => prev.filter((item) => item.id !== id));
+      refresh();
+    } catch {}
+    setProposalLoading(false);
+  };
+
   return (
     <div className="memory-tab">
       {/* 记忆变更 Dock（Proma MemoryChangeDock 风格） */}
@@ -99,6 +117,19 @@ export default function MemoryTab() {
               <button className="memory-change-dismiss" onClick={(e) => { e.stopPropagation(); dismissChange(c.file); }}>
                 <Icon name="x" size={9} />
               </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 待沉淀卡片：长期记忆必须经过用户确认 */}
+      {proposals.length > 0 && (
+        <div className="memory-proposals">
+          <div className="memory-proposals-head"><Icon name="bookmark" size={11} /> 待沉淀建议（{proposals.length}）</div>
+          {proposals.map((proposal) => (
+            <div className="memory-proposal-row" key={proposal.id}>
+              <div className="memory-proposal-copy"><strong>{proposal.section}</strong><span>{proposal.content}</span></div>
+              <button className="btn-xs primary" onClick={() => handleApproveProposal(proposal.id)} disabled={proposalLoading}>确认写入</button>
             </div>
           ))}
         </div>

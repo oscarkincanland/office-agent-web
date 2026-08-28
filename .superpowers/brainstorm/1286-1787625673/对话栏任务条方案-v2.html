@@ -1,0 +1,57 @@
+<h2>现有对话栏里的任务条</h2>
+<p class="subtitle">不新增侧栏、不挤压地图和文件区。任务条固定在输入框上方，空闲时收起，运行时自动展开。</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">运行中：自动展开</div>
+    <div class="mockup-body" style="padding:0;background:#f7f8fa">
+      <div class="mock-nav">Open Plan · 地图模块　　历史 23</div>
+      <div style="height:176px;padding:12px;font-size:11px;color:#6b7280">
+        <div style="border:1px solid #d9e1e8;border-radius:8px;padding:9px;background:white;margin-bottom:9px">Agent 正在生成玉环市—台州 OD 演示…</div>
+        <div style="border:1px solid #d9e1e8;border-radius:8px;padding:9px;background:white">工具事件与对话内容继续在这里滚动</div>
+      </div>
+      <div style="border-top:1px solid #cfd8e3;background:#eef6f5;padding:8px 10px;font-size:11px">
+        <div style="display:flex;justify-content:space-between;align-items:center"><b>▾ 执行步骤　2/4</b><span style="color:#218c83">执行中 · 任务详情</span></div>
+        <div style="height:4px;background:#d4e5e3;border-radius:3px;margin:7px 0"><div style="width:52%;height:100%;background:#218c83;border-radius:3px"></div></div>
+        <div>✓ 读取玉环与台州边界　　◉ 生成 OD 数据　　○ 渲染地图　　○ 等待确认</div>
+      </div>
+      <div style="padding:9px;border-top:1px solid #d9e1e8;font-size:11px;background:white">输入指令…　　　　　　　　　　　　　　　➤</div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">空闲/完成：自动收起</div>
+    <div class="mockup-body" style="padding:0;background:#f7f8fa">
+      <div class="mock-nav">Open Plan · 地图模块　　历史 23</div>
+      <div style="height:210px;padding:12px;font-size:11px;color:#6b7280">
+        <div style="border:1px solid #d9e1e8;border-radius:8px;padding:9px;background:white">最近任务结果与对话内容</div>
+      </div>
+      <div style="border-top:1px solid #cfd8e3;background:#eef6f5;padding:8px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center">
+        <span><b>▸ 执行步骤　4/4</b>　<span style="color:#218c83">已完成</span></span><span>查看</span>
+      </div>
+      <div style="padding:9px;border-top:1px solid #d9e1e8;font-size:11px;background:white">输入指令…　　　　　　　　　　　　　　　➤</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>我建议的行为</h3>
+  <ul>
+    <li>运行中自动展开，完成后自动收起，只保留“执行步骤 4/4 · 已完成”。</li>
+    <li>点击任务条可展开/收起；点击某一步可定位到对应工具事件和地图动作。</li>
+    <li>多个并行任务只显示一行摘要，例如“2 个执行中 · 1 个排队中”，不挤占对话。</li>
+    <li>需要看完整任务时，再打开一个轻量浮层，而不是新增永久工作区。</li>
+</ul>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="auto-expand" onclick="toggleSelect(this)">
+    <div class="letter">A</div><div class="content"><h3>运行自动展开，完成自动收起（推荐）</h3><p>最适合你现在的界面，不影响日常对话和地图操作。</p></div>
+  </div>
+  <div class="option" data-choice="always-collapsed" onclick="toggleSelect(this)">
+    <div class="letter">B</div><div class="content"><h3>始终只显示一行，点击才展开</h3><p>最省空间，但运行时不容易看到进度。</p></div>
+  </div>
+  <div class="option" data-choice="floating-popover" onclick="toggleSelect(this)">
+    <div class="letter">C</div><div class="content"><h3>右下角悬浮任务按钮</h3><p>空间占用最小，但和发送、地图导出等按钮容易产生视觉竞争。</p></div>
+  </div>
+</div>

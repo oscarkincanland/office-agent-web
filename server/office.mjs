@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import { OFFICECLI, WORKSPACE_DIR } from "./workspace.mjs";
 
@@ -36,6 +37,18 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } =
       resolve({ code, stdout: out, stderr: err, text, json });
     });
   });
+}
+
+export async function checkOfficecli(timeoutMs = 8000) {
+  if (path.isAbsolute(OFFICECLI) && !fs.existsSync(OFFICECLI)) {
+    return { available: false, path: OFFICECLI, code: null, message: `Office CLI 文件不存在：${OFFICECLI}` };
+  }
+  try {
+    const result = await runOfficecli(["--help"], { timeoutMs });
+    return { available: result.code === 0, path: OFFICECLI, code: result.code, message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500) };
+  } catch (error) {
+    return { available: false, path: OFFICECLI, code: null, message: String(error?.message || error || "Office CLI 不可用").slice(0, 500) };
+  }
 }
 
 /** L1 read: view document in a mode. */

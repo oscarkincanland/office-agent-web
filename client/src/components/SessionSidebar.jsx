@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot } from "../api.js";
+import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, listRuns, listPublishedArtifacts, publishArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
@@ -88,11 +88,12 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) {
+export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onRename, onFork }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const handleRename = async (id) => {
     await onRename(id, editValue);
@@ -104,16 +105,19 @@ export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) 
     setPinned(new Set(next));
   };
 
-  const filtered = search.trim()
+  const searched = search.trim()
     ? sessions.filter((s) => (s.title || s.label || s.id).toLowerCase().includes(search.toLowerCase()))
     : sessions;
+  const filtered = statusFilter === "all"
+    ? searched
+    : searched.filter((s) => s.runStatus === statusFilter);
   const pinnedList = filtered.filter((s) => pinned.has(s.id));
   const unpinned = filtered.filter((s) => !pinned.has(s.id));
   const groups = groupByDate(unpinned);
 
   const renderItem = (s) => (
     <div key={s.id} className="session-item" onClick={() => onSelect(s)}>
-      <div className="session-indicator" data-status={s.running ? "running" : "idle"} />
+      <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
         {editingId === s.id ? (
           <div className="session-rename" onClick={(e) => e.stopPropagation()}>
@@ -136,10 +140,15 @@ export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) 
               {pinned.has(s.id) && <Icon name="pin" size={10} className="pin-icon" />}
               {s.title || s.label || "未命名会话"}
             </span>
-            <span className="session-time">{formatTime(s.modified)}</span>
+            <span className="session-time">
+              {s.mode && <span className={`session-mode mode-${s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "office" ? "Office" : "Agent"}</span>}
+              {s.runStatus && s.runStatus !== "idle" ? ({ running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", cancel_requested: "正在中断", completed: "已完成", failed: "失败", aborted: "已中断" }[s.runStatus] || s.runStatus) : formatTime(s.modified)}
+              {s.artifactCount > 0 && <span className="session-artifact-count"> · 产物 {s.artifactCount}</span>}
+            </span>
           </>
         )}
       </div>
+      {(unreadByThread[s.threadId || s.id] || 0) > 0 && <span className="session-unread" title="有新的后台任务状态更新">{unreadByThread[s.threadId || s.id] > 99 ? "99+" : unreadByThread[s.threadId || s.id]}</span>}
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       <div className="session-actions" onClick={(e) => e.stopPropagation()}>
         <button className="btn-icon" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
@@ -166,6 +175,11 @@ export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) 
         <Icon name="search" size={11} />
         <input placeholder="搜索会话…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
+      <div className="session-filters" role="tablist" aria-label="会话状态筛选">
+        {[{ id: "all", label: "全部" }, { id: "running", label: "执行中" }, { id: "completed", label: "已完成" }, { id: "failed", label: "失败" }].map((item) => (
+          <button key={item.id} className={`session-filter ${statusFilter === item.id ? "active" : ""}`} onClick={() => setStatusFilter(item.id)}>{item.label}</button>
+        ))}
+      </div>
       {sessions.length === 0 && <div className="empty">暂无会话记录</div>}
       {/* 置顶区 */}
       {pinnedList.length > 0 && (
@@ -186,7 +200,7 @@ export function SessionList({ sessions, onSelect, onDelete, onRename, onFork }) 
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, workspaces = [], currentWorkspace = "", onWorkspaceChange, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, projects = [], currentProjectId = "", onProjectChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -200,6 +214,33 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
   const [rootOpen, setRootOpen] = useState(false);
   const [rootPath, setRootPath] = useState("");
   const [fileRoots, setFileRoots] = useState([]);
+  const [artifactRuns, setArtifactRuns] = useState([]);
+  const [publishedArtifacts, setPublishedArtifacts] = useState([]);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const projectTypes = [...new Set(projects.map((project) => project.type || "综合项目"))];
+  const currentProject = projects.find((project) => project.id === currentProjectId) || null;
+
+  const refreshArtifacts = useCallback(async () => {
+    setArtifactLoading(true);
+    try {
+      const [runData, publishedData] = await Promise.all([
+        listRuns("", 100, { cwd: currentWorkspace }),
+        listPublishedArtifacts(currentWorkspace, currentProjectId),
+      ]);
+      setArtifactRuns((runData.runs || []).filter((run) => run?.artifacts?.length));
+      setPublishedArtifacts(publishedData.artifacts || []);
+    } catch {}
+    setArtifactLoading(false);
+  }, [currentWorkspace, currentProjectId]);
+
+  useEffect(() => {
+    if (modal === "artifacts") refreshArtifacts();
+  }, [modal, refreshArtifacts]);
+
+  const artifactEntries = artifactRuns.flatMap((run) => (run.artifacts || [])
+    .filter((artifact) => artifact.status !== "deleted")
+    .map((artifact) => ({ ...artifact, run })));
+  const publishedByArtifact = new Map(publishedArtifacts.map((item) => [item.artifactId, item]));
 
   const refreshFileRoots = useCallback(async () => {
     try { setFileRoots((await listFileRoots()).roots || []); } catch {}
@@ -348,8 +389,27 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
 
   return (
     <div className="sidebar">
-      {/* 顶部：工作区选择器 + 新建会话 */}
+      {/* 顶部：项目 / 工作区选择器 + 新建会话 */}
       <div className="workspace-selector">
+        {projects.length > 0 && (
+          <>
+            <span className="ws-label">项目</span>
+            <select
+              className="project-select"
+              value={currentProjectId}
+              onChange={(e) => onProjectChange?.(e.target.value)}
+              title="切换项目（按项目类型分类）"
+            >
+              {projectTypes.map((type) => (
+                <optgroup key={type} label={type}>
+                  {projects.filter((project) => (project.type || "综合项目") === type).map((project) => (
+                    <option key={project.id} value={project.id}>{project.name} · {project.status}{project.pendingMemoryCount ? ` · 待沉淀 ${project.pendingMemoryCount}` : ""}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </>
+        )}
         <span className="ws-label">工作区</span>
         <select
           value={customMode ? "__custom__" : currentWorkspace}
@@ -369,9 +429,20 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           ))}
           <option value="__custom__">📂 自定义路径...</option>
         </select>
-        <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
-          <Icon name="plus" size={13} />
-        </button>
+         <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
+           <Icon name="plus" size={13} />
+         </button>
+         {!customMode && currentWorkspace && currentWorkspace !== workspaces[0]?.path && (
+           <button
+             className="btn-sm sidebar-del-ws"
+             title="从列表移除该工作区"
+             onClick={async () => {
+               if (window.confirm("从列表中移除该工作区路径？（不删除文件）")) {
+                 try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { alert("移除失败: " + e.message); }
+               }
+             }}
+           >×</button>
+         )}
         <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>
       </div>
       {rootOpen && (
@@ -401,6 +472,21 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           <button className="btn-xs" onClick={applyCustom} disabled={applying}>
             {applying ? "验证中..." : "打开"}
           </button>
+        </div>
+      )}
+      {currentProject && (
+        <div className="project-context-strip" title={`当前项目：${currentProject.name}`}>
+          <span className="project-context-name">{currentProject.name}</span>
+          <span className="project-context-type">{currentProject.type || "综合项目"}</span>
+          {currentProject.status && <span className="project-context-status">{currentProject.status}</span>}
+          {currentProject.pendingMemoryCount > 0 && <span className="project-context-status">待沉淀 {currentProject.pendingMemoryCount}</span>}
+          {currentProject.approvedMemoryCount > 0 && <span className="project-context-status">已沉淀 {currentProject.approvedMemoryCount}</span>}
+          {currentProject.unresolvedRunCount > 0 && <span className="project-context-status">未完成 {currentProject.unresolvedRunCount}</span>}
+          <button
+            className="project-memory-btn"
+            onClick={() => { setModal("settings"); setModalTab("memory"); }}
+            title="打开当前工作区的记忆与沉淀"
+          ><Icon name="book" size={11} /> 记忆</button>
         </div>
       )}
 
@@ -498,34 +584,40 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           <div className="sb-modal" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="file" size={13} />
-              <span className="sb-modal-title">产物（{files.filter((f) => !f.isDir).length}）</span>
-              <span className="sb-modal-sub">agent 生成的文档按时间倒序</span>
+              <span className="sb-modal-title">成果（{artifactEntries.length}）</span>
+              <span className="sb-modal-sub">按 Run manifest 展示，可固定为项目正式成果</span>
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="sb-modal-body">
-              {files.filter((f) => !f.isDir).length === 0 && <div className="empty">暂无产物，agent 生成的文档会显示在这里</div>}
+              {artifactLoading && <div className="empty">正在读取成果清单…</div>}
+              {!artifactLoading && artifactEntries.length === 0 && <div className="empty">暂无已登记成果；完成任务并通过校验后会显示在这里</div>}
               <div className="file-list">
-                {[...files]
-                  .filter((f) => !f.isDir)
-                  .sort((a, b) => b.mtime - a.mtime)
-                  .map((f) => (
-                    <div
-                      key={f.name}
-                      className={`file-item ${f.name === currentName ? "active" : ""}`}
-                      onClick={() => {
-                        const rel = currentDir ? `${currentDir}/${f.name}` : f.name;
-                        onOpenFile(rel);
-                        setModal(null);
-                      }}
-                      title={f.name}
-                    >
-                      <FileTypeIcon file={f} size="small" />
-                      <span className="file-name">{f.name}</span>
-                      <span className="file-time" title={new Date(f.mtime).toLocaleString()}>
-                        {formatTime(new Date(f.mtime).toISOString())}
-                      </span>
-                    </div>
-                  ))}
+                {[...artifactEntries]
+                  .sort((a, b) => String(b.run?.finishedAt || b.run?.startedAt || "").localeCompare(String(a.run?.finishedAt || a.run?.startedAt || "")))
+                  .map((item, index) => {
+                    const name = String(item.path || "").split(/[\\/]/).pop() || item.path;
+                    const published = publishedByArtifact.get(item.artifactId);
+                    const canPublish = item.run?.status === "completed" && item.verificationStatus !== "failed" && !published;
+                    return (
+                      <div
+                        key={`${item.artifactId || item.path}-${index}`}
+                        className={`file-item artifact-item ${name === currentName ? "active" : ""}`}
+                        onClick={() => {
+                          onOpenFile(item.path);
+                          setModal(null);
+                        }}
+                        title={`${item.path} · 来源 Run ${item.run?.id || "未知"}`}
+                      >
+                        <FileTypeIcon file={{ name, ext: name.includes(".") ? name.split(".").pop() : "" }} size="small" />
+                        <span className="file-name" title={item.path}>{name}</span>
+                        <span className={`artifact-status ${published ? "published" : item.verificationStatus === "failed" ? "failed" : ""}`}>{published ? `v${published.version} 已固定` : item.verificationStatus === "failed" ? "校验失败" : "待固定"}</span>
+                        {canPublish && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
+                          e.stopPropagation();
+                          try { await publishArtifact(item.run.id, item.artifactId); await refreshArtifacts(); } catch (error) { alert("固定成果失败: " + error.message); }
+                        }}>固定成果</button>}
+                      </div>
+                    );
+                  })}
               </div>
             </div>
           </div>
@@ -546,7 +638,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="sb-modal-body">
-              {modalTab === "settings" ? <SettingsPanel /> : <MemoryTab />}
+              {modalTab === "settings" ? <SettingsPanel /> : <MemoryTab workspace={currentWorkspace} />}
             </div>
           </div>
         </div>

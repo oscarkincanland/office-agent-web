@@ -52,24 +52,68 @@ let _currentWorkspace = WORKSPACE_DIR;
 const WS_STATE_FILE = path.join(PROJECT_DIR, ".workspace-state.json");
 try {
   const saved = JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8"));
-  if (saved && saved.workspace && fs.existsSync(saved.workspace) && fs.statSync(saved.workspace).isDirectory()) {
-    _currentWorkspace = saved.workspace;
-  }
+  const restored = saved?.workspace ? normalizeWorkspace(saved.workspace) : null;
+  if (restored) _currentWorkspace = restored;
 } catch {}
 
 export function getWorkspace() {
   return _currentWorkspace;
 }
 
-export function setWorkspace(dir) {
-  const d = String(dir || "").trim();
-  if (!d) return false;
+/**
+ * 解析并校验一个工作区目录，统一给 HTTP 层、Agent 和 Run 使用。
+ * 返回 realpath，避免同一个目录因相对路径/符号链接产生多个运行归属。
+ */
+export function normalizeWorkspace(dir = _currentWorkspace, { create = false } = {}) {
+  const raw = String(dir || "").trim();
+  if (!raw) return null;
   try {
-    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-    const real = fs.realpathSync(d);
-    if (!fs.statSync(real).isDirectory()) return false;
+    if (!fs.existsSync(raw)) {
+      if (!create) return null;
+      fs.mkdirSync(raw, { recursive: true });
+    }
+    const real = fs.realpathSync(raw);
+    return fs.statSync(real).isDirectory() ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setWorkspace(dir) {
+  try {
+    const real = normalizeWorkspace(dir, { create: true });
+    if (!real) return false;
     _currentWorkspace = real;
-    try { fs.writeFileSync(WS_STATE_FILE, JSON.stringify({ workspace: d }, null, 2), "utf8"); } catch {}
+    // 合并写入，保留 hiddenWorkspaces 等已持久化字段
+    let prev = {};
+    try { prev = fs.existsSync(WS_STATE_FILE) ? JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8")) : {}; } catch {}
+    prev.workspace = real;
+    try { fs.writeFileSync(WS_STATE_FILE, JSON.stringify(prev, null, 2), "utf8"); } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 隐藏（删除）的工作区名单：持久化在 .workspace-state.json 的 hiddenWorkspaces 中，
+// 用于让用户从下拉列表中移除不再需要的工作区路径（不破坏相关会话历史）。
+export function getHiddenWorkspaces() {
+  try {
+    const state = JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8"));
+    return Array.isArray(state.hiddenWorkspaces) ? state.hiddenWorkspaces : [];
+  } catch {
+    return [];
+  }
+}
+
+export function hideWorkspace(dir) {
+  try {
+    const state = fs.existsSync(WS_STATE_FILE) ? JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8")) : {};
+    const list = Array.isArray(state.hiddenWorkspaces) ? state.hiddenWorkspaces : [];
+    const d = fs.existsSync(dir) ? fs.realpathSync(dir) : String(dir);
+    if (!list.includes(d)) list.push(d);
+    state.hiddenWorkspaces = list;
+    fs.writeFileSync(WS_STATE_FILE, JSON.stringify(state, null, 2), "utf8");
     return true;
   } catch {
     return false;
@@ -82,7 +126,7 @@ export function safeName(name) {
   return base;
 }
 
-function isInside(root, target) {
+export function isInside(root, target) {
   const rel = path.relative(root, target);
   return rel === "" || (rel && !rel.startsWith("..") && !path.isAbsolute(rel));
 }
@@ -160,22 +204,24 @@ export function listWorkspace(dir) {
 }
 
 // 解析相对路径（支持子目录），返回绝对路径
-export function resolvePath(rel) {
+export function resolvePath(rel, workspace = _currentWorkspace) {
   const raw = String(rel || "").trim();
   if (!raw || raw.includes("\0") || raw.split(/[\\/]/).includes("..") || path.isAbsolute(raw) || raw.startsWith("\\\\") || raw.startsWith("//") || /^[a-zA-Z]:[\\/]/.test(raw)) return null;
+  const root = normalizeWorkspace(workspace);
+  if (!root) return null;
   const n = raw.replace(/^\\/g, "").replace(/^\//g, "");
-  const p = path.resolve(_currentWorkspace, n);
-  if (!isInside(_currentWorkspace, p) || !fs.existsSync(p)) return null;
+  const p = path.resolve(root, n);
+  if (!isInside(root, p) || !fs.existsSync(p)) return null;
   try {
     const real = fs.realpathSync(p);
-    return isInside(fs.realpathSync(_currentWorkspace), real) ? real : null;
+    return isInside(root, real) ? real : null;
   } catch {
     return null;
   }
 }
 
-export function filePath(name) {
-  return resolvePath(name);
+export function filePath(name, workspace = _currentWorkspace) {
+  return resolvePath(name, workspace);
 }
 
 export { SUPPORTED_EXTENSIONS };

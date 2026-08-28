@@ -11,6 +11,43 @@ import { getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from ".
 const execFileAsync = promisify(execFile);
 const MAX_READ_CHARS = 50000;
 const SUPPORTED = new Set(["docx", "xlsx", "pptx", "pdf", "csv", "json", "md", "markdown", "txt", "html", "htm"]);
+const MAX_DOCUMENT_CACHE_ENTRIES = 32;
+const MAX_DOCUMENT_CACHE_CHARS = 2_000_000;
+const documentReadCache = new Map();
+let documentCacheChars = 0;
+
+function cacheKeyFor(file, version, range) {
+  return `${file}|${version}|${JSON.stringify(range || {})}`;
+}
+
+function readCachedDocument(key) {
+  const hit = documentReadCache.get(key);
+  if (!hit) return null;
+  documentReadCache.delete(key);
+  documentReadCache.set(key, hit);
+  return hit.text;
+}
+
+function cacheDocument(key, text) {
+  const value = String(text || "");
+  if (!value || value.length > MAX_DOCUMENT_CACHE_CHARS) return;
+  const old = documentReadCache.get(key);
+  if (old) documentCacheChars -= old.text.length;
+  documentReadCache.delete(key);
+  documentReadCache.set(key, { text: value, cachedAt: new Date().toISOString() });
+  documentCacheChars += value.length;
+  while (documentReadCache.size > MAX_DOCUMENT_CACHE_ENTRIES || documentCacheChars > MAX_DOCUMENT_CACHE_CHARS) {
+    const first = documentReadCache.keys().next().value;
+    const item = documentReadCache.get(first);
+    documentReadCache.delete(first);
+    documentCacheChars -= item?.text?.length || 0;
+  }
+}
+
+export function clearReadCache() {
+  documentReadCache.clear();
+  documentCacheChars = 0;
+}
 
 function idFor(ref) {
   return "ref_" + crypto.createHash("sha1").update(JSON.stringify(ref)).digest("hex").slice(0, 12);
@@ -57,12 +94,12 @@ export function parseReferences(text = "") {
   return out;
 }
 
-function metadata(file, rootId = null) {
+function metadata(file, rootId = null, workspace = getWorkspace()) {
   const st = fs.statSync(file);
   const hash = crypto.createHash("sha1").update(fs.readFileSync(file)).digest("hex");
   return {
     path: file,
-    relativePath: rootId ? path.relative(listFileRoots().find((r) => r.id === rootId)?.path || file, file).replace(/\\/g, "/") : path.relative(getWorkspace(), file).replace(/\\/g, "/"),
+    relativePath: rootId ? path.relative(listFileRoots().find((r) => r.id === rootId)?.path || file, file).replace(/\\/g, "/") : path.relative(workspace, file).replace(/\\/g, "/"),
     rootId,
     name: path.basename(file),
     ext: path.extname(file).slice(1).toLowerCase(),
@@ -85,18 +122,18 @@ function mimeFor(file) {
   })[ext] || "application/octet-stream";
 }
 
-function resolveFile(ref) {
+function resolveFile(ref, workspace = getWorkspace()) {
   if (ref.rootId) return resolveExternalPath(ref.rootId, ref.target);
-  return resolvePath(ref.target);
+  return resolvePath(ref.target, workspace);
 }
 
-export function resolveReference(input) {
+export function resolveReference(input, workspace = getWorkspace()) {
   const ref = typeof input === "string" ? makeRef("file", input) : { ...input };
   ref.id ||= idFor(ref);
   if (["knowledge", "knowledge_dir", "template", "template_dir"].includes(ref.kind)) {
     return { ...ref, status: "deferred", message: "由知识库/模板索引解析", metadata: null };
   }
-  const file = resolveFile(ref);
+  const file = resolveFile(ref, workspace);
   if (!file) return { ...ref, status: "missing", metadata: null, message: "文件不存在或不在已登记目录内" };
   const stat = fs.statSync(file);
   if (stat.isDirectory()) {
@@ -107,16 +144,16 @@ export function resolveReference(input) {
         if (entry.name.startsWith(".")) continue;
         const p = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(p, depth + 1);
-        else if (SUPPORTED.has(path.extname(entry.name).slice(1).toLowerCase())) files.push(metadata(p, ref.rootId || null));
+        else if (SUPPORTED.has(path.extname(entry.name).slice(1).toLowerCase())) files.push(metadata(p, ref.rootId || null, workspace));
       }
     };
     walk(file);
-    return { ...ref, status: "resolved", metadata: { ...metadata(file, ref.rootId || null), isDirectory: true, files } };
+    return { ...ref, status: "resolved", metadata: { ...metadata(file, ref.rootId || null, workspace), isDirectory: true, files } };
   }
-  return { ...ref, status: SUPPORTED.has(path.extname(file).slice(1).toLowerCase()) ? "resolved" : "unsupported", metadata: metadata(file, ref.rootId || null) };
+  return { ...ref, status: SUPPORTED.has(path.extname(file).slice(1).toLowerCase()) ? "resolved" : "unsupported", metadata: metadata(file, ref.rootId || null, workspace) };
 }
 
-export function resolveReferences(references = [], text = "") {
+export function resolveReferences(references = [], text = "", workspace = getWorkspace()) {
   const refs = [...(Array.isArray(references) ? references : []), ...parseReferences(text)];
   const seen = new Set();
   return refs.map((r) => ({ ...r, id: r.id || idFor(r) })).filter((r) => {
@@ -124,7 +161,7 @@ export function resolveReferences(references = [], text = "") {
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  }).map(resolveReference);
+  }).map((ref) => resolveReference(ref, workspace));
 }
 
 async function extractDocx(file) {
@@ -214,8 +251,8 @@ function applyRange(text, range = {}) {
   return out;
 }
 
-export async function readReference(input, query = "", range = null) {
-  const resolved = resolveReference(input);
+export async function readReference(input, query = "", range = null, workspace = getWorkspace()) {
+  const resolved = resolveReference(input, workspace);
   if (resolved.kind === "knowledge") {
     const kb = await import("./kb.mjs");
     await kb.scan();
@@ -244,10 +281,23 @@ export async function readReference(input, query = "", range = null) {
   }
   if (resolved.kind === "template_dir") return { ...resolved, status: "deferred", message: "模板目录引用请先选择具体模板文件" };
   if (resolved.status !== "resolved" || resolved.metadata?.isDirectory) return { ...resolved, text: resolved.message || "目录引用需要逐个读取文件" };
-  const text = applyRange(await extractFile(resolved.metadata.path, range || resolved.range), range || resolved.range);
+  const extractionRange = range || resolved.range || null;
+  const cacheKey = cacheKeyFor(resolved.metadata.path, resolved.metadata.version, extractionRange);
+  let text = readCachedDocument(cacheKey);
+  const cacheHit = text !== null;
+  if (!cacheHit) {
+    text = await extractFile(resolved.metadata.path, extractionRange);
+    cacheDocument(cacheKey, text);
+  }
+  text = applyRange(text, extractionRange);
   const q = String(query || "").trim();
   const result = q ? text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(q.toLowerCase())).join("\n") : text;
-  return { ...resolved, text: result.slice(0, MAX_READ_CHARS), truncated: result.length > MAX_READ_CHARS };
+  return {
+    ...resolved,
+    metadata: { ...resolved.metadata, parser: path.extname(resolved.metadata.path).slice(1).toLowerCase(), cacheHit, readAt: new Date().toISOString() },
+    text: result.slice(0, MAX_READ_CHARS),
+    truncated: result.length > MAX_READ_CHARS,
+  };
 }
 
 export function contextSummary(resolved = []) {

@@ -14,7 +14,7 @@ import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, listModels, listSessions, listRuns, listWorkspaces, switchWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread } from "./api.js";
+import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead } from "./api.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -88,9 +88,18 @@ function entryCreatedAt(entry, message) {
   return entry?.timestamp || entry?.createdAt || entry?.time || message?.timestamp || message?.createdAt || null;
 }
 
+function sameWorkspacePath(a, b) {
+  if (!a || !b) return false;
+  return String(a).replace(/[\\/]$/, "").toLowerCase() === String(b).replace(/[\\/]$/, "").toLowerCase();
+}
+
+const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
+
 export default function App() {
   const [files, setFiles] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [unreadByThread, setUnreadByThread] = useState({});
+  const [eventVersion, setEventVersion] = useState(0);
   const [tabs, setTabs] = useState([]); // [{ name, kind, url?, sheets?, grids?, content? }]
   const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
   const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
@@ -114,6 +123,7 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [workspaces, setWorkspaces] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
@@ -123,7 +133,15 @@ export default function App() {
   const sessionsRef = useRef([]);
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
+  const sessionLoadSeqRef = useRef(0);
+  const currentThreadRef = useRef(threadId);
+  const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
+  const eventNoticeKeysRef = useRef(new Set());
   const { theme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    currentThreadRef.current = threadId;
+  }, [threadId]);
 
   // @ 按钮：把文件/文件夹路径插入到对话输入框
   const handleAtMention = useCallback((rel, isDir) => {
@@ -134,22 +152,23 @@ export default function App() {
   // 新建会话：清空历史消息和当前文档
   const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
     const next = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+    let created = null;
+    try {
+      // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
+      created = await createAgentThread(clientId, next, workspace || undefined);
+      refreshSessions();
+    } catch (e) {
+      console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
+    }
     setThreadId(next);
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setTabs([]);
     setActiveTab(null);
     setCurrentDir("");
-    setCurrentSessionId(null);
+    setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
-    lastSessionIdRef.current = null;
-    try {
-      const d = await createAgentThread(clientId, next, workspace || undefined);
-      if (d.sessionId) setCurrentSessionId(d.sessionId);
-      refreshSessions();
-    } catch (e) {
-      console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
-    }
+    lastSessionIdRef.current = created?.sessionId || null;
   }, [clientId, currentWorkspace]);
 
   const refreshFiles = useCallback(async (dir) => {
@@ -160,16 +179,74 @@ export default function App() {
     try { setSessions((await listSessions()).sessions || []); } catch {}
   }, []);
 
+  // 根级事件订阅：当前对话继续使用原有 thread SSE，App 额外监听所有 thread 的重要状态，
+  // 让切换后的后台任务仍能刷新历史和未读提示。
+  useEffect(() => {
+    let source;
+    let cancelled = false;
+    const cursorKey = "oaw_event_cursor";
+    const connect = async () => {
+      let cursor = eventCursorRef.current;
+      if (!localStorage.getItem(cursorKey)) {
+        try {
+          const state = await fetch(`/api/agent/events/state?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
+          if (Number.isFinite(Number(state.latest))) cursor = Number(state.latest);
+          eventCursorRef.current = cursor;
+          localStorage.setItem(cursorKey, String(cursor));
+        } catch {}
+      }
+      if (cancelled) return;
+      source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&after=${encodeURIComponent(cursor)}`);
+      source.onmessage = (message) => {
+        try {
+          const payload = JSON.parse(message.data || "{}");
+          const event = payload.event || payload;
+          const seq = Number(event.seq || 0);
+          if (!seq || seq <= eventCursorRef.current) return;
+          eventCursorRef.current = seq;
+          localStorage.setItem(cursorKey, String(seq));
+          setEventVersion((value) => value + 1);
+          const thread = event.threadId || "";
+          const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
+          if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
+            eventNoticeKeysRef.current.add(noticeKey);
+            setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
+          }
+          if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) refreshSessions();
+        } catch {}
+      };
+    };
+    connect();
+    return () => {
+      cancelled = true;
+      source?.close();
+    };
+  }, [clientId, refreshSessions]);
+
+  const refreshProjects = useCallback(async () => {
+    try { setProjects((await listProjects()).projects || []); } catch {}
+  }, []);
+
   useEffect(() => {
     refreshFiles();
     refreshSessions();
-    (async () => {
+    refreshProjects();
+    let modelTimer;
+    const sessionTimer = window.setInterval(refreshSessions, 3000);
+    const projectTimer = window.setInterval(refreshProjects, 10000);
+    const syncModels = async () => {
       try {
-        const d = await listModels();
+        const d = await refreshModels();
         setModels(d.models || []);
         setDefaultModel(d.default || "");
-      } catch {}
-    })();
+      } catch {
+        // 扫描失败时保留上一次列表，避免模型下拉框瞬间清空。
+      }
+    };
+    syncModels();
+    modelTimer = window.setInterval(syncModels, 60_000);
+    const onVisibility = () => { if (document.visibilityState === "visible") syncModels(); };
+    document.addEventListener("visibilitychange", onVisibility);
     (async () => {
       try {
         const w = await listWorkspaces();
@@ -177,7 +254,13 @@ export default function App() {
         if (w.workspaces?.[0]) setCurrentWorkspace(w.workspaces[0].path);
       } catch {}
     })();
-  }, [refreshFiles, refreshSessions]);
+    return () => {
+      window.clearInterval(modelTimer);
+      window.clearInterval(sessionTimer);
+      window.clearInterval(projectTimer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refreshFiles, refreshSessions, refreshProjects]);
 
   // 全局 Ctrl/Cmd+K 切换命令面板
   useEffect(() => {
@@ -204,11 +287,35 @@ export default function App() {
       });
       setCurrentDir("");
       setFiles(r.files || []);
+      await refreshProjects();
       setTabs([]); // 关闭所有文档
       setActiveTab(null);
-      await handleNewSession(r.workspace);
+      // 不阻塞切换：会话创建异步进行，模型连不上也不影响工作区切换
+      handleNewSession(r.workspace).catch(() => {});
     } catch (e) { alert("切换失败: " + e.message); }
-  }, [handleNewSession]);
+  }, [handleNewSession, refreshProjects]);
+
+  const currentProject = projects.find((project) => project.rootPath === currentWorkspace) || null;
+  const visibleSessions = currentWorkspace
+    ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
+    : sessions;
+  const handleProjectChange = useCallback((id) => {
+    const project = projects.find((item) => item.id === id);
+    if (project?.rootPath) handleWorkspaceChange(project.rootPath);
+  }, [projects, handleWorkspaceChange]);
+
+  // 移除工作区路径（从下拉列表隐藏，不删文件）
+  const handleWorkspaceRemove = useCallback(async (dir) => {
+    try {
+      await deleteWorkspace(dir);
+      setWorkspaces((prev) => prev.filter((w) => w.path !== dir));
+      // 若移除的是当前工作区，切回默认
+      if (dir === currentWorkspace) {
+        const def = workspaces.find((w) => w.name === "默认工作区");
+        if (def) handleWorkspaceChange(def.path);
+      }
+    } catch (e) { alert("移除失败: " + e.message); }
+  }, [currentWorkspace, workspaces, handleWorkspaceChange]);
 
   // 进入/返回子目录
   const handleDirChange = useCallback((dir) => {
@@ -250,15 +357,40 @@ export default function App() {
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
+    const loadSeq = ++sessionLoadSeqRef.current;
+    // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
+    const targetWorkspace = session.cwd || currentWorkspace;
+    if (targetWorkspace && targetWorkspace !== currentWorkspace) {
+      try {
+        const switched = await switchWorkspace(targetWorkspace);
+        if (loadSeq !== sessionLoadSeqRef.current) return;
+        setCurrentWorkspace(switched.workspace);
+        setCurrentDir("");
+        setFiles(switched.files || []);
+        setTabs([]);
+        setActiveTab(null);
+      } catch (e) {
+        console.warn("切换到会话工作区失败，仍尝试加载历史:", e.message);
+      }
+    }
+    const conversationId = session.threadId || session.id;
+    setUnreadByThread((prev) => {
+      if (!prev[conversationId]) return prev;
+      const next = { ...prev };
+      delete next[conversationId];
+      return next;
+    });
+    markAgentEventsRead(clientId, eventCursorRef.current).catch(() => {});
     setCurrentSessionId(session.id);
-    setThreadId(session.id);
-    localStorage.setItem("oaw_thread_id", session.id);
-    try { await resumeAgentThread(clientId, session.id, session.id, session.cwd || currentWorkspace); } catch (e) { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); }
+    setThreadId(conversationId);
+    localStorage.setItem("oaw_thread_id", conversationId);
+    try { await resumeAgentThread(clientId, conversationId, session.id, targetWorkspace); } catch (e) { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); }
     try {
       const [d, runData] = await Promise.all([
         getSession(session.id),
-        listRuns(session.id).catch(() => ({ runs: [] })),
+        listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
       ]);
+      if (loadSeq !== sessionLoadSeqRef.current) return;
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
       const msgs = [];
@@ -323,15 +455,18 @@ export default function App() {
         });
       }
       const runMessages = (runData?.runs || [])
-        .filter((run) => run?.status && (run.summary || run.artifacts?.length))
+        .filter((run) => run?.status)
         .map((run) => ({
           id: `run-summary-${run.id}`,
           role: "system",
-          text: run.summary || `本轮对话完成，共处理 ${run.artifacts?.length || 0} 个文件`,
+          text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
           products: (run.artifacts || []).map((a) => a.path).filter(Boolean),
           artifacts: run.artifacts || [],
           runId: run.id,
-          status: "done",
+          runStatus: run.status,
+          references: run.references || [],
+          task: run.task || null,
+          status: run.status === "running" ? "streaming" : "done",
           summary: true,
           createdAt: run.finishedAt || run.startedAt || null,
         }));
@@ -344,7 +479,9 @@ export default function App() {
           try { await open(fn[1].trim()); } catch {}
         }
       }
-    } catch (e) { alert("加载会话失败: " + e.message); }
+    } catch (e) {
+      if (loadSeq === sessionLoadSeqRef.current) alert("加载会话失败: " + e.message);
+    }
   }, [clientId, currentWorkspace, open]);
 
   const handleFileChanged = useCallback((changed) => {
@@ -444,6 +581,8 @@ export default function App() {
       ref={chatInputRef}
       clientId={clientId}
       threadId={threadId}
+      workspace={currentWorkspace}
+      project={currentProject}
       onFileChanged={(changed) => {
         handleFileChanged(changed);
         mapBridgeRef.current?.onFileChanged?.(changed);
@@ -463,10 +602,11 @@ export default function App() {
         if (mapMode) mapBridgeRef.current?.onOpenFile?.(name);
         else open(name);
       }}
-      sessions={sessions}
+      sessions={visibleSessions}
       onSelectSession={handleSelectSession}
       onSessionChange={handleSessionChange}
       onRefreshSessions={refreshSessions}
+      unreadByThread={unreadByThread}
     />
   );
 
@@ -507,15 +647,18 @@ export default function App() {
             onOpenFile={open}
             clientId={clientId}
             threadId={threadId}
+            workspace={currentWorkspace}
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
             onNewSession={handleNewSession}
             historyMessages={historyMessages}
-            sessions={sessions}
+            sessions={visibleSessions}
+            currentSessionId={currentSessionId}
             onSelectSession={handleSelectSession}
             onSessionChange={handleSessionChange}
             onRefreshSessions={refreshSessions}
+            onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
             hideChat
             bridgeRef={mapBridgeRef}
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
@@ -535,21 +678,26 @@ export default function App() {
         {sidebarOpen && (
           <>
             <SessionSidebar
-              sessions={sessions}
+              sessions={visibleSessions}
               files={files}
               currentName={current?.name}
               onOpenFile={open}
               onRefreshFiles={refreshFiles}
               onRefreshSessions={refreshSessions}
               onUploaded={refreshFiles}
+              projects={projects}
+              currentProjectId={currentProject?.id || ""}
+              onProjectChange={handleProjectChange}
               workspaces={workspaces}
               currentWorkspace={currentWorkspace}
               onWorkspaceChange={handleWorkspaceChange}
+              onWorkspaceRemove={handleWorkspaceRemove}
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onSelectSession={handleSelectSession}
               onAtMention={handleAtMention}
               onNewSession={handleNewSession}
+              unreadByThread={unreadByThread}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>
@@ -577,7 +725,16 @@ export default function App() {
             <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
             <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
             <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图（GIS 项目）"><Icon name="map" size={14} /> 地图</button>
-              <TaskCenter />
+              <TaskCenter
+                sessions={visibleSessions}
+                currentWorkspace={currentWorkspace}
+                currentThreadId={threadId}
+                currentSessionId={currentSessionId}
+                unreadCount={Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}
+                onSelectSession={handleSelectSession}
+                onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
+                eventVersion={eventVersion}
+              />
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <DocViewer

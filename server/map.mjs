@@ -270,7 +270,7 @@ function layerStyle(def) {
         type: "line",
         paint: {
           "line-color": def.id === "boundary-city" ? "#e4572e" : "#b8b8c8",
-          "line-width": def.id === "boundary-city" ? 2 : 0.8,
+          "line-width": def.id === "boundary-city" ? 2 : ["interpolate", ["linear"], ["zoom"], 7, 0.8, 10, 1.3, 13, 1.8],
           "line-opacity": 0.9,
           "line-dasharray": def.id === "boundary-city" ? [1, 0] : [2, 1.2],
         },
@@ -615,6 +615,7 @@ export async function importLayer(name, layerId, geojson) {
   const dir = ensureProject(name);
   const safeId = String(layerId || "").replace(/[^a-zA-Z0-9_-]/g, "");
   if (!dir || !safeId) return null;
+  const stats = validateGeoJSON(geojson);
   const target = path.join(dir, "layers", `${safeId}.geojson`);
   fs.writeFileSync(target, typeof geojson === "string" ? geojson : JSON.stringify(geojson));
   // 把新图层加入 config（若不存在）
@@ -629,7 +630,34 @@ export async function importLayer(name, layerId, geojson) {
   const r = buildProjectTiles(dir, { layerIds: [safeId], force: true, defs: [def] });
   // 导入后立即把新图层注册到 style，确保前端可见性复选框和 Agent 产物都能正常显示/隐藏。
   rebuildBasemapStyle(name);
-  return { ok: true, layer: safeId, tiles: r[safeId] };
+  return { ok: true, layer: safeId, features: stats.features, bbox: stats.bbox, tiles: r[safeId] };
+}
+
+function validateGeoJSON(geojson) {
+  let fc = geojson;
+  if (typeof fc === "string") fc = JSON.parse(fc);
+  if (fc?.type === "Feature") fc = { type: "FeatureCollection", features: [fc] };
+  if (fc?.type !== "FeatureCollection" || !Array.isArray(fc.features) || !fc.features.length) {
+    throw new Error("没有可导入的要素（需要非空 FeatureCollection）");
+  }
+  const bbox = [Infinity, Infinity, -Infinity, -Infinity];
+  let coordinates = 0;
+  const walk = (value) => {
+    if (!Array.isArray(value)) return;
+    if (typeof value[0] === "number" && typeof value[1] === "number") {
+      const [lng, lat] = value;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) throw new Error("图层包含无效坐标");
+      if (Math.abs(lng) > 180 || Math.abs(lat) > 90) throw new Error("坐标不在经纬度范围内，请先转换为 WGS84/EPSG:4326");
+      bbox[0] = Math.min(bbox[0], lng); bbox[1] = Math.min(bbox[1], lat);
+      bbox[2] = Math.max(bbox[2], lng); bbox[3] = Math.max(bbox[3], lat);
+      coordinates += 1;
+      return;
+    }
+    value.forEach(walk);
+  };
+  for (const feature of fc.features) walk(feature?.geometry?.coordinates);
+  if (!coordinates || bbox[0] === Infinity) throw new Error("要素没有有效几何坐标");
+  return { features: fc.features.length, bbox };
 }
 
 function guessType(geojson) {
@@ -647,7 +675,7 @@ export function rebuildTiles(name = DEFAULT_PROJECT, layerIds = null) {
   return buildProjectTiles(dir, { force: true, layerIds });
 }
 
-/** 批量导入多个图层（逐个导入 + 统一重建瓦片） */
+/** 批量导入多个图层（逐个导入，避免重复重建整套内置图层） */
 export async function importBatch(name, items) {
   const results = {};
   for (const it of items || []) {
@@ -656,8 +684,7 @@ export async function importBatch(name, items) {
     if (!safeId) continue;
     try { results[safeId] = await importLayer(name, safeId, it.geojson); } catch { results[safeId] = { ok: false, error: "导入失败" }; }
   }
-  const tiles = rebuildTiles(name);
-  return { ok: true, layers: results, tiles };
+  return { ok: Object.values(results).every((result) => result?.ok), layers: results };
 }
 
 /** 读取图层原始 GeoJSON */

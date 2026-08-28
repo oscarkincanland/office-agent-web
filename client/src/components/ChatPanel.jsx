@@ -43,6 +43,34 @@ class ErrorBoundary extends React.Component {
 let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
+const MODE_KEY = "oaw_chat_mode";
+
+const MODE_META = {
+  chat: {
+    label: "Chat",
+    shortLabel: "Chat",
+    icon: "search",
+    title: "Chat：只读检索知识库、Skills 和工作区资料，不修改文件",
+    hint: "只读检索",
+    prefix: "[模式: Chat] 只进行知识库、Skills 和工作区资料检索；不要修改文件、执行脚本或生成产物。若用户要求修改，请提醒切换到 Office 或 Agent。\n",
+  },
+  office: {
+    label: "Office",
+    shortLabel: "Office",
+    icon: "doc",
+    title: "Office：通过 Office CLI 精准编辑当前 Office 文档",
+    hint: "精准编辑",
+    prefix: "[模式: Office] 优先使用 officecli 对当前 Office 文档做精准文本/样式修改；不要创建新文件，不要调用通用脚本写入。\n",
+  },
+  agent: {
+    label: "Agent / 创作",
+    shortLabel: "Agent",
+    icon: "penTool",
+    title: "Agent / 创作：调用完整工具链执行分析、修改并生成工作产物",
+    hint: "执行与产出",
+    prefix: "[模式: Agent / 创作] 可以调用完整 skills 和工具执行分析、修改并生成新文件（文档/HTML/PPT 等），产物保存到当前工作区。\n",
+  },
+};
 
 function formatMsgTime(ts) {
   if (!ts) return "";
@@ -106,7 +134,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -122,12 +150,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   const [modelMsg, setModelMsg] = useState("");
   const [modelCounts, setModelCounts] = useState({ available: 0, configured: 0 });
   const [compacting, setCompacting] = useState(false);
-  const [editMode, setEditMode] = useState("office"); // "office" | "agent"：office编辑模式 / 普通agent模式
+  const [editMode, setEditMode] = useState(() => {
+    const saved = localStorage.getItem(MODE_KEY);
+    return MODE_META[saved] ? saved : "chat";
+  }); // chat只读检索 / office精准编辑 / agent完整执行与创作
   const [effort, setEffort] = useState("medium"); // 推理强度 low/medium/high
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
-  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
+  const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
@@ -146,6 +177,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
   const systemEventKeysRef = useRef(new Set());
   const syncedModelRef = useRef("");
+  // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
+  const threadCacheRef = useRef(new Map());
+  const previousThreadRef = useRef(threadId);
+
+  const currentMode = MODE_META[editMode] || MODE_META.chat;
+
+  useEffect(() => {
+    if (MODE_META[editMode]) localStorage.setItem(MODE_KEY, editMode);
+  }, [editMode]);
 
   useEffect(() => {
     const found = parseReferenceMarkers(input);
@@ -173,7 +213,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
   useEffect(() => {
     if (historyMessages) {
       setMessages(historyMessages);
-      setBusy(false);
+      const latestRun = [...historyMessages].reverse().find((item) => item?.runId && item?.runStatus);
+      const active = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
+      setBusy(Boolean(latestRun && active.has(latestRun.runStatus)));
+      setRunState({
+        status: latestRun?.runStatus || "idle",
+        runId: latestRun?.runId || null,
+        artifacts: latestRun?.artifacts || [],
+        references: latestRun?.references || [],
+        task: latestRun?.task || null,
+        mode: latestRun?.task?.mode || "chat",
+      });
+      if (latestRun?.task?.mode && MODE_META[latestRun.task.mode]) setEditMode(latestRun.task.mode);
       stoppingRef.current = false;
       setStopping(false);
       assistantIdRef.current = null;
@@ -185,6 +236,38 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       setInjectedContext([]);
     }
   }, [historyMessages]);
+
+  // 切换子对话时只切换本地视图，不销毁其它会话的消息/运行状态。
+  // 后端 SSE 会随 thread 重连；旧 thread 的任务继续由任务中心跟踪。
+  useEffect(() => {
+    const previous = previousThreadRef.current;
+    if (previous === threadId) return;
+    threadCacheRef.current.set(previous, {
+      messages,
+      runState,
+      busy,
+      editMode,
+    });
+    const cached = threadCacheRef.current.get(threadId);
+    setMessages(cached?.messages || []);
+    setRunState(cached?.runState || { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: editMode });
+    if (cached?.editMode && MODE_META[cached.editMode]) setEditMode(cached.editMode);
+    setBusy(Boolean(cached?.busy));
+    setStopping(false);
+    stoppingRef.current = false;
+    assistantIdRef.current = null;
+    streamBufRef.current = null;
+    streamingMsgIdRef.current = null;
+    queueRef.current = [];
+    setQueuedMessages([]);
+    setInjectedContext([]);
+    setReferences([]);
+    setImages([]);
+    setAttachments([]);
+    setInput("");
+    systemEventKeysRef.current.clear();
+    previousThreadRef.current = threadId;
+  }, [threadId]);
 
   // 新建会话：清空消息
   const handleNewSession = useCallback(() => {
@@ -202,7 +285,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     queueRef.current = [];
     setQueuedMessages([]);
     setInjectedContext([]);
-    setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null });
+    setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: editMode });
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
   }, [onNewSession]);
@@ -226,6 +309,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       });
       setModelMsg("已加入选区上下文，请补充指令后发送");
       window.setTimeout(() => setModelMsg(""), 2600);
+    },
+    focusRun() {
+      const el = bodyRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     },
   }));
 
@@ -315,7 +402,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     const connect = () => {
       if (!mountedRef.current) return;
       
-      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}`);
+      const workspaceQuery = workspace ? `&cwd=${encodeURIComponent(workspace)}` : "";
+      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}`);
       
       es.onopen = () => {
         if (mountedRef.current) setConnected(true);
@@ -346,7 +434,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
     };
-  }, [clientId, threadId]);
+  }, [clientId, threadId, workspace]);
 
   const acceptSystemEvent = useCallback((key) => {
     const value = String(key || "");
@@ -395,7 +483,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             ...m,
             blocks: [...(m.blocks || []), {
               type: "tool",
-              id: newId(),
+              id: data.toolCallId || newId(),
+              toolCallId: data.toolCallId || null,
               name: data.name,
               input: data.input || "",
               output: "",
@@ -412,8 +501,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "tool_output":
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
-          const last = blocks[blocks.length - 1];
-          if (last && last.type === "tool" && !last.done) last.output = (last.output || "") + (data.output || "");
+          const tool = data.toolCallId
+            ? blocks.find((block) => block.type === "tool" && block.id === data.toolCallId)
+            : [...blocks].reverse().find((block) => block.type === "tool" && !block.done && (!data.name || block.name === data.name));
+          if (tool) tool.output = data.replace ? (data.output || "") : (tool.output || "") + (data.output || "");
           return { ...m, blocks };
         });
         break;
@@ -421,12 +512,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "tool_end":
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
-          const last = blocks[blocks.length - 1];
-          if (last && last.type === "tool") {
-            last.done = true;
-            last.isError = !!data.isError;
-            if (data.result) last.result = data.result;
-            if (last.startTime) last.duration = ((Date.now() - last.startTime) / 1000).toFixed(1);
+          const tool = data.toolCallId
+            ? blocks.find((block) => block.type === "tool" && block.id === data.toolCallId)
+            : [...blocks].reverse().find((block) => block.type === "tool" && (!data.name || block.name === data.name));
+          if (tool) {
+            tool.done = true;
+            tool.isError = !!data.isError;
+            if (data.result) tool.result = data.result;
+            if (tool.startTime) tool.duration = ((Date.now() - tool.startTime) / 1000).toFixed(1);
           }
           return { ...m, blocks };
         });
@@ -453,7 +546,29 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       case "message_end":
         break;
       case "agent_retry":
-        pushSystem(`模型连接异常，正在重试：${data.message || "请稍候"}`, `agent_retry:${data.message || "retry"}`);
+        pushSystem(`模型连接异常，正在重试${data.attempt && data.maxAttempts ? `（${data.attempt}/${data.maxAttempts}）` : ""}：${data.message || "请稍候"}`, `agent_retry:${data.source || "agent"}:${data.attempt || "retry"}:${data.message || "retry"}`);
+        break;
+      case "agent_retry_end":
+        if (data.success) pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
+        break;
+      case "capability_plan":
+        {
+          const plan = data.plan || {};
+          const labels = (plan.capabilities || []).map((item) => item.label).filter(Boolean);
+          if (labels.length) pushSystem(`本轮能力已就绪：${labels.join("、")}`, `capability_plan:${data.runId || "current"}`);
+          setRunState((s) => ({ ...s, capabilityPlan: plan }));
+        }
+        break;
+      case "mode_policy":
+        {
+          const mode = MODE_META[data.mode] ? data.mode : "agent";
+          const policyText = data.description || MODE_META[mode].hint;
+          if (acceptSystemEvent(`mode_policy:${data.runId || "current"}:${mode}`)) {
+            pushSystem(`当前模式：${MODE_META[mode].label} · ${policyText}`, `mode_policy:${data.runId || "current"}:${mode}`);
+          }
+          setEditMode(mode);
+          setRunState((s) => ({ ...s, mode, modePolicy: data }));
+        }
         break;
       case "assistant_final":
         if (aid && data.text) patch(aid, (m) => {
@@ -533,7 +648,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         }
         break;
       case "run_finished":
-        setRunState({ status: data.status || "completed", runId: data.runId || null, artifacts: data.artifacts || [], references: data.references || [] });
+        setRunState((s) => ({ ...s, status: data.status || "completed", runId: data.runId || s.runId || null, artifacts: data.artifacts || [], references: data.references || [], verificationStatus: data.verificationStatus || "not_checked" }));
         if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, references: data.references || m.references, runStatus: data.status || "completed" } : m));
         break;
       case "memory_proposal":
@@ -652,9 +767,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
       ? `[当前地图视图: 中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}]\n`
       : "";
     // 按模式注入指令提示
-    const modePrefix = selectedEditMode === "office"
-      ? "[模式: Office编辑] 优先用 officecli 工具对当前文档做精准文本/样式修改，不要创建新文件。\n"
-      : "[模式: 创作] 你可以调用所有 skills 和工具生成新文件（文档/HTML/PPT等），产物保存到当前工作区。\n";
+    const modePrefix = (MODE_META[selectedEditMode] || MODE_META.chat).prefix;
     const contextPrefixText = contextNotes.length
       ? `## 已注入上下文\n${contextNotes.map((note) => note.text).join("\n\n")}\n\n`
       : "";
@@ -692,7 +805,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
     setAttachments([]);
     setInjectedContext([]);
     setBusy(true);
-    setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences });
+    setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
       const res = await fetch("/api/agent/prompt", {
         method: "POST",
@@ -708,7 +821,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
            effort: selectedEffort,
            task: {
              goal: text,
-             mode: selectedEditMode,
+           mode: selectedEditMode,
+             projectId: project?.id || null,
              currentFile: selectedCurrentDoc || null,
             references: sendReferences,
             workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
@@ -891,6 +1005,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
             <div className="chat-hist-list">
               <SessionList
                 sessions={sessions}
+                unreadByThread={unreadByThread}
                 onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
                 onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
@@ -901,15 +1016,23 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
         </div>
         <div className="chat-head">
           <span className="chat-title"><Logo size={16} /> Open Plan</span>
+          <span className={`chat-mode-badge mode-${editMode}`} title={currentMode.title}>
+            <Icon name={currentMode.icon} size={11} /> {currentMode.label}
+          </span>
+          {project?.type && <span className="chat-project-badge" title={`项目分类：${project.type}`}>
+            {project.type}
+          </span>}
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
         <div className="task-status-bar" role="status" aria-live="polite">
           <span className={`task-status-dot ${runState.status}`} />
-          <span>{runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          <span>{runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          <span className="task-status-meta task-mode-meta">{MODE_META[runState.mode || editMode]?.label || currentMode.label}</span>
           {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
           {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
+          {runState.verificationStatus && runState.verificationStatus !== "not_checked" && <span className={`task-status-meta verification-${runState.verificationStatus}`}>产物校验 {runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}</span>}
         </div>
 
         <div className="chat-stream-shell">
@@ -1057,20 +1180,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
               </button>
             </div>
             <span className="ct-sep" />
-            <div className="chat-toolbar-group toolbar-mode-group" title="工作模式：Office 编辑 / 创作生成">
+            <div className="chat-toolbar-group toolbar-mode-group" title={currentMode.title}>
               <span className="chat-toolbar-label">模式</span>
-              <div className="mode-switch" title="办公模式（编辑文档） / 开发模式（调用全部 skills 生成新文件）">
-              <button
-                className={`mode-btn ${editMode === "office" ? "active" : ""}`}
-                onClick={() => setEditMode("office")}
-                title="办公模式：直接编辑文档"
-              ><Icon name="doc" size={13} /></button>
-              <button
-                className={`mode-btn ${editMode === "agent" ? "active" : ""}`}
-                onClick={() => setEditMode("agent")}
-                title="开发模式：生成新文件"
-              ><Icon name="penTool" size={13} /></button>
+              <div className="mode-switch mode-switch-wide">
+              {Object.entries(MODE_META).map(([id, meta]) => (
+                <button
+                  key={id}
+                  className={`mode-btn ${editMode === id ? "active" : ""}`}
+                  onClick={() => setEditMode(id)}
+                  title={meta.title}
+                ><Icon name={meta.icon} size={12} /><span className="mode-label">{meta.shortLabel}</span></button>
+              ))}
               </div>
+              <span className="mode-current-hint">{currentMode.hint}</span>
             </div>
             <span className="ct-sep" />
             {/* 模型选择：图标 + 浮层 */}
@@ -1094,7 +1216,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, onFileChanged
                     <div className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
                       <Icon name="refresh" size={11} /> 重新扫描模型
                     </div>
-                    <div className="ct-model-meta">Pi Runtime：可用 {modelCounts.available || models.length} / 配置目录 {modelCounts.configured || "—"}</div>
+                    <div className="ct-model-meta">Pi Runtime：可用 {modelCounts.available || "—"} / 配置目录 {modelCounts.configured || models.length}</div>
                     {models
                       .filter((m) => !modelQ || m.id.toLowerCase().includes(modelQ.toLowerCase()))
                       .map((m) => (
