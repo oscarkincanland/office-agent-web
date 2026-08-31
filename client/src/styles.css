@@ -2423,12 +2423,22 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex-shrink: 0;
 }
 .memory-proposals { flex-shrink: 0; padding: 7px 10px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--warning) 7%, var(--panel-bg)); }
-.memory-proposals-head { display: flex; align-items: center; gap: 5px; color: var(--warning); font-size: 10px; font-weight: 600; margin-bottom: 5px; }
+.memory-proposals-head { display: flex; align-items: center; justify-content: space-between; gap: 5px; color: var(--warning); font-size: 10px; font-weight: 600; margin-bottom: 5px; }
+.memory-proposals-head > span { display: inline-flex; align-items: center; gap: 5px; }
+.memory-proposals-head select { border: 1px solid var(--border); border-radius: 4px; background: var(--panel-bg); color: var(--muted); font-size: 10px; padding: 2px 4px; }
 .memory-proposal-row { display: flex; align-items: center; gap: 7px; padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); font-size: 10px; }
 .memory-proposal-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .memory-proposal-copy strong { color: var(--text); }
 .memory-proposal-copy span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.memory-proposal-copy small { color: var(--dim); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .memory-proposal-row .btn-xs { flex-shrink: 0; }
+.memory-proposal-actions { display: flex; align-items: center; gap: 3px; flex-shrink: 0; }
+.memory-proposal-edit { width: 100%; min-height: 42px; resize: vertical; border: 1px solid var(--accent); border-radius: 4px; background: var(--panel-bg); color: var(--text); font: inherit; padding: 4px 5px; }
+.memory-proposal-history { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; color: var(--dim); }
+.memory-proposal-history div { display: flex; justify-content: space-between; gap: 8px; }
+.memory-proposal-history b { color: var(--muted); font-weight: 500; }
+.memory-proposal-msg { color: var(--error); font-size: 10px; padding: 3px 0; }
+.memory-proposal-empty { color: var(--dim); font-size: 10px; padding: 4px 0; }
 .memory-layout {
   flex: 1;
   display: flex;

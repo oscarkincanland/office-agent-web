@@ -122,6 +122,16 @@ function validateTarget(workspace, targetPath, { allowWorkspaceRoot = true } = {
   return { root, target, relative: path.relative(root, target).replace(/\\/g, "/") };
 }
 
+export function isProtectedMemoryTarget(workspace, targetPath) {
+  try {
+    const { relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: true });
+    const normalized = relative.toLowerCase();
+    return normalized === "agents.md" || normalized === "memory" || normalized.startsWith("memory/");
+  } catch {
+    return false;
+  }
+}
+
 function stageInfo(runId) {
   const id = safeRunId(runId);
   const runDir = ensureDirectory(path.join(RUNS_DIR, id));
@@ -281,6 +291,11 @@ function eventData({ runId, workspace, target, relative, kind, threadId }) {
 export function stageWrite({ runId, workspace, targetPath, content, threadId = null, kind = "agent", onEvent } = {}) {
   const { root, target, relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: false });
   if (!relative) throw new Error("不能把工作区根目录作为文件写入目标");
+  if (isProtectedMemoryTarget(root, target) && !["attachment", "memory_approval"].includes(kind)) {
+    const error = new Error("长期记忆必须通过 memory_update 建议并经用户审核，不能使用普通文件写入工具");
+    error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+    throw error;
+  }
   const info = stageInfo(runId);
   const data = eventData({ runId: safeRunId(runId), workspace: root, target, relative, kind, threadId });
   let token;
@@ -344,8 +359,13 @@ export function stagedAccess({ runId, workspace, targetPath } = {}) {
   return readable;
 }
 
-export function ensureStagedDirectory({ runId, workspace, targetPath } = {}) {
+export function ensureStagedDirectory({ runId, workspace, targetPath, kind = "write" } = {}) {
   const { root, relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: true });
+  if (isProtectedMemoryTarget(root, path.resolve(root, targetPath)) && !["attachment", "memory_approval"].includes(kind)) {
+    const error = new Error("长期记忆目录不能通过普通文件工具创建");
+    error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+    throw error;
+  }
   const info = stageInfo(runId);
   const directory = path.resolve(info.stagingDir, relative);
   if (!isInside(info.stagingDir, directory)) throw new Error("临时目录路径非法");

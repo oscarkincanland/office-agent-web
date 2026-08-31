@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rollbackRun } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -955,6 +955,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
   };
 
+  const handleMemoryReject = async (id) => {
+    const reason = window.prompt("拒绝原因（可选）", "用户拒绝该记忆建议");
+    if (reason === null) return;
+    try {
+      const d = await rejectMemoryProposal(id, reason);
+      if (d.proposal) setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, memoryProposal: d.proposal, text: "长期记忆建议已拒绝。" } : m));
+    } catch (e) {
+      setMessages((ms) => ms.map((m) => m.memoryProposal?.id === id ? { ...m, text: `记忆拒绝失败：${e.message}` } : m));
+    }
+  };
+
   const injectMapContext = () => {
     if (!mapContext?.center) return;
     const text = `当前地图视图：中心 ${mapContext.center[0]},${mapContext.center[1]}，缩放 ${mapContext.zoom}，可视范围 ${mapContext.bounds?.join(",") || "未知"}。`;
@@ -1052,7 +1063,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -1290,7 +1301,7 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
+function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
@@ -1300,7 +1311,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onRollba
             <div className="memory-proposal-card" role="note">
               <div><strong>{m.memoryProposal.section}</strong>：{m.memoryProposal.content}</div>
               {m.memoryProposal.status === "pending" ? (
-                <button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button>
+                <><button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button><button className="btn-xs" onClick={() => onMemoryReject?.(m.memoryProposal.id)}>拒绝</button></>
               ) : <span className="memory-proposal-state">{m.memoryProposal.status === "approved" ? "✓ 已写入" : "未写入"}</span>}
             </div>
           )}

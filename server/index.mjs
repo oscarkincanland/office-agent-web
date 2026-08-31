@@ -18,6 +18,7 @@ import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor,
 import { createTaskEnvelope, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact } from "./成果管理.mjs";
+import { atomicWriteFile, ensureDirectory } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
@@ -2225,9 +2226,12 @@ function listMemoryFiles() {
 }
 
 function resolveMemoryPath(rel) {
-  if (!rel || rel.includes("..")) return null;
-  if (rel === "AGENTS.md") return getAgentsMd();
-  return path.join(getMemoryDir(), rel);
+  const raw = String(rel || "").replace(/\\/g, "/").trim();
+  if (!raw || path.isAbsolute(raw) || raw.split("/").includes("..")) return null;
+  if (raw === "AGENTS.md") return getAgentsMd();
+  const base = path.resolve(getMemoryDir());
+  const target = path.resolve(base, raw);
+  return target === base || !target.startsWith(base + path.sep) ? null : target;
 }
 
 function startMemoryWatcher() {
@@ -2274,13 +2278,14 @@ app.post("/api/memory/init", (_req, res) => {
     const agentsMd = path.join(ws, "AGENTS.md");
     const memDir = path.join(ws, "memory");
     const memMd = path.join(memDir, "MEMORY.md");
+    ensureDirectory(memDir);
     if (!fs.existsSync(agentsMd)) {
-      fs.writeFileSync(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
+      atomicWriteFile(agentsMd, `# AGENTS.md\n\n## 项目说明\n\n在此添加项目指令和上下文信息。\n\n## 工作偏好\n\n在此添加工作偏好。\n`, "utf8");
     }
-    fs.mkdirSync(memDir, { recursive: true });
     if (!fs.existsSync(memMd)) {
-      fs.writeFileSync(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
+      atomicWriteFile(memMd, `# 记忆索引\n\n这是一个长期记忆文件，记录跨会话的上下文信息。\n\n## 项目信息\n\n## 工作规则\n\n## 用户偏好\n\n## 经验教训\n\n`, "utf8");
     }
+    appendEvent({ type: "memory_initialized", data: { workspace: ws } });
     startMemoryWatcher();
     res.json({ ok: true, files: listMemoryFiles() });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2290,15 +2295,47 @@ app.get("/api/memory/proposals", (req, res) => {
   const threadId = req.query.thread ? agentKey(String(req.query.client || ""), String(req.query.thread)) : "";
   const workspace = req.query.workspace ? normalizeWorkspace(req.query.workspace) : "";
   const status = String(req.query.status || "").trim();
-  const proposals = agentManager.memoryProposals(threadId).filter((item) =>
-    (!workspace || item.workspace === workspace) && (!status || item.status === status));
+  const proposals = agentManager.memoryProposals(threadId, {
+    workspace,
+    projectId: String(req.query.projectId || "").trim(),
+    category: String(req.query.category || "").trim(),
+    status,
+  });
   res.json({ proposals });
 });
 
-app.post("/api/memory/proposals/:id/approve", (req, res) => {
-  const result = agentManager.approveMemoryProposal(req.params.id);
-  if (!result.ok) return res.status(404).json(result);
+function sendMemoryResult(res, result) {
+  if (!result?.ok) return res.status(result?.status || 400).json(result);
   res.json(result);
+}
+
+app.post("/api/memory/proposals/:id/approve", (req, res) => {
+  sendMemoryResult(res, agentManager.approveMemoryProposal(req.params.id, {
+    content: req.body?.content,
+    category: req.body?.category,
+    section: req.body?.section,
+    reviewer: req.body?.reviewer || "user",
+  }));
+});
+
+app.patch("/api/memory/proposals/:id", (req, res) => {
+  sendMemoryResult(res, agentManager.editMemoryProposal(req.params.id, {
+    content: req.body?.content,
+    category: req.body?.category,
+    section: req.body?.section,
+  }));
+});
+
+app.post("/api/memory/proposals/:id/reject", (req, res) => {
+  sendMemoryResult(res, agentManager.rejectMemoryProposal(req.params.id, req.body?.reason));
+});
+
+app.get("/api/memory/proposals/:id/history", (req, res) => {
+  sendMemoryResult(res, agentManager.memoryProposalHistory(req.params.id));
+});
+
+app.post("/api/memory/proposals/:id/merge", (req, res) => {
+  sendMemoryResult(res, agentManager.mergeMemoryProposals(req.params.id, req.body?.sourceIds));
 });
 
 app.get(/^\/api\/memory\/([^/]+)$/, (req, res) => {
@@ -2312,8 +2349,9 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
   const fp = resolveMemoryPath(req.params[0]);
   if (!fp) return res.status(400).json({ error: "invalid path" });
   try {
-    fs.mkdirSync(path.dirname(fp), { recursive: true });
-    fs.writeFileSync(fp, req.body?.content || "", "utf8");
+    ensureDirectory(path.dirname(fp));
+    atomicWriteFile(fp, req.body?.content || "", "utf8");
+    appendEvent({ clientId: String(req.body?.client || "") || null, threadId: String(req.body?.thread || "") || null, type: "memory_file_edited", data: { workspace: getWorkspace(), path: req.params[0], source: "memory-panel" } });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

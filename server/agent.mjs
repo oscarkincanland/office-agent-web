@@ -25,10 +25,20 @@ import {
   acquireWriteLock,
   ensureStagedDirectory,
   holdWorkspaceWriteLock,
+  isProtectedMemoryTarget,
   resolveReadablePath,
   stageWrite,
   stagedAccess,
 } from "./写入协调.mjs";
+import {
+  approveMemoryProposal as approveStoredMemoryProposal,
+  createMemoryProposal,
+  editMemoryProposal as editStoredMemoryProposal,
+  getMemoryProposalHistory,
+  listMemoryProposals as listStoredMemoryProposals,
+  mergeMemoryProposals,
+  rejectMemoryProposal as rejectStoredMemoryProposal,
+} from "./记忆管理.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
 // 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
@@ -216,69 +226,7 @@ function readMemoryContext(workspace = getWorkspace()) {
   ].filter(Boolean).join("\n\n").slice(0, 6000);
 }
 
-/** memory_update 工具：按 section 写入 memory/MEMORY.md（替换同 section，总长控制）——写入当前工作区 */
-function writeMemorySection(section, content, workspace = getWorkspace()) {
-  const ws = normalizeWorkspace(workspace) || normalizeWorkspace(getWorkspace());
-  if (!ws) return { ok: false, error: "工作区不存在或不是文件夹" };
-  const memDir = path.join(ws, "memory");
-  fs.mkdirSync(memDir, { recursive: true });
-  const memFile = path.join(memDir, "MEMORY.md");
-  const maxLen = 1200;
-  const body = String(content || "").trim().slice(0, maxLen);
-  const title = `## ${section}`;
-  let text = "";
-  try {
-    if (fs.existsSync(memFile)) text = fs.readFileSync(memFile, "utf8");
-  } catch {}
-  // 按 ## section 分组：移除旧的同名 section（含标题行 + 后续内容到下一个 ##）
-  const lines = text.split(/\r?\n/);
-  const out = [];
-  let inTarget = false;
-  for (const line of lines) {
-    if (/^##\s/.test(line)) {
-      inTarget = line.trim().replace(/^##\s+/, "") === section;
-      if (!inTarget) out.push(line);
-      continue;
-    }
-    if (!inTarget) out.push(line);
-  }
-  const rest = out.join("\n").trim();
-  const block = `${title}\n${body}`;
-  text = rest ? `${rest}\n\n${block}\n` : `${block}\n`;
-  // 总长控制（约 6000 字符，超出截断最旧部分）
-  if (text.length > 6000) text = text.slice(-6000);
-  atomicWriteFile(memFile, text, "utf8");
-  return { ok: true, section, file: "memory/MEMORY.md" };
-}
-
-const PROPOSALS_FILE = path.join(PROJECT_DIR, ".oaw", "memory-proposals.json");
 const PENDING_ASKS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
-function readMemoryProposals() {
-  try { return JSON.parse(fs.readFileSync(PROPOSALS_FILE, "utf8")); } catch { return []; }
-}
-function saveMemoryProposals(items) {
-  fs.mkdirSync(path.dirname(PROPOSALS_FILE), { recursive: true });
-  atomicWriteJson(PROPOSALS_FILE, items.slice(-200));
-}
-function createMemoryProposal(threadId, section, content, workspace = getWorkspace()) {
-  const items = readMemoryProposals();
-  const proposal = { id: `memory_${crypto.randomUUID()}`, threadId, workspace: normalizeWorkspace(workspace), section, content: String(content || "").trim().slice(0, 1200), status: "pending", createdAt: new Date().toISOString() };
-  items.push(proposal);
-  saveMemoryProposals(items);
-  return proposal;
-}
-function approveMemoryProposal(id) {
-  const items = readMemoryProposals();
-  const proposal = items.find((x) => x.id === id);
-  if (!proposal) return { ok: false, error: "proposal not found" };
-  if (proposal.status !== "approved") {
-    const result = writeMemorySection(proposal.section, proposal.content, proposal.workspace);
-    proposal.status = result.ok ? "approved" : "failed";
-    proposal.approvedAt = new Date().toISOString();
-  }
-  saveMemoryProposals(items);
-  return { ok: proposal.status === "approved", proposal };
-}
 
 function readPendingAsks() {
   try { return JSON.parse(fs.readFileSync(PENDING_ASKS_FILE, "utf8")); } catch { return []; }
@@ -331,18 +279,46 @@ class AgentManager extends EventEmitter {
     return recovered ? { ok: true, mode: "queued", questionId: recovered.id } : { ok: false };
   }
 
-  memoryProposals(threadId = "") {
-    return readMemoryProposals().filter((p) => !threadId || p.threadId === threadId);
+  memoryProposals(threadId = "", filters = {}) {
+    return listStoredMemoryProposals({ ...filters, threadKey: threadId });
   }
 
-  approveMemoryProposal(id) {
-    const result = approveMemoryProposal(id);
+  approveMemoryProposal(id, options = {}) {
+    const result = approveStoredMemoryProposal(id, options);
     const proposal = result.proposal;
-    if (proposal?.threadId) {
-      const entry = this.sessions.get(proposal.threadId);
+    if (proposal?.threadKey) {
+      const entry = this.sessions.get(proposal.threadKey);
       if (entry) emitChannelSafe(entry, "memory_proposal_resolved", { proposal });
     }
     return result;
+  }
+
+  editMemoryProposal(id, options = {}) {
+    const result = editStoredMemoryProposal(id, options);
+    const proposal = result.proposal;
+    if (proposal?.threadKey) {
+      const entry = this.sessions.get(proposal.threadKey);
+      if (entry) emitChannelSafe(entry, "memory_proposal_updated", { proposal });
+    }
+    return result;
+  }
+
+  rejectMemoryProposal(id, reason = "用户拒绝该记忆建议") {
+    const result = rejectStoredMemoryProposal(id, reason);
+    const proposal = result.proposal;
+    if (proposal?.threadKey) {
+      const entry = this.sessions.get(proposal.threadKey);
+      if (entry) emitChannelSafe(entry, "memory_proposal_resolved", { proposal });
+    }
+    return result;
+  }
+
+  mergeMemoryProposals(targetId, sourceIds = []) {
+    return mergeMemoryProposals(targetId, sourceIds);
+  }
+
+  memoryProposalHistory(id) {
+    return getMemoryProposalHistory(id);
   }
 
   pendingQuestions(clientId = "") {
@@ -441,7 +417,7 @@ class AgentManager extends EventEmitter {
     });
     const managedWriteTool = createWriteToolDefinition(workspace, {
       operations: {
-        mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory }),
+        mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
         writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("write"), targetPath: absolutePath, content, onEvent: writeEvent }),
       },
     });
@@ -464,6 +440,14 @@ class AgentManager extends EventEmitter {
       operations: {
         exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
+          const commandText = String(command || "");
+          const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(commandText);
+          if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(commandText)) {
+            const error = new Error("长期记忆不能通过 Bash 直接修改，请使用 memory_update 提交待审核建议");
+            error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+            writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
+            throw error;
+          }
           holdWorkspaceWriteLock({ ...ctx, kind: "bash" });
           writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: String(command || "").slice(0, 500) });
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
@@ -799,27 +783,33 @@ class AgentManager extends EventEmitter {
       name: "memory_update",
       label: "记忆更新",
       description:
-        "提出一条可确认的长期记忆建议。默认不会直接写入；用户确认后由界面批准。section 取值：项目信息 / 工作规则 / 用户偏好 / 经验教训。每条控制在 100 字以内。",
+        "提出一条待审核的长期记忆建议。此工具永远不会直接写入记忆；用户确认后由记忆治理界面批准。分类：项目事实 / 工作规则 / 用户偏好 / 经验教训 / 资料索引。每条控制在 100 字以内。",
       parameters: Type.Object({
         section: Type.Union([
+          Type.Literal("项目事实"),
           Type.Literal("项目信息"),
           Type.Literal("工作规则"),
           Type.Literal("用户偏好"),
           Type.Literal("经验教训"),
+          Type.Literal("资料索引"),
         ]),
         content: Type.String({ description: "要记住的内容（≤100 字）" }),
-        approved: Type.Optional(Type.Boolean({ description: "仅在用户明确确认后传 true" })),
       }),
       execute: async (_toolCallId, params) => {
-        if (!params.approved) {
-          const proposal = createMemoryProposal(clientId, params.section, params.content, entry.workspace);
-          emitChannelSafe(entry, "memory_proposal", { proposal });
-          return { content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户确认后写入。` }], details: { proposal } };
-        }
-        const r = writeMemorySection(params.section, params.content, entry.workspace);
+        const proposal = createMemoryProposal({
+          clientId,
+          threadId: entry.threadId,
+          threadKey: clientId,
+          workspace: entry.workspace,
+          runId: entry.activeRunId,
+          category: params.section,
+          content: params.content,
+          source: { type: "agent", label: "当前 Agent 回合" },
+        });
+        emitChannelSafe(entry, "memory_proposal", { proposal });
         return {
-          content: [{ type: "text", text: `已更新记忆（${params.section}），后续任务会自动读取。${r.ok ? "" : "写入失败"}` }],
-          details: { ...r },
+          content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户审核后写入。` }],
+          details: { proposal },
         };
       },
     });

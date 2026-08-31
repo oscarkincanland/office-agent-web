@@ -20,6 +20,9 @@ const PERSISTED_TYPES = new Set([
   "agent_retry", "agent_retry_end", "agent_error", "assistant_final", "agent_end",
   "aborted", "context_compacted", "file_changed", "agent_summary", "step_updated", "artifact_published", "run_finished",
   "write_started", "write_locked", "write_rejected", "artifact_staged", "artifact_materialized", "write_cleaned",
+  "memory_proposal_created", "memory_proposal_edited", "memory_proposal_rejected", "memory_proposal_approved",
+  "memory_proposal_merged", "memory_proposal_failed", "memory_written",
+  "memory_file_edited", "memory_initialized",
 ]);
 
 const emitter = new EventEmitter();
