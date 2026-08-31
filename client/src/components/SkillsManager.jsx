@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { listSkills, listWorkflows, exportSkill, importSkill, validateWorkflow } from "../api.js";
 import Icon from "./Icon.jsx";
+import RetrievalChat from "./检索对话.jsx";
 
 /**
  * 技能广场（页面中的页面）：
@@ -56,7 +57,7 @@ const WORKFLOWS = [
   },
 ];
 
-export default function SkillsManager({ open, onClose, onAtMention }) {
+export default function SkillsManager({ open, onClose, onAtMention, clientId, workspace = "", project = null, models = [], defaultModel = "", onPromoteToAgent }) {
   const [skills, setSkills] = useState([]);
   const [workflows, setWorkflows] = useState(WORKFLOWS);
   const [query, setQuery] = useState("");
@@ -64,6 +65,8 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
   const [view, setView] = useState("skills"); // "skills" | "workflows"
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatSkill, setChatSkill] = useState(null);
   const fileRef = React.useRef(null);
 
   const refresh = useCallback(async () => {
@@ -137,10 +140,23 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
   const startWorkflow = (wf) => {
     const ats = wf.skills.map((s) => `@${s}`).join(" ");
     const prompt = wf.prompt || `请按「${wf.name}」工作流执行：${(wf.steps || []).join(" → ")}。完成后汇总产物和来源。`;
-    onAtMention(`@工作流[${wf.id}] ${ats} ${prompt}`);
-    onClose();
+    if (onPromoteToAgent) {
+      onPromoteToAgent({ text: prompt, skills: wf.skills, workflowId: wf.id });
+    } else {
+      onAtMention(`@工作流[${wf.id}] ${ats} ${prompt}`);
+      onClose();
+    }
     setMsg(`已启动「${wf.name}」工作流`);
   };
+
+  const askSkill = (skill = null) => {
+    setChatSkill(skill);
+    setChatOpen(true);
+  };
+
+  const skillChatContext = chatSkill
+    ? `当前选中 Skill：${chatSkill.name}\n简介：${chatSkill.description || "无"}\n来源：${chatSkill.source || "未知"}\n路径：${chatSkill.path || "未知"}\n请只解释它的用途、依赖、输入输出和调用前置条件，不执行写入。`
+    : "当前处于 Skills 搜索入口。请搜索并解释本地 Skill 的用途、依赖、输入输出和调用前置条件；只读，不执行写入。";
 
   return (
     <div className="modal-overlay" onClick={onClose} role="presentation">
@@ -162,6 +178,9 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
             onChange={(e) => setQuery(e.target.value)}
             className="modal-search"
           />
+          <button className={`btn-sm${chatOpen ? " active" : ""}`} onClick={() => askSkill(chatSkill)} title="用 Chat 搜索或询问 Skills">
+            <Icon name="comment" size={12} /> Chat
+          </button>
           <button className="btn-sm" onClick={() => fileRef.current?.click()}><Icon name="upload" size={12} /> 导入</button>
           <input
             ref={fileRef}
@@ -174,6 +193,27 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
         </div>
 
         {msg && <div className="modal-msg">{msg}</div>}
+
+        {chatOpen && (
+          <div className="skills-chat-panel">
+            <RetrievalChat
+              scope="skills"
+              title={chatSkill ? `${chatSkill.name} · Skills Chat` : "Skills Chat"}
+              clientId={clientId}
+              workspace={workspace}
+              project={project}
+              models={models}
+              defaultModel={defaultModel}
+              contextLabel={chatSkill?.name || "Skills 搜索"}
+              contextText={skillChatContext}
+              onClose={() => setChatOpen(false)}
+              onPromoteToAgent={(payload) => onPromoteToAgent?.({
+                ...payload,
+                skills: chatSkill ? [chatSkill.name] : (payload.skills || []),
+              })}
+            />
+          </div>
+        )}
 
         {view === "workflows" ? (
           <div className="skills-list">
@@ -225,8 +265,16 @@ export default function SkillsManager({ open, onClose, onAtMention }) {
                       <div className="skill-actions">
                         <button
                           className="btn-xs"
-                          title="插入 @ 到对话，让 agent 调用此技能"
-                          onClick={() => { onAtMention && onAtMention(s.name); onClose(); }}
+                          title="在只读 Chat 中询问此 Skill 的用途和依赖"
+                          onClick={() => askSkill(s)}
+                        ><Icon name="comment" size={11} /> 询问</button>
+                        <button
+                          className="btn-xs"
+                          title="加入 Agent 任务，让 Agent 调用此技能"
+                          onClick={() => {
+                            if (onPromoteToAgent) onPromoteToAgent({ text: `请使用 Skill「${s.name}」完成后续任务，并说明读取来源与产出。`, skills: [s.name] });
+                            else { onAtMention && onAtMention(s.name); onClose(); }
+                          }}
                         ><Icon name="at" size={11} /> 调用</button>
                         <button className="btn-xs" title="导出技能" onClick={() => handleExport(s)}><Icon name="download" size={11} /> 导出</button>
                       </div>

@@ -1070,6 +1070,14 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   border-radius: 8px;
   overflow: hidden;
 }
+.skills-chat-panel {
+  height: 390px;
+  flex: 0 0 390px;
+  border-bottom: 1px solid var(--border);
+  background: var(--body-bg);
+}
+.skills-chat-panel .retrieval-chat-shell,
+.skills-chat-panel .chat { height: 100%; }
 .modal-head {
   display: flex;
   align-items: center;
@@ -2737,6 +2745,60 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .kb-view-toggle { display: flex; gap: 4px; margin-left: auto; }
 .kb-view-toggle .btn-sm.active { background: var(--accent); color: #0e0e1a; }
 .kb-ima-btn.active { background: var(--accent); color: #0e0e1a; }
+.kb-chat-btn.active { background: var(--accent); color: #0e0e1a; }
+.kb-chat-drawer {
+  position: absolute;
+  z-index: 30;
+  top: 58px;
+  right: 16px;
+  width: min(460px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 84px));
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel-bg);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.38);
+}
+.retrieval-chat-shell {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+}
+.retrieval-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2-bg);
+  flex-shrink: 0;
+}
+.retrieval-chat-title { font-size: 12px; font-weight: 700; color: var(--text); }
+.retrieval-chat-subtitle { margin-top: 2px; color: var(--dim); font-size: 10px; }
+.retrieval-chat-shell > .chat { width: 100%; min-width: 0; max-width: none; height: auto; flex: 1; }
+.retrieval-chat-shell .chat-hist { display: none; }
+.retrieval-chat-shell .chat-head { padding: 7px 10px; }
+.retrieval-chat-shell .chat-body { padding: 12px 14px; }
+.retrieval-chat-shell .chat-input { padding: 8px 10px; }
+.retrieval-chat-shell .chat-input textarea { height: 56px; }
+.retrieval-chat-shell .chat-toolbar { padding: 5px 8px; }
+.chat-promote-btn { color: var(--accent); border-color: var(--accent); }
+.agent-capability-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-bg));
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.agent-capability-preview span:first-child { color: var(--accent); font-weight: 700; }
 
 .kb-body {
   flex: 1;

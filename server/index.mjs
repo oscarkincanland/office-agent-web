@@ -15,7 +15,7 @@ import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation } from "./runs.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
-import { createTaskEnvelope, planTaskCapabilities } from "./task.mjs";
+import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, ensureDirectory } from "./持久化工具.mjs";
@@ -1956,12 +1956,19 @@ app.post("/api/agent/prompt", async (req, res) => {
   let preflight = null;
   try {
     resolved = resolveReferences(references, normalizedText, runWorkspace);
-    const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
+    const requestedMode = normalizeTaskMode(taskInput?.mode);
+    const workflowId = requestedMode === "chat" ? null : (taskInput?.workflowId || workflowIdFromText(normalizedText));
     const skills = scanSkills();
     const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
-    const requestedSkills = [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
+    // Chat 允许搜索/阅读 Skills，但不把项目默认 Skills 作为执行依赖，避免只读问答
+    // 因历史配置缺失而被 Agent 预检拦截。
+    const requestedSkills = requestedMode === "chat"
+      ? []
+      : [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
     const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
-    preflight = preflightSkills({ workflowId, requestedSkills, skills });
+    preflight = requestedMode === "chat"
+      ? { ok: true, workflow: null, required: [], checks: [], missing: [], message: "Chat 不执行 Skills 依赖预检" }
+      : preflightSkills({ workflowId, requestedSkills, skills });
     const effectiveTaskInput = {
       ...(taskInput || {}),
       projectId: project?.id || taskInput?.projectId || null,

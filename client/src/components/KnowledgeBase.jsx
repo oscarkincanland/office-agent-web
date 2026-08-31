@@ -3,6 +3,7 @@ import Icon from "./Icon.jsx";
 import MarkdownBody from "./MarkdownBody.jsx";
 import KnowledgeGraph from "./KnowledgeGraph.jsx";
 import MindMap from "./MindMap.jsx";
+import RetrievalChat from "./检索对话.jsx";
 import {
   kbStatus, kbAddRoot, kbRemoveRoot, kbTree, kbSearch, kbGraph, kbDoc,
   kbImaStatus, kbImaBases, kbImaSearch, kbImaDoc,
@@ -18,7 +19,7 @@ import {
  *
  * @ 引用：点击「到对话」→ onExit 退出 kbMode → 延迟插入文本到 ChatPanel
  */
-export default function KnowledgeBase({ onExit, onAtMention }) {
+export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace = "", project = null, models = [], defaultModel = "", onPromoteToAgent }) {
   const [roots, setRoots] = useState([]);
   const [rootIdx, setRootIdx] = useState(0);
   const [treeRoot, setTreeRoot] = useState(null); // 根级 {dirs, files}（懒加载）
@@ -37,6 +38,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   const [backOpen, setBackOpen] = useState({}); // 反链展开上下文
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false); // 导出 Word 按钮的 loading
+  const [chatOpen, setChatOpen] = useState(false);
 
   // Obsidian tabs: {relPath, rootIdx, title}
   const [tabs, setTabs] = useState([]);
@@ -484,12 +486,21 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
   };
 
   const doc = currentDoc;
+  const retrievalReferences = doc ? [{
+    id: `kb_${doc.rootIdx ?? rootIdx}_${doc.relPath}`,
+    kind: "knowledge",
+    target: `${doc.relPath}@${rootName}`,
+    source: `@知识库[${doc.relPath}@${rootName}]`,
+  }] : [];
+  const retrievalContext = doc
+    ? `当前选中文档：${doc.title}\n知识库根目录：${rootName}\n相对路径：${doc.relPath}\n请优先使用知识库只读能力回答，并在回答中标明来源。`
+    : `当前知识库：${rootName}\n当前未选中文档。请先搜索知识库，再回答并标明来源。`;
 
   return (
     <div className="kb">
       {/* 顶栏 */}
       <div className="kb-topbar">
-        <button className="btn-sm" onClick={() => onExit?.(atMarks)} title="返回办公模式（@选中的内容将插入对话）">
+        <button className="btn-sm" onClick={() => onExit?.(atMarks)} title="返回主工作区（@选中的内容将插入对话）">
           <Icon name="back" size={12} /> 返回{atMarks.length > 0 ? ` · @${atMarks.length}项` : ""}
         </button>
         <span className="kb-title">📚 知识库</span>
@@ -513,10 +524,32 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
           <button className={"btn-sm" + (view === "graph" ? " active" : "")} onClick={() => setView("graph")}>思维图谱</button>
           <button className={"btn-sm" + (view === "mind" ? " active" : "")} onClick={() => setView("mind")}>脑图</button>
         </div>
+        <button className={`btn-sm kb-chat-btn${chatOpen ? " active" : ""}`} onClick={() => setChatOpen((value) => !value)} title="打开知识库只读 Chat">
+          <Icon name="comment" size={12} /> Chat
+        </button>
         <button className={"btn-sm kb-ima-btn" + (imaOpen ? " active" : "")}
           onClick={() => { setImaOpen((v) => !v); if (!imaOpen && !imaBases.length) loadImaBases(); }}
           title="IMA 云端知识库"><Icon name="cloud" size={13} /> IMA{imaConfigured ? "" : " ⚠"}</button>
       </div>
+
+      {chatOpen && (
+        <div className="kb-chat-drawer">
+          <RetrievalChat
+            scope="knowledge"
+            title="知识库 Chat"
+            clientId={clientId}
+            workspace={workspace}
+            project={project}
+            models={models}
+            defaultModel={defaultModel}
+            contextLabel={doc ? `${rootName} / ${doc.relPath}` : rootName}
+            contextText={retrievalContext}
+            references={retrievalReferences}
+            onClose={() => setChatOpen(false)}
+            onPromoteToAgent={onPromoteToAgent}
+          />
+        </div>
+      )}
 
       {/* IMA 弹层 */}
       {imaOpen && (
@@ -692,7 +725,7 @@ export default function KnowledgeBase({ onExit, onAtMention }) {
             {doc ? (
               <>
                 <div className="kb-right-section">
-                  <button className="btn-sm primary kb-at-btn" onClick={handleAtMention} title="插入 @ 引用到对话（会返回办公模式）">
+                  <button className="btn-sm primary kb-at-btn" onClick={handleAtMention} title="插入 @ 引用到主 Chat 对话">
                     <Icon name="at" size={13} /> @ 到对话
                   </button>
                 </div>
