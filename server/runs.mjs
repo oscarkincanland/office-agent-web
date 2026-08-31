@@ -4,6 +4,15 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
+import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import {
+  discardStagedRun,
+  ensureRunStaging,
+  publishStagedRun,
+  reclaimStaleWriteLocks,
+  releaseRunLocks,
+  withWriteLock,
+} from "./写入协调.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = path.join(PROJECT_DIR, ".oaw", "runs");
@@ -13,13 +22,12 @@ const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
 const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 
 function ensureDir(dir) {
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return ensureDirectory(dir);
 }
 
 function safeJsonWrite(file, value) {
   ensureDir(path.dirname(file));
-  fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n", "utf8");
+  atomicWriteJson(file, value);
 }
 
 function runFile(id) {
@@ -167,6 +175,7 @@ function updateStepFromEvent(run, type, data = {}) {
 
 export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
+  const staging = ensureRunStaging(id, cwd);
   const before = snapshotWorkspace(cwd);
   copyBeforeBlobs(id, before);
   const run = {
@@ -186,6 +195,7 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
     before,
     artifacts: [],
+    staging: { directory: path.relative(PROJECT_DIR, staging.directory).replace(/\\/g, "/"), status: "open", files: [] },
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     finishedAt: null,
@@ -276,60 +286,95 @@ function copyAfterBlobs(run, artifacts, after) {
 export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null, validations = [] } = {}) {
   const run = loadRun(id);
   if (!run) return null;
-  const after = snapshotWorkspace(run.cwd);
-  const artifacts = changedFiles(run.before, after);
-  copyAfterBlobs(run, artifacts, after);
-  run.after = after;
-  run.artifacts = artifacts;
-  run.status = status;
-  run.error = error;
-  if (sessionId) run.sessionId = sessionId;
-  const validationMap = new Map((Array.isArray(validations) ? validations : []).map((item) => [String(item?.path || "").replace(/\\/g, "/"), item]));
-  for (const artifact of artifacts) {
-    artifact.artifactId = `artifact_${crypto.randomUUID()}`;
-    artifact.runId = run.id;
-    artifact.sessionId = run.sessionId || null;
-    artifact.projectId = run.projectId || null;
-    artifact.validation = validationMap.get(String(artifact.path || "").replace(/\\/g, "/")) || null;
-    artifact.verificationStatus = artifact.validation?.status || "not_checked";
+  const persistWriteEvent = (type, data) => appendEvent({
+    clientId: run.clientId,
+    threadId: run.threadId,
+    runId: run.id,
+    type,
+    data,
+  });
+  let finalStatus = status;
+  let finalError = error;
+  const validationList = Array.isArray(validations) ? validations : [];
+  if (finalStatus === "completed" && validationList.some((item) => item?.status === "failed")) {
+    finalStatus = "failed";
+    finalError ||= "产物校验失败，未发布临时产物";
   }
-  run.validations = Array.isArray(validations) ? validations : [];
-  run.verificationStatus = run.validations.some((item) => item.status === "failed")
-    ? "failed"
-    : run.validations.some((item) => item.status === "warning")
-      ? "warning"
-      : run.validations.length
-        ? "passed"
-        : "not_checked";
-  const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
-  run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
-  run.finishedAt = new Date().toISOString();
-  run.events = Array.isArray(run.events) ? run.events : [];
-  run.steps = Array.isArray(run.steps) ? run.steps : [];
-  for (const step of run.steps) {
-    if (step.status === "running" || step.status === "ready") {
-      step.status = status === "completed" ? "completed" : (status === "cancelled" ? "cancelled" : "failed");
-      step.finishedAt = run.finishedAt;
+  if (finalStatus === "completed") {
+    try {
+      const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent });
+      run.staging = { ...(run.staging || {}), status: "published", files: staged };
+    } catch (publishError) {
+      finalStatus = "failed";
+      finalError = `临时产物发布失败：${publishError?.message || publishError}`;
+      discardStagedRun(run.id, { reason: "publish_failed", onEvent: persistWriteEvent });
+      run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
     }
+  } else {
+    discardStagedRun(run.id, { reason: finalStatus || "run_not_completed", onEvent: persistWriteEvent });
+    run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
   }
-  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
-  run.eventSeq = seq;
-  run.events.push({ seq, type: "run_finished", data: { status, artifacts: artifacts.length, verificationStatus: run.verificationStatus }, at: run.finishedAt });
-  const saved = saveRun(run);
-  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status, artifacts: artifacts.length, verificationStatus: run.verificationStatus } });
-  return saved;
+  try {
+    const after = snapshotWorkspace(run.cwd);
+    const artifacts = changedFiles(run.before, after);
+    copyAfterBlobs(run, artifacts, after);
+    run.after = after;
+    run.artifacts = artifacts;
+    run.status = finalStatus;
+    run.error = finalError;
+    if (sessionId) run.sessionId = sessionId;
+    const validationMap = new Map(validationList.map((item) => [String(item?.path || "").replace(/\\/g, "/"), item]));
+    for (const artifact of artifacts) {
+      artifact.artifactId = `artifact_${crypto.randomUUID()}`;
+      artifact.runId = run.id;
+      artifact.sessionId = run.sessionId || null;
+      artifact.projectId = run.projectId || null;
+      artifact.validation = validationMap.get(String(artifact.path || "").replace(/\\/g, "/")) || null;
+      artifact.verificationStatus = artifact.validation?.status || "not_checked";
+    }
+    run.validations = validationList;
+    run.verificationStatus = run.validations.some((item) => item.status === "failed")
+      ? "failed"
+      : run.validations.some((item) => item.status === "warning")
+        ? "warning"
+        : run.validations.length
+          ? "passed"
+          : "not_checked";
+    const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
+    run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
+    run.finishedAt = new Date().toISOString();
+    run.events = Array.isArray(run.events) ? run.events : [];
+    run.steps = Array.isArray(run.steps) ? run.steps : [];
+    for (const step of run.steps) {
+      if (step.status === "running" || step.status === "ready") {
+        step.status = finalStatus === "completed" ? "completed" : (finalStatus === "cancelled" ? "cancelled" : "failed");
+        step.finishedAt = run.finishedAt;
+      }
+    }
+    const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+    run.eventSeq = seq;
+    run.events.push({ seq, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus }, at: run.finishedAt });
+    const saved = saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus } });
+    return saved;
+  } finally {
+    releaseRunLocks(run.id);
+  }
 }
 
 /**
  * 服务重启后，磁盘上仍为活动态的 Run 不可能继续持有旧进程内存，
  * 先标记为 recovering，交给任务中心显式继续，避免假装仍在执行。
  */
-export function recoverActiveRuns() {
+export function recoverActiveRuns({ onlyIds = null } = {}) {
   ensureDir(RUNS_DIR);
+  reclaimStaleWriteLocks();
+  const allowList = Array.isArray(onlyIds) ? new Set(onlyIds.map(String)) : null;
   const recovered = [];
   for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
     const run = loadRun(path.basename(name, ".json"));
     if (!run || !ACTIVE_RUN_STATUSES.has(run.status) || run.status === "recovering") continue;
+    if (allowList && !allowList.has(run.id)) continue;
     run.status = "recovering";
     run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };
     run.events = Array.isArray(run.events) ? run.events : [];
@@ -396,6 +441,16 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", limit = 50 }
 export function rollbackRun(id, paths = []) {
   const run = loadRun(id);
   if (!run || run.status === "running") return { ok: false, error: "run not finished" };
+  let lock;
+  try {
+    lock = withWriteLock({ workspace: run.cwd, targetPath: run.cwd, runId: `rollback_${run.id}`, threadId: run.threadId, kind: "rollback" }, () => rollbackRunUnlocked(run, paths));
+    return lock;
+  } catch (error) {
+    return { ok: false, code: error?.code || "ROLLBACK_FAILED", error: error?.message || String(error) };
+  }
+}
+
+function rollbackRunUnlocked(run, paths = []) {
   const wanted = new Set(Array.isArray(paths) && paths.length ? paths : run.artifacts.map((a) => a.path));
   const beforeDir = path.join(RUNS_DIR, run.id, "before");
   const root = path.resolve(run.cwd);

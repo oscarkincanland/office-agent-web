@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import { appendJsonLine, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EVENT_DIR = path.join(PROJECT_DIR, ".oaw", "events");
@@ -18,6 +19,7 @@ const PERSISTED_TYPES = new Set([
   "prompt", "capability_plan", "mode_policy", "tool_start", "tool_end", "ask_user",
   "agent_retry", "agent_retry_end", "agent_error", "assistant_final", "agent_end",
   "aborted", "context_compacted", "file_changed", "agent_summary", "step_updated", "artifact_published", "run_finished",
+  "write_started", "write_locked", "write_rejected", "artifact_staged", "artifact_materialized", "write_cleaned",
 ]);
 
 const emitter = new EventEmitter();
@@ -27,7 +29,7 @@ let nextSeq = 0;
 let events = [];
 
 function ensureStore() {
-  fs.mkdirSync(EVENT_DIR, { recursive: true });
+  ensureDirectory(EVENT_DIR);
 }
 
 function safeJson(value) {
@@ -78,7 +80,7 @@ export function appendEvent({ clientId = null, threadId = null, runId = null, ty
     data: safeJson(data),
   };
   try {
-    fs.appendFileSync(EVENT_FILE, JSON.stringify(event) + "\n", "utf8");
+    appendJsonLine(EVENT_FILE, event);
   } catch (error) {
     // Store 写入失败不能阻断 Agent 当前回合；内存事件仍让当前 UI 可见。
     console.warn("[events] 持久化事件失败：", error?.message || error);
@@ -129,7 +131,7 @@ export function markReadCursor(clientId = "", seq = 0) {
   const cursors = readCursors();
   const requested = Math.max(0, Number(seq) || 0);
   cursors[clientId] = Math.max(Number(cursors[clientId] || 0), Math.min(requested, nextSeq));
-  fs.writeFileSync(READ_CURSOR_FILE, JSON.stringify(cursors, null, 2) + "\n", "utf8");
+  atomicWriteJson(READ_CURSOR_FILE, cursors);
   return { ok: true, clientId, seq: cursors[clientId] };
 }
 

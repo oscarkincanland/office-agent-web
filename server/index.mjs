@@ -16,11 +16,12 @@ import { parseReferences, resolveReferences, readReference, contextSummary } fro
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation } from "./runs.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, planTaskCapabilities } from "./task.mjs";
-import { validateArtifacts } from "./产物验证.mjs";
+import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact } from "./成果管理.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
+import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -32,6 +33,10 @@ const AGENT_DIAGNOSTIC_LOG = path.join(process.env.TEMP || PROJECT_DIR, "open-pl
 
 const recoveredRunIds = recoverActiveRuns();
 if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
+
+function validateStagedArtifacts(runId) {
+  return listStagedFilesForValidation(runId).map((item) => validateArtifactFile(item.file, item.root, item.path));
+}
 
 app.use(express.json({ limit: "256mb" }));
 
@@ -1842,16 +1847,6 @@ app.post("/api/agent/prompt", async (req, res) => {
   let task = null;
   let capabilityPlan = null;
   let preflight = null;
-  // 保存上传的附件到工作区（agent 可读取）
-  if (Array.isArray(attachments) && attachments.length) {
-    for (const att of attachments) {
-      try {
-        const safe = safeName(att.name);
-        if (!safe) continue;
-        fs.writeFileSync(path.join(runWorkspace, safe), Buffer.from(att.data, "base64"));
-      } catch {}
-    }
-  }
   try {
     resolved = resolveReferences(references, normalizedText, runWorkspace);
     const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
@@ -1889,6 +1884,22 @@ app.post("/api/agent/prompt", async (req, res) => {
     });
     const project = projectManager.getProjectForWorkspace(runWorkspace);
     run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan });
+    // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
+    if (Array.isArray(attachments) && attachments.length) {
+      for (const att of attachments) {
+        const safe = safeName(att.name);
+        if (!safe) continue;
+        stageWrite({
+          runId: run.id,
+          workspace: runWorkspace,
+          targetPath: path.join(runWorkspace, safe),
+          content: Buffer.from(att.data, "base64"),
+          threadId: thread || null,
+          kind: "attachment",
+          onEvent: (type, data) => emitChannel(entry, type, data),
+        });
+      }
+    }
     recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
     recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
     emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
@@ -1911,6 +1922,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     // 出错也检测产物（agent 可能已部分写入文件）
     const changed = await waitForFlush(before, runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
+    const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length) {
       if (entry) {
         emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
@@ -1924,7 +1936,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
     if (run) {
       const cancelled = getRun(run.id)?.status === "cancel_requested";
-      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations });
+      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations] });
       if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -1934,25 +1946,28 @@ app.post("/api/agent/prompt", async (req, res) => {
   // Poll until the workspace snapshot stabilizes, then diff.
   const changed = await waitForFlush(before, runWorkspace);
   const validations = validateArtifacts(changed, runWorkspace);
-  const verificationNote = validations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : validations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
+  const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
+  const allValidations = [...validations, ...stagedValidations];
+  const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
   const cancelled = run && getRun(run.id)?.status === "cancel_requested";
   const finalStatus = cancelled ? "cancelled" : "completed";
-  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length ? `本轮对话完成，共处理 ${changed.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations }) : null;
+  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length || stagedValidations.length ? `本轮对话完成，共处理 ${changed.length + stagedValidations.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations }) : null;
   if (entry) {
-    if (changed.length) {
-      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
+    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
+    if (productPaths.length) {
+      emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
-        products: changed,
-        summary: `本轮对话完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        products: productPaths,
+        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
         runId: run?.id || null,
         artifacts: completed?.artifacts || [],
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
   }
   // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
-  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], validations, verificationStatus: completed?.verificationStatus || "not_checked", status: finalStatus, task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
+  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], validations: allValidations, verificationStatus: completed?.verificationStatus || "not_checked", status: completed?.status || finalStatus, task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
 });
 
 const CONTINUABLE_RUN_STATUSES = new Set(["recovering", "failed", "cancelled", "aborted"]);
@@ -1987,25 +2002,28 @@ async function executeContinuation({ key, entry, run, task, references, workflow
     await agentManager.promptWithContext(key, continuationPrompt(task, task.recoveryAction), [], undefined, references, { runId: run.id, task, workflow });
     const changed = await waitForFlush(before, entry.workspace || run.cwd || getWorkspace());
     const validations = validateArtifacts(changed, entry.workspace || run.cwd || getWorkspace());
+    const stagedValidations = validateStagedArtifacts(run.id);
+    const allValidations = [...validations, ...stagedValidations];
     const cancelled = getRun(run.id)?.status === "cancel_requested";
     const status = cancelled ? "cancelled" : "completed";
     const finished = finishRun(run.id, {
       status,
       sessionId: entry.session?.sessionId || run.sessionId,
       summary: status === "cancelled" ? "恢复任务已取消" : (changed.length ? `恢复任务完成，共处理 ${changed.length} 个文件` : "恢复任务完成，未检测到文件变更"),
-      validations,
+      validations: allValidations,
     });
-    if (changed.length) {
-      emitChannel(entry, "file_changed", { files: changed, runId: run.id });
+    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
+    if (productPaths.length) {
+      emitChannel(entry, "file_changed", { files: productPaths, runId: run.id });
       emitChannel(entry, "agent_summary", {
-        products: changed,
-        summary: `恢复任务完成，共处理 ${changed.length} 个文件：${changed.join(", ")}`,
+        products: productPaths,
+        summary: `恢复任务完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
         runId: run.id,
         artifacts: finished?.artifacts || [],
         references,
       });
     }
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status, verificationStatus: finished?.verificationStatus || "not_checked" });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked" });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";

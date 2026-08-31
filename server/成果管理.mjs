@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getRun } from "./runs.mjs";
 import { appendEvent } from "./事件存储.mjs";
 import { normalizeWorkspace } from "./workspace.mjs";
+import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const PUBLISHED_FILE = path.join(PROJECT_DIR, ".oaw", "artifacts.json");
@@ -19,8 +20,8 @@ function readPublished() {
 }
 
 function savePublished(items) {
-  fs.mkdirSync(path.dirname(PUBLISHED_FILE), { recursive: true });
-  fs.writeFileSync(PUBLISHED_FILE, JSON.stringify(items.slice(-1000), null, 2) + "\n", "utf8");
+  ensureDirectory(path.dirname(PUBLISHED_FILE));
+  atomicWriteJson(PUBLISHED_FILE, items.slice(-1000));
 }
 
 function isInside(root, target) {

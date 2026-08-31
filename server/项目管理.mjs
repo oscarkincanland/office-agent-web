@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { PROJECT_DIR, WORKSPACE_DIR, normalizeWorkspace } from "./workspace.mjs";
+import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 
 const PROJECTS_FILE = path.join(PROJECT_DIR, ".oaw", "projects.json");
 const PROJECT_TYPES = ["交通规划", "GIS / 地图分析", "调研报告", "Office 文档", "数据分析", "综合项目", "资料库"];
@@ -19,8 +20,8 @@ function readProjects() {
 }
 
 function saveProjects(projects) {
-  fs.mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true });
-  fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2) + "\n", "utf8");
+  ensureDirectory(path.dirname(PROJECTS_FILE));
+  atomicWriteJson(PROJECTS_FILE, projects);
 }
 
 function projectIdFor(rootPath) {
