@@ -4,6 +4,11 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import {
   createAgentSession,
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createLocalBashOperations,
+  createReadToolDefinition,
+  createWriteToolDefinition,
   DefaultResourceLoader,
   defineTool,
   ModelRuntime,
@@ -15,6 +20,15 @@ import { resolveReferences, readReference, contextSummary } from "./context.mjs"
 import { recordRunEvent } from "./runs.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 import { createDemoAnalysis } from "./map-analysis.mjs";
+import { atomicWriteFile, atomicWriteJson } from "./持久化工具.mjs";
+import {
+  acquireWriteLock,
+  ensureStagedDirectory,
+  holdWorkspaceWriteLock,
+  resolveReadablePath,
+  stageWrite,
+  stagedAccess,
+} from "./写入协调.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
 // 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
@@ -136,14 +150,14 @@ function localCredentialStore() {
       const next = await fn(auth[provider]);
       if (next === undefined) return auth[provider];
       auth[provider] = next;
-      fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n", "utf8");
+      atomicWriteJson(authPath, auth);
       return next;
     },
     delete: async (provider) => {
       const authPath = path.join(AGENT_DIR, "auth.json");
       const auth = readJsonFile(authPath, {});
       delete auth[provider];
-      fs.writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n", "utf8");
+      atomicWriteJson(authPath, auth);
     },
   };
 }
@@ -233,7 +247,7 @@ function writeMemorySection(section, content, workspace = getWorkspace()) {
   text = rest ? `${rest}\n\n${block}\n` : `${block}\n`;
   // 总长控制（约 6000 字符，超出截断最旧部分）
   if (text.length > 6000) text = text.slice(-6000);
-  fs.writeFileSync(memFile, text, "utf8");
+  atomicWriteFile(memFile, text, "utf8");
   return { ok: true, section, file: "memory/MEMORY.md" };
 }
 
@@ -244,7 +258,7 @@ function readMemoryProposals() {
 }
 function saveMemoryProposals(items) {
   fs.mkdirSync(path.dirname(PROPOSALS_FILE), { recursive: true });
-  fs.writeFileSync(PROPOSALS_FILE, JSON.stringify(items.slice(-200), null, 2) + "\n", "utf8");
+  atomicWriteJson(PROPOSALS_FILE, items.slice(-200));
 }
 function createMemoryProposal(threadId, section, content, workspace = getWorkspace()) {
   const items = readMemoryProposals();
@@ -271,7 +285,7 @@ function readPendingAsks() {
 }
 function savePendingAsks(items) {
   fs.mkdirSync(path.dirname(PENDING_ASKS_FILE), { recursive: true });
-  fs.writeFileSync(PENDING_ASKS_FILE, JSON.stringify(items.slice(-100), null, 2) + "\n", "utf8");
+  atomicWriteJson(PENDING_ASKS_FILE, items.slice(-100));
 }
 function persistPendingAsk(item) {
   const items = readPendingAsks().filter((x) => x.clientId !== item.clientId || x.status !== "pending");
@@ -405,6 +419,64 @@ class AgentManager extends EventEmitter {
     });
     await loader.reload();
 
+    const activeWriteContext = (kind = "agent") => {
+      const runId = entry?.activeRunId;
+      if (!runId) {
+        const error = new Error("写入操作必须绑定当前 Run");
+        error.code = "RUN_REQUIRED";
+        throw error;
+      }
+      return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
+    };
+    const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+    const managedReadTool = createReadToolDefinition(workspace, {
+      operations: {
+        readFile: async (absolutePath) => fs.promises.readFile(resolveReadablePath({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath })),
+        access: async (absolutePath) => fs.promises.access(stagedAccess({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath }), fs.constants.R_OK),
+        detectImageMimeType: async (absolutePath) => {
+          const ext = path.extname(absolutePath).toLowerCase();
+          return ({ ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" })[ext] || null;
+        },
+      },
+    });
+    const managedWriteTool = createWriteToolDefinition(workspace, {
+      operations: {
+        mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory }),
+        writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("write"), targetPath: absolutePath, content, onEvent: writeEvent }),
+      },
+    });
+    const managedEditTool = createEditToolDefinition(workspace, {
+      operations: {
+        access: async (absolutePath) => {
+          const ctx = activeWriteContext("edit");
+          acquireWriteLock({ ...ctx, targetPath: absolutePath, kind: "edit" });
+          return fs.promises.access(resolveReadablePath({ ...ctx, targetPath: absolutePath }), fs.constants.R_OK);
+        },
+        readFile: async (absolutePath) => {
+          const ctx = activeWriteContext("edit");
+          return fs.promises.readFile(resolveReadablePath({ ...ctx, targetPath: absolutePath }));
+        },
+        writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent }),
+      },
+    });
+    const localBash = createLocalBashOperations();
+    const managedBashTool = createBashToolDefinition(workspace, {
+      operations: {
+        exec: async (command, cwd, options) => {
+          const ctx = activeWriteContext("bash");
+          holdWorkspaceWriteLock({ ...ctx, kind: "bash" });
+          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: String(command || "").slice(0, 500) });
+          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
+          try {
+            return await localBash.exec(command, cwd, options);
+          } catch (error) {
+            writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
+            throw error;
+          }
+        },
+      },
+    });
+
     const officeTool = defineTool({
       name: "officecli",
       label: "Office CLI",
@@ -416,6 +488,10 @@ class AgentManager extends EventEmitter {
       execute: async (_toolCallId, params) => {
         const { runOfficecli } = await import("./office.mjs");
         const args = parseArgs(params.args);
+        const ctx = activeWriteContext("officecli");
+        holdWorkspaceWriteLock({ ...ctx, kind: "officecli" });
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli", command: String(params.args || "").slice(0, 500) });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli" });
         const r = await runOfficecli(args, { cwd: entry.workspace });
         const body = r.stdout + (r.stderr || "");
         const hint = entry.currentFile
@@ -565,6 +641,10 @@ class AgentManager extends EventEmitter {
         const fs = (await import("node:fs")).default;
         const path = (await import("node:path")).default;
         const stylePath = path.join(dir, "style.json");
+        const ctx = activeWriteContext("map_edit");
+        holdWorkspaceWriteLock({ ...ctx, kind: "map_edit" });
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
         const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
         const layerId = String(params.layerId || "");
         if (!layerId) return { content: [{ type: "text", text: "layerId 必填" }], details: {} };
@@ -597,7 +677,7 @@ class AgentManager extends EventEmitter {
           base.paint = paint || defs[params.type] || defs.fill;
           style.layers.push(base);
         }
-        fs.writeFileSync(stylePath, JSON.stringify(style, null, 2));
+        atomicWriteFile(stylePath, JSON.stringify(style, null, 2), "utf8");
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/style.json`] });
         const vis = style.layers.find((x) => x.id === layerId)?.layout?.visibility;
         return {
@@ -630,6 +710,10 @@ class AgentManager extends EventEmitter {
         if (!fs.existsSync(fp)) {
           return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
         }
+        const ctx = activeWriteContext("map_import");
+        holdWorkspaceWriteLock({ ...ctx, kind: "map_import" });
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
         let geojson;
         try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
           return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
@@ -682,6 +766,10 @@ class AgentManager extends EventEmitter {
         const action = entry.lastMapAnalysis;
         if (!action?.geojson) return { content: [{ type: "text", text: "当前没有可保存的地图分析结果，请先生成热力图或等时圈。" }], details: {} };
         const map = await import("./map.mjs");
+        const ctx = activeWriteContext("map_save_analysis");
+        holdWorkspaceWriteLock({ ...ctx, kind: "map_save_analysis" });
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
         const project = params.project || action.project || map.DEFAULT_PROJECT;
         const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
         await map.importLayer(project, layerId, action.geojson);
@@ -791,7 +879,7 @@ class AgentManager extends EventEmitter {
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
+      customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
       tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
       sessionManager,
     });
@@ -1179,7 +1267,7 @@ class AgentManager extends EventEmitter {
         "",
         "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
       ].join("\n");
-      fs.writeFileSync(path.join(ws, ".agent-context.md"), ctx, "utf8");
+      atomicWriteFile(path.join(ws, ".agent-context.md"), ctx, "utf8");
     } catch {}
   }
 
@@ -1303,7 +1391,7 @@ export async function setApiKey(provider, key) {
   const auth = listAuth();
   auth[provider] = { type: "api_key", key: String(key).trim() };
   fs.mkdirSync(AGENT_DIR, { recursive: true });
-  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  atomicWriteJson(authFilePath(), auth);
   try {
     const mr = await agentManager.modelRuntime();
     await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
@@ -1315,7 +1403,7 @@ export async function setApiKey(provider, key) {
 export async function removeApiKey(provider) {
   const auth = listAuth();
   if (auth[provider]) delete auth[provider];
-  fs.writeFileSync(authFilePath(), JSON.stringify(auth, null, 2));
+  atomicWriteJson(authFilePath(), auth);
   return { ok: true, providers: Object.keys(auth) };
 }
 
@@ -1345,7 +1433,7 @@ export function parseArgs(input) {
   try {
     const fp = path.join(PROJECT_DIR, ".agent-context.md");
     if (!fs.existsSync(fp)) {
-      fs.writeFileSync(fp, "# Office Agent Workspace\n\n- 当前没有打开文档\n- 当前工作文件: (无)\n", "utf8");
+      atomicWriteFile(fp, "# Office Agent Workspace\n\n- 当前没有打开文档\n- 当前工作文件: (无)\n", "utf8");
     }
   } catch {}
 })();

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { atomicWriteJson } from "./持久化工具.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PROJECT_DIR = path.resolve(__dirname, "..");
@@ -88,7 +89,7 @@ export function setWorkspace(dir) {
     let prev = {};
     try { prev = fs.existsSync(WS_STATE_FILE) ? JSON.parse(fs.readFileSync(WS_STATE_FILE, "utf8")) : {}; } catch {}
     prev.workspace = real;
-    try { fs.writeFileSync(WS_STATE_FILE, JSON.stringify(prev, null, 2), "utf8"); } catch {}
+    try { atomicWriteJson(WS_STATE_FILE, prev); } catch {}
     return true;
   } catch {
     return false;
@@ -113,7 +114,7 @@ export function hideWorkspace(dir) {
     const d = fs.existsSync(dir) ? fs.realpathSync(dir) : String(dir);
     if (!list.includes(d)) list.push(d);
     state.hiddenWorkspaces = list;
-    fs.writeFileSync(WS_STATE_FILE, JSON.stringify(state, null, 2), "utf8");
+    atomicWriteJson(WS_STATE_FILE, state);
     return true;
   } catch {
     return false;
@@ -155,7 +156,7 @@ export function addFileRoot(dir, label = "") {
     if (existing) return { ok: true, root: { ...existing, path: real }, roots: listFileRoots() };
     const id = crypto.createHash("sha1").update(real).digest("hex").slice(0, 12);
     const root = { id, path: real, label: String(label || path.basename(real) || real), created: new Date().toISOString() };
-    fs.writeFileSync(ROOTS_STATE_FILE, JSON.stringify([...roots, root], null, 2) + "\n", "utf8");
+    atomicWriteJson(ROOTS_STATE_FILE, [...roots, root]);
     return { ok: true, root, roots: listFileRoots() };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -166,7 +167,7 @@ export function removeFileRoot(id) {
   const roots = readFileRoots();
   const next = roots.filter((r) => r.id !== String(id || ""));
   if (next.length === roots.length) return { ok: false, error: "root not found" };
-  fs.writeFileSync(ROOTS_STATE_FILE, JSON.stringify(next, null, 2) + "\n", "utf8");
+  atomicWriteJson(ROOTS_STATE_FILE, next);
   return { ok: true, roots: listFileRoots() };
 }
 
