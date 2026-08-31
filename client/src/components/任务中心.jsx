@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { cancelRun, getRun, listRuns, resumeRun, retryRun } from "../api.js";
+import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import Icon from "./Icon.jsx";
 
 const ACTIVE = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
@@ -93,7 +93,11 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
     const load = async () => {
       try {
         const result = await getRun(selectedId);
-        if (!cancelled) setDetail(result.run || result);
+        let nextRun = result.run || result;
+        if (nextRun?.status === "completed" && nextRun.artifacts?.length && !nextRun.acceptance) {
+          try { nextRun = (await getRunAcceptance(selectedId)).run || nextRun; } catch {}
+        }
+        if (!cancelled) setDetail(nextRun);
       } catch (e) {
         if (!cancelled) setError(e.message || "任务详情加载失败");
       }
@@ -227,7 +231,10 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                   </div>
                 ))}
               </div>
-              {!!detail.artifacts?.length && <div className="task-center-artifacts">产物 {detail.artifacts.length} 个</div>}
+              {!!detail.artifacts?.length && <div className="task-center-artifacts">
+                <div>产物 {detail.artifacts.length} 个 · 成果验收 {detail.acceptanceStatus === "passed" ? "通过" : detail.acceptanceStatus === "manual_review" ? "待人工确认" : detail.acceptanceStatus === "failed" ? "失败" : "未检查"}</div>
+                {detail.acceptance?.artifacts?.map((item) => <div className="task-center-artifact-check" key={item.path}><span>{String(item.path || "").split(/[\\/]/).pop()}</span><small>{item.status === "passed" ? "通过" : item.status === "manual_review" ? "待确认" : item.status === "warning" ? "有提示" : item.status === "failed" ? "失败" : "未检查"}</small></div>)}
+              </div>}
               <div className="task-center-events">
                 {(detail.events || []).slice(-8).reverse().map((event, index) => <div key={`${event.seq || "event"}-${index}`}><span>{event.type}</span><small>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</small></div>)}
               </div>

@@ -374,6 +374,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .task-center-step.failed > span:first-child { color: var(--danger); }
 .task-center-step small { grid-column: 2; color: var(--danger); font-size: 9px; word-break: break-word; }
 .task-center-artifacts { padding: 8px 0; color: var(--success); font-size: 10px; }
+.task-center-artifact-check { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--muted); }
+.task-center-artifact-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-center-artifact-check small { color: var(--dim); flex-shrink: 0; }
 .task-center-events { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
 .task-center-events > div { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; color: var(--muted); font-size: 9px; }
 .task-center-events small { color: var(--dim); }
@@ -4816,7 +4819,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .artifact-status { flex-shrink: 0; color: var(--muted); font-size: 9px; }
 .artifact-status.published { color: var(--success); }
 .artifact-status.failed { color: var(--error); }
+.artifact-status.ready { color: var(--success); }
+.artifact-status.pending { color: var(--warning, #b7791f); }
 .artifact-publish-btn { flex-shrink: 0; }
+.artifact-acceptance-details { flex-basis: 100%; margin: 2px 0 0 22px; color: var(--dim); font-size: 9px; line-height: 1.6; }
+.artifact-acceptance-details summary { color: var(--muted); cursor: pointer; }
+.artifact-history { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.artifact-history-title { color: var(--muted); font-size: 10px; margin-bottom: 6px; }
+.artifact-history-row { display: flex; align-items: center; gap: 6px; min-height: 28px; border-bottom: 1px solid var(--line); font-size: 10px; }
+.artifact-history-row .file-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifact-history-meta { color: var(--dim); white-space: nowrap; }
 
 .sidebar-section-head {
   display: flex;
