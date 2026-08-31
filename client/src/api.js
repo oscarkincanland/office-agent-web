@@ -90,7 +90,11 @@ export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
 export const listConnectors = () => api("/api/connectors");
 export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
-export const approveMemoryProposal = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify({}) });
+export const approveMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify(payload || {}) });
+export const editMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const rejectMemoryProposal = (id, reason = "用户拒绝该记忆建议") => api(`/api/memory/proposals/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+export const mergeMemoryProposals = (targetId, sourceIds = []) => api(`/api/memory/proposals/${encodeURIComponent(targetId)}/merge`, { method: "POST", body: JSON.stringify({ sourceIds }) });
+export const memoryProposalHistory = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/history`);
 export const listMemoryProposals = (workspace = "", status = "") => {
   const params = new URLSearchParams();
   if (workspace) params.set("workspace", workspace);

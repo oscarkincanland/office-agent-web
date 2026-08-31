@@ -327,7 +327,7 @@ export default function SettingsPanel({ onReset }) {
       <div className="sp-section">
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>
         <button className="sp-danger" onClick={resetAll}>重置界面状态与设置</button>
-        <div className="sp-note">版本 {version || "v0.8.16"}</div>
+        <div className="sp-note">版本 {version || "v0.9.28"}</div>
       </div>
     </div>
   );
