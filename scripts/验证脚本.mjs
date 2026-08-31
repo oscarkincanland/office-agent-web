@@ -178,8 +178,12 @@ async function smokeTest() {
       return { action, status: res.status, body: await res.json().catch(() => ({})) };
     }));
     const publish = await fetch(`http://localhost:${PORT}/api/runs/run-not-found/artifacts/artifact-no/publish`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const acceptance = await fetch(`http://localhost:${PORT}/api/runs/run-not-found/acceptance`);
+    const acceptanceBody = await acceptance.json().catch(() => ({}));
+    const rollbackPublication = await fetch(`http://localhost:${PORT}/api/artifacts/publication-no/rollback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const rollbackPublicationBody = await rollbackPublication.json().catch(() => ({}));
     const publishBody = await publish.json().catch(() => ({}));
-    if (checks.every((item) => item.status === 404 && item.body?.error === "run not found") && publish.status === 404 && publishBody.error === "run not found") ok("任务取消/继续/重试/成果固定接口错误结构");
+    if (checks.every((item) => item.status === 404 && item.body?.error === "run not found") && publish.status === 404 && publishBody.error === "run not found" && acceptance.status === 404 && acceptanceBody.error === "run not found" && rollbackPublication.status === 400 && rollbackPublicationBody.error === "rollback requires confirm=true") ok("任务控制/成果验收/成果固定接口错误结构");
     else fail("任务控制接口错误结构异常");
   } catch (e) {
     fail(`任务控制接口检查: ${e.message}`);

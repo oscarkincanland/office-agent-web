@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, listRuns, listPublishedArtifacts, publishArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
@@ -240,7 +240,12 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         listRuns("", 100, { cwd: currentWorkspace }),
         listPublishedArtifacts(currentWorkspace, currentProjectId),
       ]);
-      setArtifactRuns((runData.runs || []).filter((run) => run?.artifacts?.length));
+      const runs = (runData.runs || []).filter((run) => run?.artifacts?.length);
+      const enrichedRuns = await Promise.all(runs.slice(0, 12).map(async (run) => {
+        if (run.acceptance?.artifacts?.length) return run;
+        try { return (await getRunAcceptance(run.id)).run || run; } catch { return run; }
+      }));
+      setArtifactRuns([...enrichedRuns, ...runs.slice(12)]);
       setPublishedArtifacts(publishedData.artifacts || []);
     } catch {}
     setArtifactLoading(false);
@@ -631,7 +636,10 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                   .map((item, index) => {
                     const name = String(item.path || "").split(/[\\/]/).pop() || item.path;
                     const published = publishedByArtifact.get(item.artifactId);
-                    const canPublish = item.run?.status === "completed" && item.verificationStatus !== "failed" && !published;
+                    const acceptance = item.acceptance || item.run?.acceptance?.artifacts?.find((result) => result.path === item.path);
+                    const acceptanceStatus = acceptance?.status || item.acceptanceStatus || item.verificationStatus || "not_checked";
+                    const canConfirm = item.run?.status === "completed" && !published && acceptance && !acceptance.readyToPublish && acceptanceStatus !== "failed";
+                    const canPublish = item.run?.status === "completed" && !published && acceptance?.readyToPublish;
                     return (
                       <div
                         key={`${item.artifactId || item.path}-${index}`}
@@ -644,15 +652,37 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
                       >
                         <FileTypeIcon file={{ name, ext: name.includes(".") ? name.split(".").pop() : "" }} size="small" />
                         <span className="file-name" title={item.path}>{name}</span>
-                        <span className={`artifact-status ${published ? "published" : item.verificationStatus === "failed" ? "failed" : ""}`}>{published ? `v${published.version} 已固定` : item.verificationStatus === "failed" ? "校验失败" : "待固定"}</span>
+                        <span className={`artifact-status ${published ? "published" : acceptanceStatus === "failed" ? "failed" : acceptanceStatus === "passed" ? "ready" : "pending"}`} title={acceptance?.summary || "尚未完成成果验收"}>{published ? `v${published.version} 已固定` : acceptance?.readyToPublish ? "验收通过·待固定" : acceptanceStatus === "failed" ? "验收失败" : "待人工确认"}</span>
+                        {canConfirm && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
+                          e.stopPropagation();
+                          const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示");
+                          if (note === null) return;
+                          try { await confirmArtifactAcceptance(item.run.id, item.artifactId, note); await refreshArtifacts(); } catch (error) { alert("人工确认失败: " + error.message); }
+                        }}>人工确认</button>}
                         {canPublish && <button className="btn-xs artifact-publish-btn" onClick={async (e) => {
                           e.stopPropagation();
                           try { await publishArtifact(item.run.id, item.artifactId); await refreshArtifacts(); } catch (error) { alert("固定成果失败: " + error.message); }
                         }}>固定成果</button>}
+                        {acceptance && <details className="artifact-acceptance-details" onClick={(e) => e.stopPropagation()}>
+                          <summary>验收详情</summary>
+                          <div>结构：{acceptance.checks?.structure?.status || "未检查"} · 内容：{acceptance.checks?.content?.status || "未检查"}</div>
+                          <div>视觉：{acceptance.checks?.visual?.status || "未检查"} · 人工：{acceptance.checks?.manual?.status || "未检查"}</div>
+                        </details>}
                       </div>
                     );
                   })}
               </div>
+              {publishedArtifacts.length > 0 && <div className="artifact-history">
+                <div className="artifact-history-title">正式成果版本（含来源与回滚）</div>
+                {publishedArtifacts.map((item) => <div className="artifact-history-row" key={item.id}>
+                  <span className="file-name" title={item.path}>{String(item.path || "").split(/[\\/]/).pop()}</span>
+                  <span className="artifact-history-meta">v{item.version} · {item.diffSummary?.changeType || "修改"} · Run {String(item.sourceRunId || item.runId || "").slice(-8)} · {item.status === "rolled_back" ? "已回滚" : "当前版本"}</span>
+                  {item.status !== "rolled_back" && item.rollbackTarget && <button className="btn-xs" onClick={async () => {
+                    if (!window.confirm(`确认将 ${item.path} 回滚到 v${publishedArtifacts.find((entry) => entry.id === item.rollbackTarget)?.version || "历史"}？`)) return;
+                    try { await rollbackPublishedArtifact(item.id); await refreshArtifacts(); } catch (error) { alert("回滚成果失败: " + error.message); }
+                  }}>回滚</button>}
+                </div>)}
+              </div>}
             </div>
           </div>
         </div>

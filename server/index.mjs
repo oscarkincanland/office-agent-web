@@ -17,7 +17,7 @@ import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, r
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
-import { listPublishedArtifacts, publishArtifact } from "./成果管理.mjs";
+import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
 import { atomicWriteFile, ensureDirectory } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
@@ -1435,8 +1435,33 @@ app.get("/api/artifacts", (req, res) => {
   res.json({ artifacts: listPublishedArtifacts({ cwd, projectId: String(req.query.projectId || ""), limit: parseInt(req.query.limit, 10) || 200 }) });
 });
 
-app.post("/api/runs/:id/artifacts/:artifactId/publish", (req, res) => {
-  const result = publishArtifact(req.params.id, req.params.artifactId);
+app.post("/api/runs/:id/artifacts/:artifactId/publish", async (req, res) => {
+  const result = await publishArtifact(req.params.id, req.params.artifactId, { rules: req.body?.rules || {}, operator: req.body?.operator });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.post("/api/runs/:id/artifacts/:artifactId/accept", async (req, res) => {
+  const result = await confirmArtifactAcceptance(req.params.id, req.params.artifactId, {
+    note: req.body?.note,
+    operator: req.body?.operator,
+    rules: req.body?.rules || {},
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.post("/api/artifacts/:publicationId/rollback", (req, res) => {
+  if (req.body?.confirm !== true) return res.status(400).json({ error: "rollback requires confirm=true" });
+  const result = rollbackPublishedArtifact(req.params.publicationId, { operator: req.body?.operator });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json(result);
+});
+
+app.get("/api/runs/:id/acceptance", async (req, res) => {
+  let rules = {};
+  try { rules = req.query.rules ? JSON.parse(String(req.query.rules)) : {}; } catch { return res.status(400).json({ error: "rules 参数不是有效 JSON" }); }
+  const result = await inspectRunAcceptance(req.params.id, rules);
   if (!result.ok) return res.status(result.status || 400).json(result);
   res.json(result);
 });

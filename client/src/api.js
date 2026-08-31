@@ -115,6 +115,9 @@ export const listPublishedArtifacts = (cwd, projectId = "") => {
   return api(`/api/artifacts?${params.toString()}`);
 };
 export const publishArtifact = (runId, artifactId) => api(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/publish`, { method: "POST", body: JSON.stringify({}) });
+export const getRunAcceptance = (runId) => api(`/api/runs/${encodeURIComponent(runId)}/acceptance`);
+export const confirmArtifactAcceptance = (runId, artifactId, note = "") => api(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}/accept`, { method: "POST", body: JSON.stringify({ note }) });
+export const rollbackPublishedArtifact = (publicationId) => api(`/api/artifacts/${encodeURIComponent(publicationId)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true }) });
 export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id)}/rollback`, { method: "POST", body: JSON.stringify({ confirm: true, paths }) });
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
 export const listConnectors = () => api("/api/connectors");

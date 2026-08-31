@@ -442,6 +442,23 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = 
     .filter(Boolean);
 }
 
+/** 持久化成果验收，保留旧版 validations/verificationStatus 供历史客户端兼容。 */
+export function updateRunAcceptance(id, acceptance) {
+  const run = loadRun(id);
+  if (!run) return null;
+  run.acceptance = acceptance || null;
+  run.acceptanceStatus = acceptance?.status || "not_checked";
+  run.acceptanceReadyToPublish = Boolean(acceptance?.readyToPublish);
+  const byPath = new Map((acceptance?.artifacts || []).map((item) => [String(item.path || "").replace(/\\/g, "/"), item]));
+  for (const artifact of run.artifacts || []) {
+    const result = byPath.get(String(artifact.path || "").replace(/\\/g, "/"));
+    if (!result) continue;
+    artifact.acceptance = result;
+    artifact.acceptanceStatus = result.status;
+  }
+  return saveRun(run);
+}
+
 export function rollbackRun(id, paths = []) {
   const run = loadRun(id);
   if (!run || run.status === "running") return { ok: false, error: "run not finished" };
