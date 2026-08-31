@@ -38,37 +38,48 @@ function progressText(run) {
   return `${p.completed || 0}/${p.total} 步${run?.currentStep?.name ? ` · ${run.currentStep.name}` : ""}`;
 }
 
-function TaskCard({ run, selected, onSelect }) {
+function TaskCard({ run, selected, onSelect, projectName = "" }) {
   const status = run?.status || "completed";
   return (
     <button className={`task-center-item ${selected ? "selected" : ""}`} onClick={() => onSelect(run.id)}>
       <span className={`task-center-dot ${status}`} />
       <span className="task-center-item-main">
         <span className="task-center-item-title">{taskTitle(run)}</span>
-        <span className="task-center-item-meta">{modeText(run)} · {statusText[status] || status} · {progressText(run)}</span>
+      <span className="task-center-item-meta">{projectName ? `${projectName} · ` : ""}{modeText(run)} · {statusText[status] || status} · {progressText(run)}</span>
       </span>
       <Icon name="chevronRight" size={12} />
     </button>
   );
 }
 
-export default function TaskCenter({ sessions = [], currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun }) {
+export default function TaskCenter({ sessions = [], projects = [], currentProjectId = "", currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun, onOpenRun }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState("");
   const [action, setAction] = useState("");
+  const [projectScope, setProjectScope] = useState("current");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [modeFilter, setModeFilter] = useState("all");
+  const [queryFilter, setQueryFilter] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      const result = await listRuns("", 30, { cwd: currentWorkspace });
+      const options = {
+        cwd: projectScope === "current" ? currentWorkspace : "",
+        projectId: projectScope !== "current" && projectScope !== "all" ? projectScope : "",
+        status: statusFilter,
+        mode: modeFilter,
+        query: queryFilter.trim(),
+      };
+      const result = await listRuns("", 50, options);
       setRuns(Array.isArray(result.runs) ? result.runs.filter(Boolean) : []);
       setError("");
     } catch (e) {
       setError(e.message || "任务状态暂不可用");
     }
-  }, [currentWorkspace, eventVersion]);
+  }, [currentWorkspace, eventVersion, modeFilter, projectScope, queryFilter, statusFilter]);
 
   useEffect(() => {
     refresh();
@@ -97,18 +108,20 @@ export default function TaskCenter({ sessions = [], currentWorkspace = "", curre
     setAction(type);
     setError("");
     try {
-      if (type === "cancel") await cancelRun(detail.id);
-      else if (type === "resume") await resumeRun(detail.id);
-      else await retryRun(detail.id);
+      let result;
+      if (type === "cancel") result = await cancelRun(detail.id);
+      else if (type === "resume") result = await resumeRun(detail.id);
+      else result = await retryRun(detail.id);
       await refresh();
-      const result = await getRun(detail.id);
-      setDetail(result.run || result);
+      const nextRun = result?.run || result;
+      setDetail(nextRun?.id ? nextRun : (await getRun(detail.id)).run);
+      if (type !== "cancel" && nextRun?.id) onOpenRun?.(nextRun);
     } catch (e) {
       setError(e.message || "任务操作失败");
     } finally {
       setAction("");
     }
-  }, [detail, action, refresh]);
+  }, [detail, action, onOpenRun, refresh]);
 
   const counts = useMemo(() => runs.filter(Boolean).reduce((acc, run) => {
     const status = run.status || "completed";
@@ -137,7 +150,15 @@ export default function TaskCenter({ sessions = [], currentWorkspace = "", curre
       setSelectedId(null);
       setDetail(null);
     }
-  }, [sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun]);
+    else if (run?.sessionId || run?.threadId) {
+      onOpenRun?.(run);
+      setOpen(false);
+      setSelectedId(null);
+      setDetail(null);
+    }
+  }, [sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun, onOpenRun]);
+
+  const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
   return (
     <div className="task-center-wrap">
@@ -158,6 +179,21 @@ export default function TaskCenter({ sessions = [], currentWorkspace = "", curre
             <span><Icon name="list" size={13} /> 并行任务</span>
             <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={11} /></button>
           </div>
+          <div className="task-center-filters">
+            <select value={projectScope} onChange={(e) => setProjectScope(e.target.value)} title="项目范围">
+              <option value="current">当前项目</option>
+              <option value="all">全部项目</option>
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} title="任务状态">
+              <option value="all">全部状态</option>
+              {Object.entries(statusText).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+            </select>
+            <select value={modeFilter} onChange={(e) => setModeFilter(e.target.value)} title="任务模式">
+              <option value="all">全部模式</option><option value="chat">Chat</option><option value="office">Office</option><option value="agent">Agent</option>
+            </select>
+            <input value={queryFilter} onChange={(e) => setQueryFilter(e.target.value)} placeholder="搜索任务或失败原因" title="搜索任务目标、摘要或失败原因" />
+          </div>
           <div className="task-center-summary">
             <span>执行中 {counts.running || 0}</span>
             <span>排队中 {counts.queued || 0}</span>
@@ -166,7 +202,7 @@ export default function TaskCenter({ sessions = [], currentWorkspace = "", curre
           {error && <div className="task-center-error">{error}</div>}
           {!detail ? (
             <div className="task-center-list">
-              {visibleRuns.length ? visibleRuns.map((run) => <TaskCard key={run.id} run={run} onSelect={(id) => {
+              {visibleRuns.length ? visibleRuns.map((run) => <TaskCard key={run.id} run={run} projectName={projectNameFor(run)} onSelect={(id) => {
                 setSelectedId(id);
               }} />) : <div className="task-center-empty">暂无任务记录</div>}
             </div>
@@ -174,13 +210,14 @@ export default function TaskCenter({ sessions = [], currentWorkspace = "", curre
             <div className="task-center-detail">
               <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
-              <div className="task-center-detail-meta">{modeText(detail)} · {statusText[detail.status] || detail.status} · {progressText(detail)}</div>
+              <div className="task-center-detail-meta">{projectNameFor(detail) || "当前项目"} · {modeText(detail)} · {statusText[detail.status] || detail.status} · {progressText(detail)}</div>
               <button className="btn-xs task-center-open-chat" onClick={() => openRunConversation(detail)}>打开对应对话</button>
               <div className="task-center-actions">
                 {detail.actions?.canCancel && <button className="btn-xs danger" onClick={() => runAction("cancel")} disabled={!!action}>{action === "cancel" ? "取消中…" : "取消任务"}</button>}
                 {detail.actions?.canResume && <button className="btn-xs" onClick={() => runAction("resume")} disabled={!!action}>{action === "resume" ? "继续中…" : "继续任务"}</button>}
                 {detail.actions?.canRetry && <button className="btn-xs" onClick={() => runAction("retry")} disabled={!!action}>{action === "retry" ? "重试中…" : "重试任务"}</button>}
               </div>
+              {detail.error && <div className="task-center-detail-error">失败原因：{detail.error}</div>}
               <div className="task-center-steps">
                 {(detail.steps || []).map((step) => (
                   <div className={`task-center-step ${step.status}`} key={step.id}>

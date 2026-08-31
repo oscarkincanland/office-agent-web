@@ -1287,6 +1287,33 @@ function materializeWritableSession(found) {
   }
 }
 
+function readSessionHeader(found) {
+  if (!found?.fullPath) return {};
+  try {
+    const firstLine = fs.readFileSync(found.fullPath, "utf8").split(/\r?\n/)[0];
+    return firstLine ? JSON.parse(firstLine) : {};
+  } catch {
+    return {};
+  }
+}
+
+function updateSessionHeader(id, patch = {}) {
+  const found = findSessionFile(id);
+  if (!found) return { ok: false, status: 404, error: "not found" };
+  try {
+    const writable = materializeWritableSession(found);
+    const lines = fs.readFileSync(writable.fullPath, "utf8").split(/\r?\n/);
+    if (!lines[0]) return { ok: false, status: 400, error: "empty file" };
+    const header = JSON.parse(lines[0]);
+    const next = { ...header, ...patch, updatedAt: new Date().toISOString() };
+    lines[0] = JSON.stringify(next);
+    atomicWriteFile(writable.fullPath, lines.join("\n"), "utf8");
+    return { ok: true, header: next };
+  } catch (error) {
+    return { ok: false, status: 500, error: error.message };
+  }
+}
+
 // 解析 JSONL 文件所有行（每行一个 JSON 对象，跳过空行和解析失败的行）
 function parseJsonl(text) {
   const out = [];
@@ -1304,23 +1331,25 @@ function annotateSessionThread(sessionId, threadId) {
   if (!sessionId || !threadId) return;
   const found = findSessionFile(sessionId);
   if (!found) return;
-  try {
-    const writable = materializeWritableSession(found);
-    const lines = fs.readFileSync(writable.fullPath, "utf8").split(/\r?\n/);
-    if (!lines[0]) return;
-    const header = JSON.parse(lines[0]);
-    if (header.threadId === threadId) return;
-    header.threadId = threadId;
-    lines[0] = JSON.stringify(header);
-    fs.writeFileSync(writable.fullPath, lines.join("\n"), "utf8");
-  } catch {}
+  const header = readSessionHeader(found);
+  if (header.threadId === threadId) return;
+  updateSessionHeader(sessionId, { threadId });
 }
 
 // ---------- 任务执行（run）与产物清单 ----------
 app.get("/api/runs", (req, res) => {
   const rawCwd = String(req.query.cwd || "");
   const cwd = rawCwd ? (normalizeWorkspace(rawCwd) || "__invalid_workspace__") : "";
-  res.json({ runs: listRuns({ threadId: String(req.query.thread || ""), sessionId: String(req.query.session || ""), cwd, limit: parseInt(req.query.limit, 10) || 50 }) });
+  res.json({ runs: listRuns({
+    threadId: String(req.query.thread || ""),
+    sessionId: String(req.query.session || ""),
+    cwd,
+    projectId: String(req.query.projectId || ""),
+    status: String(req.query.status || ""),
+    mode: String(req.query.mode || ""),
+    query: String(req.query.query || ""),
+    limit: parseInt(req.query.limit, 10) || 50,
+  }) });
 });
 
 // 根级持久事件流：跨所有 thread 订阅当前 client 的可恢复状态事件。
@@ -1420,14 +1449,18 @@ app.get("/api/projects", (req, res) => {
     const runs = listRuns({ limit: 200 });
     const proposals = agentManager.memoryProposals();
     const sessions = listSessionFiles().map((file) => {
-      try {
-        const header = JSON.parse(fs.readFileSync(file.fullPath, "utf8").split(/\r?\n/)[0]);
-        return { cwd: header.cwd || "", id: header.id || header.sessionId || "" };
-      } catch { return null; }
-    }).filter(Boolean);
-    const projects = projectManager.listProjects().map((project) => ({
+      const header = readSessionHeader(file);
+      return { cwd: header.cwd || "", projectId: header.projectId || "", id: header.id || header.sessionId || "" };
+    }).filter((item) => item.id);
+    const projectFilters = {
+      type: String(req.query.type || ""),
+      status: String(req.query.status || ""),
+      pinned: req.query.pinned === undefined ? null : req.query.pinned === "true",
+      sort: String(req.query.sort || "recent"),
+    };
+    const projects = projectManager.listProjects(projectFilters).map((project) => ({
       ...project,
-      sessionCount: sessions.filter((session) => session.cwd === project.rootPath).length,
+      sessionCount: sessions.filter((session) => session.projectId === project.id || session.cwd === project.rootPath).length,
       runCount: runs.filter((run) => run.cwd === project.rootPath).length,
       artifactCount: runs.filter((run) => run.cwd === project.rootPath).reduce((count, run) => count + (run.artifacts?.length || 0), 0),
       unresolvedRunCount: runs.filter((run) => run.cwd === project.rootPath && ["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(run.status)).length,
@@ -1435,7 +1468,7 @@ app.get("/api/projects", (req, res) => {
       approvedMemoryCount: proposals.filter((item) => item.workspace === project.rootPath && item.status === "approved").length,
       lastMemoryAt: proposals.filter((item) => item.workspace === project.rootPath).map((item) => item.approvedAt || item.createdAt).sort().pop() || null,
     }));
-    res.json({ projects, types: projectManager.listProjectTypes(), statuses: projectManager.listProjectStatuses() });
+    res.json({ projects, types: projectManager.listProjectTypes(), statuses: projectManager.listProjectStatuses(), profiles: projectManager.listProjectProfiles(), defaultSettings: projectManager.defaultProjectSettings() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1449,6 +1482,18 @@ app.post("/api/projects", (req, res) => {
 
 app.patch("/api/projects/:id", (req, res) => {
   const result = projectManager.updateProject(req.params.id, req.body || {});
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
+app.get("/api/projects/:id/settings", (req, res) => {
+  const project = projectManager.getProject(req.params.id);
+  if (!project) return res.status(404).json({ ok: false, error: "project not found" });
+  res.json({ ok: true, projectId: project.id, settings: projectManager.getProjectSettings(project.id) });
+});
+
+app.patch("/api/projects/:id/settings", (req, res) => {
+  const result = projectManager.updateProjectSettings(req.params.id, req.body || {});
   if (!result.ok) return res.status(404).json(result);
   res.json(result);
 });
@@ -1474,11 +1519,25 @@ app.post("/api/sessions/:id/fork", (req, res) => {
     if (!lines.length) return res.status(400).json({ error: "empty session" });
     const header = JSON.parse(lines[0]);
     const id = crypto.randomUUID();
-    const nextHeader = { ...header, id, sessionId: id, parentSessionId: header.sessionId || header.id || req.params.id, created: new Date().toISOString(), label: String(req.body?.label || `${header.label || "会话"}（分支）`) };
+    const label = String(req.body?.label || `${header.label || "会话"}（分支）`).trim();
+    const nextHeader = {
+      ...header,
+      id,
+      sessionId: id,
+      threadId: id,
+      parentSessionId: header.sessionId || header.id || req.params.id,
+      branchSourceMessageId: String(req.body?.sourceMessageId || "") || null,
+      branchPurpose: String(req.body?.purpose || "") || "从历史会话创建的独立分支",
+      created: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      label,
+      pinned: false,
+      frozen: false,
+    };
     lines[0] = JSON.stringify(nextHeader);
     const fileName = `${id}.jsonl`;
-    fs.writeFileSync(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
-    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd });
+    atomicWriteFile(path.join(SESSIONS_DIR, fileName), lines.join("\n") + "\n", "utf8");
+    res.json({ ok: true, id, fileName, parentSessionId: nextHeader.parentSessionId, cwd: nextHeader.cwd, threadId: id, label, projectId: nextHeader.projectId || null });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1605,6 +1664,11 @@ function isBootstrapSessionTitle(title) {
 // 支持 ?file=xxx 过滤：只返回提到指定文件的会话
 app.get("/api/sessions", (req, res) => {
   const fileFilter = String(req.query.file || "").trim();
+  const projectFilter = String(req.query.projectId || "").trim();
+  const modeFilter = String(req.query.mode || "").trim();
+  const runStatusFilter = String(req.query.runStatus || "").trim();
+  const pinnedFilter = req.query.pinned === undefined ? null : req.query.pinned === "true";
+  const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
   try {
     const files = listSessionFiles();
     const recentRuns = listRuns({ limit: 200 });
@@ -1646,7 +1710,12 @@ app.get("/api/sessions", (req, res) => {
         if (isBootstrapSessionTitle(title)) continue;
         const id = h.id || h.sessionId || sessionBaseName(f.fileName);
         const latestRun = recentRuns.find((run) => run.sessionId === id);
-        const project = projectManager.getProjectForWorkspace(cwd || getWorkspace());
+        const project = projectManager.getProject(h.projectId) || projectManager.getProjectForWorkspace(cwd || getWorkspace());
+        if (projectFilter && project?.id !== projectFilter) continue;
+        if (modeFilter && (latestRun?.task?.mode || "") !== modeFilter) continue;
+        if (runStatusFilter && (latestRun?.status || "idle") !== runStatusFilter) continue;
+        if (pinnedFilter !== null && Boolean(h.pinned) !== pinnedFilter) continue;
+        if (frozenFilter !== null && Boolean(h.frozen) !== frozenFilter) continue;
         sessions.push({
           id,
           threadId: h.threadId || latestRun?.threadId || id,
@@ -1658,7 +1727,13 @@ app.get("/api/sessions", (req, res) => {
           created: h.created || "",
           modified: f.mtime,
           label: h.label || "",
+          pinned: Boolean(h.pinned),
+          frozen: Boolean(h.frozen),
+          freezeReason: h.freezeReason || "",
+          contextSnapshot: h.contextSnapshot || null,
           parentSessionId: h.parentSessionId || null,
+          branchSourceMessageId: h.branchSourceMessageId || null,
+          branchPurpose: h.branchPurpose || "",
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -1678,20 +1753,27 @@ app.get("/api/sessions", (req, res) => {
 // POST /api/sessions - 创建新会话（写入空 header 的 JSONL 文件）
 app.post("/api/sessions", (req, res) => {
   try {
-    const { cwd } = req.body || {};
+    const { cwd, projectId, label, frozen = false } = req.body || {};
     const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
+    const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
     const id = crypto.randomUUID();
     const created = new Date().toISOString();
     const header = {
       type: "header",
+      id,
       sessionId: id,
+      threadId: id,
       cwd: workspace,
+      projectId: project?.id || null,
       created,
-      label: "",
+      updatedAt: created,
+      label: String(label || "").trim(),
+      pinned: false,
+      frozen: Boolean(frozen),
     };
     const fileName = id + ".jsonl";
-    fs.writeFileSync(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n");
-    res.json({ id, fileName, cwd: header.cwd, created, status: "idle" });
+    atomicWriteFile(path.join(SESSIONS_DIR, fileName), JSON.stringify(header) + "\n", "utf8");
+    res.json({ id, fileName, cwd: header.cwd, projectId: header.projectId, created, status: "idle", pinned: false, frozen: header.frozen });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1732,9 +1814,16 @@ app.get("/api/sessions/:id", (req, res) => {
       info: {
         id: header.sessionId || header.id || sessionBaseName(found.fileName),
         cwd: header.cwd || "",
+        projectId: header.projectId || projectManager.getProjectForWorkspace(header.cwd || getWorkspace())?.id || null,
         created: header.created || "",
         label: header.label || "",
+        pinned: Boolean(header.pinned),
+        frozen: Boolean(header.frozen),
+        freezeReason: header.freezeReason || "",
+        contextSnapshot: header.contextSnapshot || null,
         parentSessionId: header.parentSessionId || null,
+        branchSourceMessageId: header.branchSourceMessageId || null,
+        branchPurpose: header.branchPurpose || "",
         fileName: found.fileName,
         modified: found.mtime,
       },
@@ -1758,22 +1847,31 @@ app.delete("/api/sessions/:id", (req, res) => {
 
 // POST /api/sessions/:id/rename - 重命名会话（修改 header.label）
 app.post("/api/sessions/:id/rename", (req, res) => {
+  const result = updateSessionHeader(req.params.id, { label: String(req.body?.label || "").trim() });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json({ ok: true, label: result.header.label });
+});
+
+app.post("/api/sessions/:id/pin", (req, res) => {
+  const result = updateSessionHeader(req.params.id, { pinned: req.body?.pinned !== false });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json({ ok: true, sessionId: req.params.id, pinned: Boolean(result.header.pinned) });
+});
+
+app.post("/api/sessions/:id/freeze", (req, res) => {
+  const frozen = req.body?.frozen !== false;
   const found = findSessionFile(req.params.id);
-  if (!found) return res.status(404).json({ error: "not found" });
-  try {
-    const { label } = req.body || {};
-    const writable = materializeWritableSession(found);
-    const text = fs.readFileSync(writable.fullPath, "utf8");
-    const lines = text.split(/\r?\n/);
-    if (!lines[0]) return res.status(400).json({ error: "empty file" });
-    const header = JSON.parse(lines[0]);
-    header.label = String(label || "");
-    lines[0] = JSON.stringify(header);
-    fs.writeFileSync(writable.fullPath, lines.join("\n"));
-    res.json({ ok: true, label: header.label });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  const header = readSessionHeader(found);
+  const capturedAt = new Date().toISOString();
+  const result = updateSessionHeader(req.params.id, {
+    frozen,
+    freezeReason: frozen ? String(req.body?.reason || "用户冻结会话") : "",
+    contextSnapshot: frozen
+      ? (req.body?.snapshot || { capturedAt, workspace: header.cwd || "", projectId: header.projectId || null, source: "session-freeze" })
+      : (header.contextSnapshot || null),
+  });
+  if (!result.ok) return res.status(result.status || 400).json(result);
+  res.json({ ok: true, sessionId: req.params.id, frozen: Boolean(result.header.frozen), freezeReason: result.header.freezeReason || "", contextSnapshot: result.header.contextSnapshot || null });
 });
 
 // 中止当前 agent 运行
@@ -1834,11 +1932,19 @@ app.post("/api/agent/prompt", async (req, res) => {
     return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
   }
   const runWorkspace = entry.workspace || requestedWorkspace;
-  if (requestedModel) {
+  const sessionHeader = readSessionHeader(findSessionFile(entry.session?.sessionId || ""));
+  if (sessionHeader.frozen) {
+    return res.status(409).json({ error: "当前会话已冻结，请先解冻后再继续执行", code: "SESSION_FROZEN", sessionId: entry.session?.sessionId || null });
+  }
+  const project = projectManager.getProjectForWorkspace(runWorkspace);
+  const projectSettings = project?.settings || projectManager.defaultProjectSettings();
+  const effectiveModel = String(requestedModel || projectSettings.defaultModel || "").trim();
+  const projectSkills = Array.isArray(projectSettings.skills) ? projectSettings.skills : [];
+  if (effectiveModel) {
     try {
-      await agentManager.setModel(key, String(requestedModel));
+      await agentManager.setModel(key, effectiveModel);
     } catch (e) {
-      const diagnostic = recordAgentDiagnostic(req, { client, thread, model: String(requestedModel), error: e });
+      const diagnostic = recordAgentDiagnostic(req, { client, thread, model: effectiveModel, error: e });
       return res.status(409).json({ error: `模型同步失败：${diagnostic.message}`, requestId: req.requestId, retryable: diagnostic.retryable });
     }
   }
@@ -1853,10 +1959,18 @@ app.post("/api/agent/prompt", async (req, res) => {
     const workflowId = taskInput?.workflowId || workflowIdFromText(normalizedText);
     const skills = scanSkills();
     const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
-    const requestedSkills = [...new Set([...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
+    const requestedSkills = [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
     const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
     preflight = preflightSkills({ workflowId, requestedSkills, skills });
-    capabilityPlan = planTaskCapabilities({ text: normalizedText, task: { ...(taskInput || {}), workflowId }, references: resolved, attachments });
+    const effectiveTaskInput = {
+      ...(taskInput || {}),
+      projectId: project?.id || taskInput?.projectId || null,
+      agentProfile: projectSettings.agentProfile,
+      projectSettings,
+      skills: requestedSkills,
+      workflowId,
+    };
+    capabilityPlan = planTaskCapabilities({ text: normalizedText, task: effectiveTaskInput, references: resolved, attachments });
     if (capabilityPlan.routing.officecli === "preferred") {
       capabilityPlan.officecli = await checkOfficecli();
       if (!capabilityPlan.officecli.available) {
@@ -1871,7 +1985,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       throw error;
     }
     task = createTaskEnvelope({
-      ...(taskInput || {}),
+      ...effectiveTaskInput,
       text: normalizedText,
       threadId: thread || null,
       currentFile: taskInput?.currentFile || null,
@@ -1883,7 +1997,6 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-    const project = projectManager.getProjectForWorkspace(runWorkspace);
     run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan });
     // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
     if (Array.isArray(attachments) && attachments.length) {
@@ -1916,7 +2029,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       client,
       thread,
       runId: run?.id || null,
-      model: requestedModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
+      model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
       error: e,
     });
     if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -2114,12 +2227,14 @@ app.post("/api/runs/:id/resume", (req, res) => handleContinuation(req, res, "res
 app.post("/api/runs/:id/retry", (req, res) => handleContinuation(req, res, "retry"));
 
 app.post("/api/agent/new", async (req, res) => {
-  const { client, thread, cwd } = req.body || {};
+  const { client, thread, cwd, projectId, label } = req.body || {};
   if (!client || !thread) return res.status(400).json({ error: "client and thread required" });
   try {
     const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
     const result = await agentManager.newThread(agentKey(client, thread), thread, workspace);
     annotateSessionThread(result.sessionId, thread);
+    const project = projectManager.getProject(projectId) || projectManager.getProjectForWorkspace(workspace);
+    updateSessionHeader(result.sessionId, { projectId: project?.id || null, label: String(label || "").trim() });
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -6,8 +6,8 @@ import { normalizeWorkspace, isInside } from "./workspace.mjs";
 import { atomicWriteFile, atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const RUNS_DIR = path.join(ROOT, ".oaw", "runs");
-const LOCK_DIR = path.join(ROOT, ".oaw", "locks");
+const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(ROOT, ".oaw", "runs");
+const LOCK_DIR = process.env.OAW_WRITE_LOCK_DIR || path.join(ROOT, ".oaw", "locks");
 const locks = new Map();
 
 export class WriteConflictError extends Error {

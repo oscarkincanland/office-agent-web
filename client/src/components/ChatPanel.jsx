@@ -134,7 +134,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions, onForkSession, onPinSession, onFreezeSession }, ref) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -700,6 +700,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [patch]);
 
   const send = async (overrideText, options = {}) => {
+    if (frozen) {
+      setModelMsg("当前会话已冻结，可查看历史或新建分支；如需继续请先解冻。");
+      window.setTimeout(() => setModelMsg(""), 3200);
+      return;
+    }
     if (stoppingRef.current) return;
     const source = options.payload || {};
     const sourceImages = source.images || images;
@@ -1020,7 +1025,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                 onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
                 onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
-                onFork={async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } }}
+                onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } })}
+                onPin={onPinSession}
+                onFreeze={onFreezeSession}
               />
             </div>
           )}
@@ -1038,7 +1045,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         </div>
         <div className="task-status-bar" role="status" aria-live="polite">
           <span className={`task-status-dot ${runState.status}`} />
-          <span>{runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          <span>{frozen ? "会话已冻结" : runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
           <span className="task-status-meta task-mode-meta">{MODE_META[runState.mode || editMode]?.label || currentMode.label}</span>
           {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
           {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
@@ -1138,7 +1145,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           <div className="chat-input-row">
             <textarea
               value={input}
-              placeholder={busy ? "输入后可排队执行，或仅注入下一轮上下文..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
+              disabled={frozen}
+              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -1166,7 +1174,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                   </button>
                 </>
               ) : (
-                <button className="btn primary send-btn" onClick={() => send()} title="发送 (Enter)"><Icon name="send" size={14} /></button>
+                <button className="btn primary send-btn" onClick={() => send()} disabled={frozen} title={frozen ? "会话已冻结" : "发送 (Enter)"}><Icon name="send" size={14} /></button>
               )}
             </div>
           </div>

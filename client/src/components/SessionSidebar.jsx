@@ -88,7 +88,7 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onRename, onFork }) {
+export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onRename, onFork, onPin, onFreeze }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
@@ -100,9 +100,15 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
     setEditingId(null);
   };
 
-  const handleTogglePin = (id) => {
-    const next = togglePin(id);
+  const handleTogglePin = async (session) => {
+    const isPinned = session.pinned ?? pinned.has(session.id);
+    if (onPin) await onPin(session.id, !isPinned);
+    const next = togglePin(session.id);
     setPinned(new Set(next));
+  };
+
+  const handleToggleFreeze = async (session) => {
+    if (onFreeze) await onFreeze(session.id, !session.frozen);
   };
 
   const searched = search.trim()
@@ -111,11 +117,14 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const filtered = statusFilter === "all"
     ? searched
     : searched.filter((s) => s.runStatus === statusFilter);
-  const pinnedList = filtered.filter((s) => pinned.has(s.id));
-  const unpinned = filtered.filter((s) => !pinned.has(s.id));
+  const isSessionPinned = (session) => session.pinned ?? pinned.has(session.id);
+  const pinnedList = filtered.filter(isSessionPinned);
+  const unpinned = filtered.filter((s) => !isSessionPinned(s));
   const groups = groupByDate(unpinned);
 
-  const renderItem = (s) => (
+  const renderItem = (s) => {
+    const isPinned = s.pinned ?? pinned.has(s.id);
+    return (
     <div key={s.id} className="session-item" onClick={() => onSelect(s)}>
       <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
@@ -137,7 +146,9 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
               title={s.title || s.label || "未命名会话"}
               onDoubleClick={(e) => { e.stopPropagation(); setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
             >
-              {pinned.has(s.id) && <Icon name="pin" size={10} className="pin-icon" />}
+              {isPinned && <Icon name="pin" size={10} className="pin-icon" />}
+              {s.frozen && <span className="session-frozen-mark" title="会话已冻结">冻结</span>}
+              {s.parentSessionId && <span className="session-branch-mark" title={s.branchPurpose || "独立分支"}>分支</span>}
               {s.title || s.label || "未命名会话"}
             </span>
             <span className="session-time">
@@ -151,15 +162,16 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       {(unreadByThread[s.threadId || s.id] || 0) > 0 && <span className="session-unread" title="有新的后台任务状态更新">{unreadByThread[s.threadId || s.id] > 99 ? "99+" : unreadByThread[s.threadId || s.id]}</span>}
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
       <div className="session-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="btn-icon" onClick={() => handleTogglePin(s.id)} title={pinned.has(s.id) ? "取消置顶" : "置顶"}>
-          <Icon name="pin" size={12} className={pinned.has(s.id) ? "pinned" : ""} />
+        <button className="btn-icon" onClick={() => handleTogglePin(s)} title={isPinned ? "取消置顶" : "置顶"}>
+          <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
         </button>
         <button
           className="btn-icon"
           onClick={() => { setEditingId(s.id); setEditValue(s.label || s.title || ""); }}
           title="重命名"
         ><Icon name="penTool" size={12} /></button>
-        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
+        <button className="btn-icon" onClick={async () => { if (onFork) await onFork(s.id, `${s.title || s.label || "会话"}（分支）`); }} title="从此会话创建分支"><Icon name="copy" size={12} /></button>
+        <button className="btn-icon" onClick={() => handleToggleFreeze(s)} title={s.frozen ? "解冻会话" : "冻结会话"}><Icon name={s.frozen ? "check" : "stop"} size={12} /></button>
         <button
           className="btn-icon danger"
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
@@ -168,6 +180,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       </div>
     </div>
   );
+  };
 
   return (
     <div className="session-list">
@@ -176,7 +189,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
         <input placeholder="搜索会话…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
       <div className="session-filters" role="tablist" aria-label="会话状态筛选">
-        {[{ id: "all", label: "全部" }, { id: "running", label: "执行中" }, { id: "completed", label: "已完成" }, { id: "failed", label: "失败" }].map((item) => (
+        {[{ id: "all", label: "全部" }, { id: "running", label: "执行中" }, { id: "recovering", label: "恢复中" }, { id: "completed", label: "已完成" }, { id: "failed", label: "失败" }, { id: "aborted", label: "已中断" }].map((item) => (
           <button key={item.id} className={`session-filter ${statusFilter === item.id ? "active" : ""}`} onClick={() => setStatusFilter(item.id)}>{item.label}</button>
         ))}
       </div>
@@ -200,7 +213,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, projects = [], currentProjectId = "", onProjectChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession }) {
+export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession, onPinSession, onFreezeSession, unreadByThread = {} }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -490,6 +503,27 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
         </div>
       )}
 
+      {/* 持久会话历史：与 Chat 历史抽屉共用同一份服务端列表，后台任务不会因新建会话消失 */}
+      <div className="sidebar-section sessions-section">
+        <div className="sidebar-section-head">
+          <Icon name="history" size={12} />
+          <span className="section-name">会话</span>
+          <span className="section-count">{sessions.length}</span>
+          <button className="btn-xs section-refresh" onClick={onRefreshSessions} title="刷新会话"><Icon name="refresh" size={11} /></button>
+          <button className="btn-xs section-new" onClick={() => onNewSession?.()} title="新建会话"><Icon name="plus" size={11} /></button>
+        </div>
+        <SessionList
+          sessions={sessions}
+          unreadByThread={unreadByThread}
+          onSelect={onSelectSession}
+          onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions?.(); } catch (e) { alert("删除失败: " + e.message); } }}
+          onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions?.(); } catch (e) { alert("重命名失败: " + e.message); } }}
+          onFork={onForkSession}
+          onPin={onPinSession}
+          onFreeze={onFreezeSession}
+        />
+      </div>
+
       {/* 文件树 */}
       <div className="sidebar-section-head">
         <Icon name="folder" size={12} />
@@ -638,7 +672,7 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="sb-modal-body">
-              {modalTab === "settings" ? <SettingsPanel /> : <MemoryTab workspace={currentWorkspace} />}
+              {modalTab === "settings" ? <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} onProjectUpdated={onProjectUpdated} onProjectSelect={onProjectChange} /> : <MemoryTab workspace={currentWorkspace} projectId={currentProjectId} />}
             </div>
           </div>
         </div>

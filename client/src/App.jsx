@@ -14,7 +14,7 @@ import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead } from "./api.js";
+import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -125,9 +125,11 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState([]);
   const [projects, setProjects] = useState([]);
   const [currentWorkspace, setCurrentWorkspace] = useState("");
+  const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
+  const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
@@ -155,7 +157,8 @@ export default function App() {
     let created = null;
     try {
       // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
-      created = await createAgentThread(clientId, next, workspace || undefined);
+      const project = projects.find((item) => sameWorkspacePath(item.rootPath, workspace || currentWorkspace));
+      created = await createAgentThread(clientId, next, workspace || undefined, { projectId: project?.id || null });
       refreshSessions();
     } catch (e) {
       console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
@@ -169,14 +172,18 @@ export default function App() {
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
     lastSessionIdRef.current = created?.sessionId || null;
-  }, [clientId, currentWorkspace]);
+  }, [clientId, currentWorkspace, projects]);
 
   const refreshFiles = useCallback(async (dir) => {
     try { setFiles((await listFiles(dir || currentDir)).files); } catch {}
   }, [currentDir]);
 
   const refreshSessions = useCallback(async () => {
-    try { setSessions((await listSessions()).sessions || []); } catch {}
+    try {
+      const next = (await listSessions()).sessions || [];
+      setSessions(next);
+      return next;
+    } catch { return []; }
   }, []);
 
   // 根级事件订阅：当前对话继续使用原有 thread SSE，App 额外监听所有 thread 的重要状态，
@@ -295,7 +302,6 @@ export default function App() {
     } catch (e) { alert("切换失败: " + e.message); }
   }, [handleNewSession, refreshProjects]);
 
-  const currentProject = projects.find((project) => project.rootPath === currentWorkspace) || null;
   const visibleSessions = currentWorkspace
     ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
     : sessions;
@@ -360,7 +366,7 @@ export default function App() {
     const loadSeq = ++sessionLoadSeqRef.current;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
     const targetWorkspace = session.cwd || currentWorkspace;
-    if (targetWorkspace && targetWorkspace !== currentWorkspace) {
+    if (targetWorkspace && !sameWorkspacePath(targetWorkspace, currentWorkspace)) {
       try {
         const switched = await switchWorkspace(targetWorkspace);
         if (loadSeq !== sessionLoadSeqRef.current) return;
@@ -454,8 +460,9 @@ export default function App() {
           currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
         });
       }
-      const runMessages = (runData?.runs || [])
+      const runMessages = [...(runData?.runs || [])]
         .filter((run) => run?.status)
+        .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")))
         .map((run) => ({
           id: `run-summary-${run.id}`,
           role: "system",
@@ -483,6 +490,50 @@ export default function App() {
       if (loadSeq === sessionLoadSeqRef.current) alert("加载会话失败: " + e.message);
     }
   }, [clientId, currentWorkspace, open]);
+
+  const handleForkSession = useCallback(async (id, label) => {
+    const source = sessions.find((item) => item.id === id);
+    const result = await forkSession(id, label, {
+      purpose: "从历史会话创建独立分析分支",
+      sourceMessageId: null,
+    });
+    await refreshSessions();
+    await handleSelectSession({
+      id: result.id,
+      threadId: result.threadId || result.id,
+      cwd: result.cwd || source?.cwd || currentWorkspace,
+      projectId: result.projectId || source?.projectId || currentProject?.id || null,
+      parentSessionId: result.parentSessionId || id,
+      label: result.label || label || "会话分支",
+      title: result.label || label || "会话分支",
+      pinned: false,
+      frozen: false,
+    });
+    return result;
+  }, [currentProject?.id, currentWorkspace, handleSelectSession, refreshSessions, sessions]);
+
+  const handlePinSession = useCallback(async (id, pinned) => {
+    await pinSession(id, pinned);
+    await refreshSessions();
+  }, [refreshSessions]);
+
+  const handleFreezeSession = useCallback(async (id, frozen) => {
+    await freezeSession(id, frozen);
+    await refreshSessions();
+  }, [refreshSessions]);
+
+  const handleOpenRun = useCallback((run) => {
+    const id = run?.sessionId || run?.threadId;
+    if (!id) return;
+    handleSelectSession({
+      id,
+      threadId: run.threadId || id,
+      cwd: run.cwd || currentWorkspace,
+      projectId: run.projectId || currentProject?.id || null,
+      title: run.task?.goal || "任务对应会话",
+      label: run.task?.goal || "任务对应会话",
+    });
+  }, [currentProject?.id, currentWorkspace, handleSelectSession]);
 
   const handleFileChanged = useCallback((changed) => {
     refreshFiles();
@@ -583,6 +634,7 @@ export default function App() {
       threadId={threadId}
       workspace={currentWorkspace}
       project={currentProject}
+      frozen={Boolean(currentSession?.frozen)}
       onFileChanged={(changed) => {
         handleFileChanged(changed);
         mapBridgeRef.current?.onFileChanged?.(changed);
@@ -607,6 +659,9 @@ export default function App() {
       onSessionChange={handleSessionChange}
       onRefreshSessions={refreshSessions}
       unreadByThread={unreadByThread}
+      onForkSession={handleForkSession}
+      onPinSession={handlePinSession}
+      onFreezeSession={handleFreezeSession}
     />
   );
 
@@ -697,6 +752,11 @@ export default function App() {
               onSelectSession={handleSelectSession}
               onAtMention={handleAtMention}
               onNewSession={handleNewSession}
+              onForkSession={handleForkSession}
+              onPinSession={handlePinSession}
+              onFreezeSession={handleFreezeSession}
+              onProjectUpdated={refreshProjects}
+              models={models}
               unreadByThread={unreadByThread}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
@@ -727,12 +787,15 @@ export default function App() {
             <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图（GIS 项目）"><Icon name="map" size={14} /> 地图</button>
               <TaskCenter
                 sessions={visibleSessions}
+                projects={projects}
+                currentProjectId={currentProject?.id || ""}
                 currentWorkspace={currentWorkspace}
                 currentThreadId={threadId}
                 currentSessionId={currentSessionId}
                 unreadCount={Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}
                 onSelectSession={handleSelectSession}
                 onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
+                onOpenRun={handleOpenRun}
                 eventVersion={eventVersion}
               />
               <span className="topbar-badge">{models.length} 模型</span>

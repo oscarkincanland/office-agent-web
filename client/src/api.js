@@ -29,15 +29,36 @@ export const setAgentModelForThread = (client, thread, model) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
 export const compactAgentContext = (client, thread, instructions = "") =>
   api("/api/agent/compact", { method: "POST", body: JSON.stringify({ client, thread, instructions }) });
-export const createAgentThread = (client, thread, cwd) =>
-  api("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd }) });
+export const createAgentThread = (client, thread, cwd, options = {}) =>
+  api("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd, ...options }) });
 export const resumeAgentThread = (client, thread, sessionId, cwd) =>
   api("/api/agent/resume", { method: "POST", body: JSON.stringify({ client, thread, sessionId, cwd }) });
 
-export const listSessions = (file) => api(`/api/sessions${file ? `?file=${encodeURIComponent(file)}` : ""}`);
-export const listProjects = () => api("/api/projects");
+export const listSessions = (fileOrOptions) => {
+  const params = new URLSearchParams();
+  if (typeof fileOrOptions === "string") {
+    if (fileOrOptions) params.set("file", fileOrOptions);
+  } else {
+    const options = fileOrOptions || {};
+    for (const key of ["file", "projectId", "mode", "runStatus"]) if (options[key]) params.set(key, options[key]);
+    for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
+  }
+  const query = params.toString();
+  return api(`/api/sessions${query ? `?${query}` : ""}`);
+};
+export const listProjects = (options = {}) => {
+  const params = new URLSearchParams();
+  for (const key of ["type", "status", "sort"]) if (options[key]) params.set(key, options[key]);
+  if (options.pinned !== undefined && options.pinned !== null) params.set("pinned", String(options.pinned));
+  const query = params.toString();
+  return api(`/api/projects${query ? `?${query}` : ""}`);
+};
+export const createProject = (payload) => api("/api/projects", { method: "POST", body: JSON.stringify(payload || {}) });
 export const updateProject = (id, patch) => api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
 export const pinProject = (id, pinned = true) => api(`/api/projects/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
+export const archiveProject = (id, archived = true) => api(`/api/projects/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ archived }) });
+export const getProjectSettings = (id) => api(`/api/projects/${encodeURIComponent(id)}/settings`);
+export const updateProjectSettings = (id, settings) => api(`/api/projects/${encodeURIComponent(id)}/settings`, { method: "PATCH", body: JSON.stringify(settings || {}) });
 export const listWorkspaces = () => api("/api/workspaces");
 export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
@@ -64,13 +85,21 @@ export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
-export const forkSession = (id, label) =>
-  api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label }) });
+export const pinSession = (id, pinned = true) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
+export const freezeSession = (id, frozen = true, reason = "") =>
+  api(`/api/sessions/${encodeURIComponent(id)}/freeze`, { method: "POST", body: JSON.stringify({ frozen, reason }) });
+export const forkSession = (id, label, options = {}) =>
+  api(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify({ label, ...options }) });
 export const listRuns = (thread = "", limit = 50, options = {}) => {
   const params = new URLSearchParams();
   if (thread) params.set("thread", thread);
   if (options.sessionId) params.set("session", options.sessionId);
   if (options.cwd) params.set("cwd", options.cwd);
+  if (options.projectId) params.set("projectId", options.projectId);
+  if (options.status && options.status !== "all") params.set("status", options.status);
+  if (options.mode && options.mode !== "all") params.set("mode", options.mode);
+  if (options.query) params.set("query", options.query);
   params.set("limit", String(limit));
   return api(`/api/runs?${params.toString()}`);
 };
@@ -95,10 +124,11 @@ export const editMemoryProposal = (id, payload = {}) => api(`/api/memory/proposa
 export const rejectMemoryProposal = (id, reason = "用户拒绝该记忆建议") => api(`/api/memory/proposals/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
 export const mergeMemoryProposals = (targetId, sourceIds = []) => api(`/api/memory/proposals/${encodeURIComponent(targetId)}/merge`, { method: "POST", body: JSON.stringify({ sourceIds }) });
 export const memoryProposalHistory = (id) => api(`/api/memory/proposals/${encodeURIComponent(id)}/history`);
-export const listMemoryProposals = (workspace = "", status = "") => {
+export const listMemoryProposals = (workspace = "", status = "", projectId = "") => {
   const params = new URLSearchParams();
   if (workspace) params.set("workspace", workspace);
   if (status) params.set("status", status);
+  if (projectId) params.set("projectId", projectId);
   return api(`/api/memory/proposals?${params.toString()}`);
 };
 export const listPendingQuestions = (client, thread) => api(`/api/agent/pending?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread)}`);
