@@ -198,7 +198,7 @@ function readMemoryLayers(workspace = getWorkspace()) {
             if (!body) return;
             if (/规则|准则/i.test(title)) add("rules", `### ${title}\n${body}`);
             else if (/偏好|preference/i.test(title)) add("preferences", `### ${title}\n${body}`);
-            else if (/项目信息|项目状态|project/i.test(title)) add("project", `### ${title}\n${body}`);
+            else if (/项目信息|项目事实|项目状态|project/i.test(title)) add("project", `### ${title}\n${body}`);
             else if (/经验|教训|lesson/i.test(title)) add("lessons", `### ${title}\n${body}`);
             else layers.other.push({ file: `${f} / ${title}`, content: body });
           });

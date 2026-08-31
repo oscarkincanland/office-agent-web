@@ -10,7 +10,7 @@ const MEMORY_CATEGORY_LABELS = {
   resource_index: "资料索引",
 };
 
-export default function MemoryTab({ workspace = "" }) {
+export default function MemoryTab({ workspace = "", projectId = "" }) {
   const [files, setFiles] = useState([]);
   const [active, setActive] = useState(null); // rel path
   const [content, setContent] = useState("");
@@ -32,13 +32,13 @@ export default function MemoryTab({ workspace = "" }) {
     try {
       const [r, p] = await Promise.all([
         fetch("/api/memory"),
-        listMemoryProposals(workspace, proposalStatus).catch(() => ({ proposals: [] })),
+        listMemoryProposals(workspace, proposalStatus, projectId).catch(() => ({ proposals: [] })),
       ]);
       const d = await r.json();
       setFiles(d.files || []);
       setProposals(p.proposals || []);
     } catch {}
-  }, [workspace, proposalStatus]);
+  }, [projectId, workspace, proposalStatus]);
 
   useEffect(() => { refresh(); }, [refresh]);
 

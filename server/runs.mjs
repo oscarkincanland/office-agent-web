@@ -15,7 +15,7 @@ import {
 } from "./写入协调.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const RUNS_DIR = path.join(PROJECT_DIR, ".oaw", "runs");
+const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
 const MAX_FILES = 1200;
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
@@ -425,13 +425,17 @@ export function getRun(id) {
   };
 }
 
-export function listRuns({ threadId = "", sessionId = "", cwd = "", limit = 50 } = {}) {
+export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50 } = {}) {
   ensureDir(RUNS_DIR);
+  const textQuery = String(query || "").trim().toLowerCase();
   return fs.readdirSync(RUNS_DIR)
     .filter((n) => n.endsWith(".json"))
     .map((n) => loadRun(path.basename(n, ".json")))
     .filter(Boolean)
     .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || path.resolve(r.cwd || "") === path.resolve(cwd)))
+    .filter((r) => (!projectId || r.projectId === projectId) && (!status || status === "all" || r.status === status))
+    .filter((r) => (!mode || mode === "all" || r.task?.mode === mode))
+    .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
     .slice(0, Math.max(1, Math.min(200, limit)))
     .map((run) => getRun(run.id))
