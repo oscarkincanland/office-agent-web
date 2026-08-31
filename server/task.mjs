@@ -4,13 +4,13 @@ const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
 
 /**
- * 工作台的三种对话模式。创作模式沿用 agent 作为内部值，避免破坏已有
- * TaskEnvelope/Run 数据；前端展示为 Agent/创作。
+ * 工作台保留三种后端模式值。office 是历史兼容值，前端主入口只展示
+ * Chat / Agent；Office CLI 作为 Agent 内部能力按任务需要自动路由。
  */
 export const TASK_MODES = Object.freeze(["chat", "office", "agent"]);
 
 const READ_ONLY_TOOLS = Object.freeze([
-  "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read",
+  "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
 ]);
 const OFFICE_TOOLS = Object.freeze([
   ...READ_ONLY_TOOLS, "officecli",
@@ -31,7 +31,7 @@ export function modeLabel(mode) {
   return {
     chat: "Chat",
     office: "Office",
-    agent: "Agent / 创作",
+    agent: "Agent",
   }[normalizeTaskMode(mode)];
 }
 
@@ -85,7 +85,9 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   ];
   if (document) capabilities.push({ id: "document", label: "文档读取", status: "planned", required: true, reason: "本轮存在文档、文件引用或附件" });
   if (knowledge) capabilities.push({ id: "knowledge", label: "知识库检索", status: "planned", required: false, reason: "本轮出现知识库引用或检索意图" });
-  if (office) capabilities.push({ id: "officecli", label: "Office CLI", status: "preferred", required: Boolean(output), reason: "本轮涉及 Office 文件或 Office 编辑意图" });
+  // Chat 只负责检索与解释，即使用户提到 docx/xlsx，也不能触发 Office CLI
+  // 预检或写入路由；Office CLI 仅作为 Office 兼容模式或 Agent 内部能力使用。
+  if (office && mode !== "chat") capabilities.push({ id: "officecli", label: "Office CLI", status: "preferred", required: Boolean(output), reason: "本轮涉及 Office 文件或 Office 编辑意图" });
   if (map) capabilities.push({ id: "map", label: "地图工具", status: "planned", required: false, reason: "本轮出现地图、图层或空间分析意图" });
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
   return {
@@ -93,23 +95,24 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
     mode,
     capabilities,
     routing: {
-      officecli: office ? "preferred" : "not_needed",
+      officecli: office && mode !== "chat" ? "preferred" : "not_needed",
       documentRead: document ? "enabled" : "not_needed",
       knowledge: knowledge ? "enabled" : "not_needed",
       map: map ? "enabled" : "not_needed",
       skills: workflow ? "preflight" : "available_on_demand",
     },
-    output: { expected: output, saveToWorkspace: task.output?.saveToWorkspace !== false },
+    output: { expected: mode !== "chat" && output, saveToWorkspace: mode !== "chat" && task.output?.saveToWorkspace !== false },
   };
 }
 
 export function createTaskEnvelope(input = {}) {
   const references = Array.isArray(input.references) ? input.references : [];
+  const mode = normalizeTaskMode(input.mode);
   return {
     version: 1,
     id: input.id || `task_${crypto.randomUUID()}`,
     goal: String(input.goal || input.text || "").trim(),
-    mode: normalizeTaskMode(input.mode),
+    mode,
     modeLabel: modeLabel(input.mode),
     modeDescription: modeDescription(input.mode),
     workflowId: input.workflowId || null,
@@ -126,7 +129,7 @@ export function createTaskEnvelope(input = {}) {
     constraints: Array.isArray(input.constraints) ? input.constraints : [],
     output: {
       format: input.output?.format || "markdown",
-      saveToWorkspace: input.output?.saveToWorkspace !== false,
+      saveToWorkspace: mode !== "chat" && input.output?.saveToWorkspace !== false,
       requireSources: input.output?.requireSources !== false,
     },
     createdAt: input.createdAt || new Date().toISOString(),
@@ -146,6 +149,8 @@ export function taskSummary(task) {
     task.currentFile ? `- 当前文件: ${task.currentFile}` : "",
     task.references?.length ? `- 引用数: ${task.references.length}` : "- 引用数: 0",
     task.capabilityPlan?.capabilities?.length ? `- 本轮能力: ${task.capabilityPlan.capabilities.map((item) => item.label).join("、")}` : "",
-    "- 输出要求：完成后明确列出读取来源、修改文件、产物、假设和下一步。",
+    task.mode === "chat"
+      ? "- 输出要求：回答检索结果并明确列出来源；不修改文件、不执行脚本、不写入长期记忆。"
+      : "- 输出要求：完成后明确列出读取来源、修改文件、产物、假设和下一步。",
   ].filter(Boolean).join("\n");
 }

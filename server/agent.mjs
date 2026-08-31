@@ -80,6 +80,51 @@ function eventValueText(value) {
   try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
+// Chat 的 Skills 检索只读本地 SKILL.md，不把目录扫描交给模型自行猜路径。
+// 这样既能复用 Pi/Agents 的技能目录，也避免外部路径被 read 工具误用。
+function localSkillRoots() {
+  return [
+    path.join(AGENT_DIR, "skills"),
+    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".agents", "skills"),
+    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".claude", "skills"),
+    path.join(PROJECT_DIR, ".agents", "skills"),
+    path.join(PROJECT_DIR, ".pi", "skills"),
+    path.join(PROJECT_DIR, ".claude", "skills"),
+    "F:\\Claude code本地文件\\.claude\\skills",
+  ];
+}
+
+function localSkillCatalog() {
+  const result = [];
+  const seen = new Set();
+  for (const root of localSkillRoots()) {
+    if (!fs.existsSync(root)) continue;
+    let entries = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || seen.has(entry.name)) continue;
+      const file = path.join(root, entry.name, "SKILL.md");
+      if (!fs.existsSync(file)) continue;
+      let content = "";
+      try { content = fs.readFileSync(file, "utf8"); } catch { continue; }
+      const frontmatter = content.match(/^---\s*\n([\s\S]*?)\n---/);
+      const description = frontmatter?.[1]?.match(/description:\s*["']?([^"'\n]+)/)?.[1]?.trim() || "";
+      seen.add(entry.name);
+      result.push({ name: entry.name, description, path: file, source: root.includes(".agents") ? "agents" : root.includes(".pi") ? "pi" : "pi-agent" });
+    }
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function searchLocalSkills(query = "", limit = 12) {
+  const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const skills = localSkillCatalog();
+  const matched = words.length
+    ? skills.filter((skill) => words.every((word) => `${skill.name} ${skill.description}`.toLowerCase().includes(word)))
+    : skills;
+  return matched.slice(0, Math.max(1, Math.min(30, Number(limit) || 12)));
+}
+
 const APP_PROMPT_RETRY_DELAYS = [2000, 5000];
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
@@ -537,6 +582,40 @@ class AgentManager extends EventEmitter {
       },
     });
 
+    const skillsSearchTool = defineTool({
+      name: "skills_search",
+      label: "Skills 搜索",
+      description: "搜索本地已安装的 Skills，返回名称、简介和来源。用于解释某项能力是否存在、适合什么任务；只读，不执行 Skill。",
+      parameters: Type.Object({
+        query: Type.String({ description: "技能名称、用途或关键词；留空返回常用技能" }),
+        limit: Type.Optional(Type.Number({ description: "最多返回条数，默认 12" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const results = searchLocalSkills(params.query || "", params.limit);
+        if (!results.length) return { content: [{ type: "text", text: "未找到匹配的 Skill。" }], details: {} };
+        return {
+          content: [{ type: "text", text: results.map((item) => `- ${item.name}（${item.source}）：${item.description || "无简介"}`).join("\n") }],
+          details: { skills: results.map(({ name, description, source }) => ({ name, description, source })) },
+        };
+      },
+    });
+
+    const skillsReadTool = defineTool({
+      name: "skills_read",
+      label: "Skills 说明",
+      description: "读取指定 Skill 的 SKILL.md 说明，用于解释使用边界、依赖和调用方式。只读，不执行 Skill。",
+      parameters: Type.Object({
+        name: Type.String({ description: "Skill 名称，例如 frontend-design" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const name = String(params.name || "").trim();
+        const skill = localSkillCatalog().find((item) => item.name === name);
+        if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
+        const content = fs.readFileSync(skill.path, "utf8").slice(0, 30000);
+        return { content: [{ type: "text", text: `# ${name}\n\n${content}` }], details: { name, source: skill.source } };
+      },
+    });
+
     const contextReadTool = defineTool({
       name: "context_read",
       label: "读取引用上下文",
@@ -869,14 +948,14 @@ class AgentManager extends EventEmitter {
       agentDir: AGENT_DIR,
       modelRuntime,
       resourceLoader: loader,
-      customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
+      customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
+      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
       sessionManager,
     });
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"])]);
+      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"])]);
     } catch {}
 
     const emitter = new EventEmitter();

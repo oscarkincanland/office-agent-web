@@ -151,6 +151,14 @@ export default function App() {
     chatInputRef.current?.insertText(`@${marker}`);
   }, []);
 
+  // 知识库 / Skills 的只读 Chat 转 Agent：关闭入口后把问题、引用和上下文
+  // 交给主 ChatPanel，用户确认后再发送，避免检索入口隐式产生写入。
+  const handlePromoteToAgent = useCallback((payload = {}) => {
+    setKbMode(false);
+    setSkillsOpen(false);
+    window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120);
+  }, []);
+
   // 新建会话：清空历史消息和当前文档
   const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
     const next = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
@@ -670,6 +678,12 @@ export default function App() {
       <div className="app">
         {kbMode && (
           <KnowledgeBase
+            clientId={clientId}
+            workspace={currentWorkspace}
+            project={currentProject}
+            models={models}
+            defaultModel={defaultModel}
+            onPromoteToAgent={handlePromoteToAgent}
             onExit={(marks) => {
               setKbMode(false);
               if (marks?.length) {
@@ -816,6 +830,12 @@ export default function App() {
         <SkillsManager
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
+          clientId={clientId}
+          workspace={currentWorkspace}
+          project={currentProject}
+          models={models}
+          defaultModel={defaultModel}
+          onPromoteToAgent={handlePromoteToAgent}
           onAtMention={(value) => chatInputRef.current?.insertText(String(value || "").startsWith("@") ? value : `@${value}`)}
         />
         <AgentMarket
