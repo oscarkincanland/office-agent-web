@@ -155,10 +155,12 @@ function updateStepFromEvent(run, type, data = {}) {
   const toolCallId = data.toolCallId || data.id || "";
   const stepId = data.stepId || (toolName ? `${run.id}:tool:${toolCallId || toolName}` : null);
   if (type === "step_started" || type === "tool_start") {
+    const existing = run.steps?.find((item) => item.id === stepId);
     const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "running");
+    const wasRunning = existing?.status === "running";
     step.status = "running";
     step.startedAt ||= new Date().toISOString();
-    step.attempts = Number(step.attempts || 0) + 1;
+    if (!wasRunning) step.attempts = Number(step.attempts || 0) + 1;
     run.currentStepId = step.id;
   } else if (type === "step_finished" || type === "tool_end") {
     const step = ensureStep(run, stepId, data.name ? stepTitleForTool(data.name) : data.name, "completed");
@@ -173,7 +175,7 @@ function updateStepFromEvent(run, type, data = {}) {
   }
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [] } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
   const before = snapshotWorkspace(cwd);
@@ -189,6 +191,17 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     cwd: before.root,
     task: task || null,
     capabilityPlan: capabilityPlan || task?.capabilityPlan || null,
+    runtime: runtimeSnapshot || null,
+    recoveryChain: Array.isArray(recoveryChain) ? recoveryChain : [],
+    checkpoint: {
+      version: 1,
+      type: "jsonl_reopen",
+      status: sessionId ? "available" : "unavailable",
+      native: false,
+      sessionId: sessionId || null,
+      note: "当前使用 JSONL 会话重开 + 恢复提示词；Pi token 级 checkpoint 尚未接入。",
+      updatedAt: new Date().toISOString(),
+    },
     workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
     steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
@@ -232,12 +245,39 @@ export function recordRunEvent(id, type, data = {}) {
   if (!run) return null;
   run.events = Array.isArray(run.events) ? run.events : [];
   updateStepFromEvent(run, type, data);
+  if (type === "runtime_health" && data && typeof data === "object") {
+    run.runtimeHealth = data;
+    run.runtime = { ...(run.runtime || {}), ...data };
+  }
+  if (type === "runtime_error" && data && typeof data === "object") {
+    run.runtimeHealth = { status: "failed", ...data };
+    if (data.runtime && typeof data.runtime === "object") run.runtime = { ...(run.runtime || {}), ...data.runtime };
+    run.recovery = { required: true, reason: data.message || "Pi Runtime 异常", detectedAt: new Date().toISOString() };
+  }
   const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
   run.eventSeq = seq;
   if (run.events.length < 800) run.events.push({ seq, type, data, at: new Date().toISOString() });
   const saved = saveRun(run);
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type, data });
   return saved;
+}
+
+/** 幂等更新 Run 检查点；相同状态重复上报不会追加重复事件。 */
+export function updateRunCheckpoint(id, patch = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const next = { ...(run.checkpoint || {}), ...(patch || {}) };
+  const comparable = (value) => JSON.stringify(value);
+  if (comparable(next) === comparable(run.checkpoint || {})) return getRun(id);
+  next.updatedAt = new Date().toISOString();
+  run.checkpoint = next;
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const seq = Number(run.eventSeq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "run_checkpoint_updated", data: next, at: next.updatedAt });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_checkpoint_updated", data: next });
+  return getRun(saved.id);
 }
 
 function changedFiles(before, after) {
@@ -323,6 +363,12 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.status = finalStatus;
     run.error = finalError;
     if (sessionId) run.sessionId = sessionId;
+    run.checkpoint = {
+      ...(run.checkpoint || {}),
+      status: sessionId || run.sessionId ? "available" : "unavailable",
+      sessionId: sessionId || run.sessionId || null,
+      updatedAt: new Date().toISOString(),
+    };
     const validationMap = new Map(validationList.map((item) => [String(item?.path || "").replace(/\\/g, "/"), item]));
     for (const artifact of artifacts) {
       artifact.artifactId = `artifact_${crypto.randomUUID()}`;
