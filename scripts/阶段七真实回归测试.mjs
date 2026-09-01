@@ -180,6 +180,13 @@ try {
     assert.equal(data.run.recovery.required, true);
     assert.equal(data.run.events.some((event) => event.type === "run_recovered"), true);
     summary.serviceRestart = { status: data.run.status, recoveryRequired: data.run.recovery.required, event: "run_recovered" };
+    const diagnosticsResponse = await fetch(`http://127.0.0.1:${port}/api/agent/diagnostics?client=phase7&thread=restart&limit=1`);
+    assert.equal(diagnosticsResponse.ok, true);
+    const diagnostics = await diagnosticsResponse.json();
+    assert.equal(diagnostics.ok, true);
+    assert.equal(typeof diagnostics.service.version, "string");
+    assert.equal(typeof diagnostics.model.authConfigured, "boolean");
+    summary.serviceRestart.diagnostics = { version: diagnostics.service.version, authConfigured: diagnostics.model.authConfigured, recentFailures: diagnostics.recentFailures.length };
   } finally {
     await stopProcess(service);
   }

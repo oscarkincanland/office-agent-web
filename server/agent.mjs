@@ -138,6 +138,19 @@ function safeAgentErrorMessage(message) {
     .slice(0, 1200);
 }
 
+/** Pi 可能把最终模型错误放进 assistant message 后正常结束；转成可被上层 Run 捕获的错误。 */
+export function createSettledAgentError(message) {
+  const error = new Error(safeAgentErrorMessage(message));
+  error.code = "PI_SETTLED_ERROR";
+  return error;
+}
+
+export function captureSettledAgentError(entry) {
+  const settledError = entry?.lastAgentError || null;
+  if (entry) entry.lastSettledError = settledError;
+  return settledError;
+}
+
 /** 将 SDK/网关错误归一化，供有限重试和诊断日志复用。 */
 export function classifyAgentError(error) {
   const message = rawAgentErrorMessage(error);
@@ -1023,7 +1036,9 @@ class AgentManager extends EventEmitter {
             const messages = Array.isArray(ev.messages) ? ev.messages : [];
             const message = [...messages].reverse().find((item) => item?.role === "assistant");
             entry.lastAssistantText = assistantText(message) || entry.lastAssistantText || "";
-            if (message) entry.lastAgentError = message.errorMessage || (message.stopReason === "error" ? "模型调用失败" : null);
+            if (message?.errorMessage || message?.stopReason === "error") {
+              entry.lastAgentError = message.errorMessage || "模型调用失败";
+            }
           }
           // 若 ev 包含 usage 信息，emit stats 事件
           if (ev.usage) {
@@ -1059,21 +1074,28 @@ class AgentManager extends EventEmitter {
           });
           break;
         case "agent_settled":
-          if (entry.lastAgentError) emit("agent_error", { message: entry.lastAgentError });
+          {
+            const settledError = captureSettledAgentError(entry);
+            if (settledError) emit("agent_error", { message: settledError });
+          }
           if (entry.lastAssistantText) emit("assistant_final", { text: entry.lastAssistantText });
           emit("agent_end", {});
           entry.lastAgentError = null;
           entry.lastAssistantText = "";
           break;
         case "error":
-          emit("agent_error", { message: ev.error?.message || String(ev.error || "") });
+          {
+            const message = ev.error?.message || String(ev.error || "");
+            entry.lastAgentError = message || "模型调用失败";
+            emit("agent_error", { message: entry.lastAgentError });
+          }
           break;
         default:
           break;
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastAssistantText: "", turnStarted: false };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1098,6 +1120,7 @@ class AgentManager extends EventEmitter {
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
     entry.lastAgentError = null;
+    entry.lastSettledError = null;
     entry.lastAssistantText = "";
     // 只有尚未收到本轮模型/工具事件时，才允许对抛出的传输异常重放 prompt。
     // 一旦已经开始工具调用，绝不重复提交，避免副作用被执行两次。
@@ -1210,6 +1233,9 @@ class AgentManager extends EventEmitter {
         steer: isStreaming,
         metadata: { clientId: entry.clientId, threadId: entry.threadId, runId: entry.activeRunId },
       });
+      const settledError = entry.lastSettledError;
+      entry.lastSettledError = null;
+      if (settledError) throw createSettledAgentError(settledError);
     } finally {
       const activeRunId = entry.activeRunId;
       if (activeRunId) {
