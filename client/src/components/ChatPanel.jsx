@@ -44,6 +44,7 @@ let msgSeq = 0;
 const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
+const THINKING_KEY = "oaw_thinking_level";
 
 const MODE_META = {
   chat: {
@@ -168,10 +169,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     return forcedMode ? normalizeUiMode(forcedMode) : normalizeUiMode(saved);
   }); // Chat 只读检索 / Agent 完整执行与产出
   const [lastPrompt, setLastPrompt] = useState(null);
-  const [effort, setEffort] = useState("medium"); // 推理强度 low/medium/high
+  const [effort, setEffort] = useState(() => {
+    const saved = localStorage.getItem(THINKING_KEY);
+    return ["low", "medium", "high"].includes(saved) ? saved : "low";
+  }); // 推理强度 low/medium/high
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
+  const [agentPhase, setAgentPhase] = useState("");
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
@@ -185,6 +191,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const rafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
   const stoppingRef = useRef(false);
+  const agentErrorRef = useRef(false);
   const queueRef = useRef([]);
   // 组件挂载状态追踪，防止卸载后更新状态
   const mountedRef = useRef(true);
@@ -271,6 +278,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       queueRef.current = [];
       setQueuedMessages([]);
       setInjectedContext([]);
+      setAgentPhase("");
+      agentErrorRef.current = false;
     }
   }, [historyMessages]);
 
@@ -303,6 +312,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAttachments([]);
     setInput("");
     setLastPrompt(null);
+    setAgentPhase("");
+    agentErrorRef.current = false;
     systemEventKeysRef.current.clear();
     previousThreadRef.current = threadId;
   }, [threadId]);
@@ -318,6 +329,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     streamingMsgIdRef.current = null;
     setInput("");
     setLastPrompt(null);
+    setAgentPhase("");
+    agentErrorRef.current = false;
     setReferences([]);
     setImages([]);
     setAttachments([]);
@@ -424,7 +437,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       applyModel(cur, nextModels);
-      const syncKey = `${clientId}:${threadId || ""}:${cur}`;
+      // 模型是工作台级偏好；切换子会话不重复执行一次 setModel，避免历史恢复
+      // 后又额外等待 provider 初始化。用户主动换模型时 changeModel 仍会立即同步。
+      const syncKey = `${clientId}:${cur}`;
       if (cur && syncKey !== syncedModelRef.current) {
         syncedModelRef.current = syncKey;
         try { await setAgentModel(clientId, cur, threadId); }
@@ -524,14 +539,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     switch (type) {
       // 文本 token：节流合并到 blocks
       case "token":
+        setAgentPhase("生成回复");
         if (aid) scheduleFlush("token", data);
         break;
       // 思考过程：节流合并到 blocks
       case "thinking":
+        setAgentPhase("模型思考");
         if (aid) scheduleFlush("thinking", data);
         break;
       // 工具调用开始：推入新 tool block
       case "tool_start":
+        setAgentPhase(`调用工具：${data.name || "处理中"}`);
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
           patch(aid, (m) => ({
@@ -601,10 +619,37 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       case "message_end":
         break;
       case "agent_retry":
+        // Pi 结算失败后，工作台可能会在同一请求内重放一次。失败回合
+        // 已经发出 agent_end 并清空了 assistant 引用，这里重新建立一个
+        // 流式气泡，避免恢复后的 token 被丢弃。
+        agentErrorRef.current = false;
+        stoppingRef.current = false;
+        setStopping(false);
+        setBusy(true);
+        setRunState((s) => ({ ...s, status: "running" }));
+        if (!assistantIdRef.current) {
+          const retryAid = newId();
+          assistantIdRef.current = retryAid;
+          streamingMsgIdRef.current = retryAid;
+          streamBufRef.current = { text: "", thinking: "" };
+          setMessages((ms) => [...ms, {
+            id: retryAid, role: "assistant", blocks: [],
+            status: "streaming", images: [], createdAt: Date.now(),
+          }]);
+        } else {
+          patch(assistantIdRef.current, (m) => ({ ...m, status: "streaming", errorText: "" }));
+        }
+        setAgentPhase(`模型连接重试${data.attempt && data.maxAttempts ? `（${data.attempt}/${data.maxAttempts}）` : ""}`);
         pushSystem(`模型连接异常，正在重试${data.attempt && data.maxAttempts ? `（${data.attempt}/${data.maxAttempts}）` : ""}：${data.message || "请稍候"}`, `agent_retry:${data.source || "agent"}:${data.attempt || "retry"}:${data.message || "retry"}`);
         break;
       case "agent_retry_end":
-        if (data.success) pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
+        if (data.success) {
+          setAgentPhase("模型连接已恢复");
+          pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
+        }
+        break;
+      case "thinking_level":
+        setRunState((s) => ({ ...s, thinkingLevel: data.effective || null }));
         break;
       case "capability_plan":
         {
@@ -635,20 +680,24 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       case "context_compacted":
         pushSystem(`上下文已压缩${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`);
         break;
-      case "agent_end":
+      case "agent_end": {
+        const endedWithError = agentErrorRef.current;
         if (streamBufRef.current) flushNow(aid);
-        if (aid) patch(aid, (m) => ({ ...m, status: "done" }));
+        if (aid) patch(aid, (m) => ({ ...m, status: endedWithError ? "error" : "done" }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
         setBusy(false);
         stoppingRef.current = false;
         setStopping(false);
-        setRunState((s) => ({ ...s, status: "finishing" }));
-        if (onAgentEnd) onAgentEnd();
-        flushQueued(true);
+        setAgentPhase(endedWithError ? "模型调用失败" : "");
+        setRunState((s) => ({ ...s, status: endedWithError ? "failed" : "finishing" }));
+        if (!endedWithError && onAgentEnd) onAgentEnd();
+        if (!endedWithError) flushQueued(true);
         break;
+      }
       case "agent_error":
+        agentErrorRef.current = true;
         if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText: data.message || "出错了" }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
@@ -656,6 +705,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         setBusy(false);
         stoppingRef.current = false;
         setStopping(false);
+        setAgentPhase("模型调用失败");
         setRunState((s) => ({ ...s, status: "failed" }));
         break;
       case "steer":
@@ -868,6 +918,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAttachments([]);
     setInjectedContext([]);
     setBusy(true);
+    agentErrorRef.current = false;
+    setAgentPhase("连接模型");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
       const res = await fetch("/api/agent/prompt", {
@@ -905,6 +957,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
         if (mountedRef.current) setBusy(false);
+        setAgentPhase("请求失败");
         setRunState((s) => ({ ...s, status: "failed" }));
       }
     } catch (e) {
@@ -912,6 +965,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       patch(aid, (m) => ({ ...m, status: "error", text: "网络错误: " + e.message }));
       assistantIdRef.current = null;
       if (mountedRef.current) setBusy(false);
+      setAgentPhase("网络请求失败");
     }
   };
 
@@ -1068,7 +1122,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           <div className="chat-hist-head" onClick={() => setHistOpen((v) => !v)}>
             <span className="chat-hist-chevron">{histOpen ? "▾" : "▸"}</span>
             <Icon name="history" size={12} />
-            <span className="chat-hist-title">历史</span>
+            <span className="chat-hist-title">{historyLoading ? "切换中…" : "历史"}</span>
             <span className="chat-hist-count">{sessions.length}</span>
             <button
               className="btn-xs chat-hist-refresh"
@@ -1081,7 +1135,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               <SessionList
                 sessions={sessions}
                 unreadByThread={unreadByThread}
-                onSelect={(s) => { if (onSelectSession) onSelectSession(s); setHistOpen(false); }}
+                onSelect={async (s) => {
+                  if (!onSelectSession || historyLoading) return;
+                  setHistoryLoading(true);
+                  try { await onSelectSession(s); setHistOpen(false); }
+                  finally { setHistoryLoading(false); }
+                }}
                 onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
                 onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } })}
@@ -1111,8 +1170,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         </div>
         <div className="task-status-bar" role="status" aria-live="polite">
           <span className={`task-status-dot ${runState.status}`} />
-          <span>{frozen ? "会话已冻结" : runState.status === "running" ? "任务执行中" : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
+          <span>{frozen ? "会话已冻结" : runState.status === "running" ? (agentPhase || "任务执行中") : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
           <span className="task-status-meta task-mode-meta">{MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}</span>
+          {runState.thinkingLevel && <span className="task-status-meta">推理 {runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}</span>}
           {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
           {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
@@ -1346,7 +1406,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                     <div
                       key={e.id}
                       className={`ct-pop-item ${effort === e.id ? "active" : ""}`}
-                      onClick={() => { setEffort(e.id); setEffortOpen(false); }}
+                      onClick={() => { setEffort(e.id); localStorage.setItem(THINKING_KEY, e.id); setEffortOpen(false); }}
                     >
                       <b>{e.label}</b>
                       <span className="ct-pop-desc">{e.desc}</span>
@@ -1505,7 +1565,7 @@ function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemory
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
               <div className="bubble loading-bubble">
-                <LoadingDots label="正在思考" seconds={waitSec} />
+                <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
               </div>
             )}
             {/* 流式收尾：呼吸脉冲圆点 */}

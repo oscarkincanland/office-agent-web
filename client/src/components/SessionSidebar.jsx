@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, deleteSession, renameSession, fileToBase64, listSessions, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import MemoryTab from "./MemoryTab.jsx";
@@ -213,7 +213,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ sessions, files, currentName, onOpenFile, onRefreshFiles, onRefreshSessions, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onSelectSession, onAtMention, onNewSession, onForkSession, onPinSession, onFreezeSession, unreadByThread = {} }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -507,27 +507,6 @@ export default function SessionSidebar({ sessions, files, currentName, onOpenFil
           ><Icon name="book" size={11} /> 记忆</button>
         </div>
       )}
-
-      {/* 持久会话历史：与 Chat 历史抽屉共用同一份服务端列表，后台任务不会因新建会话消失 */}
-      <div className="sidebar-section sessions-section">
-        <div className="sidebar-section-head">
-          <Icon name="history" size={12} />
-          <span className="section-name">会话</span>
-          <span className="section-count">{sessions.length}</span>
-          <button className="btn-xs section-refresh" onClick={onRefreshSessions} title="刷新会话"><Icon name="refresh" size={11} /></button>
-          <button className="btn-xs section-new" onClick={() => onNewSession?.()} title="新建会话"><Icon name="plus" size={11} /></button>
-        </div>
-        <SessionList
-          sessions={sessions}
-          unreadByThread={unreadByThread}
-          onSelect={onSelectSession}
-          onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions?.(); } catch (e) { alert("删除失败: " + e.message); } }}
-          onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions?.(); } catch (e) { alert("重命名失败: " + e.message); } }}
-          onFork={onForkSession}
-          onPin={onPinSession}
-          onFreeze={onFreezeSession}
-        />
-      </div>
 
       {/* 文件树 */}
       <div className="sidebar-section-head">

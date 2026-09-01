@@ -760,7 +760,7 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
       const comments = [];
       for (const f of listSessionFiles()) {
         try {
-          const text = fs.readFileSync(f.fullPath, "utf8");
+          const text = readSessionTextCached(f);
           if (!text.includes(fileName)) continue;
           for (const line of text.split(/\r?\n/)) {
             if (!line.trim()) continue;
@@ -1109,6 +1109,9 @@ const SESSIONS_DIR = path.join(PROJECT_DIR, ".规聚会话");
 const LEGACY_SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
 const SESSION_READ_DIRS = [SESSIONS_DIR, LEGACY_SESSIONS_DIR];
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+const SESSION_TEXT_CACHE_LIMIT = 160;
+const sessionTextCache = new Map();
+const sessionIdIndex = new Map();
 
 // ---------- skills ----------
 // 交通规划工程师工作台：按技能用途分类
@@ -1328,7 +1331,7 @@ function listSessionFiles() {
       } else if (e.isFile() && /\.(?:jsonl|json)$/i.test(e.name)) {
         try {
           const st = fs.statSync(full);
-          candidates.push({ fileName: e.name, fullPath: full, storeDir, mtime: st.mtimeMs });
+          candidates.push({ fileName: e.name, fullPath: full, storeDir, mtime: st.mtimeMs, size: st.size });
         } catch {}
       }
     }
@@ -1336,6 +1339,7 @@ function listSessionFiles() {
   for (const dir of SESSION_READ_DIRS) walk(dir, 0, dir);
   // 同一个会话迁移后可能同时存在于新旧目录；按 session id 去重，
   // 但保留旧目录中不同子目录下同名的独立会话。
+  sessionIdIndex.clear();
   const preferred = candidates.sort((a, b) => {
     const aCurrent = a.storeDir === SESSIONS_DIR ? 1 : 0;
     const bCurrent = b.storeDir === SESSIONS_DIR ? 1 : 0;
@@ -1346,9 +1350,14 @@ function listSessionFiles() {
   for (const f of preferred) {
     let identity = `file:${f.fullPath}`;
     try {
-      const firstLine = fs.readFileSync(f.fullPath, "utf8").split(/\r?\n/)[0];
+      const firstLine = readSessionTextCached(f).split(/\r?\n/)[0];
       const h = JSON.parse(firstLine);
-      if (h?.id || h?.sessionId) identity = `id:${h.id || h.sessionId}`;
+      const sessionId = h?.id || h?.sessionId;
+      if (sessionId) {
+        identity = `id:${sessionId}`;
+        f.sessionId = sessionId;
+        if (!sessionIdIndex.has(sessionId)) sessionIdIndex.set(sessionId, f);
+      }
     } catch {}
     if (seenIds.has(identity)) continue;
     seenIds.add(identity);
@@ -1357,14 +1366,39 @@ function listSessionFiles() {
   return out.sort((a, b) => b.mtime - a.mtime);
 }
 
+function readSessionTextCached(foundOrPath) {
+  const fullPath = typeof foundOrPath === "string" ? foundOrPath : foundOrPath?.fullPath;
+  if (!fullPath) return "";
+  let stat;
+  try {
+    stat = fs.statSync(fullPath);
+  } catch {
+    sessionTextCache.delete(fullPath);
+    return "";
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = sessionTextCache.get(fullPath);
+  if (cached?.fingerprint === fingerprint) return cached.text;
+  const text = fs.readFileSync(fullPath, "utf8");
+  sessionTextCache.set(fullPath, { fingerprint, text });
+  while (sessionTextCache.size > SESSION_TEXT_CACHE_LIMIT) {
+    const oldest = sessionTextCache.keys().next().value;
+    if (oldest === undefined) break;
+    sessionTextCache.delete(oldest);
+  }
+  return text;
+}
+
 // 根据 id 查找对应的会话文件（先按文件名匹配，再按首行 session id 匹配）
 function findSessionFile(id) {
   const files = listSessionFiles();
   const byName = files.find((f) => f.fileName === id + ".jsonl" || f.fileName === id + ".json" || f.fileName.startsWith(id));
   if (byName) return byName;
+  const indexed = sessionIdIndex.get(String(id));
+  if (indexed && files.some((f) => f.fullPath === indexed.fullPath)) return indexed;
   for (const f of files) {
     try {
-      const text = fs.readFileSync(f.fullPath, "utf8");
+      const text = readSessionTextCached(f);
       const firstLine = text.split(/\r?\n/)[0];
       if (!firstLine) continue;
       const h = JSON.parse(firstLine);
@@ -1388,7 +1422,7 @@ function materializeWritableSession(found) {
 function readSessionHeader(found) {
   if (!found?.fullPath) return {};
   try {
-    const firstLine = fs.readFileSync(found.fullPath, "utf8").split(/\r?\n/)[0];
+    const firstLine = readSessionTextCached(found).split(/\r?\n/)[0];
     return firstLine ? JSON.parse(firstLine) : {};
   } catch {
     return {};
@@ -1406,6 +1440,7 @@ function updateSessionHeader(id, patch = {}) {
     const next = { ...header, ...patch, updatedAt: new Date().toISOString() };
     lines[0] = JSON.stringify(next);
     atomicWriteFile(writable.fullPath, lines.join("\n"), "utf8");
+    sessionTextCache.delete(writable.fullPath);
     return { ok: true, header: next };
   } catch (error) {
     return { ok: false, status: 500, error: error.message };
@@ -1637,7 +1672,7 @@ app.post("/api/sessions/:id/fork", (req, res) => {
   const found = findSessionFile(req.params.id);
   if (!found) return res.status(404).json({ error: "not found" });
   try {
-    const source = fs.readFileSync(found.fullPath, "utf8");
+    const source = readSessionTextCached(found);
     const lines = source.split(/\r?\n/).filter(Boolean);
     if (!lines.length) return res.status(400).json({ error: "empty session" });
     const header = JSON.parse(lines[0]);
@@ -1672,7 +1707,7 @@ app.get("/api/workspaces", (_req, res) => {
   const seen = new Set([WORKSPACE_DIR]);
   for (const f of listSessionFiles()) {
     try {
-      const first = fs.readFileSync(f.fullPath, "utf8").split(/\r?\n/)[0];
+      const first = readSessionTextCached(f).split(/\r?\n/)[0];
       const h = JSON.parse(first);
       if (h.cwd && !seen.has(h.cwd)) {
         seen.add(h.cwd);
@@ -1798,7 +1833,7 @@ app.get("/api/sessions", (req, res) => {
     const sessions = [];
     for (const f of files) {
       try {
-        const text = fs.readFileSync(f.fullPath, "utf8");
+        const text = readSessionTextCached(f);
         const firstLine = text.split(/\r?\n/)[0];
         if (!firstLine) continue;
         const h = JSON.parse(firstLine);
@@ -1907,7 +1942,7 @@ app.get("/api/sessions/:id", (req, res) => {
   const found = findSessionFile(req.params.id);
   if (!found) return res.status(404).json({ error: "not found" });
   try {
-    const text = fs.readFileSync(found.fullPath, "utf8");
+    const text = readSessionTextCached(found);
     const all = parseJsonl(text);
     const header = all.find((e) => e && e.type === "header") || all[0] || {};
     const entries = all.filter((e) => e !== header);
@@ -1962,6 +1997,7 @@ app.delete("/api/sessions/:id", (req, res) => {
   if (!found) return res.status(404).json({ error: "not found" });
   try {
     fs.unlinkSync(found.fullPath);
+    sessionTextCache.delete(found.fullPath);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -2047,25 +2083,32 @@ app.post("/api/agent/prompt", async (req, res) => {
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
   const key = agentKey(client, thread);
   const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
+  const initialProject = projectManager.getProjectForWorkspace(requestedWorkspace);
+  const initialProjectSettings = initialProject?.settings || projectManager.defaultProjectSettings();
+  const initialModel = String(requestedModel || initialProjectSettings.defaultModel || "").trim();
   let entry;
   try {
-    entry = await agentManager.getOrCreate(key, { threadId: thread, cwd: requestedWorkspace });
+    entry = await agentManager.getOrCreate(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
   } catch (e) {
     const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
     return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
   }
   const runWorkspace = entry.workspace || requestedWorkspace;
+  const project = projectManager.getProjectForWorkspace(runWorkspace) || initialProject;
+  const projectSettings = project?.settings || initialProjectSettings;
+  const effectiveModel = String(requestedModel || projectSettings.defaultModel || "").trim();
   const sessionHeader = readSessionHeader(findSessionFile(entry.session?.sessionId || ""));
   if (sessionHeader.frozen) {
     return res.status(409).json({ error: "当前会话已冻结，请先解冻后再继续执行", code: "SESSION_FROZEN", sessionId: entry.session?.sessionId || null });
   }
-  const project = projectManager.getProjectForWorkspace(runWorkspace);
-  const projectSettings = project?.settings || projectManager.defaultProjectSettings();
-  const effectiveModel = String(requestedModel || projectSettings.defaultModel || "").trim();
   const projectSkills = Array.isArray(projectSettings.skills) ? projectSettings.skills : [];
   if (effectiveModel) {
     try {
-      await agentManager.setModel(key, effectiveModel);
+      const current = entry.session?.model;
+      const currentSpec = current?.provider && current?.id ? `${current.provider}/${current.id}` : "";
+      // ChatPanel 每次发送都会带当前模型；同模型无需再次 setModel，避免重复
+      // 触发 Pi 的 provider/model 初始化，把首字节延迟叠加到每一轮。
+      if (currentSpec !== effectiveModel) await agentManager.setModel(key, effectiveModel);
     } catch (e) {
       const diagnostic = recordAgentDiagnostic(req, { client, thread, model: effectiveModel, error: e });
       return res.status(409).json({ error: `模型同步失败：${diagnostic.message}`, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -2402,7 +2445,9 @@ app.get("/api/agent/stream", async (req, res) => {
   const thread = String(req.query.thread || "");
   if (!client) return res.status(400).end();
   const workspace = normalizeWorkspace(req.query.cwd || getWorkspace()) || getWorkspace();
-  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread, cwd: workspace });
+  const project = projectManager.getProjectForWorkspace(workspace);
+  const defaultModel = String(project?.settings?.defaultModel || "").trim();
+  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
