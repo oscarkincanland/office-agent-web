@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import { appendJsonLine, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
-const EVENT_DIR = path.join(PROJECT_DIR, ".oaw", "events");
+const EVENT_DIR = path.resolve(process.env.OAW_EVENT_DIR || path.join(PROJECT_DIR, ".oaw", "events"));
 const EVENT_FILE = path.join(EVENT_DIR, "事件流.jsonl");
 const READ_CURSOR_FILE = path.join(EVENT_DIR, "阅读游标.json");
+const EVENT_LOCK_FILE = path.join(EVENT_DIR, "事件流写入.lock");
 const MAX_MEMORY_EVENTS = 20000;
 const MAX_DATA_STRING = 8000;
+const EVENT_LOCK_TIMEOUT_MS = 3000;
 
 // token/thinking/tool_output 属于高频流式事件，仍由当前会话 SSE 实时发送，
 // 但不写入根级 Store，避免长任务把持久日志膨胀成不可用的副作用。
@@ -46,10 +48,11 @@ function safeJson(value) {
   }
 }
 
-function loadStore() {
-  if (loaded) return;
+function loadStore(force = false) {
+  if (loaded && !force) return;
   loaded = true;
   ensureStore();
+  nextSeq = 0;
   try {
     const lines = fs.readFileSync(EVENT_FILE, "utf8").split(/\r?\n/).filter(Boolean);
     const parsed = [];
@@ -65,6 +68,46 @@ function loadStore() {
   } catch {}
 }
 
+function processAlive(pid) {
+  if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return false;
+  if (Number(pid) === process.pid) return true;
+  try { process.kill(Number(pid), 0); return true; } catch { return false; }
+}
+
+function acquireEventLock() {
+  ensureStore();
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < EVENT_LOCK_TIMEOUT_MS) {
+    try {
+      const fd = fs.openSync(EVENT_LOCK_FILE, "wx");
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, lockedAt: new Date().toISOString() }) + "\n", "utf8");
+      return fd;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const record = JSON.parse(fs.readFileSync(EVENT_LOCK_FILE, "utf8"));
+        if (!processAlive(Number(record.pid))) fs.rmSync(EVENT_LOCK_FILE, { force: true });
+      } catch {
+        // 创建者可能还没写完锁内容；只有明显超时的损坏锁才回收。
+        try {
+          const stat = fs.statSync(EVENT_LOCK_FILE);
+          if (Date.now() - stat.mtimeMs > EVENT_LOCK_TIMEOUT_MS) fs.rmSync(EVENT_LOCK_FILE, { force: true });
+        } catch {}
+      }
+      if (fs.existsSync(EVENT_LOCK_FILE)) {
+        // appendEvent 是同步边界；短暂让出线程，避免多个服务进程忙等。
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 8);
+      }
+    }
+  }
+  throw new Error("事件流写入锁超时");
+}
+
+function releaseEventLock(fd) {
+  try { fs.closeSync(fd); } catch {}
+  try { fs.rmSync(EVENT_LOCK_FILE, { force: true }); } catch {}
+}
+
 export function shouldPersistEvent(type) {
   return PERSISTED_TYPES.has(String(type || ""));
 }
@@ -72,26 +115,35 @@ export function shouldPersistEvent(type) {
 export function appendEvent({ clientId = null, threadId = null, runId = null, type, data = {}, at = new Date().toISOString() } = {}) {
   if (!shouldPersistEvent(type)) return null;
   loadStore();
-  const event = {
-    eventId: `event_${crypto.randomUUID()}`,
-    seq: ++nextSeq,
-    at,
-    clientId: clientId || null,
-    threadId: threadId || null,
-    runId: runId || null,
-    type: String(type),
-    data: safeJson(data),
-  };
+  let lockFd;
   try {
+    lockFd = acquireEventLock();
+    // 另一进程可能在当前进程上次读取后追加过事件，分配序号前必须重新读取。
+    loadStore(true);
+    const event = {
+      eventId: `event_${crypto.randomUUID()}`,
+      seq: ++nextSeq,
+      at,
+      clientId: clientId || null,
+      threadId: threadId || null,
+      runId: runId || null,
+      type: String(type),
+      data: safeJson(data),
+    };
     appendJsonLine(EVENT_FILE, event);
+    events.push(event);
+    if (events.length > MAX_MEMORY_EVENTS) events = events.slice(-MAX_MEMORY_EVENTS);
+    releaseEventLock(lockFd);
+    lockFd = undefined;
+    emitter.emit("event", event);
+    return event;
   } catch (error) {
-    // Store 写入失败不能阻断 Agent 当前回合；内存事件仍让当前 UI 可见。
+    // Store 写入失败不能阻断 Agent 当前回合；当前会话事件仍由独立通道负责。
     console.warn("[events] 持久化事件失败：", error?.message || error);
+    return null;
+  } finally {
+    if (lockFd !== undefined) releaseEventLock(lockFd);
   }
-  events.push(event);
-  if (events.length > MAX_MEMORY_EVENTS) events = events.slice(-MAX_MEMORY_EVENTS);
-  emitter.emit("event", event);
-  return event;
 }
 
 export function listEvents({ after = 0, clientId = "", threadId = "", runId = "", limit = 500 } = {}) {

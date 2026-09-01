@@ -90,7 +90,8 @@ function entryCreatedAt(entry, message) {
 
 function sameWorkspacePath(a, b) {
   if (!a || !b) return false;
-  return String(a).replace(/[\\/]$/, "").toLowerCase() === String(b).replace(/[\\/]$/, "").toLowerCase();
+  const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return normalize(a) === normalize(b);
 }
 
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
