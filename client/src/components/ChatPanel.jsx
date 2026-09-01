@@ -1206,7 +1206,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
+          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onResend={(text) => send(text)} onToggleTool={(toolId) => {
             patch(m.id, (msg) => {
               let blocks = [...(msg.blocks || [])];
               blocks = blocks.map((b, i) => {
@@ -1448,7 +1448,7 @@ function SafeMarkdown({ text }) {
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
+function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
     return (
       <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
