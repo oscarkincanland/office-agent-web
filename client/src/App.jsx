@@ -134,9 +134,14 @@ export default function App() {
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
   const restoredRef = useRef(false); // 界面状态恢复标记（避免重复/过早保存）
   const sessionsRef = useRef([]);
+  const sessionsRefreshRef = useRef(null);
+  const projectsRefreshRef = useRef(null);
+  const eventRefreshTimerRef = useRef(null);
+  const sessionHistoryCacheRef = useRef(new Map());
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
+  const workspaceSwitchSeqRef = useRef(0);
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
@@ -188,11 +193,19 @@ export default function App() {
   }, [currentDir]);
 
   const refreshSessions = useCallback(async () => {
-    try {
-      const next = (await listSessions()).sessions || [];
-      setSessions(next);
-      return next;
-    } catch { return []; }
+    if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
+    const request = listSessions()
+      .then((data) => {
+        const next = data.sessions || [];
+        setSessions(next);
+        return next;
+      })
+      .catch(() => []);
+    sessionsRefreshRef.current = request;
+    try { return await request; }
+    finally {
+      if (sessionsRefreshRef.current === request) sessionsRefreshRef.current = null;
+    }
   }, []);
 
   // 根级事件订阅：当前对话继续使用原有 thread SSE，App 额外监听所有 thread 的重要状态，
@@ -228,7 +241,14 @@ export default function App() {
             eventNoticeKeysRef.current.add(noticeKey);
             setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
           }
-          if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) refreshSessions();
+          if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
+            if (!eventRefreshTimerRef.current) {
+              eventRefreshTimerRef.current = window.setTimeout(() => {
+                eventRefreshTimerRef.current = null;
+                if (document.visibilityState === "visible") refreshSessions();
+              }, 180);
+            }
+          }
         } catch {}
       };
     };
@@ -236,11 +256,27 @@ export default function App() {
     return () => {
       cancelled = true;
       source?.close();
+      if (eventRefreshTimerRef.current) {
+        clearTimeout(eventRefreshTimerRef.current);
+        eventRefreshTimerRef.current = null;
+      }
     };
   }, [clientId, refreshSessions]);
 
   const refreshProjects = useCallback(async () => {
-    try { setProjects((await listProjects()).projects || []); } catch {}
+    if (projectsRefreshRef.current) return projectsRefreshRef.current;
+    const request = listProjects()
+      .then((data) => {
+        const next = data.projects || [];
+        setProjects(next);
+        return next;
+      })
+      .catch(() => []);
+    projectsRefreshRef.current = request;
+    try { return await request; }
+    finally {
+      if (projectsRefreshRef.current === request) projectsRefreshRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -248,8 +284,12 @@ export default function App() {
     refreshSessions();
     refreshProjects();
     let modelTimer;
-    const sessionTimer = window.setInterval(refreshSessions, 3000);
-    const projectTimer = window.setInterval(refreshProjects, 10000);
+    const sessionTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshSessions();
+    }, 15000);
+    const projectTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshProjects();
+    }, 30000);
     const syncModels = async () => {
       try {
         const d = await refreshModels();
@@ -267,7 +307,10 @@ export default function App() {
       try {
         const w = await listWorkspaces();
         setWorkspaces(w.workspaces || []);
-        if (w.workspaces?.[0]) setCurrentWorkspace(w.workspaces[0].path);
+        const savedWorkspace = loadUIState()?.workspace;
+        const restored = w.workspaces?.find((item) => sameWorkspacePath(item.path, savedWorkspace));
+        if (restored) setCurrentWorkspace(restored.path);
+        else if (w.workspaces?.[0]) setCurrentWorkspace(w.workspaces[0].path);
       } catch {}
     })();
     return () => {
@@ -292,8 +335,19 @@ export default function App() {
 
   // 切换工作区
   const handleWorkspaceChange = useCallback(async (dir) => {
+    const requestedPath = String(dir || "").trim();
+    if (!requestedPath || sameWorkspacePath(requestedPath, currentWorkspace)) return;
+    const switchSeq = ++workspaceSwitchSeqRef.current;
+    // 先清空旧工作区的视图，避免等待服务端时继续操作旧文件。
+    setCurrentDir("");
+    setFiles([]);
+    setTabs([]);
+    setActiveTab(null);
+    setHistoryMessages(null);
+    setCurrentSessionId(null);
     try {
-      const r = await switchWorkspace(dir);
+      const r = await switchWorkspace(requestedPath);
+      if (switchSeq !== workspaceSwitchSeqRef.current) return;
       setCurrentWorkspace(r.workspace);
       // 新工作区加入下拉列表（自定义路径切换后也能在下拉中看到）
       setWorkspaces((prev) => {
@@ -301,15 +355,17 @@ export default function App() {
         const name = String(r.workspace).split(/[\\/]/).filter(Boolean).pop() || r.workspace;
         return [...prev, { path: r.workspace, name }];
       });
-      setCurrentDir("");
       setFiles(r.files || []);
-      await refreshProjects();
-      setTabs([]); // 关闭所有文档
-      setActiveTab(null);
-      // 不阻塞切换：会话创建异步进行，模型连不上也不影响工作区切换
-      handleNewSession(r.workspace).catch(() => {});
-    } catch (e) { alert("切换失败: " + e.message); }
-  }, [handleNewSession, refreshProjects]);
+      // 项目统计和新会话不再阻塞工作区视图；完成后由列表刷新反映结果。
+      void refreshProjects();
+      void handleNewSession(r.workspace);
+    } catch (e) {
+      if (switchSeq === workspaceSwitchSeqRef.current) {
+        refreshFiles();
+        alert("切换失败: " + e.message);
+      }
+    }
+  }, [currentWorkspace, handleNewSession, refreshFiles, refreshProjects]);
 
   const visibleSessions = currentWorkspace
     ? sessions.filter((session) => !session.cwd || sameWorkspacePath(session.cwd, currentWorkspace))
@@ -338,10 +394,10 @@ export default function App() {
     refreshFiles(dir || "");
   }, [refreshFiles]);
 
-  const open = useCallback(async (name) => {
+  const open = useCallback(async (name, thread = threadId) => {
     setDocLoading(true);
     try {
-      const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}`).then((r) => r.json());
+      const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}`).then((r) => r.json());
       // 单次 setTabs：避免 React 批处理导致重复 tab
       setTabs((prev) => {
         const exists = prev.find((t) => t.name === name);
@@ -375,20 +431,33 @@ export default function App() {
     const loadSeq = ++sessionLoadSeqRef.current;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
     const targetWorkspace = session.cwd || currentWorkspace;
+    let resumedWorkspace = targetWorkspace;
     if (targetWorkspace && !sameWorkspacePath(targetWorkspace, currentWorkspace)) {
       try {
         const switched = await switchWorkspace(targetWorkspace);
         if (loadSeq !== sessionLoadSeqRef.current) return;
+        resumedWorkspace = switched.workspace;
         setCurrentWorkspace(switched.workspace);
         setCurrentDir("");
         setFiles(switched.files || []);
         setTabs([]);
         setActiveTab(null);
+        void refreshProjects();
       } catch (e) {
         console.warn("切换到会话工作区失败，仍尝试加载历史:", e.message);
       }
     }
     const conversationId = session.threadId || session.id;
+    const cachedHistory = sessionHistoryCacheRef.current.get(session.id);
+    if (cachedHistory) setHistoryMessages(cachedHistory);
+    // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
+    // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
+    const historyPromise = Promise.all([
+      getSession(session.id),
+      listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
+    ]);
+    const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
+      .catch((e) => { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); return null; });
     setUnreadByThread((prev) => {
       if (!prev[conversationId]) return prev;
       const next = { ...prev };
@@ -396,16 +465,12 @@ export default function App() {
       return next;
     });
     markAgentEventsRead(clientId, eventCursorRef.current).catch(() => {});
-    setCurrentSessionId(session.id);
-    setThreadId(conversationId);
-    localStorage.setItem("oaw_thread_id", conversationId);
-    try { await resumeAgentThread(clientId, conversationId, session.id, targetWorkspace); } catch (e) { console.warn("恢复 Agent 会话失败，仍加载历史记录:", e.message); }
     try {
-      const [d, runData] = await Promise.all([
-        getSession(session.id),
-        listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
-      ]);
+      const [[d, runData]] = await Promise.all([historyPromise, resumePromise]);
       if (loadSeq !== sessionLoadSeqRef.current) return;
+      setCurrentSessionId(session.id);
+      setThreadId(conversationId);
+      localStorage.setItem("oaw_thread_id", conversationId);
       // 按原始 JSONL 顺序重建消息。toolResult 是工具输出，不能渲染成 You 的用户气泡；
       // 它要按 toolCallId 回填到对应 Agent 工具卡，否则 Word/PPT 读取结果会被误认为用户输入。
       const msgs = [];
@@ -486,19 +551,28 @@ export default function App() {
           summary: true,
           createdAt: run.finishedAt || run.startedAt || null,
         }));
-      setHistoryMessages([...msgs, ...runMessages]);
+      const loadedHistory = [...msgs, ...runMessages];
+      sessionHistoryCacheRef.current.set(session.id, loadedHistory);
+      // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
+      while (sessionHistoryCacheRef.current.size > 8) {
+        const first = sessionHistoryCacheRef.current.keys().next().value;
+        if (first === undefined) break;
+        sessionHistoryCacheRef.current.delete(first);
+      }
+      setHistoryMessages(loadedHistory);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
         const fn = fileMatch.text.match(/当前打开文件:\s*([^\]\n]+)/);
         if (fn?.[1]) {
-          try { await open(fn[1].trim()); } catch {}
+          // 历史文本先显示，关联文档在后台打开，不再阻塞会话切换。
+          void open(fn[1].trim(), conversationId).catch(() => {});
         }
       }
     } catch (e) {
       if (loadSeq === sessionLoadSeqRef.current) alert("加载会话失败: " + e.message);
     }
-  }, [clientId, currentWorkspace, open]);
+  }, [clientId, currentWorkspace, open, refreshProjects]);
 
   const handleForkSession = useCallback(async (id, label) => {
     const source = sessions.find((item) => item.id === id);
@@ -584,8 +658,10 @@ export default function App() {
     if (!saved) { setUiRestored(true); return; }
     (async () => {
       try {
-        if (saved.workspace && saved.workspace !== currentWorkspace) {
-          await switchWorkspace(saved.workspace);
+        if (saved.workspace && !sameWorkspacePath(saved.workspace, currentWorkspace)) {
+          const switched = await switchWorkspace(saved.workspace);
+          setCurrentWorkspace(switched.workspace);
+          setFiles(switched.files || []);
         }
       } catch {}
       for (const t of saved.tabs || []) {
@@ -748,12 +824,10 @@ export default function App() {
         {sidebarOpen && (
           <>
             <SessionSidebar
-              sessions={visibleSessions}
               files={files}
               currentName={current?.name}
               onOpenFile={open}
               onRefreshFiles={refreshFiles}
-              onRefreshSessions={refreshSessions}
               onUploaded={refreshFiles}
               projects={projects}
               currentProjectId={currentProject?.id || ""}
@@ -764,15 +838,10 @@ export default function App() {
               onWorkspaceRemove={handleWorkspaceRemove}
               currentDir={currentDir}
               onDirChange={handleDirChange}
-              onSelectSession={handleSelectSession}
               onAtMention={handleAtMention}
               onNewSession={handleNewSession}
-              onForkSession={handleForkSession}
-              onPinSession={handlePinSession}
-              onFreezeSession={handleFreezeSession}
               onProjectUpdated={refreshProjects}
               models={models}
-              unreadByThread={unreadByThread}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>

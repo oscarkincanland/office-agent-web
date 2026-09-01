@@ -124,6 +124,8 @@ function searchLocalSkills(query = "", limit = 12) {
 }
 
 const APP_PROMPT_RETRY_DELAYS = [2000, 5000];
+const SETTLED_AGENT_RETRY_DELAYS = [1200];
+const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
@@ -172,6 +174,27 @@ function waitForAgentRetry(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+const THINKING_LEVEL_ORDER = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/**
+ * Pi 模型目录里的 thinkingLevelMap 才是本模型真正支持的档位。
+ * 例如 Hy3 的 medium/xhigh/max 是 null；直接把 medium 传给 Pi 会让界面
+ * 显示“标准”，但运行时仍可能保留较慢的默认档位。
+ */
+export function resolveThinkingLevel(model, requested = "low") {
+  const wanted = THINKING_LEVEL_ORDER.includes(String(requested)) ? String(requested) : "low";
+  const map = model?.thinkingLevelMap;
+  if (!map || typeof map !== "object") return model?.reasoning === false ? "off" : wanted;
+  if (map[wanted] !== null && map[wanted] !== undefined) return wanted;
+  if (wanted === "medium" || wanted === "minimal" || wanted === "xhigh" || wanted === "max") {
+    if (map.low !== null && map.low !== undefined) return "low";
+  }
+  for (const level of THINKING_LEVEL_ORDER) {
+    if (map[level] !== null && map[level] !== undefined) return level;
+  }
+  return model?.reasoning === false ? "off" : "low";
+}
+
 /** 本地 Pi 的模型来源：models-store + models.json + auth.json。 */
 function localModelProviders() {
   const store = readJsonFile(path.join(AGENT_DIR, "models-store.json"), {});
@@ -200,6 +223,24 @@ function localStoredModels(providers = localModelProviders()) {
     }
   }
   return models;
+}
+
+function configuredModelSpec() {
+  const settings = readJsonFile(path.join(AGENT_DIR, "settings.json"), {});
+  const provider = String(settings?.defaultProvider || "").trim();
+  const model = String(settings?.defaultModel || "").trim();
+  return provider && model ? `${provider}/${model}` : "";
+}
+
+function resolveInitialModel(modelRuntime, requestedSpec = "") {
+  const spec = String(requestedSpec || configuredModelSpec()).trim();
+  const separator = spec.indexOf("/");
+  if (separator <= 0 || separator === spec.length - 1) return null;
+  const provider = spec.slice(0, separator);
+  const id = spec.slice(separator + 1);
+  return modelRuntime?.getModel?.(provider, id)
+    || localStoredModels().find((item) => item.provider === provider && item.id === id)
+    || null;
 }
 
 /** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
@@ -389,10 +430,15 @@ class AgentManager extends EventEmitter {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "model_runtime_create_failed" });
       throw error;
     }
+    const initialModel = resolveInitialModel(modelRuntime, options.modelSpec);
     let entry; // 在下方创建，供 officeTool 闭包引用
     const loader = new DefaultResourceLoader({
       cwd: workspace,
       agentDir: AGENT_DIR,
+      // 工作台自己提供 skills_search/skills_read，并按任务按需读取 SKILL.md。
+      // 不把全局 160+ 个 Skill 的目录摘要注入每一轮模型上下文，降低
+      // Runtime 创建和首字节延迟，同时保留 Skills 的可检索、可读取能力。
+      noSkills: true,
       agentsFilesOverride: (current) => ({
         agentsFiles: [
           ...current.agentsFiles,
@@ -935,6 +981,7 @@ class AgentManager extends EventEmitter {
         resourceLoader: loader,
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
+        model: initialModel || undefined,
         customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
         tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
       }));
@@ -975,7 +1022,10 @@ class AgentManager extends EventEmitter {
           }
           break;
         case "tool_execution_start":
-          if (entry) entry.turnStarted = true;
+          if (entry) {
+            entry.turnStarted = true;
+            entry.toolStarted = true;
+          }
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
             toolCallId: ev.toolCallId || null,
@@ -1003,7 +1053,9 @@ class AgentManager extends EventEmitter {
           });
           break;
         case "message_start":
-          if (entry) entry.turnStarted = true;
+          // Pi 的失败 assistant message 也会触发 message_start；它不代表
+          // 已经执行了模型回合或工具副作用，允许上层做一次有限重放。
+          if (entry && !ev.message?.errorMessage && ev.message?.stopReason !== "error") entry.turnStarted = true;
           emit("message_start", {});
           break;
         case "message_end":
@@ -1095,7 +1147,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1124,10 +1176,22 @@ class AgentManager extends EventEmitter {
     entry.lastAssistantText = "";
     // 只有尚未收到本轮模型/工具事件时，才允许对抛出的传输异常重放 prompt。
     // 一旦已经开始工具调用，绝不重复提交，避免副作用被执行两次。
-    if (!isStreaming) entry.turnStarted = false;
+    if (!isStreaming) {
+      entry.turnStarted = false;
+      entry.toolStarted = false;
+    }
     try {
-      // 每次对话前刷新 agent 上下文（工作区记忆/当前文件变更即时生效）
-      try { await entry.loader.reload(); } catch {}
+      // Skills/上下文目录在同一回合内不会变化；短时间内复用一次 reload，
+      // 仍保留每轮动态记忆注入，避免高频请求重复扫描本地目录拖慢首字节。
+      const nowMs = Date.now();
+      if (nowMs - (entry.lastResourceReloadAt || 0) >= RESOURCE_RELOAD_INTERVAL_MS && !entry.resourceReloadPromise) {
+        entry.lastResourceReloadAt = nowMs;
+        entry.resourceReloadPromise = Promise.resolve()
+          .then(() => entry.loader.reload())
+          .catch(() => {})
+          .finally(() => { entry.resourceReloadPromise = null; });
+      }
+      if (entry.resourceReloadPromise) await entry.resourceReloadPromise;
       // 按本轮模式收缩 Pi 的可用工具集合。该策略必须在 prompt 前应用，
       // Chat/Office 发生异常时直接中止，避免以更宽权限继续执行。
       const modePolicy = toolPolicyForMode(entry.mode);
@@ -1156,10 +1220,17 @@ class AgentManager extends EventEmitter {
       }
       // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
       this.writeContextFile(entry, entry.currentFile);
-      // 应用推理强度（low/medium/high → pi thinking level）
-      if (effort) {
-        try { piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effort); } catch {}
-      }
+      // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
+      // UI 显示标准但 SDK 实际沿用高延迟默认档位。
+      const requestedThinkingLevel = effort || "low";
+      const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      entry.requestedThinkingLevel = requestedThinkingLevel;
+      entry.effectiveThinkingLevel = effectiveThinkingLevel;
+      try {
+        piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
+        piRuntimeManager.update(entry.runtimeId, { requestedThinkingLevel, thinkingLevel: effectiveThinkingLevel });
+        emitChannelSafe(entry, "thinking_level", { requested: requestedThinkingLevel, effective: effectiveThinkingLevel, model: entry.session?.model?.id || null });
+      } catch {}
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -1199,9 +1270,41 @@ class AgentManager extends EventEmitter {
           return;
         }
         let transportAttempt = 0;
+        let settledReplayAttempt = 0;
         while (true) {
           try {
             await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, opts);
+            const settledError = entry.lastSettledError;
+            entry.lastSettledError = null;
+            if (settledError) {
+              const info = classifyAgentError(settledError);
+              const canReplay = info.retryable && !entry.toolStarted && settledReplayAttempt < SETTLED_AGENT_RETRY_DELAYS.length;
+              if (!canReplay) throw createSettledAgentError(settledError);
+              const delayMs = SETTLED_AGENT_RETRY_DELAYS[settledReplayAttempt];
+              settledReplayAttempt += 1;
+              emitChannelSafe(entry, "agent_retry", {
+                message: info.message,
+                attempt: settledReplayAttempt,
+                maxAttempts: SETTLED_AGENT_RETRY_DELAYS.length,
+                delayMs,
+                source: "workbench-settled",
+                willRetry: true,
+              });
+              entry.lastAgentError = null;
+              entry.lastAssistantText = "";
+              entry.turnStarted = false;
+              entry.toolStarted = false;
+              await waitForAgentRetry(delayMs);
+              continue;
+            }
+            if (settledReplayAttempt > 0) {
+              emitChannelSafe(entry, "agent_retry_end", {
+                success: true,
+                attempt: settledReplayAttempt,
+                message: "模型连接已恢复",
+                source: "workbench-settled",
+              });
+            }
             break;
           } catch (e) {
             // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
@@ -1213,7 +1316,7 @@ class AgentManager extends EventEmitter {
             }
 
             const info = classifyAgentError(e);
-            const canReplay = info.retryable && !entry.turnStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
+            const canReplay = info.retryable && !entry.toolStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
             if (!canReplay) throw e;
 
             const delayMs = APP_PROMPT_RETRY_DELAYS[transportAttempt];
