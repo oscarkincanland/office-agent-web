@@ -23,6 +23,7 @@ import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs"
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
+import { runRuntimeEvaluation } from "./运行评测.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -971,6 +972,46 @@ app.post("/api/agent/model", async (req, res) => {
   } catch (e) {
     recordAgentDiagnostic(req, { client, thread, model: String(model), error: e });
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------- Pi Runtime 管理（只返回脱敏快照） ----------
+app.get("/api/agent/runtimes", (_req, res) => {
+  res.json(agentManager.listRuntimes());
+});
+
+app.get("/api/agent/runtime", (req, res) => {
+  const client = String(req.query.client || "").trim();
+  if (!client) return res.status(400).json({ error: "client required" });
+  res.json({ runtime: agentManager.runtimeHealth(agentKey(client, req.query.thread)) });
+});
+
+app.post("/api/agent/runtime/health", (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ error: "client required" });
+  res.json({ runtime: agentManager.runtimeHealth(agentKey(client, thread)) });
+});
+
+app.get("/api/agent/evaluations", async (req, res) => {
+  const client = String(req.query.client || "").trim();
+  const thread = String(req.query.thread || "").trim();
+  const workspace = normalizeWorkspace(req.query.cwd || getWorkspace()) || getWorkspace();
+  const runtime = client ? agentManager.runtimeHealth(agentKey(client, thread)) : null;
+  res.json(await runRuntimeEvaluation({ workspace, runtime, probeOffice: String(req.query.probeOffice || "") === "true" }));
+});
+
+app.post("/api/agent/runtime/restart", async (req, res) => {
+  const { client, thread, sessionId, cwd } = req.body || {};
+  if (!client || !thread || !sessionId) return res.status(400).json({ error: "client, thread and sessionId required" });
+  const found = findSessionFile(sessionId);
+  if (!found) return res.status(404).json({ error: "session not found", code: "SESSION_NOT_FOUND" });
+  try {
+    const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
+    const result = await agentManager.restartRuntime(agentKey(client, thread), { threadId: thread, sessionPath: found.fullPath, cwd: workspace });
+    annotateSessionThread(result.sessionId, thread);
+    res.json(result);
+  } catch (error) {
+    res.status(409).json({ error: error.message, code: error.code || "RUNTIME_RESTART_FAILED" });
   }
 });
 
@@ -2029,7 +2070,12 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-    run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan });
+    const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
+      profile: task.agentProfile,
+      taskMode: task.mode,
+      capabilityPlanVersion: capabilityPlan?.version || null,
+    });
+    run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan, runtimeSnapshot });
     // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
     if (Array.isArray(attachments) && attachments.length) {
       for (const att of attachments) {
@@ -2048,6 +2094,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
     recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
     recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
+    if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
     emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
     await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
@@ -2081,6 +2128,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       }
     }
     if (run) {
+      const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
+      if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
       const cancelled = getRun(run.id)?.status === "cancel_requested";
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations] });
       if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
@@ -2235,6 +2284,12 @@ async function startContinuation(sourceRun, action) {
     workflow,
     projectId: project?.id || sourceRun.projectId || null,
     capabilityPlan,
+    runtimeSnapshot: agentManager.runtimeSnapshot(key, {
+      profile: task.agentProfile,
+      taskMode: task.mode,
+      capabilityPlanVersion: capabilityPlan?.version || null,
+    }),
+    recoveryChain: [{ sourceRunId: sourceRun.id, action }],
   });
   recordRunEvent(run.id, "run_recovery_started", { sourceRunId: sourceRun.id, action, preflight });
   void executeContinuation({ key, entry, run, task: { ...task, recoveryAction: action }, references, workflow });

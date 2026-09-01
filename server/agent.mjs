@@ -3,7 +3,6 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import {
-  createAgentSession,
   createBashToolDefinition,
   createEditToolDefinition,
   createLocalBashOperations,
@@ -11,9 +10,8 @@ import {
   createWriteToolDefinition,
   DefaultResourceLoader,
   defineTool,
-  ModelRuntime,
-  SessionManager,
-} from "@earendil-works/pi-coding-agent";
+  piRuntimeManager,
+} from "./Pi运行时管理.mjs";
 import { Type } from "typebox";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
@@ -191,32 +189,6 @@ function localStoredModels(providers = localModelProviders()) {
   return models;
 }
 
-/**
- * Pi SDK 默认的 auth storage 需要在 auth.json 旁创建锁目录；受限桌面进程只能读取该文件，
- * 会导致 SDK 把本地凭据误判为不存在。这里提供同格式的只读/写入适配器，保持与 TUI 共用文件。
- */
-function localCredentialStore() {
-  return {
-    read: async (provider) => readJsonFile(path.join(AGENT_DIR, "auth.json"), {})[provider],
-    list: async () => Object.entries(readJsonFile(path.join(AGENT_DIR, "auth.json"), {})).map(([providerId, value]) => ({ providerId, type: value?.type })),
-    modify: async (provider, fn) => {
-      const authPath = path.join(AGENT_DIR, "auth.json");
-      const auth = readJsonFile(authPath, {});
-      const next = await fn(auth[provider]);
-      if (next === undefined) return auth[provider];
-      auth[provider] = next;
-      atomicWriteJson(authPath, auth);
-      return next;
-    },
-    delete: async (provider) => {
-      const authPath = path.join(AGENT_DIR, "auth.json");
-      const auth = readJsonFile(authPath, {});
-      delete auth[provider];
-      atomicWriteJson(authPath, auth);
-    },
-  };
-}
-
 /** 分层读取工作区记忆：规则优先，偏好/项目知识/经验再按预算注入。 */
 function readMemoryLayers(workspace = getWorkspace()) {
   const layers = { rules: "", project: "", preferences: "", lessons: "", other: [] };
@@ -306,7 +278,6 @@ class AgentManager extends EventEmitter {
   constructor() {
     super();
     this.sessions = new Map(); // agentKey(clientId:threadId) -> session entry
-    this.modelRuntimePromise = null;
     this.pendingAsks = new Map(); // agentKey -> resolve(回答)（ask_user 工具阻塞等待）
   }
 
@@ -371,18 +342,7 @@ class AgentManager extends EventEmitter {
   }
 
   modelRuntime() {
-    if (!this.modelRuntimePromise) {
-      this.modelRuntimePromise = ModelRuntime.create({
-        authPath: path.join(AGENT_DIR, "auth.json"),
-        modelsPath: path.join(AGENT_DIR, "models.json"),
-        modelsStorePath: path.join(AGENT_DIR, "models-store.json"),
-        credentials: localCredentialStore(),
-      }).catch((e) => {
-        this.modelRuntimePromise = null;
-        throw e;
-      });
-    }
-    return this.modelRuntimePromise;
+    return piRuntimeManager.modelRuntime();
   }
 
   async getOrCreate(clientId, options = {}) {
@@ -400,9 +360,22 @@ class AgentManager extends EventEmitter {
   }
 
   async _create(clientId, options = {}) {
-    const modelRuntime = await this.modelRuntime();
     const workspace = normalizeWorkspace(options.cwd) || normalizeWorkspace(getWorkspace());
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
+    const runtimeRecord = piRuntimeManager.beginRuntime({
+      key: clientId,
+      clientId,
+      threadId: options.threadId || null,
+      cwd: workspace,
+      profile: options.profile || "通用 Agent",
+    });
+    let modelRuntime;
+    try {
+      modelRuntime = await this.modelRuntime();
+    } catch (error) {
+      piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "model_runtime_create_failed" });
+      throw error;
+    }
     let entry; // 在下方创建，供 officeTool 闭包引用
     const loader = new DefaultResourceLoader({
       cwd: workspace,
@@ -940,22 +913,26 @@ class AgentManager extends EventEmitter {
     });
 
     const writableSessionPath = materializeSessionPath(options.sessionPath);
-    const sessionManager = writableSessionPath
-      ? SessionManager.open(writableSessionPath, SESSION_STORE, workspace)
-      : SessionManager.create(workspace, SESSION_STORE);
-    const { session } = await createAgentSession({
-      cwd: workspace,
-      agentDir: AGENT_DIR,
-      modelRuntime,
-      resourceLoader: loader,
-      customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
-      tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
-      sessionManager,
-    });
+    let session;
+    try {
+      ({ session } = await piRuntimeManager.createSession({
+        cwd: workspace,
+        agentDir: AGENT_DIR,
+        modelRuntime,
+        resourceLoader: loader,
+        sessionPath: writableSessionPath,
+        sessionStore: SESSION_STORE,
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
+      }));
+    } catch (error) {
+      piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
+      throw error;
+    }
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"])]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"]);
     } catch {}
 
     const emitter = new EventEmitter();
@@ -1096,7 +1073,8 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, references: [], threadId: options.threadId || null, currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastAssistantText: "", turnStarted: false };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastAssistantText: "", turnStarted: false };
+    piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
   }
@@ -1131,8 +1109,13 @@ class AgentManager extends EventEmitter {
       // Chat/Office 发生异常时直接中止，避免以更宽权限继续执行。
       const modePolicy = toolPolicyForMode(entry.mode);
       try {
-        entry.session.setActiveToolsByName(modePolicy.tools);
+        piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
         entry.modePolicy = modePolicy;
+        piRuntimeManager.update(entry.runtimeId, {
+          profile: entry.task?.agentProfile || "通用 Agent",
+          toolPolicyVersion: "task-tool-policy-v1",
+          toolPolicy: { mode: modePolicy.mode, tools: [...modePolicy.tools] },
+        });
         emitChannelSafe(entry, "mode_policy", {
           runId: entry.activeRunId,
           mode: modePolicy.mode,
@@ -1152,7 +1135,7 @@ class AgentManager extends EventEmitter {
       this.writeContextFile(entry, entry.currentFile);
       // 应用推理强度（low/medium/high → pi thinking level）
       if (effort) {
-        try { entry.session.setThinkingLevel(effort); } catch {}
+        try { piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effort); } catch {}
       }
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
@@ -1184,23 +1167,25 @@ class AgentManager extends EventEmitter {
           mimeType: img.mediaType || "image/png",
         }));
       }
-      if (isStreaming) {
-        // 打断当前回合并插入新指令（steer 在 agent 停止后生效，或中断当前工具调用）
-        opts.streamingBehavior = "steer";
-        emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
-        await entry.session.prompt(text, opts);
-      } else {
+      await piRuntimeManager.runPrompt(entry.runtimeId, async () => {
+        if (isStreaming) {
+          // 打断当前回合并插入新指令（steer 在 agent 停止后生效，或中断当前工具调用）
+          opts.streamingBehavior = "steer";
+          emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
+          await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, opts);
+          return;
+        }
         let transportAttempt = 0;
         while (true) {
           try {
-            await entry.session.prompt(text, opts);
+            await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, opts);
             break;
           } catch (e) {
             // 竞态兜底：entry.busy=false 但 pi 内部仍在收尾（compaction/post-run），
             // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列。
             if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
               emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
-              await entry.session.prompt(text, { ...opts, streamingBehavior: "steer" });
+              await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, { ...opts, streamingBehavior: "steer" });
               break;
             }
 
@@ -1221,8 +1206,15 @@ class AgentManager extends EventEmitter {
             await waitForAgentRetry(delayMs);
           }
         }
-      }
+      }, {
+        steer: isStreaming,
+        metadata: { clientId: entry.clientId, threadId: entry.threadId, runId: entry.activeRunId },
+      });
     } finally {
+      const activeRunId = entry.activeRunId;
+      if (activeRunId) {
+        try { recordRunEvent(activeRunId, "runtime_health", piRuntimeManager.health(entry.runtimeId, entry.session)); } catch {}
+      }
       entry.busy = false;
       entry.activeRunId = null;
     }
@@ -1233,9 +1225,11 @@ class AgentManager extends EventEmitter {
     const entry = this.sessions.get(clientId);
     if (!entry) return { ok: true };
     try {
-      await entry.session.abort();
+      await piRuntimeManager.abort(entry.runtimeId, entry.session);
       emitChannelSafe(entry, "aborted", {});
-    } catch {}
+    } catch (error) {
+      emitChannelSafe(entry, "agent_error", { message: error?.message || String(error), code: "RUNTIME_ABORT_FAILED" });
+    }
     entry.busy = false;
     return { ok: true };
   }
@@ -1246,7 +1240,7 @@ class AgentManager extends EventEmitter {
     if (entry.busy || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
       throw new Error("agent busy — wait for the current task to finish");
     }
-    const result = await entry.session.compact(String(customInstructions || "").trim() || undefined);
+    const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, String(customInstructions || "").trim());
     emitChannelSafe(entry, "context_compacted", {
       tokensBefore: result?.tokensBefore || 0,
       estimatedTokensAfter: result?.estimatedTokensAfter || 0,
@@ -1264,11 +1258,11 @@ class AgentManager extends EventEmitter {
     const old = this.sessions.get(clientId);
     if (old) {
       if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
-      try { old.session.dispose(); } catch {}
+      piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
     const entry = await this._create(clientId, { cwd: workspace, threadId });
-    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd: workspace };
+    return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: workspace };
   }
 
   async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
@@ -1277,11 +1271,11 @@ class AgentManager extends EventEmitter {
     const old = this.sessions.get(clientId);
     if (old) {
       if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
-      try { old.session.dispose(); } catch {}
+      piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
     const entry = await this._create(clientId, { cwd: workspace, sessionPath, threadId });
-    return { ok: true, threadId, sessionId: entry.session.sessionId, cwd: workspace };
+    return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: workspace };
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
@@ -1348,6 +1342,36 @@ class AgentManager extends EventEmitter {
     return { ok: true, currentFile: entry.currentFile };
   }
 
+  runtimeSnapshot(clientId, overrides = {}) {
+    const entry = this.sessions.get(clientId);
+    if (!entry) return null;
+    return piRuntimeManager.health(entry.runtimeId, entry.session, {
+      profile: entry.task?.agentProfile || overrides.profile || "通用 Agent",
+      toolPolicy: entry.modePolicy ? { mode: entry.modePolicy.mode, tools: [...entry.modePolicy.tools] } : overrides.toolPolicy || null,
+      ...overrides,
+    });
+  }
+
+  runtimeHealth(clientId) {
+    return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
+  }
+
+  async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace() } = {}) {
+    const old = this.sessions.get(clientId);
+    if (old?.busy) throw new Error("当前 Runtime 正在执行任务，不能重启");
+    if (old) {
+      piRuntimeManager.markRecovery(old.runtimeId, "manual_runtime_restart");
+      piRuntimeManager.dispose(old.runtimeId, old.session);
+      this.sessions.delete(clientId);
+    }
+    const entry = await this._create(clientId, { cwd, threadId, sessionPath });
+    return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: entry.workspace, recovery: "jsonl_reopen" };
+  }
+
+  listRuntimes() {
+    return { runtimes: piRuntimeManager.listSnapshots(), scheduler: piRuntimeManager.schedulerSnapshot() };
+  }
+
   async setModel(clientId, spec) {
     const entry = await this.getOrCreate(clientId);
     if (entry.busy) throw new Error("agent busy — wait for the current task to finish");
@@ -1358,7 +1382,7 @@ class AgentManager extends EventEmitter {
     // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
     const model = mr.getModel(provider, id) || localStoredModels().find((item) => item.provider === provider && item.id === id);
     if (!model) throw new Error("model not found: " + spec);
-    await entry.session.setModel(model);
+    await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
     return { ok: true, model: spec };
   }
 
@@ -1412,7 +1436,7 @@ class AgentManager extends EventEmitter {
 
   /** 重新扫描模型：重置 ModelRuntime 缓存并重新构建（模型配置变更后调用） */
   async refreshModels() {
-    this.modelRuntimePromise = null;
+    piRuntimeManager.resetModelRuntime();
     const mr = await this.modelRuntime();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
@@ -1431,11 +1455,7 @@ class AgentManager extends EventEmitter {
   }
 
   async disposeAll() {
-    for (const { session } of this.sessions.values()) {
-      try {
-        session.dispose();
-      } catch {}
-    }
+    await piRuntimeManager.disposeAll([...this.sessions.values()]);
     this.sessions.clear();
   }
 }

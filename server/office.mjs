@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { OFFICECLI, WORKSPACE_DIR } from "./workspace.mjs";
+import { officeLimiter } from "./Pi运行时管理.mjs";
 
 /**
  * Run an officecli command inside the workspace directory.
@@ -9,7 +10,7 @@ import { OFFICECLI, WORKSPACE_DIR } from "./workspace.mjs";
  * or when output starts with {/[.
  */
 export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } = {}) {
-  return new Promise((resolve, reject) => {
+  return officeLimiter.run(() => new Promise((resolve, reject) => {
     const child = spawn(OFFICECLI, args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
@@ -36,7 +37,7 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } =
       }
       resolve({ code, stdout: out, stderr: err, text, json });
     });
-  });
+  }), { cwd, args: Array.isArray(args) ? args.slice(0, 8) : [] });
 }
 
 export async function checkOfficecli(timeoutMs = 8000) {

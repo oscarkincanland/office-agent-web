@@ -150,6 +150,9 @@ async function smokeTest() {
     ["GET", "/api/artifacts"],
     ["GET", "/api/memory/proposals"],
     ["GET", "/api/agent/events/state?client=verify"],
+    ["GET", "/api/agent/runtimes"],
+    ["GET", "/api/agent/runtime?client=verify&thread=verify"],
+    ["GET", "/api/agent/evaluations"],
   ];
   for (const [method, url] of endpoints) {
     try {
@@ -196,6 +199,20 @@ async function smokeTest() {
     else fail(`事件阅读游标接口返回结构异常 (${res.status})`);
   } catch (e) {
     fail(`事件阅读游标检查: ${e.message}`);
+  }
+
+  try {
+    const runtimeRes = await fetch(`http://localhost:${PORT}/api/agent/runtimes`);
+    const runtimeBody = await runtimeRes.json();
+    const evaluationRes = await fetch(`http://localhost:${PORT}/api/agent/evaluations`);
+    const evaluationBody = await evaluationRes.json();
+    if (runtimeRes.ok && Number(runtimeBody.scheduler?.agent?.limit) > 0 && Number(runtimeBody.scheduler?.officecli?.limit) > 0 && evaluationRes.ok && Array.isArray(evaluationBody.checks) && evaluationBody.checks.some((item) => item.id === "runtime")) {
+      ok("第六阶段 Pi Runtime/调度器/运行评测接口结构");
+    } else {
+      fail("第六阶段 Runtime/运行评测接口结构异常");
+    }
+  } catch (e) {
+    fail(`第六阶段 Runtime/运行评测接口检查: ${e.message}`);
   }
 
   // 知识图谱结构校验：节点、边和健康统计必须同时返回
