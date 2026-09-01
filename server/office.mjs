@@ -9,9 +9,9 @@ import { officeLimiter } from "./Pi运行时管理.mjs";
  * Returns { code, stdout, stderr, json } — `json` is parsed when --json was used
  * or when output starts with {/[.
  */
-export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } = {}) {
+export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
   return officeLimiter.run(() => new Promise((resolve, reject) => {
-    const child = spawn(OFFICECLI, args, { cwd, windowsHide: true });
+    const child = spawn(executable, args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     const timer = setTimeout(() => {
@@ -22,7 +22,7 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } =
     child.stderr.on("data", (d) => (err += d));
     child.on("error", (e) => {
       clearTimeout(timer);
-      reject(new Error(`officecli not found at ${OFFICECLI}: ${e.message}`));
+      reject(new Error(`officecli not found at ${executable}: ${e.message}`));
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -40,15 +40,15 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000 } =
   }), { cwd, args: Array.isArray(args) ? args.slice(0, 8) : [] });
 }
 
-export async function checkOfficecli(timeoutMs = 8000) {
-  if (path.isAbsolute(OFFICECLI) && !fs.existsSync(OFFICECLI)) {
-    return { available: false, path: OFFICECLI, code: null, message: `Office CLI 文件不存在：${OFFICECLI}` };
+export async function checkOfficecli(timeoutMs = 8000, executable = OFFICECLI) {
+  if (path.isAbsolute(executable) && !fs.existsSync(executable)) {
+    return { available: false, path: executable, code: null, message: `Office CLI 文件不存在：${executable}` };
   }
   try {
-    const result = await runOfficecli(["--help"], { timeoutMs });
-    return { available: result.code === 0, path: OFFICECLI, code: result.code, message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500) };
+    const result = await runOfficecli(["--help"], { timeoutMs, executable });
+    return { available: result.code === 0, path: executable, code: result.code, message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500) };
   } catch (error) {
-    return { available: false, path: OFFICECLI, code: null, message: String(error?.message || error || "Office CLI 不可用").slice(0, 500) };
+    return { available: false, path: executable, code: null, message: String(error?.message || error || "Office CLI 不可用").slice(0, 500) };
   }
 }
 
