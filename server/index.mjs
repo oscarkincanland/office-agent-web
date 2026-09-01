@@ -61,6 +61,23 @@ function recordAgentDiagnostic(req, details = {}) {
   return record;
 }
 
+function readRecentAgentDiagnostics({ client = "", thread = "", runId = "", limit = 20 } = {}) {
+  let lines = [];
+  try { lines = fs.readFileSync(AGENT_DIAGNOSTIC_LOG, "utf8").split(/\r?\n/).filter(Boolean); } catch { return []; }
+  const max = Math.max(1, Math.min(50, Number.parseInt(String(limit), 10) || 20));
+  const matches = [];
+  for (let index = lines.length - 1; index >= 0 && matches.length < max; index -= 1) {
+    try {
+      const item = JSON.parse(lines[index]);
+      if (client && item.clientId !== client) continue;
+      if (thread && item.threadId !== thread) continue;
+      if (runId && item.runId !== runId) continue;
+      matches.push(item);
+    } catch {}
+  }
+  return matches;
+}
+
 // ---------- request boundary / local API authentication ----------
 // The app is intended to run locally. Keep the default listener on loopback and
 // make authentication opt-in so existing local workflows remain compatible.
@@ -984,6 +1001,46 @@ app.get("/api/agent/runtime", (req, res) => {
   const client = String(req.query.client || "").trim();
   if (!client) return res.status(400).json({ error: "client required" });
   res.json({ runtime: agentManager.runtimeHealth(agentKey(client, req.query.thread)) });
+});
+
+app.get("/api/agent/diagnostics", async (req, res) => {
+  const client = String(req.query.client || "").trim();
+  const thread = String(req.query.thread || "").trim();
+  const runtime = client ? agentManager.runtimeHealth(agentKey(client, thread)) : null;
+  const runtimeList = agentManager.listRuntimes();
+  const auth = listAuth();
+  let catalog = null;
+  let catalogError = null;
+  try {
+    const value = await agentManager.listModelCatalog();
+    const selected = runtime?.model?.provider && runtime?.model?.id
+      ? `${runtime.model.provider}/${runtime.model.id}`
+      : loadSettingsDefault();
+    const selectedCatalog = value.models.find((item) => item.id === selected) || null;
+    catalog = {
+      selected,
+      selectedInCatalog: Boolean(selectedCatalog),
+      selectedAvailable: selectedCatalog?.available ?? null,
+      counts: value.counts,
+      source: value.source,
+    };
+  } catch (error) {
+    catalogError = String(error?.message || error);
+  }
+  const selectedProvider = runtime?.model?.provider || String(loadSettingsDefault()).split("/")[0] || null;
+  const authProviders = Object.fromEntries(
+    Object.entries(auth).map(([provider, value]) => [provider, { type: value?.type || "unknown", set: Boolean(value) }])
+  );
+  res.json({
+    ok: true,
+    service: { version: pkg.version, pid: process.pid },
+    requestId: req.requestId,
+    model: { ... (catalog || { selected: loadSettingsDefault(), selectedInCatalog: null, selectedAvailable: null }), authProvider: selectedProvider, authConfigured: Boolean(selectedProvider && auth[selectedProvider]), catalogError },
+    runtime,
+    scheduler: runtimeList.scheduler,
+    recentFailures: readRecentAgentDiagnostics({ client, thread, runId: req.query.runId, limit: req.query.limit }),
+    authProviders,
+  });
 });
 
 app.post("/api/agent/runtime/health", (req, res) => {

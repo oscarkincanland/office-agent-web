@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.9.33",
+  "version": "0.9.34",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
@@ -15,6 +15,7 @@
     "test:phase5-9": "node scripts/阶段五九测试.mjs",
     "test:phase6": "node scripts/阶段六运行时测试.mjs",
     "test:phase7": "node scripts/阶段七真实回归测试.mjs",
+    "test:final": "node scripts/最后阶段模型调用回归测试.mjs",
     "test:closure": "node scripts/遗留十项测试.mjs",
     "map:fetch": "node scripts/fetch-boundaries.mjs",
     "map:prepare": "node scripts/prepare-map-data.mjs",
