@@ -651,6 +651,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       case "thinking_level":
         setRunState((s) => ({ ...s, thinkingLevel: data.effective || null }));
         break;
+      case "agent_queued":
+        pushSystem(`当前 Agent 正在执行，本轮已进入队列（第 ${data.position || 2} 项）。`, `agent_queued:${data.runId || "current"}:${data.position || 2}`);
+        break;
       case "capability_plan":
         {
           const plan = data.plan || {};
@@ -678,7 +681,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         });
         break;
       case "context_compacted":
-        pushSystem(`上下文已压缩${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`);
+        pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${data.automatic ? "auto" : "manual"}:${data.tokensBefore || 0}`);
+        break;
+      case "context_compacting":
+        pushSystem("当前会话上下文较长，正在压缩重复过程信息…", "context_compacting");
+        break;
+      case "context_compact_warning":
+        pushSystem(`自动压缩未完成：${data.message || "将继续使用当前上下文"}`, "context_compact_warning");
         break;
       case "agent_end": {
         const endedWithError = agentErrorRef.current;
@@ -738,14 +747,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
           if (!acceptSystemEvent(key)) break;
         }
-        if (data.products?.length) {
+        {
           setMessages((ms) => [...ms, {
             id: newId(),
             role: "system",
             text: `${data.summary || "本轮对话完成"}`,
-            products: data.products,
+            products: data.products || [],
             runId: data.runId,
             artifacts: data.artifacts || [],
+            runMode: data.task?.mode || runState.mode || "agent",
             status: "done",
             summary: true,
             createdAt: Date.now(),
@@ -1447,32 +1457,29 @@ function SafeMarkdown({ text }) {
   return <pre className="large-msg-raw">{text}</pre>;
 }
 
-// ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
-  if (m.role === "system") {
-    return (
-      <div className={`msg system ${m.summary ? "summary-msg" : ""}`}>
-        <div className="bubble">
-          {m.text}
-          {m.memoryProposal && (
-            <div className="memory-proposal-card" role="note">
-              <div><strong>{m.memoryProposal.section}</strong>：{m.memoryProposal.content}</div>
-              {m.memoryProposal.status === "pending" ? (
-                <><button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button><button className="btn-xs" onClick={() => onMemoryReject?.(m.memoryProposal.id)}>拒绝</button></>
-              ) : <span className="memory-proposal-state">{m.memoryProposal.status === "approved" ? "✓ 已写入" : "未写入"}</span>}
-            </div>
-          )}
+function RunSummary({ m, onOpenFile, onRollbackRun }) {
+  const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "running" ? "执行中" : "已完成";
+  const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "office" ? "Office" : "Agent";
+  const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
+  const title = m.task?.goal || m.task?.text || "本轮任务";
+  return (
+    <div className="msg system summary-msg">
+      <div className="bubble run-summary-bubble">
+        <div className="run-summary-header">
+          <span className={`run-summary-dot ${m.runStatus || "done"}`} />
+          <strong>任务轮次 {m.runIndex ? `${m.runIndex}/${m.runCount || m.runIndex}` : ""}</strong>
+          <span className="run-summary-title" title={title}>{title}</span>
+          <span className="run-summary-meta">{modeLabel} · {statusLabel}{time ? ` · ${time}` : ""}</span>
+        </div>
+        <details className="run-summary-details" defaultOpen={Boolean(m.expanded)}>
+          <summary>查看本轮对话与产物</summary>
+          <div className="run-summary-content">{m.text}</div>
           {m.products?.length > 0 && (
             <div className="file-change-summary">
-              <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物</span>
+              <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
               <div className="summary-products">
                 {m.products.map((p) => (
-                  <span 
-                    key={p} 
-                    className="summary-product clickable"
-                    onClick={() => onOpenFile && onOpenFile(p)}
-                    title={`点击打开 ${p}`}
-                  >
+                  <span key={p} className="summary-product clickable" onClick={() => onOpenFile?.(p)} title={`点击打开 ${p}`}>
                     <Icon name="file" size={11} /> {p}
                   </span>
                 ))}
@@ -1483,6 +1490,28 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             <div className="run-artifacts">
               {m.artifacts.map((a) => <div key={a.path} className="run-artifact-row"><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
               {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
+            </div>
+          )}
+        </details>
+      </div>
+    </div>
+  );
+}
+
+// ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
+function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onResend, index, prevRole, clientId, threadId }) {
+  if (m.role === "system") {
+    if (m.summary) return <RunSummary m={m} onOpenFile={onOpenFile} onRollbackRun={onRollbackRun} />;
+    return (
+      <div className="msg system">
+        <div className="bubble">
+          {m.text}
+          {m.memoryProposal && (
+            <div className="memory-proposal-card" role="note">
+              <div><strong>{m.memoryProposal.section}</strong>：{m.memoryProposal.content}</div>
+              {m.memoryProposal.status === "pending" ? (
+                <><button className="btn-xs primary" onClick={() => onMemoryApprove?.(m.memoryProposal.id)}>确认写入记忆</button><button className="btn-xs" onClick={() => onMemoryReject?.(m.memoryProposal.id)}>拒绝</button></>
+              ) : <span className="memory-proposal-state">{m.memoryProposal.status === "approved" ? "✓ 已写入" : "未写入"}</span>}
             </div>
           )}
         </div>

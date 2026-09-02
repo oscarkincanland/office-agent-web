@@ -1,14 +1,14 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
-import SkillsManager from "./components/SkillsManager.jsx";
-import AgentMarket from "./components/AgentMarket.jsx";
-import KnowledgeBase from "./components/KnowledgeBase.jsx";
-import TemplateLibrary from "./components/TemplateLibrary.jsx";
-import MapPanel from "./components/MapPanel.jsx";
-import CommandPalette from "./components/CommandPalette.jsx";
+const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
+const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
+const KnowledgeBase = lazy(() => import("./components/KnowledgeBase.jsx"));
+const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
+const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
+const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
@@ -35,6 +35,10 @@ function historyReferences(text = "") {
     if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
   }
   return refs;
+}
+
+function DeferredModule({ children, label = "模块" }) {
+  return <Suspense fallback={<div className="module-loading">正在加载{label}…</div>}>{children}</Suspense>;
 }
 
 // 全局错误边界
@@ -536,8 +540,9 @@ export default function App() {
       }
       const runMessages = [...(runData?.runs || [])]
         .filter((run) => run?.status)
+        .filter((run, index, list) => list.findIndex((item) => item.id === run.id) === index)
         .sort((a, b) => String(a.startedAt || "").localeCompare(String(b.startedAt || "")))
-        .map((run) => ({
+        .map((run, index, list) => ({
           id: `run-summary-${run.id}`,
           role: "system",
           text: run.summary || (run.status === "running" ? "本轮任务仍在执行中" : `本轮任务${run.status === "failed" ? "失败" : run.status === "cancelled" ? "已取消" : "完成"}，处理 ${run.artifacts?.length || 0} 个文件`),
@@ -549,6 +554,10 @@ export default function App() {
           task: run.task || null,
           status: run.status === "running" ? "streaming" : "done",
           summary: true,
+          runIndex: index + 1,
+          runCount: list.length,
+          runMode: run.task?.mode || "agent",
+          expanded: run.status === "running",
           createdAt: run.finishedAt || run.startedAt || null,
         }));
       const loadedHistory = [...msgs, ...runMessages];
@@ -754,6 +763,7 @@ export default function App() {
     <AppErrorBoundary>
       <div className="app">
         {kbMode && (
+          <DeferredModule label="知识库">
           <KnowledgeBase
             clientId={clientId}
             workspace={currentWorkspace}
@@ -771,8 +781,10 @@ export default function App() {
             }}
             onAtMention={(text) => chatInputRef.current?.insertText(text)}
           />
+          </DeferredModule>
         )}
         {tplMode && (
+          <DeferredModule label="模板库">
           <TemplateLibrary
             onExit={(marks) => {
               // 返回时统一把累积的 @标记 插入对话（支持一次多个）
@@ -786,8 +798,10 @@ export default function App() {
             onOpenFile={open}
             onAtMention={() => {}}
           />
+          </DeferredModule>
         )}
         {mapMode && (
+          <DeferredModule label="地图">
           <MapPanel
             onExit={() => setMapMode(false)}
             onOpenFile={open}
@@ -809,6 +823,7 @@ export default function App() {
             bridgeRef={mapBridgeRef}
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
           />
+          </DeferredModule>
         )}
         {mapMode && (
           <Resizer
@@ -897,6 +912,7 @@ export default function App() {
           </div>
         </div>
         <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
+        <DeferredModule label="技能管理">
         <SkillsManager
           open={skillsOpen}
           onClose={() => setSkillsOpen(false)}
@@ -908,14 +924,18 @@ export default function App() {
           onPromoteToAgent={handlePromoteToAgent}
           onAtMention={(value) => chatInputRef.current?.insertText(String(value || "").startsWith("@") ? value : `@${value}`)}
         />
+        </DeferredModule>
+        <DeferredModule label="智能体广场">
         <AgentMarket
           open={agentsOpen}
           onClose={() => setAgentsOpen(false)}
           onAtMention={(text) => chatInputRef.current?.insertText(text)}
         />
+        </DeferredModule>
         </>
         )}
         {!kbMode && !tplMode && <div className={`app-chat-slot ${mapMode ? "map" : ""}`}>{sharedChatPanel}</div>}
+        <DeferredModule label="命令面板">
         <CommandPalette
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
@@ -925,6 +945,7 @@ export default function App() {
           onMap={() => setMapMode(true)}
           onSession={handleSelectSession}
         />
+        </DeferredModule>
       </div>
     </AppErrorBoundary>
   );

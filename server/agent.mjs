@@ -75,7 +75,18 @@ function assistantText(message) {
 function eventValueText(value) {
   if (typeof value === "string") return value;
   if (value === undefined || value === null) return "";
-  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+  try { return limitToolText(JSON.stringify(value, null, 2)); } catch { return limitToolText(String(value)); }
+}
+
+// 工具结果同时会进入 Pi 上下文和前端事件流。保留首尾，避免一次读取大文档
+// 把后续任务的上下文预算吃满；需要全文时让模型继续按 offset/range 分段读取。
+const TOOL_OUTPUT_MAX_CHARS = 16000;
+function limitToolText(value, max = TOOL_OUTPUT_MAX_CHARS) {
+  const text = String(value ?? "");
+  if (text.length <= max) return text;
+  const head = Math.floor(max * 0.72);
+  const tail = max - head;
+  return `${text.slice(0, head)}\n\n...[输出已截断，原始长度 ${text.length} 字符；请使用分段读取继续获取]...\n\n${text.slice(-tail)}`;
 }
 
 // Chat 的 Skills 检索只读本地 SKILL.md，不把目录扫描交给模型自行猜路径。
@@ -126,6 +137,8 @@ function searchLocalSkills(query = "", limit = 12) {
 const APP_PROMPT_RETRY_DELAYS = [2000, 5000];
 const SETTLED_AGENT_RETRY_DELAYS = [1200];
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
+const AUTO_COMPACT_PROMPT_CHARS = 90000;
+const AUTO_COMPACT_INPUT_TOKENS = 26000;
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
@@ -290,11 +303,11 @@ function readMemoryContext(workspace = getWorkspace()) {
   const layers = readMemoryLayers(workspace);
   return [
     layers.rules && `## 工作区准则（AGENTS.md）\n${layers.rules}`,
-    layers.project && `## 项目信息\n${layers.project.slice(0, 1400)}`,
-    layers.preferences && `## 用户偏好\n${layers.preferences.slice(0, 1400)}`,
-    layers.lessons && `## 经验教训\n${layers.lessons.slice(0, 1400)}`,
-    ...layers.other.map((x) => `## 记忆：${x.file}\n${x.content.slice(0, 1000)}`),
-  ].filter(Boolean).join("\n\n").slice(0, 6000);
+    layers.project && `## 项目信息\n${layers.project.slice(0, 900)}`,
+    layers.preferences && `## 用户偏好\n${layers.preferences.slice(0, 900)}`,
+    layers.lessons && `## 经验教训\n${layers.lessons.slice(0, 900)}`,
+    ...layers.other.map((x) => `## 记忆：${x.file}\n${x.content.slice(0, 600)}`),
+  ].filter(Boolean).join("\n\n").slice(0, 2800);
 }
 
 const PENDING_ASKS_FILE = path.join(PROJECT_DIR, ".oaw", "pending-asks.json");
@@ -554,12 +567,12 @@ class AgentManager extends EventEmitter {
         writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli", command: String(params.args || "").slice(0, 500) });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli" });
         const r = await runOfficecli(args, { cwd: entry.workspace });
-        const body = r.stdout + (r.stderr || "");
+        const body = limitToolText(r.stdout + (r.stderr || ""));
         const hint = entry.currentFile
           ? `\n[当前工作文件: ${entry.currentFile}]`
           : "";
         return {
-          content: [{ type: "text", text: (body || `(exit ${r.code}, no output)`) + hint }],
+          content: [{ type: "text", text: limitToolText((body || `(exit ${r.code}, no output)`) + hint) }],
           details: {},
         };
       },
@@ -610,7 +623,7 @@ class AgentManager extends EventEmitter {
           return { content: [{ type: "text", text: `未找到文档: ${raw}` }], details: {} };
         }
         const text = `# ${doc.title}\n\n标签: ${doc.tags.join(", ") || "无"}\n路径: ${relPath}\n\n${doc.content}`;
-        return { content: [{ type: "text", text: text.slice(0, 40000) }], details: {} };
+        return { content: [{ type: "text", text: limitToolText(text) }], details: {} };
       },
     });
 
@@ -643,7 +656,7 @@ class AgentManager extends EventEmitter {
         const name = String(params.name || "").trim();
         const skill = localSkillCatalog().find((item) => item.name === name);
         if (!skill) return { content: [{ type: "text", text: `未找到 Skill：${name}` }], details: {} };
-        const content = fs.readFileSync(skill.path, "utf8").slice(0, 30000);
+        const content = limitToolText(fs.readFileSync(skill.path, "utf8"));
         return { content: [{ type: "text", text: `# ${name}\n\n${content}` }], details: { name, source: skill.source } };
       },
     });
@@ -663,7 +676,7 @@ class AgentManager extends EventEmitter {
         if (!ref) return { content: [{ type: "text", text: `未找到引用 ${params.refId}。当前引用：\n${contextSummary(refs) || "（无）"}` }], details: {} };
         try {
           const result = await readReference(ref, params.query, params.range, entry.workspace);
-          return { content: [{ type: "text", text: result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}` }], details: { reference: result } };
+          return { content: [{ type: "text", text: limitToolText(result.status === "resolved" ? `引用 ${result.id}（${result.metadata.relativePath}）：\n${result.text}` : `${result.id}: ${result.message || result.status}`) }], details: { reference: result } };
         } catch (error) {
           const message = String(error?.message || error || "读取失败").slice(0, 800);
           const failed = { ...ref, status: "read_error", message, readAt: new Date().toISOString() };
@@ -1072,6 +1085,7 @@ class AgentManager extends EventEmitter {
           // usage/stats 事件：转发为统一的 stats 事件给前端
           if (ev.usage || ev.tokens) {
             const u = ev.usage || ev.tokens;
+            if (entry) entry.lastUsage = u;
             emit("stats", {
               tokens: {
                 input: u.inputTokens ?? u.input ?? 0,
@@ -1095,6 +1109,7 @@ class AgentManager extends EventEmitter {
           // 若 ev 包含 usage 信息，emit stats 事件
           if (ev.usage) {
             const u = ev.usage;
+            entry.lastUsage = u;
             emit("stats", {
               tokens: {
                 input: u.inputTokens ?? u.input ?? 0,
@@ -1147,7 +1162,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: 0, lastUsage: null, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1156,12 +1171,56 @@ class AgentManager extends EventEmitter {
   /** Run a prompt. Events stream to entry.emitter; resolves on completion. */
   async prompt(clientId, text, images = [], effort) {
     const entry = await this.getOrCreate(clientId);
-    return this._promptEntry(entry, text, images, effort, []);
+    return this._enqueuePrompt(entry, { text, images, effort, references: [], runContext: null });
   }
 
   async promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
     const entry = await this.getOrCreate(clientId);
-    return this._promptEntry(entry, text, images, effort, references, runContext);
+    return this._enqueuePrompt(entry, { text, images, effort, references, runContext });
+  }
+
+  _enqueuePrompt(entry, payload) {
+    const wasOccupied = entry.busy || entry.queuedCount > 0;
+    if (wasOccupied) {
+      const position = entry.queuedCount + 1;
+      emitChannelSafe(entry, "agent_queued", {
+        runId: payload.runContext?.runId || null,
+        position,
+        queued: entry.queuedCount,
+      });
+    }
+    entry.queuedCount += 1;
+    const operation = entry.promptChain.then(async () => {
+      entry.queuedCount = Math.max(0, entry.queuedCount - 1);
+      await this._maybeCompact(entry);
+      return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
+    });
+    // 保留链路继续执行，同时不让前一个失败阻断后续排队请求。
+    entry.promptChain = operation.catch(() => {});
+    return operation;
+  }
+
+  async _maybeCompact(entry) {
+    if (entry.autoCompacting || !entry.promptChars) return;
+    const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
+    if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && inputTokens < AUTO_COMPACT_INPUT_TOKENS) return;
+    entry.autoCompacting = true;
+    emitChannelSafe(entry, "context_compacting", { promptChars: entry.promptChars, inputTokens });
+    try {
+      const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
+      entry.promptChars = 0;
+      entry.lastUsage = null;
+      emitChannelSafe(entry, "context_compacted", {
+        automatic: true,
+        tokensBefore: result?.tokensBefore || 0,
+        estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+      });
+    } catch (error) {
+      // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
+      emitChannelSafe(entry, "context_compact_warning", { message: String(error?.message || error).slice(0, 300) });
+    } finally {
+      entry.autoCompacting = false;
+    }
   }
 
   async _promptEntry(entry, text, images = [], effort, references = [], runContext = null) {
@@ -1252,6 +1311,7 @@ class AgentManager extends EventEmitter {
         text = `## 本轮结构化引用\n${contextSummary(entry.references)}\n请使用 context_read(refId) 按需读取引用内容；若状态为 missing/deferred，应明确告诉用户。\n\n${text}`;
       }
       if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
+      entry.promptChars += text.length;
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -1366,7 +1426,7 @@ class AgentManager extends EventEmitter {
   /** 手动压缩当前会话上下文。压缩属于 pi session 能力，不通过伪造 /compact 文本实现。 */
   async compact(clientId, customInstructions = "") {
     const entry = await this.getOrCreate(clientId);
-    if (entry.busy || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
+    if (entry.busy || entry.queuedCount > 0 || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
       throw new Error("agent busy — wait for the current task to finish");
     }
     const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, String(customInstructions || "").trim());
@@ -1386,7 +1446,7 @@ class AgentManager extends EventEmitter {
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
+      if (old.busy || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -1399,7 +1459,7 @@ class AgentManager extends EventEmitter {
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy) throw new Error("当前会话正在执行任务，不能替换活动会话");
+      if (old.busy || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -1487,7 +1547,7 @@ class AgentManager extends EventEmitter {
 
   async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace() } = {}) {
     const old = this.sessions.get(clientId);
-    if (old?.busy) throw new Error("当前 Runtime 正在执行任务，不能重启");
+    if (old?.busy || old?.queuedCount > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
     if (old) {
       piRuntimeManager.markRecovery(old.runtimeId, "manual_runtime_restart");
       piRuntimeManager.dispose(old.runtimeId, old.session);
@@ -1503,7 +1563,7 @@ class AgentManager extends EventEmitter {
 
   async setModel(clientId, spec) {
     const entry = await this.getOrCreate(clientId);
-    if (entry.busy) throw new Error("agent busy — wait for the current task to finish");
+    if (entry.busy || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
     const [provider, id] = String(spec).split("/");
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
