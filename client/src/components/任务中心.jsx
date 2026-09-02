@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import Icon from "./Icon.jsx";
 
@@ -63,8 +63,11 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const [statusFilter, setStatusFilter] = useState("all");
   const [modeFilter, setModeFilter] = useState("all");
   const [queryFilter, setQueryFilter] = useState("");
+  const [opening, setOpening] = useState(false);
+  const refreshInFlightRef = useRef(null);
 
   const refresh = useCallback(async () => {
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
     try {
       const options = {
         cwd: projectScope === "current" ? currentWorkspace : "",
@@ -73,17 +76,31 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         mode: modeFilter,
         query: queryFilter.trim(),
       };
-      const result = await listRuns("", 50, options);
-      setRuns(Array.isArray(result.runs) ? result.runs.filter(Boolean) : []);
-      setError("");
+      const request = listRuns("", 50, options)
+        .then((result) => {
+          setRuns(Array.isArray(result.runs) ? result.runs.filter(Boolean) : []);
+          setError("");
+        })
+        .catch((e) => {
+          setError(e.message || "任务状态暂不可用");
+        })
+        .finally(() => {
+          refreshInFlightRef.current = null;
+        });
+      refreshInFlightRef.current = request;
+      return request;
     } catch (e) {
+      refreshInFlightRef.current = null;
       setError(e.message || "任务状态暂不可用");
+      return null;
     }
   }, [currentWorkspace, eventVersion, modeFilter, projectScope, queryFilter, statusFilter]);
 
   useEffect(() => {
     refresh();
-    const timer = window.setInterval(refresh, open ? 1500 : 4000);
+    // 任务状态通过 SSE 事件即时刷新；轮询只作为断线兜底，避免打开面板时
+    // 每 1.5 秒重复扫描服务端的全部任务记录。
+    const timer = window.setInterval(refresh, open ? 3000 : 10000);
     return () => window.clearInterval(timer);
   }, [open, refresh]);
 
@@ -103,7 +120,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
       }
     };
     load();
-    const timer = window.setInterval(load, 1500);
+    const timer = window.setInterval(load, 3000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [selectedId, eventVersion]);
 
@@ -135,32 +152,34 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const activeCount = [...ACTIVE].reduce((total, status) => total + (counts[status] || 0), 0);
   const visibleRuns = runs.filter(Boolean).slice(0, 12);
 
-  const openRunConversation = useCallback((run) => {
+  const openRunConversation = useCallback(async (run) => {
+    if (opening) return;
+    setOpening(true);
+    setError("");
     const session = sessions.find((item) => item?.id && (
       item.id === run?.sessionId || item.id === run?.threadId
     ));
-    if (session) {
-      onSelectSession?.(session);
+    try {
+      if (session) {
+        await onSelectSession?.(session);
+      } else if (run?.threadId && (run.threadId === currentThreadId || run.sessionId === currentSessionId)) {
+        // 运行中的任务在 session 文件尚未刷新时通常只有 threadId；
+        // 如果正好是当前对话，直接聚焦即可。
+        onFocusRun?.(run);
+      } else if (run?.sessionId || run?.threadId) {
+        await onOpenRun?.(run);
+      } else {
+        throw new Error("任务没有关联的会话");
+      }
       setOpen(false);
       setSelectedId(null);
       setDetail(null);
-      return;
+    } catch (e) {
+      setError(e.message || "对应会话打开失败");
+    } finally {
+      setOpening(false);
     }
-    // 运行中的任务在 session 文件尚未刷新时通常只有 threadId；
-    // 如果正好是当前对话，直接聚焦即可。
-    if (run?.threadId && (run.threadId === currentThreadId || run.sessionId === currentSessionId)) {
-      onFocusRun?.(run);
-      setOpen(false);
-      setSelectedId(null);
-      setDetail(null);
-    }
-    else if (run?.sessionId || run?.threadId) {
-      onOpenRun?.(run);
-      setOpen(false);
-      setSelectedId(null);
-      setDetail(null);
-    }
-  }, [sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun, onOpenRun]);
+  }, [opening, sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun, onOpenRun]);
 
   const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
@@ -215,7 +234,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
               <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
               <div className="task-center-detail-meta">{projectNameFor(detail) || "当前项目"} · {modeText(detail)} · {statusText[detail.status] || detail.status} · {progressText(detail)}</div>
-              <button className="btn-xs task-center-open-chat" onClick={() => openRunConversation(detail)}>打开对应对话</button>
+              <button className="btn-xs task-center-open-chat" onClick={() => openRunConversation(detail)} disabled={opening}>{opening ? "切换中…" : "打开对应对话"}</button>
               <div className="task-center-actions">
                 {detail.actions?.canCancel && <button className="btn-xs danger" onClick={() => runAction("cancel")} disabled={!!action}>{action === "cancel" ? "取消中…" : "取消任务"}</button>}
                 {detail.actions?.canResume && <button className="btn-xs" onClick={() => runAction("resume")} disabled={!!action}>{action === "resume" ? "继续中…" : "继续任务"}</button>}

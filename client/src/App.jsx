@@ -173,7 +173,9 @@ export default function App() {
       // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
       const project = projects.find((item) => sameWorkspacePath(item.rootPath, workspace || currentWorkspace));
       created = await createAgentThread(clientId, next, workspace || undefined, { projectId: project?.id || null });
-      refreshSessions();
+      // 新会话已经由当前 Chat 状态立即接管；历史列表刷新延后，避免工作区切换
+      // 立刻触发一次全量 JSONL 扫描，阻塞刚完成的界面切换。
+      window.setTimeout(() => refreshSessions(), 600);
     } catch (e) {
       console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
     }
@@ -356,8 +358,7 @@ export default function App() {
         return [...prev, { path: r.workspace, name }];
       });
       setFiles(r.files || []);
-      // 项目统计和新会话不再阻塞工作区视图；完成后由列表刷新反映结果。
-      void refreshProjects();
+      // 项目统计不参与工作区切换，交给定时刷新，避免切换时与会话扫描争用服务端。
       void handleNewSession(r.workspace);
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
@@ -442,7 +443,6 @@ export default function App() {
         setFiles(switched.files || []);
         setTabs([]);
         setActiveTab(null);
-        void refreshProjects();
       } catch (e) {
         console.warn("切换到会话工作区失败，仍尝试加载历史:", e.message);
       }
@@ -608,7 +608,7 @@ export default function App() {
   const handleOpenRun = useCallback((run) => {
     const id = run?.sessionId || run?.threadId;
     if (!id) return;
-    handleSelectSession({
+    return handleSelectSession({
       id,
       threadId: run.threadId || id,
       cwd: run.cwd || currentWorkspace,

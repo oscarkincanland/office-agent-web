@@ -1699,18 +1699,32 @@ app.post("/api/sessions/:id/fork", (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+let workspacesCache = null;
+const WORKSPACES_CACHE_MS = 5000;
+
+function invalidateWorkspacesCache() {
+  workspacesCache = null;
+}
+
 // GET /api/workspaces - 列出已知工作区目录
 app.get("/api/workspaces", (_req, res) => {
+  if (workspacesCache && Date.now() - workspacesCache.createdAt < WORKSPACES_CACHE_MS) {
+    return res.json({ workspaces: workspacesCache.workspaces });
+  }
   const hidden = new Set(getHiddenWorkspaces().map((p) => fs.existsSync(p) ? fs.realpathSync(p) : p));
   const workspaces = [{ name: "默认工作区", path: WORKSPACE_DIR }];
   // 从会话历史里收集其他 cwd（存在 office 文件的工作区）
-  const seen = new Set([WORKSPACE_DIR]);
+  const canonical = (value) => {
+    try { return fs.realpathSync(value).toLowerCase(); } catch { return path.resolve(value).toLowerCase(); }
+  };
+  const seen = new Set([canonical(WORKSPACE_DIR)]);
   for (const f of listSessionFiles()) {
     try {
       const first = readSessionTextCached(f).split(/\r?\n/)[0];
       const h = JSON.parse(first);
-      if (h.cwd && !seen.has(h.cwd)) {
-        seen.add(h.cwd);
+      const key = h.cwd ? canonical(h.cwd) : "";
+      if (h.cwd && !seen.has(key)) {
+        seen.add(key);
         // 只收录看起来是办公工作区的目录（有 docx/xlsx/pptx）
         let hasOffice = false;
         try {
@@ -1725,7 +1739,16 @@ app.get("/api/workspaces", (_req, res) => {
     const rp = fs.existsSync(w.path) ? fs.realpathSync(w.path) : w.path;
     return !hidden.has(rp);
   });
-  res.json({ workspaces: filtered });
+  const unique = [];
+  const uniqueKeys = new Set();
+  for (const workspace of filtered) {
+    const key = canonical(workspace.path);
+    if (uniqueKeys.has(key)) continue;
+    uniqueKeys.add(key);
+    unique.push(workspace);
+  }
+  workspacesCache = { createdAt: Date.now(), workspaces: unique };
+  res.json({ workspaces: unique });
 });
 
 // POST /api/workspace/delete - 从下拉列表中移除工作区路径（隐藏，不破坏会话历史）
@@ -1739,6 +1762,7 @@ app.post("/api/workspace/delete", (req, res) => {
     setWorkspace(WORKSPACE_DIR);
     workspace = getWorkspace();
   }
+  invalidateWorkspacesCache();
   res.json({ ok: true, workspace });
 });
 

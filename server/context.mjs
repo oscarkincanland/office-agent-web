@@ -96,7 +96,11 @@ export function parseReferences(text = "") {
 
 function metadata(file, rootId = null, workspace = getWorkspace()) {
   const st = fs.statSync(file);
-  const hash = crypto.createHash("sha1").update(fs.readFileSync(file)).digest("hex");
+  // 目录引用只需要用于展示和版本判断，不能把目录交给 readFileSync。
+  // Windows 上对目录调用 readFileSync 会抛出 EISDIR，导致整个 Agent 请求失败。
+  const hash = st.isDirectory()
+    ? null
+    : crypto.createHash("sha1").update(fs.readFileSync(file)).digest("hex");
   return {
     path: file,
     relativePath: rootId ? path.relative(listFileRoots().find((r) => r.id === rootId)?.path || file, file).replace(/\\/g, "/") : path.relative(workspace, file).replace(/\\/g, "/"),
@@ -107,7 +111,7 @@ function metadata(file, rootId = null, workspace = getWorkspace()) {
     size: st.size,
     mtime: st.mtimeMs,
     hash,
-    version: `${st.size}:${st.mtimeMs}:${hash.slice(0, 8)}`,
+    version: st.isDirectory() ? `${st.size}:${st.mtimeMs}:directory` : `${st.size}:${st.mtimeMs}:${hash.slice(0, 8)}`,
   };
 }
 
