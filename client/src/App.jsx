@@ -113,6 +113,7 @@ export default function App() {
   const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
   const [mapMode, setMapMode] = useState(false); // 地图全屏模式（三栏：图层树+地图+对话）
+  const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
   const [clientId] = useState(getClientId);
   const [threadId, setThreadId] = useState(() => {
@@ -903,6 +904,17 @@ export default function App() {
               />
               <span className="topbar-badge">{models.length} 模型</span>
             </div>
+            <div className="center-chat-slot">{sharedChatPanel}</div>
+          </div>
+        </div>
+        {previewOpen && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
+        {previewOpen && (
+          <aside className="app-preview-slot">
+            <div className="preview-panel-head">
+              <span><Icon name="file" size={15} /> 当前工作产物</span>
+              <button className="btn-icon" onClick={() => setPreviewOpen(false)} title="隐藏右侧预览"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="preview-panel-tabs"><span className="active">文档预览</span><span>事件流</span><span>产物</span></div>
             <DocViewer
               tabs={tabs}
               activeTab={activeTab}
@@ -913,9 +925,8 @@ export default function App() {
               onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
               onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
             />
-          </div>
-        </div>
-        <Resizer side="right" min={300} max={600} cssVar="--chat-w" />
+          </aside>
+        )}
         <DeferredModule label="技能管理">
         <SkillsManager
           open={skillsOpen}
@@ -938,7 +949,9 @@ export default function App() {
         </DeferredModule>
         </>
         )}
-        {!kbMode && !tplMode && <div className={`app-chat-slot ${mapMode ? "map" : ""}`}>{sharedChatPanel}</div>}
+        {!kbMode && !tplMode && !mapMode && !previewOpen && (
+          <button className="preview-reopen" onClick={() => setPreviewOpen(true)} title="显示右侧预览"><Icon name="file" size={13} /> 预览</button>
+        )}
         <DeferredModule label="命令面板">
         <CommandPalette
           open={paletteOpen}

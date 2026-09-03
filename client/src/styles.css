@@ -4848,6 +4848,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   --chat-w: 430px;
   --chat-min: 320px;
   --chat-max: 680px;
+  --preview-w: 360px;
 }
 [data-theme="light"] {
   --body-bg: #f7f8f6;
@@ -4928,6 +4929,19 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-area { background: var(--body-bg); }
 .docview { background: var(--body-bg); }
 .app-chat-slot > .chat { border-left: 1px solid var(--border); }
+.center-chat-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.center-chat-slot > .chat { width: 100%; max-width: none; min-width: 0; height: 100%; flex: 1; background: transparent; }
+.app-preview-slot { width: var(--preview-w); min-width: 280px; max-width: 680px; height: 100vh; min-height: 0; flex: 0 0 var(--preview-w); display: flex; flex-direction: column; background: var(--panel-bg); border-left: 1px solid var(--border); }
+.preview-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 54px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; font-weight: 700; }
+.preview-panel-head > span { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.preview-panel-head .icon { color: var(--accent); }
+.preview-panel-tabs { display: flex; gap: 4px; padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--panel2-bg); }
+.preview-panel-tabs span { padding: 4px 8px; border-radius: 5px; color: var(--muted); font-size: 10px; }
+.preview-panel-tabs span.active { color: var(--accent); background: var(--selected); font-weight: 700; }
+.app-preview-slot > .docview { width: 100%; min-width: 0; height: auto; flex: 1; background: var(--panel-bg); }
+.app-preview-slot > .docview .docview-body { background: var(--panel-bg); }
+.preview-reopen { position: absolute; z-index: 12; right: 12px; top: 64px; display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--panel-bg); cursor: pointer; font: inherit; font-size: 10px; box-shadow: 0 6px 18px rgba(0,0,0,.18); }
+.preview-reopen:hover { color: var(--accent); border-color: var(--accent); }
 
 .sidebar-section-head {
   display: flex;
