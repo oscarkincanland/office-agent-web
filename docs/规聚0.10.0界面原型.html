@@ -248,6 +248,59 @@
     .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 38px; color: var(--text); font-size: 11px; }
     .setting-row small { display: block; margin-top: 3px; color: var(--dim); font-size: 9px; }
     .setting-value { padding: 6px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--panel-2); font-size: 10px; }
+    .map-modal { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center; padding: 28px; background: rgba(7,9,8,.72); backdrop-filter: blur(6px); animation: rise .22s both; }
+    .map-window { width: min(1440px, 100%); height: min(900px, 100%); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); box-shadow: 0 28px 90px rgba(0,0,0,.4); }
+    .map-modal-head { display: flex; align-items: center; gap: 8px; min-height: 45px; padding: 6px 9px; border-bottom: 1px solid var(--line); background: var(--panel); }
+    .map-modal-title { display: inline-flex; align-items: center; gap: 6px; margin-right: 2px; color: var(--text); font-size: 13px; font-weight: 700; }
+    .map-modal-head select, .map-modal-head input { max-width: 150px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; outline: 0; color: var(--text); background: var(--panel-2); font-size: 10px; }
+    .map-modal-head input { width: 82px; }
+    .map-modal-head select:focus, .map-modal-head input:focus { border-color: var(--accent-2); }
+    .map-modal-sep { width: 1px; height: 20px; margin: 0 2px; background: var(--line); }
+    .map-modal-tools { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: auto; }
+    .map-modal-tools button, .map-modal-close { display: inline-flex; align-items: center; gap: 5px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--panel-2); font-size: 10px; white-space: nowrap; }
+    .map-modal-tools button:hover, .map-modal-tools button.active { color: var(--text); border-color: var(--accent-2); background: var(--panel-3); }
+    .map-modal-close { margin-left: auto; color: var(--text); background: transparent; }
+    .map-modal-close:hover { color: var(--danger); border-color: var(--danger); }
+    .map-modal-tools svg, .map-modal-close svg, .map-layer-head svg, .map-layer-row svg, .map-chat-head svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+    .map-modal-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 230px minmax(0,1fr) 285px; }
+    .map-layer-panel, .map-chat-panel { min-width: 0; overflow: auto; background: var(--panel); }
+    .map-layer-panel { border-right: 1px solid var(--line); }
+    .map-chat-panel { border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+    .map-layer-head, .map-chat-head { display: flex; align-items: center; gap: 6px; min-height: 37px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); color: var(--muted); font-size: 11px; font-weight: 650; }
+    .map-layer-count { margin-left: auto; padding: 2px 6px; border-radius: 8px; color: var(--dim); background: var(--panel-3); font-size: 9px; }
+    .map-layer-group { padding: 10px 9px 4px; color: var(--dim); font-size: 9px; letter-spacing: .04em; }
+    .map-layer-row { display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 5px 10px; color: var(--muted); font-size: 10px; }
+    .map-layer-row:hover { color: var(--text); background: var(--panel-2); }
+    .map-layer-row input { accent-color: var(--accent-2); }
+    .map-layer-symbol { width: 10px; height: 10px; border: 2px solid var(--accent); border-radius: 50%; }
+    .map-layer-symbol.line { width: 14px; height: 3px; border: 0; border-radius: 0; background: var(--warm); }
+    .map-layer-symbol.area { border-radius: 2px; background: rgba(107,139,46,.18); }
+    .map-layer-row small { margin-left: auto; color: var(--dim); font-size: 9px; }
+    .map-canvas { position: relative; min-width: 0; overflow: hidden; background-color: #1b211e; background-image: linear-gradient(rgba(169,200,78,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(169,200,78,.08) 1px, transparent 1px); background-size: 48px 48px; }
+    .map-canvas::before, .map-canvas::after { content: ""; position: absolute; background: rgba(232,168,108,.36); transform: rotate(-18deg); }
+    .map-canvas::before { width: 130%; height: 22px; left: -14%; top: 42%; }
+    .map-canvas::after { width: 20px; height: 125%; left: 58%; top: -10%; transform: rotate(21deg); }
+    .map-road { position: absolute; z-index: 1; width: 70%; height: 8px; left: 15%; top: 63%; border-top: 2px dashed rgba(240,198,116,.8); transform: rotate(-12deg); }
+    .map-region { position: absolute; z-index: 1; width: 42%; height: 32%; left: 29%; top: 23%; border: 2px solid rgba(118,188,206,.65); border-radius: 46% 54% 35% 65%; background: rgba(69,120,117,.15); transform: rotate(12deg); }
+    .map-point { position: absolute; z-index: 2; width: 13px; height: 13px; border: 3px solid var(--bg); border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(217,243,106,.16); }
+    .map-point.one { left: 32%; top: 31%; } .map-point.two { left: 68%; top: 60%; background: var(--warm); } .map-point.three { left: 48%; top: 76%; }
+    .map-canvas-label { position: absolute; z-index: 2; padding: 5px 7px; border: 1px solid rgba(217,243,106,.25); border-radius: 5px; color: var(--text); background: rgba(17,18,17,.8); font-size: 10px; }
+    .map-canvas-label.one { left: 34%; top: 26%; } .map-canvas-label.two { left: 70%; top: 55%; }
+    .map-canvas-controls { position: absolute; z-index: 4; top: 12px; right: 12px; display: grid; gap: 5px; }
+    .map-canvas-controls button { width: 31px; height: 31px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: var(--panel); }
+    .map-canvas-controls button:hover { color: var(--text); }
+    .map-status { position: absolute; z-index: 4; left: 12px; bottom: 12px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); background: rgba(23,25,23,.86); font-size: 9px; }
+    .map-chat-head { color: var(--text); }
+    .map-chat-head span:last-child { margin-left: auto; color: var(--accent-2); font-size: 9px; font-weight: 500; }
+    .map-chat-messages { flex: 1; overflow: auto; padding: 14px 12px; }
+    .map-chat-message { margin-bottom: 13px; font-size: 10px; line-height: 1.65; }
+    .map-chat-message.user { margin-left: 22px; padding: 8px 9px; border-radius: 8px 8px 2px 8px; color: #182013; background: #d7ed9d; }
+    .map-chat-message.agent { color: var(--muted); }
+    .map-chat-message strong { display: block; margin-bottom: 4px; color: var(--text); font-size: 10px; }
+    .map-chat-event { margin-top: 7px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; color: var(--dim); background: var(--panel-2); font-family: var(--mono); font-size: 9px; }
+    .map-chat-input { display: flex; gap: 5px; padding: 9px; border-top: 1px solid var(--line); }
+    .map-chat-input input { flex: 1; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; outline: 0; color: var(--text); background: var(--panel-2); font-size: 10px; }
+    .map-chat-input button { width: 30px; border-radius: 6px; color: #161b0f; background: var(--accent); }
     .hidden { display: none !important; }
     body[data-theme="light"] .sidebar-foot,
     body[data-theme="light"] .preview-head,
@@ -442,6 +495,45 @@
         </div>
       </section>
     </main>
+    <section class="map-modal hidden" id="mapModal" aria-label="地图工作面板">
+      <div class="map-window">
+        <header class="map-modal-head">
+          <span class="map-modal-title" data-icon="map">地图</span>
+          <select title="地图项目"><option>义乌物流专题</option><option>柬埔寨公交项目</option></select>
+          <select title="底图"><option>高德路网</option><option>高德卫星</option><option>Esri 街道</option></select>
+          <div class="map-modal-tools">
+            <button data-icon="refresh">重建瓦片</button><button data-icon="upload">导入数据</button><button data-icon="refresh">刷新地图</button>
+            <span class="map-modal-sep"></span><button data-icon="chart">分析工具</button><button data-icon="history">可达性</button><button data-icon="chart">示例数据</button><button data-icon="download">导出</button><button data-icon="globe">地球</button>
+          </div>
+          <select title="区域"><option>浙江省</option><option>金华市</option><option>义乌市</option></select><input placeholder="搜索区域" title="搜索区域"><button class="map-modal-close" id="mapModalClose" title="返回当前会话" data-icon="x">返回</button>
+        </header>
+        <div class="map-modal-body">
+          <aside class="map-layer-panel">
+            <div class="map-layer-head"><span data-icon="layers"></span>图层<span class="map-layer-count">6</span></div>
+            <div class="map-layer-group">底图</div>
+            <label class="map-layer-row"><input type="checkbox" checked><span class="map-layer-symbol area"></span>行政区划<small>边界</small></label>
+            <label class="map-layer-row"><input type="checkbox" checked><span class="map-layer-symbol"></span>高德路网<small>底图</small></label>
+            <div class="map-layer-group">项目图层</div>
+            <label class="map-layer-row"><input type="checkbox" checked><span class="map-layer-symbol line"></span>主要道路<small>12 条</small></label>
+            <label class="map-layer-row"><input type="checkbox" checked><span class="map-layer-symbol"></span>物流中心候选点<small>3 点</small></label>
+            <label class="map-layer-row"><input type="checkbox"><span class="map-layer-symbol area"></span>项目影响范围<small>临时</small></label>
+            <div class="map-layer-group">分析结果</div>
+            <label class="map-layer-row"><input type="checkbox" checked><span class="map-layer-symbol line"></span>可达性等时圈<small>30 分钟</small></label>
+            <div class="map-chips" style="padding:12px 10px"><button class="module-chip active">图层组</button><button class="module-chip">属性表</button></div>
+          </aside>
+          <div class="map-canvas">
+            <div class="map-canvas-controls"><button data-icon="plus" title="放大"></button><button data-icon="minus" title="缩小"></button><button data-icon="locate" title="定位"></button><button data-icon="penTool" title="标注"></button></div>
+            <div class="map-region"></div><div class="map-road"></div><span class="map-point one"></span><span class="map-point two"></span><span class="map-point three"></span><span class="map-canvas-label one">物流中心</span><span class="map-canvas-label two">候选节点</span>
+            <div class="map-status">浙江省 · 当前区域：义乌市 · 缩放 10 · 坐标系 EPSG:4326</div>
+          </div>
+          <aside class="map-chat-panel">
+            <div class="map-chat-head"><span data-icon="robot"></span>地图 Agent <span>模型可用</span></div>
+            <div class="map-chat-messages"><div class="map-chat-message user">帮我查看物流中心候选点周边 30 分钟可达范围。</div><div class="map-chat-message agent"><strong>规聚 Agent</strong>我会读取当前地图视图，调用可达性分析，并把结果作为临时图层叠加，不修改原始图层。<div class="map-chat-event">map_context · 已读取<br>isochrone · 30 min · 已生成</div></div><div class="map-chat-message agent"><strong>当前地图操作</strong>你可以继续让我切换底图、筛选区域、测量距离、绘制图层或导出地图报告。</div></div>
+            <div class="map-chat-input"><input placeholder="输入地图分析指令"><button data-icon="send" title="发送"></button></div>
+          </aside>
+        </div>
+      </div>
+    </section>
     <div class="splitter right-splitter" data-resize="right" role="separator" aria-label="调整右侧预览栏宽度" tabindex="0" title="拖动调整右侧预览栏宽度"></div>
 
     <aside class="preview" id="preview">
@@ -493,6 +585,14 @@
       refresh: '<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/>',
       check: '<path d="M20 6L9 17l-5-5"/>',
       warning: '<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
+      download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+      chart: '<path d="M4 19V5"/><path d="M4 19h17"/><path d="M8 16v-5"/><path d="M12 16V7"/><path d="M16 16v-3"/><path d="M20 16V4"/>',
+      history: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+      route: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h4a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4"/>',
+      globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+      locate: '<path d="M12 21s-7-5.4-7-11a7 7 0 0 1 14 0c0 5.6-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+      penTool: '<path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/>',
       menu: '<path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/>',
       layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
       flow: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v6"/><path d="M16 16l2 2-2 2"/>',
@@ -587,6 +687,7 @@
       settings: ['设置', '统一管理模型、Office CLI、记忆和界面参数']
     };
     let lastModuleTrigger = null;
+    let lastMapTrigger = null;
     function closeModule() {
       moduleView.classList.add('hidden');
       lastModuleTrigger?.focus();
@@ -601,9 +702,22 @@
       lastModuleTrigger = trigger;
       document.getElementById('moduleBack').focus();
     }
-    document.querySelectorAll('[data-module]').forEach((trigger) => trigger.addEventListener('click', () => openModule(trigger.dataset.module, trigger)));
+    const mapModal = document.getElementById('mapModal');
+    function closeMapModal() {
+      mapModal.classList.add('hidden');
+      lastMapTrigger?.focus();
+      lastMapTrigger = null;
+    }
+    function openMapModal(trigger) {
+      moduleView.classList.add('hidden');
+      mapModal.classList.remove('hidden');
+      lastMapTrigger = trigger;
+      document.getElementById('mapModalClose').focus();
+    }
+    document.querySelectorAll('[data-module]').forEach((trigger) => trigger.addEventListener('click', () => trigger.dataset.module === 'map' ? openMapModal(trigger) : openModule(trigger.dataset.module, trigger)));
     document.getElementById('moduleBack').addEventListener('click', closeModule);
-    document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !moduleView.classList.contains('hidden')) closeModule(); });
+    document.getElementById('mapModalClose').addEventListener('click', closeMapModal);
+    document.addEventListener('keydown', (event) => { if (event.key !== 'Escape') return; if (!mapModal.classList.contains('hidden')) closeMapModal(); else if (!moduleView.classList.contains('hidden')) closeModule(); });
     document.querySelectorAll('.module-nav, .module-chips').forEach((group) => group.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => group.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button)))));
     document.querySelectorAll('.nav-tab').forEach((tab) => tab.addEventListener('click', () => {
       closeModule();
