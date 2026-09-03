@@ -50,10 +50,14 @@
     }
     button, textarea { font: inherit; }
     button { color: inherit; border: 0; cursor: pointer; }
-    .app { height: 100vh; display: grid; grid-template-columns: 274px minmax(520px, 1fr) 360px; background: var(--bg); }
-    .app.preview-hidden { grid-template-columns: 274px minmax(520px, 1fr) 0; }
+    .app { --left-width: 274px; --right-width: 360px; height: 100vh; display: grid; grid-template-columns: var(--left-width) 7px minmax(520px, 1fr) 7px var(--right-width); background: var(--bg); }
+    .app.preview-hidden { grid-template-columns: var(--left-width) 7px minmax(520px, 1fr) 0 0; }
     .sidebar, .preview { background: var(--panel); border-color: var(--line-soft); }
     .sidebar { border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; min-width: 0; }
+    .splitter { position: relative; z-index: 5; cursor: col-resize; background: transparent; }
+    .splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 1px; background: transparent; transition: background .2s, box-shadow .2s; }
+    .splitter:hover::after, .splitter.dragging::after { background: var(--accent); box-shadow: 0 0 13px rgba(217,243,106,.34); }
+    .preview-hidden .right-splitter { pointer-events: none; }
     .brandbar { height: 66px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-soft); }
     .brand-actions { display: flex; align-items: center; gap: 3px; }
     .brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 720; letter-spacing: .04em; }
@@ -192,8 +196,8 @@
     body[data-theme="light"] .composer { border-color: #cbd5c7; }
     @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(232,168,108,.08); opacity: .72; } 50% { box-shadow: 0 0 0 5px rgba(232,168,108,.09); opacity: 1; } }
     @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
-    @media (max-width: 1060px) { .app { grid-template-columns: 245px minmax(480px, 1fr) 300px; } .app.preview-hidden { grid-template-columns: 245px minmax(480px, 1fr) 0; } }
-    @media (max-width: 820px) { .app, .app.preview-hidden { grid-template-columns: 64px minmax(0,1fr) 0; } .brandbar { padding: 0 17px; } .brandbar .brand span, .workspace, .nav-tabs, .sidebar-scroll, .sidebar-foot span, .online { display: none; } .sidebar-foot { justify-content: center; } .brandbar .icon-btn { display: none; } .chat-scroll, .composer-wrap { padding-left: 20px; padding-right: 20px; } }
+    @media (max-width: 1060px) { .app { --left-width: 245px; --right-width: 300px; grid-template-columns: var(--left-width) 7px minmax(480px, 1fr) 7px var(--right-width); } .app.preview-hidden { grid-template-columns: var(--left-width) 7px minmax(480px, 1fr) 0 0; } }
+    @media (max-width: 820px) { .app, .app.preview-hidden { --left-width: 64px; --right-width: 0px; grid-template-columns: var(--left-width) 0 minmax(0,1fr) 0 0; } .splitter { display: none; } .brandbar { padding: 0 17px; } .brandbar .brand span, .workspace, .nav-tabs, .sidebar-scroll, .sidebar-foot span, .online { display: none; } .sidebar-foot { justify-content: center; } .brandbar .icon-btn { display: none; } .chat-scroll, .composer-wrap { padding-left: 20px; padding-right: 20px; } }
   </style>
 </head>
 <body>
@@ -264,6 +268,7 @@
       </div>
       <div class="sidebar-foot"><span class="avatar">规</span><span>本地工作台</span><span class="online"><i></i>模型可用</span></div>
     </aside>
+    <div class="splitter left-splitter" data-resize="left" role="separator" aria-label="调整左侧栏宽度" tabindex="0" title="拖动调整左侧栏宽度"></div>
 
     <main class="main">
       <header class="topbar">
@@ -309,6 +314,7 @@
         </div>
       </div>
     </main>
+    <div class="splitter right-splitter" data-resize="right" role="separator" aria-label="调整右侧预览栏宽度" tabindex="0" title="拖动调整右侧预览栏宽度"></div>
 
     <aside class="preview" id="preview">
       <header class="preview-head"><div class="preview-title" data-icon="file">当前工作产物</div><button class="icon-btn" id="closePreview" title="隐藏预览" data-icon="panel-close"></button></header>
@@ -351,9 +357,9 @@
       layout: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/>',
       map: '<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/>',
       bot: '<rect x="5" y="7" width="14" height="12" rx="3"/><path d="M12 3v4M8 12h.01M16 12h.01M9 16h6"/><path d="M3 11v4M21 11v4"/>',
-      chevron-down: '<path d="m6 9 6 6 6-6"/>',
-      chevron-up: '<path d="m6 15 6-6 6 6"/>',
-      chevron-right: '<path d="m9 6 6 6-6 6"/>',
+      'chevron-down': '<path d="m6 9 6 6 6-6"/>',
+      'chevron-up': '<path d="m6 15 6-6 6 6"/>',
+      'chevron-right': '<path d="m9 6 6 6-6 6"/>',
       plus: '<path d="M12 5v14M5 12h14"/>',
       more: '<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>',
       panel: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M15 4v16"/>',
@@ -382,6 +388,53 @@
     setTheme(savedTheme);
     themeToggle.addEventListener('click', () => setTheme(document.body.dataset.theme === 'light' ? 'dark' : 'light'));
     const app = document.getElementById('app');
+    const DEFAULT_COLUMNS = { left: 274, right: 360 };
+    const columnLimits = { left: [210, 390], right: [280, 520] };
+    function clamp(value, [min, max]) { return Math.max(min, Math.min(max, value)); }
+    function setColumnWidth(side, value, persist = true) {
+      const width = clamp(Math.round(value), columnLimits[side]);
+      app.style.setProperty(`--${side}-width`, `${width}px`);
+      if (persist) try { localStorage.setItem(`oaw-prototype-${side}-width`, String(width)); } catch {}
+    }
+    try {
+      const savedLeft = Number(localStorage.getItem('oaw-prototype-left-width'));
+      const savedRight = Number(localStorage.getItem('oaw-prototype-right-width'));
+      if (savedLeft) setColumnWidth('left', savedLeft, false);
+      if (savedRight) setColumnWidth('right', savedRight, false);
+    } catch {}
+    let resizing = null;
+    function finishResize() {
+      if (!resizing) return;
+      resizing.handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      resizing = null;
+    }
+    document.querySelectorAll('.splitter').forEach((handle) => {
+      handle.addEventListener('pointerdown', (event) => {
+        if (handle.dataset.resize === 'right' && app.classList.contains('preview-hidden')) return;
+        handle.setPointerCapture?.(event.pointerId);
+        resizing = { side: handle.dataset.resize, startX: event.clientX, startWidth: parseFloat(getComputedStyle(app).getPropertyValue(`--${handle.dataset.resize}-width`)), handle };
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      });
+      handle.addEventListener('dblclick', () => setColumnWidth(handle.dataset.resize, DEFAULT_COLUMNS[handle.dataset.resize]));
+      handle.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const side = handle.dataset.resize;
+        const direction = side === 'left' ? (event.key === 'ArrowRight' ? 1 : -1) : (event.key === 'ArrowLeft' ? 1 : -1);
+        setColumnWidth(side, parseFloat(getComputedStyle(app).getPropertyValue(`--${side}-width`)) + direction * 16);
+      });
+    });
+    window.addEventListener('pointermove', (event) => {
+      if (!resizing) return;
+      const delta = event.clientX - resizing.startX;
+      setColumnWidth(resizing.side, resizing.startWidth + (resizing.side === 'left' ? delta : -delta));
+    });
+    window.addEventListener('pointerup', finishResize);
+    window.addEventListener('blur', finishResize);
     const preview = document.getElementById('preview');
     const textarea = document.getElementById('prompt');
     const pastePreview = document.getElementById('pastePreview');
