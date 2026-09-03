@@ -62,8 +62,8 @@
     .brandbar { height: 66px; padding: 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-soft); }
     .brand-actions { display: flex; align-items: center; gap: 3px; }
     .brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 720; letter-spacing: .04em; }
-    .brand-mark { width: 27px; height: 27px; border-radius: 9px; display: grid; place-items: center; color: #12140e; background: var(--accent); box-shadow: 0 0 0 4px rgba(217,243,106,.08); }
-    .brand-mark svg { width: 16px; height: 16px; }
+    .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; flex: 0 0 auto; }
+    .brand-mark svg { width: 30px; height: 30px; display: block; }
     .icon-btn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); background: transparent; }
     .icon-btn:hover { color: var(--text); background: var(--panel-3); }
     .icon-btn svg, .tool-icon svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -326,7 +326,7 @@
   <div class="app" id="app">
     <aside class="sidebar">
       <div class="brandbar">
-        <div class="brand"><span class="brand-mark" data-icon="skills"></span><span>规聚</span></div>
+        <div class="brand"><span class="brand-mark" aria-label="Open Plan 规聚"><svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><linearGradient id="prototype-op-bg" x1="4" y1="4" x2="44" y2="44" gradientUnits="userSpaceOnUse"><stop stop-color="#2a8c82"/><stop offset="1" stop-color="#14535c"/></linearGradient></defs><rect x="2" y="2" width="44" height="44" rx="12" fill="url(#prototype-op-bg)"/><g stroke="#ffffff" stroke-opacity="0.22" stroke-width="1"><path d="M2 16h44M2 32h44M16 2v44M32 2v44"/></g><g stroke="#ffffff" stroke-opacity="0.55" stroke-width="1.4"><line x1="12.5" y1="12.5" x2="19.5" y2="19.5"/><line x1="35.5" y1="12.5" x2="28.5" y2="19.5"/><line x1="12.5" y1="35.5" x2="19.5" y2="28.5"/><line x1="35.5" y1="35.5" x2="28.5" y2="28.5"/></g><circle cx="10" cy="10" r="2.6" fill="#ffffff" fill-opacity="0.9"/><circle cx="38" cy="10" r="2.6" fill="#ffffff" fill-opacity="0.9"/><circle cx="10" cy="38" r="2.6" fill="#ffffff" fill-opacity="0.9"/><circle cx="38" cy="38" r="2.6" fill="#ffffff" fill-opacity="0.9"/><circle cx="24" cy="24" r="9" stroke="#ffffff" stroke-width="3"/><circle cx="24" cy="24" r="3.6" fill="#ffffff"/></svg></span><span>Open Plan</span></div>
         <div class="brand-actions"><button class="icon-btn" id="themeToggle" title="切换为浅色主题" data-icon="sun"></button><button class="icon-btn" title="搜索" data-icon="search"></button></div>
       </div>
       <div class="workspace">
