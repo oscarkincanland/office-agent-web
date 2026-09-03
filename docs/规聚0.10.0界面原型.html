@@ -80,12 +80,12 @@
     .section-head button { background: transparent; color: var(--dim); font-size: 16px; }
     .section-head button:hover { color: var(--accent); }
     .project { margin-bottom: 12px; }
-    .project-title { display: flex; align-items: center; gap: 8px; padding: 9px 9px; color: #d8ddd2; font-size: 13px; font-weight: 650; }
+    .project-title { display: flex; align-items: center; gap: 8px; padding: 9px 9px; color: var(--text); font-size: 13px; font-weight: 650; }
     .project-title svg, .session svg, .file-row svg, .capability svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
     .project-title .chevron { margin-left: auto; color: var(--dim); width: 13px; }
     .session { min-height: 52px; display: grid; grid-template-columns: 11px minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 3px 0 3px 8px; padding: 7px 8px; color: var(--muted); border-radius: 8px; background: transparent; text-align: left; }
     .session:hover { background: var(--panel-2); color: var(--text); }
-    .session.active { color: var(--text); background: #282d28; box-shadow: inset 2px 0 var(--accent); }
+    .session.active { color: var(--text); background: var(--panel-3); box-shadow: inset 2px 0 var(--accent); }
     .session.running { box-shadow: inset 2px 0 var(--warm); }
     .session-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
     .session.active .session-dot { background: var(--accent); }
@@ -129,10 +129,10 @@
     .assistant-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--muted); font-size: 11px; }
     .agent-avatar { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; color: #17200b; background: var(--accent); }
     .agent-avatar svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-    .assistant-body { padding-left: 33px; color: #d7dbd1; font-size: 14px; }
+    .assistant-body { padding-left: 33px; color: var(--text); font-size: 14px; }
     .assistant-body p { margin: 0 0 12px; }
     .assistant-body strong { color: var(--text); }
-    .answer-list { margin: 10px 0 0; padding-left: 20px; color: #b9c0b5; }
+    .answer-list { margin: 10px 0 0; padding-left: 20px; color: var(--muted); }
     .answer-list li { margin: 5px 0; }
     .event-card { margin: 12px 0 0 33px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); overflow: hidden; }
     .event-card summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 38px; padding: 8px 11px; color: var(--muted); cursor: pointer; font-size: 11px; }
@@ -144,11 +144,11 @@
     .event-content { border-top: 1px solid var(--line); padding: 10px 12px; color: var(--dim); font-family: var(--mono); font-size: 10px; line-height: 1.7; }
     .event-row { display: grid; grid-template-columns: 115px 1fr; gap: 8px; }
     .event-row + .event-row { margin-top: 5px; }
-    .event-row b { color: #bbc5af; font-weight: 500; }
+    .event-row b { color: var(--text); font-weight: 500; }
     .artifact-strip { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0 0 33px; }
-    .artifact { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid #394333; border-radius: 7px; color: #c8dc9b; background: rgba(217,243,106,.06); font-size: 11px; }
+    .artifact { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--accent); background: rgba(217,243,106,.06); font-size: 11px; }
     .artifact svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-    .composer-wrap { position: absolute; left: 0; right: 0; bottom: 0; padding: 24px max(7vw, 34px) 22px; background: linear-gradient(transparent, #121312 27%); }
+    .composer-wrap { position: absolute; left: 0; right: 0; bottom: 0; padding: 24px max(7vw, 34px) 22px; background: linear-gradient(transparent, var(--bg) 27%); }
     .composer { max-width: 840px; margin: 0 auto; border: 1px solid #485248; border-radius: 13px; background: var(--panel); box-shadow: var(--shadow); transition: border-color .2s, box-shadow .2s; }
     .composer:focus-within { border-color: #91aa4c; box-shadow: 0 0 0 3px rgba(217,243,106,.06), var(--shadow); }
     .paste-preview { display: none; align-items: center; gap: 8px; padding: 9px 12px 0; color: var(--muted); font-size: 11px; }
@@ -168,7 +168,7 @@
     .preview { min-width: 0; border-left: 1px solid var(--line-soft); display: flex; flex-direction: column; overflow: hidden; transition: opacity .2s; background: var(--panel); }
     .preview-hidden .preview { opacity: 0; pointer-events: none; }
     .preview-head { height: 66px; padding: 0 14px 0 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
-    .preview-title { display: flex; align-items: center; gap: 8px; color: #e2e7db; font-size: 13px; font-weight: 650; }
+    .preview-title { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; font-weight: 650; }
     .preview-title svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     .preview-tabs { display: flex; gap: 4px; padding: 12px 12px 0; }
     .preview-tab { padding: 7px 10px; border-radius: 6px; color: var(--muted); background: transparent; font-size: 11px; }
@@ -179,22 +179,26 @@
     .doc-subtitle { color: var(--muted); font-size: 11px; line-height: 1.6; }
     .doc-rule { height: 1px; margin: 20px 0; background: var(--line); }
     .doc-section { margin: 18px 0; }
-    .doc-section h3 { margin: 0 0 8px; color: #dce5d2; font-size: 12px; }
-    .doc-section p { margin: 0; color: #9fa89e; font-size: 11px; line-height: 1.75; }
+    .doc-section h3 { margin: 0 0 8px; color: var(--text); font-size: 12px; }
+    .doc-section p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.75; }
     .doc-highlight { margin-top: 16px; padding: 11px; border-left: 2px solid var(--accent); color: #c5d29e; background: rgba(217,243,106,.06); font-size: 11px; line-height: 1.65; }
     .right-event { margin-bottom: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); }
-    .right-event-head { display: flex; align-items: center; gap: 7px; color: #ccd4c5; font-size: 11px; }
+    .right-event-head { display: flex; align-items: center; gap: 7px; color: var(--text); font-size: 11px; }
     .right-event-head i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
     .right-event small { display: block; margin-top: 6px; color: var(--dim); font-family: var(--mono); font-size: 9px; }
     .hidden { display: none !important; }
     body[data-theme="light"] .sidebar-foot,
     body[data-theme="light"] .preview-head,
     body[data-theme="light"] .topbar { background: rgba(255,255,255,.72); }
+    body[data-theme="light"] .session.active { background: #e7ece3; color: var(--text); }
+    body[data-theme="light"] .session.running { background: #fbf4ed; color: var(--text); }
     body[data-theme="light"] .user .bubble { color: #f8fff1; background: #6f8f38; }
     body[data-theme="light"] .assistant-body { color: #4d584d; }
     body[data-theme="light"] .event-content { color: #697569; }
     body[data-theme="light"] .artifact { color: #587523; background: rgba(107,139,46,.08); border-color: #c7d8ae; }
     body[data-theme="light"] .doc-highlight { color: #587523; background: rgba(107,139,46,.08); }
+    body[data-theme="light"] .event-type { color: var(--accent-2); }
+    body[data-theme="light"] .composer-wrap { background: linear-gradient(transparent, var(--bg) 27%); }
     body[data-theme="light"] .composer { border-color: #cbd5c7; }
     @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(232,168,108,.08); opacity: .72; } 50% { box-shadow: 0 0 0 5px rgba(232,168,108,.09); opacity: 1; } }
     @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
