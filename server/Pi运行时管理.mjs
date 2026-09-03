@@ -264,7 +264,7 @@ export class PiRuntimeManager {
 
   async runPrompt(runtimeId, operation, { steer = false, metadata = {} } = {}) {
     const record = this.find(runtimeId);
-    if (record) this.update(runtimeId, { status: steer ? "running" : "queued", health: { status: "healthy", checkedAt: now(), message: null } });
+    if (record) this.update(runtimeId, { status: steer ? "running" : "queued", health: { status: "healthy", checkedAt: now(), message: null }, error: null });
     const execute = async () => {
       if (record) this.update(runtimeId, { status: "running" });
       try {

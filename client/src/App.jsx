@@ -912,16 +912,13 @@ export default function App() {
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
-              <span>{currentProject?.name || "新建 Agent 会话"}</span>
+              <span>{currentSession?.title || currentSession?.label || currentProject?.name || "新建 Agent 会话"}</span>
               {current?.name && <span className="topbar-file"> · {current.name}</span>}
             </span>
             <span className={`conversation-mode-pill mode-${conversationMode}`}><Icon name={conversationMode === "agent" ? "robot" : "comment"} size={12} /> {conversationMode === "agent" ? "Agent" : "Chat"}</span>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button className="btn-sm topbar-preview-toggle" onClick={() => setPreviewOpen((v) => !v)} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
-            <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
-              <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
-            </button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
@@ -935,7 +932,6 @@ export default function App() {
                 onOpenRun={handleOpenRun}
                 eventVersion={eventVersion}
               />
-              <span className="topbar-badge">{models.length} 模型</span>
             </div>
             <div className="center-chat-slot">{sharedChatPanel}</div>
           </div>

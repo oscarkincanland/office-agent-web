@@ -445,8 +445,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const syncKey = `${clientId}:${cur}`;
       if (cur && syncKey !== syncedModelRef.current) {
         syncedModelRef.current = syncKey;
-        try { await setAgentModel(clientId, cur, threadId); }
-        catch (e) { if (mountedRef.current) setModelMsg(`模型同步失败：${e.message}`); }
+        try {
+          const result = await setAgentModel(clientId, cur, threadId);
+          if (result?.model && result.model !== cur) {
+            setModel(result.model);
+            applyModel(result.model, nextModels);
+            setModelMsg(`旧模型不可用，已切换到 ${result.model}`);
+            window.setTimeout(() => setModelMsg(""), 3600);
+          }
+        } catch (e) { if (mountedRef.current) setModelMsg(`模型同步失败：${e.message}`); }
       }
     })();
     return () => { cancelled = true; };
@@ -462,7 +469,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setModel(id);
     applyModel(id);
     setModelMsg("切换中...");
-    try { await setAgentModel(clientId, id, threadId); setModelMsg("ok"); }
+    try {
+      const result = await setAgentModel(clientId, id, threadId);
+      if (result?.model && result.model !== id) {
+        setModel(result.model);
+        applyModel(result.model);
+        setModelMsg(`连接失败，已切换到 ${result.model}`);
+      } else setModelMsg("ok");
+    }
     catch (e) { setModelMsg("失败: " + e.message); }
     setTimeout(() => setModelMsg(""), 2500);
   };
@@ -542,6 +556,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     switch (type) {
       case "connected":
         setConnected(true);
+        if (data.model && data.model !== model) {
+          setModel(data.model);
+          applyModel(data.model);
+          if (data.modelFallbackFrom) {
+            setModelMsg(`旧模型连接失败，已恢复到 ${data.model}`);
+            window.setTimeout(() => setModelMsg(""), 3600);
+          }
+        }
         break;
       // 文本 token：节流合并到 blocks
       case "token":
@@ -653,6 +675,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           setAgentPhase("模型连接已恢复");
           pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
         }
+        break;
+      case "agent_model_fallback":
+        if (data.to) {
+          setModel(data.to);
+          applyModel(data.to);
+          setAgentPhase("切换备用模型");
+          pushSystem(data.message || `模型连接失败，已切换到 ${data.to}`, `agent_model_fallback:${data.from || "unknown"}:${data.to}`);
+        }
+        break;
+      case "agent_model_fallback_failed":
+        pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`);
         break;
       case "thinking_level":
         setRunState((s) => ({ ...s, thinkingLevel: data.effective || null }));
@@ -963,6 +996,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       });
       if (!mountedRef.current) return;
       const d = await res.json().catch(() => ({}));
+      if (d.model && d.model !== model) {
+        setModel(d.model);
+        applyModel(d.model);
+        if (d.modelFallbackFrom) {
+          setModelMsg(`旧模型连接失败，已恢复到 ${d.model}`);
+          window.setTimeout(() => setModelMsg(""), 3600);
+        }
+      }
       // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
       if (d.sessionId) onSessionChange?.(d.sessionId);
       if (d.accepted) {
@@ -1310,7 +1351,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               ref={textareaRef}
               value={input}
               disabled={frozen}
-              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
+              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…  @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话"}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();

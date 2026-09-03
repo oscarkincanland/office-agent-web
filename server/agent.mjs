@@ -141,7 +141,7 @@ const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
 // 只监控“首个模型/工具事件”的等待时间，不限制已经开始执行的长任务。
 // 供应商连接卡住时必须自动释放 Agent，否则前端会永久停留在“连接模型”。
-const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "45000", 10) || 45000);
+const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "20000", 10) || 20000);
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
@@ -1225,6 +1225,40 @@ class AgentManager extends EventEmitter {
     return this._enqueuePrompt(entry, { text, images, effort, references: [], runContext: null });
   }
 
+  /**
+   * 失败的 Pi runtime 不能继续复用：它通常已经持有失效的 provider 连接，
+   * 继续向同一个 session 投递只会让前端一直停在“连接模型”。
+   * 优先用原 JSONL 文件重开；如果历史文件不存在，则创建一个新 runtime。
+   */
+  async ensureRuntime(clientId, options = {}) {
+    const existing = this.sessions.get(clientId);
+    if (!existing) return this.getOrCreate(clientId, options);
+    const health = this.runtimeHealth(clientId);
+    const staleError = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(health?.error?.code || ""));
+    if (health?.status !== "failed" && health?.health?.status !== "failed" && !staleError) return existing;
+
+    const failedModel = existing.session?.model?.provider && existing.session?.model?.id
+      ? `${existing.session.model.provider}/${existing.session.model.id}`
+      : "";
+    const fallbackModel = configuredModelSpec();
+    const modelSpec = fallbackModel && fallbackModel !== failedModel
+      ? fallbackModel
+      : String(options.modelSpec || "").trim();
+    const found = findSessionFile(existing.session?.sessionId || "");
+    const recovered = await this.restartRuntime(clientId, {
+      threadId: options.threadId || existing.threadId || null,
+      sessionPath: found?.fullPath || null,
+      cwd: options.cwd || existing.workspace,
+      modelSpec,
+    });
+    const entry = this.sessions.get(clientId);
+    if (entry && modelSpec && modelSpec !== failedModel) {
+      entry.modelFallbackSpec = modelSpec;
+      entry.modelFallbackFrom = failedModel || null;
+    }
+    return entry || this.getOrCreate(clientId, options);
+  }
+
   async promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
     const entry = await this.getOrCreate(clientId);
     return this._enqueuePrompt(entry, { text, images, effort, references, runContext });
@@ -1383,6 +1417,7 @@ class AgentManager extends EventEmitter {
         }
         let transportAttempt = 0;
         let settledReplayAttempt = 0;
+        let modelFallbackAttempted = false;
         while (true) {
           try {
             await promptWithFirstEventTimeout(entry, text, opts);
@@ -1429,6 +1464,39 @@ class AgentManager extends EventEmitter {
             }
 
             const info = classifyAgentError(e);
+            const currentSpec = entry.session?.model?.provider && entry.session?.model?.id
+              ? `${entry.session.model.provider}/${entry.session.model.id}`
+              : "";
+            const canFallbackModel = !modelFallbackAttempted
+              && !entry.toolStarted
+              && !entry.firstResponseReceived
+              && e?.code !== "MODEL_TIMEOUT"
+              && info.retryable;
+            if (canFallbackModel) {
+              try {
+                const fallback = await this.fallbackModel(entry, currentSpec);
+                if (fallback) {
+                  modelFallbackAttempted = true;
+                  entry.lastAgentError = null;
+                  entry.lastSettledError = null;
+                  entry.turnStarted = false;
+                  entry.toolStarted = false;
+                  entry.firstResponseReceived = false;
+                  emitChannelSafe(entry, "agent_model_fallback", {
+                    from: currentSpec,
+                    to: fallback,
+                    message: `模型连接失败，已切换到 ${fallback}`,
+                  });
+                  await waitForAgentRetry(300);
+                  continue;
+                }
+              } catch (fallbackError) {
+                emitChannelSafe(entry, "agent_model_fallback_failed", {
+                  from: currentSpec,
+                  message: String(fallbackError?.message || fallbackError).slice(0, 300),
+                });
+              }
+            }
             const canReplay = info.retryable && !e?.noRetry && !entry.toolStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
             if (!canReplay) throw e;
 
@@ -1599,7 +1667,7 @@ class AgentManager extends EventEmitter {
     return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
   }
 
-  async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace() } = {}) {
+  async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace(), modelSpec = "" } = {}) {
     const old = this.sessions.get(clientId);
     if (old?.busy || old?.queuedCount > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
     if (old) {
@@ -1607,7 +1675,7 @@ class AgentManager extends EventEmitter {
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
-    const entry = await this._create(clientId, { cwd, threadId, sessionPath });
+    const entry = await this._create(clientId, { cwd, threadId, sessionPath, modelSpec });
     return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: entry.workspace, recovery: "jsonl_reopen" };
   }
 
@@ -1616,7 +1684,12 @@ class AgentManager extends EventEmitter {
   }
 
   async setModel(clientId, spec) {
-    const entry = await this.getOrCreate(clientId);
+    const existing = this.sessions.get(clientId);
+    const entry = await this.ensureRuntime(clientId, {
+      threadId: existing?.threadId || null,
+      cwd: existing?.workspace || getWorkspace(),
+      modelSpec: spec,
+    });
     if (entry.busy || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
     const [provider, id] = String(spec).split("/");
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
@@ -1625,8 +1698,54 @@ class AgentManager extends EventEmitter {
     // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
     const model = mr.getModel(provider, id) || localStoredModels().find((item) => item.provider === provider && item.id === id);
     if (!model) throw new Error("model not found: " + spec);
+    try {
+      await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
+      entry.modelFallbackSpec = "";
+      entry.modelFallbackFrom = null;
+      return { ok: true, model: spec };
+    } catch (error) {
+      // provider 目录可见不代表当前网络/授权可用。连接类失败时自动退回 Pi
+      // 全局默认模型，避免会话再次卡在“连接模型”。认证错误等不可重试错误原样抛出。
+      const fallback = configuredModelSpec();
+      const info = classifyAgentError(error);
+      if (!fallback || fallback === spec || !info.retryable) throw error;
+      const [fallbackProvider, ...fallbackIdParts] = fallback.split("/");
+      const fallbackId = fallbackIdParts.join("/");
+      const fallbackModel = mr.getModel(fallbackProvider, fallbackId)
+        || localStoredModels().find((item) => item.provider === fallbackProvider && item.id === fallbackId);
+      if (!fallbackModel) throw error;
+      await piRuntimeManager.setModel(entry.runtimeId, entry.session, fallbackModel);
+      entry.modelFallbackSpec = fallback;
+      entry.modelFallbackFrom = spec;
+      return { ok: true, model: fallback, modelFallbackFrom: spec };
+    }
+  }
+
+  async fallbackModel(entry, failedSpec) {
+    const current = String(failedSpec || "").trim();
+    const catalog = await this.listModelCatalog();
+    const available = new Map((catalog.available || []).map((item) => [item.id, item]));
+    const preferred = [
+      "minimax-cn/MiniMax-M2.7-highspeed",
+      "minimax-cn/MiniMax-M2.7",
+      "deepseek/deepseek-v4-flash",
+      "opencode-go/mimo-v2.5",
+      "opencode-go/hy3",
+    ];
+    const candidate = [...preferred, ...available.keys()]
+      .map((id) => available.get(id))
+      .find((item) => item && item.id !== current);
+    if (!candidate) return null;
+    const [provider, ...idParts] = candidate.id.split("/");
+    const id = idParts.join("/");
+    const runtime = await this.modelRuntime();
+    const model = runtime.getModel(provider, id)
+      || localStoredModels().find((item) => item.provider === provider && item.id === id);
+    if (!model) return null;
     await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
-    return { ok: true, model: spec };
+    entry.modelFallbackSpec = candidate.id;
+    entry.modelFallbackFrom = current || null;
+    return candidate.id;
   }
 
   async listModelCatalog() {

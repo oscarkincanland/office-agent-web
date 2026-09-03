@@ -2183,7 +2183,7 @@ app.post("/api/agent/prompt", async (req, res) => {
   const initialModel = String(requestedModel || initialProjectSettings.defaultModel || "").trim();
   let entry;
   try {
-    entry = await agentManager.getOrCreate(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
+    entry = await agentManager.ensureRuntime(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
   } catch (e) {
     const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
     return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -2191,7 +2191,9 @@ app.post("/api/agent/prompt", async (req, res) => {
   const runWorkspace = entry.workspace || requestedWorkspace;
   const project = projectManager.getProjectForWorkspace(runWorkspace) || initialProject;
   const projectSettings = project?.settings || initialProjectSettings;
-  const effectiveModel = String(requestedModel || projectSettings.defaultModel || "").trim();
+  // ensureRuntime 可能刚刚从失效 provider 恢复到 Pi 全局默认模型；本轮沿用恢复后的模型，
+  // 避免下面的 setModel 又把会话切回刚刚失败的旧模型。
+  const effectiveModel = String(entry.modelFallbackSpec || requestedModel || projectSettings.defaultModel || "").trim();
   const sessionHeader = readSessionHeader(findSessionFile(entry.session?.sessionId || ""));
   if (sessionHeader.frozen) {
     return res.status(409).json({ error: "当前会话已冻结，请先解冻后再继续执行", code: "SESSION_FROZEN", sessionId: entry.session?.sessionId || null });
@@ -2326,6 +2328,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       status: "accepted",
       task,
       sessionId: entry?.session?.sessionId || null,
+      model: effectiveModel || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null),
+      modelFallbackFrom: entry.modelFallbackFrom || null,
       thread: thread || null,
     });
     return;
@@ -2553,7 +2557,7 @@ app.get("/api/agent/stream", async (req, res) => {
   const workspace = normalizeWorkspace(req.query.cwd || getWorkspace()) || getWorkspace();
   const project = projectManager.getProjectForWorkspace(workspace);
   const defaultModel = String(project?.settings?.defaultModel || "").trim();
-  const entry = await agentManager.getOrCreate(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
+  const entry = await agentManager.ensureRuntime(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -2567,7 +2571,8 @@ app.get("/api/agent/stream", async (req, res) => {
   const lastId = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
   // 参考 pi-web：连接建立后发送可被客户端确认的应用层握手，
   // 不把浏览器 EventSource 的 onopen 当作 Agent 已就绪。
-  res.write(`data: ${JSON.stringify({ type: "connected", data: { client, thread, sessionId: entry.session?.sessionId || null } })}\n\n`);
+  const connectedModel = entry.modelFallbackSpec || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null);
+  res.write(`data: ${JSON.stringify({ type: "connected", data: { client, thread, sessionId: entry.session?.sessionId || null, model: connectedModel, modelFallbackFrom: entry.modelFallbackFrom || null } })}\n\n`);
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
   res.write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
 
