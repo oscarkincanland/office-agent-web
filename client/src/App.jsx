@@ -11,6 +11,7 @@ const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
 const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 import Icon from "./components/Icon.jsx";
 import TaskCenter from "./components/任务中心.jsx";
+import WorkProductPanel from "./components/工作产物面板.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
@@ -114,6 +115,7 @@ export default function App() {
   const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
   const [mapMode, setMapMode] = useState(false); // 地图全屏模式（三栏：图层树+地图+对话）
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
+  const [previewTab, setPreviewTab] = useState("document");
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
   const [clientId] = useState(getClientId);
   const [threadId, setThreadId] = useState(() => {
@@ -937,17 +939,31 @@ export default function App() {
               <span><Icon name="file" size={15} /> 当前工作产物</span>
               <button className="btn-icon" onClick={() => setPreviewOpen(false)} title="隐藏右侧预览"><Icon name="close" size={14} /></button>
             </div>
-            <div className="preview-panel-tabs"><span className="active">文档预览</span><span>事件流</span><span>产物</span></div>
-            <DocViewer
-              tabs={tabs}
-              activeTab={activeTab}
-              onSwitchTab={(n) => setActiveTab(n)}
-              onCloseTab={closeTab}
+            <div className="preview-panel-tabs">
+              {[['document', '文档预览'], ['events', '事件流'], ['artifacts', '产物']].map(([id, label]) => (
+                <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
+              ))}
+            </div>
+            <WorkProductPanel
+              tab={previewTab}
+              clientId={clientId}
+              threadId={threadId}
+              workspace={currentWorkspace}
+              projectId={currentProject?.id || ""}
+              currentSessionId={currentSessionId}
               onOpenFile={open}
-              loading={docLoading}
-              onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
-              onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
-            />
+            >
+              <DocViewer
+                tabs={tabs}
+                activeTab={activeTab}
+                onSwitchTab={(n) => setActiveTab(n)}
+                onCloseTab={closeTab}
+                onOpenFile={open}
+                loading={docLoading}
+                onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
+                onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+              />
+            </WorkProductPanel>
           </aside>
         )}
         <DeferredModule label="技能管理">
