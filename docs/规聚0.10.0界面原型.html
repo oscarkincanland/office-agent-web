@@ -98,6 +98,8 @@
     .capability { min-height: 53px; display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid transparent; border-radius: 8px; color: var(--muted); background: var(--panel-2); text-align: left; }
     .capability:hover { border-color: var(--line); color: var(--text); background: var(--panel-2); }
     .capability small { display: block; margin-top: 3px; color: var(--dim); font-size: 9px; }
+    .capability-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 4px; }
+    .capability-list .capability { min-height: 44px; }
     .file-tree { padding: 0 5px; }
     .file-row { display: flex; align-items: center; gap: 8px; min-height: 31px; padding: 4px 7px; border-radius: 6px; color: var(--muted); font-size: 11px; }
     .file-row:hover { color: var(--text); background: var(--panel-2); }
@@ -204,12 +206,12 @@
   <div class="app" id="app">
     <aside class="sidebar">
       <div class="brandbar">
-        <div class="brand"><span class="brand-mark" data-icon="spark"></span><span>规聚</span></div>
+        <div class="brand"><span class="brand-mark" data-icon="skills"></span><span>规聚</span></div>
         <div class="brand-actions"><button class="icon-btn" id="themeToggle" title="切换为浅色主题" data-icon="sun"></button><button class="icon-btn" title="搜索" data-icon="search"></button></div>
       </div>
       <div class="workspace">
         <div class="eyebrow">当前工作区</div>
-        <div class="workspace-name"><span data-icon="folder">office-agent-web</span><span data-icon="chevron-down"></span></div>
+        <div class="workspace-name"><span data-icon="folder">office-agent-web</span><span data-icon="chevronDown"></span></div>
       </div>
       <nav class="nav-tabs" aria-label="工作台导航">
         <button class="nav-tab active" data-tab="projects">项目</button>
@@ -220,23 +222,32 @@
         <section class="tab-content" data-content="projects">
           <div class="section-head"><span>我的项目</span><button title="新建项目">＋</button></div>
           <div class="project">
-            <div class="project-title"><span data-icon="folder"></span><span>义乌物流专题</span><span class="chevron" data-icon="chevron-up"></span></div>
+            <div class="project-title"><span data-icon="folder"></span><span>义乌物流专题</span><span class="chevron" data-icon="chevronDown"></span></div>
             <button class="session active" data-session="active"><span class="session-dot"></span><span class="session-copy"><span class="session-name">物流中心建设方案 · 分析</span><span class="session-meta">Agent · 运行中 · 3/5 步</span></span><span class="session-time">刚刚</span></button>
             <button class="session running" data-session="running"><span class="session-dot"></span><span class="session-copy"><span class="session-name">读取前期资料并提炼重点</span><span class="session-meta">Agent · 连接模型</span></span><span class="session-time">2分</span></button>
             <button class="session" data-session="history"><span class="session-dot"></span><span class="session-copy"><span class="session-name">项目资料索引整理</span><span class="session-meta">Chat · 已完成</span></span><span class="session-time">昨天</span></button>
           </div>
           <div class="project">
-            <div class="project-title"><span data-icon="folder"></span><span>柬埔寨公交项目</span><span class="chevron" data-icon="chevron-down"></span></div>
+            <div class="project-title"><span data-icon="folder"></span><span>柬埔寨公交项目</span><span class="chevron" data-icon="chevronDown"></span></div>
           </div>
           <div class="project">
-            <div class="project-title"><span data-icon="folder"></span><span>知识库与素材沉淀</span><span class="chevron" data-icon="chevron-down"></span></div>
+            <div class="project-title"><span data-icon="folder"></span><span>知识库与素材沉淀</span><span class="chevron" data-icon="chevronDown"></span></div>
           </div>
           <div class="section-head"><span>能力入口</span><span class="eyebrow">按需打开</span></div>
           <div class="capability-grid">
             <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>检索与引用</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="spark"></span><span>Skills<small>技能搜索</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="layout"></span><span>模板库<small>结构与样式</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>技能搜索</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="file"></span><span>模板库<small>结构与样式</small></span></button>
             <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>GIS 分析</small></span></button>
+          </div>
+          <div class="section-head"><span>0.9.xx 已有功能</span><span class="eyebrow">全部保留</span></div>
+          <div class="capability-list">
+            <button class="capability"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>预置 Agent</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="list"></span><span>任务中心<small>并行任务</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="tool"></span><span>Office CLI<small>自动判断</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="pin"></span><span>项目记忆<small>审核后沉淀</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="grid"></span><span>命令面板<small>快捷调用</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="gear"></span><span>模型与设置<small>供应商配置</small></span></button>
           </div>
         </section>
         <section class="tab-content hidden" data-content="files">
@@ -258,9 +269,16 @@
           <div class="section-head"><span>通用能力</span><span class="eyebrow">Agent 可调用</span></div>
           <div class="capability-grid">
             <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>搜索 / 阅读</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="spark"></span><span>Skills<small>搜索 / 读取</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>搜索 / 读取</small></span></button>
             <button class="capability"><span class="tool-icon" data-icon="file"></span><span>Office CLI<small>自动判断</small></span></button>
             <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>读取 / 编辑</small></span></button>
+          </div>
+          <div class="section-head"><span>项目工具</span><span class="eyebrow">0.9.xx</span></div>
+          <div class="capability-list">
+            <button class="capability"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>Agent 模板</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="list"></span><span>任务中心<small>并行 / 恢复</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="pin"></span><span>记忆管理<small>提案 / 审核</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="gear"></span><span>模型设置<small>模型 / 主题</small></span></button>
           </div>
           <div class="section-head" style="margin-top:16px"><span>记忆沉淀</span></div>
           <div class="doc-highlight">每轮完成后只提出稳定的项目事实、工作规则、用户偏好和经验教训，写入前必须经过审核。</div>
@@ -272,18 +290,18 @@
 
     <main class="main">
       <header class="topbar">
-        <div class="conversation-title"><h1>物流中心建设方案 · 分析</h1><span class="mode-pill" data-icon="bot">Agent</span></div>
-        <div class="top-actions"><span class="top-status"><i class="status-dot"></i>正在工作 · 3/5</span><button class="icon-btn" title="新建对话" id="newChat" data-icon="plus"></button><button class="icon-btn" title="隐藏右侧预览" id="togglePreview" data-icon="panel"></button><button class="icon-btn" title="更多" data-icon="more"></button></div>
+        <div class="conversation-title"><h1>物流中心建设方案 · 分析</h1><span class="mode-pill" data-icon="robot">Agent</span></div>
+        <div class="top-actions"><span class="top-status"><i class="status-dot"></i>正在工作 · 3/5</span><button class="icon-btn" title="新建对话" id="newChat" data-icon="plus"></button><button class="icon-btn" title="隐藏右侧预览" id="togglePreview" data-icon="layers"></button><button class="icon-btn" title="更多" data-icon="menu"></button></div>
       </header>
       <div class="chat-scroll" id="chatScroll">
         <div class="date-label">今天 · 10:24 · 当前会话</div>
         <article class="message user"><div class="bubble">帮我读取项目资料，提炼物流中心建设方案的关键问题，并形成一份可继续修改的分析框架。</div></article>
         <article class="message">
-          <div class="assistant-head"><span class="agent-avatar" data-icon="bot"></span><b>规聚 Agent</b><span>10:25</span><span class="mode-pill">Agent</span></div>
+          <div class="assistant-head"><span class="agent-avatar" data-icon="robot"></span><b>规聚 Agent</b><span>10:25</span><span class="mode-pill">Agent</span></div>
           <div class="assistant-body">
             <p>我已接收任务，正在按“资料 → 知识 → 分析 → 成果”的顺序处理。目前先读取项目资料并建立引用边界。</p>
             <details class="event-card">
-              <summary><span data-icon="activity"></span><span>执行过程 · 4 个事件</span><span class="event-type">collapsed</span><span class="event-chevron" data-icon="chevron-right"></span></summary>
+              <summary><span data-icon="flow"></span><span>执行过程 · 4 个事件</span><span class="event-type">collapsed</span><span class="event-chevron" data-icon="chevronRight"></span></summary>
               <div class="event-content">
                 <div class="event-row"><b>context_read</b><span>读取项目资料索引 · 成功</span></div>
                 <div class="event-row"><b>skills_search</b><span>匹配“规划研究报告” · 2 项</span></div>
@@ -295,11 +313,11 @@
           </div>
         </article>
         <article class="message">
-          <div class="assistant-head"><span class="agent-avatar" data-icon="bot"></span><b>规聚 Agent</b><span class="top-status"><i class="status-dot"></i>正在读取资料</span></div>
+          <div class="assistant-head"><span class="agent-avatar" data-icon="robot"></span><b>规聚 Agent</b><span class="top-status"><i class="status-dot"></i>正在读取资料</span></div>
           <div class="assistant-body">
             <p>当前阶段：<strong>读取文档 → 对照模板 → 形成分析框架</strong></p>
             <details class="event-card">
-              <summary><span data-icon="activity"></span><span>工具与事件流</span><span class="event-type">6 items</span><span class="event-chevron" data-icon="chevron-right"></span></summary>
+              <summary><span data-icon="flow"></span><span>工具与事件流</span><span class="event-type">6 items</span><span class="event-chevron" data-icon="chevronRight"></span></summary>
               <div class="event-content"><div class="event-row"><b>document_read</b><span>等待 Office / 文档读取结果</span></div><div class="event-row"><b>artifact_plan</b><span>成果预期：Markdown 分析框架</span></div></div>
             </details>
             <div class="artifact-strip"><span class="artifact" data-icon="file">物流中心建设方案.md</span><span class="artifact" data-icon="file">分析框架 · 草稿</span></div>
@@ -310,14 +328,14 @@
         <div class="composer" id="composer">
           <div class="paste-preview" id="pastePreview"><span class="paste-thumb" data-icon="image"></span><span>已粘贴图片 · 将作为本轮引用发送</span><button class="icon-btn" id="removePaste" data-icon="x"></button></div>
           <textarea id="prompt" rows="1" placeholder="输入消息…  @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话"></textarea>
-          <div class="composer-foot"><button class="composer-tool" title="快速能力" data-icon="spark"></button><button class="composer-tool" title="添加图片" data-icon="image"></button><button class="composer-tool" title="添加文件" data-icon="paperclip"></button><span class="composer-hint">Enter 发送 · Shift + Enter 换行</span><button class="send-btn" id="send" title="发送" data-icon="send"></button></div>
+          <div class="composer-foot"><button class="composer-tool" title="快速能力" data-icon="skills"></button><button class="composer-tool" title="添加图片" data-icon="image"></button><button class="composer-tool" title="添加文件" data-icon="link"></button><span class="composer-hint">Enter 发送 · Shift + Enter 换行</span><button class="send-btn" id="send" title="发送" data-icon="send"></button></div>
         </div>
       </div>
     </main>
     <div class="splitter right-splitter" data-resize="right" role="separator" aria-label="调整右侧预览栏宽度" tabindex="0" title="拖动调整右侧预览栏宽度"></div>
 
     <aside class="preview" id="preview">
-      <header class="preview-head"><div class="preview-title" data-icon="file">当前工作产物</div><button class="icon-btn" id="closePreview" title="隐藏预览" data-icon="panel-close"></button></header>
+      <header class="preview-head"><div class="preview-title" data-icon="file">当前工作产物</div><button class="icon-btn" id="closePreview" title="隐藏预览" data-icon="layers"></button></header>
       <nav class="preview-tabs"><button class="preview-tab active" data-preview="document">文档预览</button><button class="preview-tab" data-preview="events">事件流</button><button class="preview-tab" data-preview="artifacts">产物</button></nav>
       <div class="preview-scroll">
         <section data-preview-content="document">
@@ -348,29 +366,32 @@
     </aside>
   </div>
   <script>
+    // 与 client/src/components/Icon.jsx 的 PATHS 保持同名、同路径、同线性 stroke 规范。
     const icons = {
-      spark: '<path d="m12 3-1.4 5.6L5 10l5.6 1.4L12 17l1.4-5.6L19 10l-5.6-1.4L12 3Z"/><path d="m19 16-.7 2.3L16 19l2.3.7L19 22l.7-2.3L22 19l-2.3-.7L19 16Z"/>',
-      search: '<circle cx="10.8" cy="10.8" r="6.2"/><path d="m16 16 4.5 4.5"/>',
-      folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h5l2 2h8A1.5 1.5 0 0 1 21 8.5v9A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-11Z"/>',
-      file: '<path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/>',
-      book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>',
-      layout: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 10h16M10 10v10"/>',
-      map: '<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/>',
-      bot: '<rect x="5" y="7" width="14" height="12" rx="3"/><path d="M12 3v4M8 12h.01M16 12h.01M9 16h6"/><path d="M3 11v4M21 11v4"/>',
-      'chevron-down': '<path d="m6 9 6 6 6-6"/>',
-      'chevron-up': '<path d="m6 15 6-6 6 6"/>',
-      'chevron-right': '<path d="m9 6 6 6-6 6"/>',
-      plus: '<path d="M12 5v14M5 12h14"/>',
-      more: '<circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/>',
-      panel: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M15 4v16"/>',
-      'panel-close': '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="m14 9-3 3 3 3M18 12h-7"/>',
-      activity: '<path d="M3 12h4l2-7 4 14 2-7h6"/>',
-      image: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.5"/><path d="m4 17 5-5 3 3 2-2 6 5"/>',
-      x: '<path d="m6 6 12 12M18 6 6 18"/>',
-      paperclip: '<path d="m8 12 5.7-5.7a3 3 0 0 1 4.3 4.3l-7.2 7.2a4.5 4.5 0 0 1-6.4-6.4l7-7"/>',
-      send: '<path d="m4 4 16 8-16 8 3-8-3-8Z"/><path d="M7 12h13"/>',
-      sun: '<circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
-      moon: '<path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z"/>'
+      skills: '<path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>',
+      search: '<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
+      folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+      file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+      book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+      grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>',
+      map: '<path d="M1 6v16l7-3 8 3 7-3V3l-7 3-8-3z"/><path d="M8 3v16M16 6v16"/>',
+      robot: '<rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 4v4"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/><path d="M9 17h6"/>',
+      chevronDown: '<path d="M6 9l6 6 6-6"/>',
+      chevronRight: '<path d="M9 18l6-6-6-6"/>',
+      plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+      menu: '<path d="M3 12h18"/><path d="M3 6h18"/><path d="M3 18h18"/>',
+      layers: '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
+      flow: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a4 4 0 0 1 4 4v6"/><path d="M16 16l2 2-2 2"/>',
+      image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+      x: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+      link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+      send: '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>',
+      sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M6.34 17.66l-1.41 1.41"/><path d="M19.07 4.93l-1.41 1.41"/>',
+      moon: '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+      list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+      pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
+      tool: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+      gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a2 2 0 0 0-1.51 1z"/>'
     };
     function paintIcon(el) { const name = el.dataset.icon; if (icons[name]) el.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]}</svg>${el.textContent}`; }
     document.querySelectorAll('[data-icon]').forEach(paintIcon);
@@ -463,7 +484,7 @@
       const value = textarea.value.trim(); if (!value && !pastePreview.classList.contains('show')) return;
       const user = document.createElement('article'); user.className = 'message user'; user.innerHTML = `<div class="bubble">${value || '请分析这张图片并归入当前项目资料。'}</div>`; chatScroll.appendChild(user);
       textarea.value = ''; pastePreview.classList.remove('show'); resizeInput(); chatScroll.scrollTop = chatScroll.scrollHeight;
-      window.setTimeout(() => { const answer = document.createElement('article'); answer.className = 'message'; answer.innerHTML = '<div class="assistant-head"><span class="agent-avatar"><svg viewBox="0 0 24 24">' + icons.bot + '</svg></span><b>规聚 Agent</b><span class="top-status"><i class="status-dot"></i>正在分析</span></div><div class="assistant-body"><p>已收到。我会先确认当前项目、引用边界和输出类型，再继续处理。</p><details class="event-card"><summary><span class="event-type">accepted</span><span>本轮请求已接收，事件流持续更新</span><span class="event-chevron">›</span></summary><div class="event-content">runtime_health: healthy<br>mode: agent<br>context: scoped</div></details></div>'; chatScroll.appendChild(answer); chatScroll.scrollTop = chatScroll.scrollHeight; }, 650);
+      window.setTimeout(() => { const answer = document.createElement('article'); answer.className = 'message'; answer.innerHTML = '<div class="assistant-head"><span class="agent-avatar"><svg viewBox="0 0 24 24">' + icons.robot + '</svg></span><b>规聚 Agent</b><span class="top-status"><i class="status-dot"></i>正在分析</span></div><div class="assistant-body"><p>已收到。我会先确认当前项目、引用边界和输出类型，再继续处理。</p><details class="event-card"><summary><span class="event-type">accepted</span><span>本轮请求已接收，事件流持续更新</span><span class="event-chevron">›</span></summary><div class="event-content">runtime_health: healthy<br>mode: agent<br>context: scoped</div></details></div>'; chatScroll.appendChild(answer); chatScroll.scrollTop = chatScroll.scrollHeight; }, 650);
     }
     document.getElementById('send').addEventListener('click', sendDemo);
     textarea.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendDemo(); } });
