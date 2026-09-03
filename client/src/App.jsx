@@ -13,7 +13,7 @@ import Icon from "./components/Icon.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -609,6 +609,20 @@ export default function App() {
     await refreshSessions();
   }, [refreshSessions]);
 
+  const handleDeleteSession = useCallback(async (id) => {
+    await deleteSession(id);
+    if (currentSessionId === id) {
+      setHistoryMessages(null);
+      setCurrentSessionId(null);
+    }
+    await refreshSessions();
+  }, [currentSessionId, refreshSessions]);
+
+  const handleRenameSession = useCallback(async (id, label) => {
+    await renameSession(id, label);
+    await refreshSessions();
+  }, [refreshSessions]);
+
   const handleFreezeSession = useCallback(async (id, frozen) => {
     await freezeSession(id, frozen);
     await refreshSessions();
@@ -857,6 +871,15 @@ export default function App() {
               onNewSession={handleNewSession}
               onProjectUpdated={refreshProjects}
               models={models}
+              sessions={visibleSessions}
+              unreadByThread={unreadByThread}
+              onSelectSession={handleSelectSession}
+              onRefreshSessions={refreshSessions}
+              onDeleteSession={handleDeleteSession}
+              onRenameSession={handleRenameSession}
+              onForkSession={handleForkSession}
+              onPinSession={handlePinSession}
+              onFreezeSession={handleFreezeSession}
               onOpenSkills={() => setSkillsOpen(true)}
               onOpenAgents={() => setAgentsOpen(true)}
               onOpenKnowledgeBase={() => setKbMode(true)}

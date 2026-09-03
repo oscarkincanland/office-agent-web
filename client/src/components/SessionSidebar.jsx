@@ -214,7 +214,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -537,7 +537,24 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             </button>
           ))}
           {!projects.length && <div className="empty">暂无项目，可在设置中创建</div>}
-          <div className="sidebar-project-hint">当前工作区的会话、文件、任务和记忆会保持关联。</div>
+          <div className="sidebar-session-section">
+            <div className="sidebar-view-title"><span>会话历史</span><span>{sessions.length}</span></div>
+            <div className="sidebar-session-summary">
+              <span><i className="running" /> 执行中 {sessions.filter((s) => ["running", "queued", "recovering", "waiting_user"].includes(s.runStatus)).length}</span>
+              <span><i className="completed" /> 已完成 {sessions.filter((s) => s.runStatus === "completed").length}</span>
+              <span><i className="unread" /> 未读 {Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}</span>
+            </div>
+            <SessionList
+              sessions={sessions}
+              unreadByThread={unreadByThread}
+              onSelect={onSelectSession}
+              onDelete={onDeleteSession}
+              onRename={onRenameSession}
+              onFork={onForkSession}
+              onPin={onPinSession}
+              onFreeze={onFreezeSession}
+            />
+          </div>
         </div>
       )}
 
