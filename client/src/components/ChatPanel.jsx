@@ -148,7 +148,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -182,6 +182,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
+
+  useEffect(() => { onModeChange?.(normalizeUiMode(editMode)); }, [editMode, onModeChange]);
+  useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1110,6 +1113,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const bodyRef = useRef(null);
+  const textareaRef = useRef(null);
   const userScrolledUpRef = useRef(false);
   useEffect(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
@@ -1126,6 +1130,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }, 60);
     return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
   }, [messages]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(220, Math.max(72, textarea.scrollHeight))}px`;
+  }, [input]);
 
   const hint = currentDoc || "未打开文件";
   const hasDraft = Boolean(input.trim() || images.length || attachments.length);
@@ -1296,6 +1307,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           )}
           <div className="chat-input-row">
             <textarea
+              ref={textareaRef}
               value={input}
               disabled={frozen}
               placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文..." : "输入指令... (Enter 发送，Shift+Enter 换行，可粘贴图片)"}
