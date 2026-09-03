@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$ServiceUrl = "http://127.0.0.1:3001"
+$ServiceUrl = "http://127.0.0.1:3002"
 $PackagePath = Join-Path $ProjectRoot "package.json"
 $LocalVersion = ([string](Get-Content -LiteralPath $PackagePath -Raw | ConvertFrom-Json).version).Trim()
 
@@ -20,7 +20,7 @@ function Test-Service([string]$Url) {
 $ExistingService = Test-Service $ServiceUrl
 if ($ExistingService -and $ExistingService.ok) {
   if ([string]$ExistingService.version -ne $LocalVersion) {
-    Write-Error "Service version mismatch on port 3001: running $($ExistingService.version), local $LocalVersion. Stop the old Node service before starting again to keep the frontend and backend aligned."
+    Write-Error "Service version mismatch on port 3002: running $($ExistingService.version), local $LocalVersion. Stop the old Node service before starting again to keep the frontend and backend aligned."
     exit 2
   }
   Write-Host "Open Plan service is already running: $ServiceUrl (version $($ExistingService.version))" -ForegroundColor Green

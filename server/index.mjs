@@ -29,7 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 const app = express();
 const HOST = process.env.HOST || "127.0.0.1";
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3002;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 const AGENT_DIAGNOSTIC_LOG = path.join(process.env.TEMP || PROJECT_DIR, "open-plan-agent连接诊断.log");
 

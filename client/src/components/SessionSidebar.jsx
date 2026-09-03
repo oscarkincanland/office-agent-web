@@ -3,6 +3,7 @@ import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, fileToBase64, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
+import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
 
@@ -213,7 +214,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -230,6 +231,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [artifactRuns, setArtifactRuns] = useState([]);
   const [publishedArtifacts, setPublishedArtifacts] = useState([]);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  const [primaryTab, setPrimaryTab] = useState("project");
   const projectTypes = [...new Set(projects.map((project) => project.type || "综合项目"))];
   const currentProject = projects.find((project) => project.id === currentProjectId) || null;
 
@@ -407,6 +409,22 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
   return (
     <div className="sidebar">
+      <div className="sidebar-brand">
+        <Logo size={24} />
+        <div className="sidebar-brand-copy">
+          <strong>Open Plan</strong>
+          <span>规聚工作台</span>
+        </div>
+        <button className="sidebar-brand-action" onClick={onToggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
+          <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
+        </button>
+        <button className="sidebar-brand-action" onClick={onOpenCommandPalette} title="命令面板（Ctrl/Cmd+K）"><Icon name="search" size={15} /></button>
+      </div>
+      <div className="sidebar-primary-tabs" role="tablist" aria-label="工作台导航">
+        <button className={primaryTab === "project" ? "active" : ""} onClick={() => setPrimaryTab("project")}><Icon name="folder" size={14} /> 项目</button>
+        <button className={primaryTab === "file" ? "active" : ""} onClick={() => setPrimaryTab("file")}><Icon name="file" size={14} /> 文件</button>
+        <button className={primaryTab === "tools" ? "active" : ""} onClick={() => setPrimaryTab("tools")}><Icon name="grid" size={14} /> 能力</button>
+      </div>
       {/* 顶部：项目 / 工作区选择器 + 新建会话 */}
       <div className="workspace-selector">
         {projects.length > 0 && (
@@ -461,9 +479,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
              }}
            >×</button>
          )}
-        <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>
+         {primaryTab === "file" && <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>}
       </div>
-      {rootOpen && (
+      {primaryTab === "file" && rootOpen && (
         <div className="workspace-custom external-roots">
           <div className="external-root-form">
             <input type="text" placeholder="本地目录绝对路径" value={rootPath} onChange={(e) => setRootPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") registerRoot(); }} />
@@ -478,7 +496,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
         </div>
       )}
-      {customMode && (
+      {primaryTab === "file" && customMode && (
         <div className="workspace-custom">
           <input
             type="text"
@@ -508,7 +526,35 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         </div>
       )}
 
+      {primaryTab === "project" && (
+        <div className="sidebar-project-list">
+          <div className="sidebar-view-title"><span>我的项目</span><span>{projects.length}</span></div>
+          {projects.map((project) => (
+            <button key={project.id} className={`sidebar-project-card ${project.id === currentProjectId ? "active" : ""}`} onClick={() => onProjectChange?.(project.id)}>
+              <Icon name="folder" size={15} />
+              <span className="sidebar-project-main"><strong>{project.name}</strong><small>{project.type || "综合项目"} · {project.status || "进行中"}</small></span>
+              {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
+            </button>
+          ))}
+          {!projects.length && <div className="empty">暂无项目，可在设置中创建</div>}
+          <div className="sidebar-project-hint">当前工作区的会话、文件、任务和记忆会保持关联。</div>
+        </div>
+      )}
+
+      {primaryTab === "tools" && (
+        <div className="sidebar-capabilities">
+          <div className="sidebar-view-title"><span>工作能力</span><span>按需打开</span></div>
+          <button onClick={onOpenKnowledgeBase}><Icon name="book" size={16} /><span><strong>知识库</strong><small>检索与引用</small></span></button>
+          <button onClick={onOpenSkills}><Icon name="skills" size={16} /><span><strong>Skills</strong><small>技能搜索与调用</small></span></button>
+          <button onClick={onOpenTemplates}><Icon name="doc" size={16} /><span><strong>模板库</strong><small>结构与样式</small></span></button>
+          <button onClick={onOpenMap}><Icon name="map" size={16} /><span><strong>地图</strong><small>GIS 分析</small></span></button>
+          <button onClick={onOpenAgents}><Icon name="robot" size={16} /><span><strong>智能体广场</strong><small>预置 Agent</small></span></button>
+          <button onClick={onOpenTasks}><Icon name="list" size={16} /><span><strong>任务中心</strong><small>并行任务与历史</small></span></button>
+        </div>
+      )}
+
       {/* 文件树 */}
+      {primaryTab === "file" && <>
       <div className="sidebar-section-head">
         <Icon name="folder" size={12} />
         <span className="section-name">文件</span>
@@ -585,6 +631,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           })}
         </div>
       </div>
+
+      </>}
 
       {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">

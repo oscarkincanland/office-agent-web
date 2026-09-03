@@ -10,7 +10,6 @@ const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
 const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 import Icon from "./components/Icon.jsx";
-import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
@@ -857,6 +856,15 @@ export default function App() {
               onNewSession={handleNewSession}
               onProjectUpdated={refreshProjects}
               models={models}
+              onOpenSkills={() => setSkillsOpen(true)}
+              onOpenAgents={() => setAgentsOpen(true)}
+              onOpenKnowledgeBase={() => setKbMode(true)}
+              onOpenTemplates={() => setTplMode(true)}
+              onOpenMap={() => setMapMode(true)}
+              onOpenTasks={() => document.querySelector(".task-center-trigger")?.click()}
+              onOpenCommandPalette={() => setPaletteOpen(true)}
+              onToggleTheme={toggleTheme}
+              theme={theme}
             />
             <Resizer side="left" min={180} max={400} cssVar="--sidebar-w" />
           </>
@@ -873,17 +881,13 @@ export default function App() {
                 <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
               )}
             <span className="topbar-title">
-              <Logo size={18} /> <span className="brand-name">Open Plan</span>
+              <Icon name="comment" size={16} />
+              <span>{currentProject?.name || "新建 Agent 会话"}</span>
               {current?.name && <span className="topbar-file"> · {current.name}</span>}
             </span>
             <button className="btn-sm theme-toggle" onClick={toggleTheme} title={theme === "dark" ? "切换到亮色主题" : "切换到暗色主题"}>
               <Icon name={theme === "dark" ? "sun" : "moon"} size={14} />
             </button>
-            <button className="btn-sm skills-btn" onClick={() => setSkillsOpen(true)} title="技能管理"><Icon name="skills" size={14} /> 技能</button>
-            <button className="btn-sm agents-btn" onClick={() => setAgentsOpen(true)} title="智能体广场"><Icon name="robot" size={14} /> 智能体</button>
-            <button className="btn-sm kb-btn" onClick={() => setKbMode(true)} title="知识库（Obsidian 风格）"><Icon name="grid" size={14} /> 知识库</button>
-            <button className="btn-sm tpl-btn" onClick={() => setTplMode(true)} title="模版库（交通规划产出模版）"><Icon name="doc" size={14} /> 模版库</button>
-            <button className={`btn-sm map-btn ${mapMode ? "active" : ""}`} onClick={() => setMapMode(true)} title="地图（GIS 项目）"><Icon name="map" size={14} /> 地图</button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
