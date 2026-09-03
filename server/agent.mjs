@@ -139,6 +139,9 @@ const SETTLED_AGENT_RETRY_DELAYS = [1200];
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
+// 只监控“首个模型/工具事件”的等待时间，不限制已经开始执行的长任务。
+// 供应商连接卡住时必须自动释放 Agent，否则前端会永久停留在“连接模型”。
+const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "45000", 10) || 45000);
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
@@ -185,6 +188,51 @@ export function classifyAgentError(error) {
 
 function waitForAgentRetry(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+function createModelTimeoutError() {
+  const error = new Error(`模型连接超过 ${Math.round(MODEL_FIRST_EVENT_TIMEOUT_MS / 1000)} 秒没有响应，已自动中止`);
+  error.code = "MODEL_TIMEOUT";
+  error.noRetry = true;
+  return error;
+}
+
+/**
+ * pi.prompt() 会一直等到整轮任务结束。这里仅对首个 Pi 事件设 watchdog，
+ * 一旦已经收到文本、思考或工具事件，就允许长文档任务继续执行。
+ */
+async function promptWithFirstEventTimeout(entry, text, options = {}) {
+  let timeout;
+  let probe;
+  let settled = false;
+  const prompt = Promise.resolve().then(() => piRuntimeManager.prompt(entry.runtimeId, entry.session, text, options));
+  const firstEvent = new Promise((_, reject) => {
+    const rejectTimeout = () => {
+      if (settled) return;
+      settled = true;
+      const error = createModelTimeoutError();
+      // 不通过 AgentManager.abort，避免把用户主动中止事件误发给前端；
+      // 这里的错误会由 _promptEntry 统一转成 agent_error/run_finished。
+      void piRuntimeManager.abort(entry.runtimeId, entry.session).catch(() => {});
+      reject(error);
+    };
+    timeout = setTimeout(rejectTimeout, MODEL_FIRST_EVENT_TIMEOUT_MS);
+    probe = setInterval(() => {
+      if (entry.firstResponseReceived) {
+        clearTimeout(timeout);
+        clearInterval(probe);
+        timeout = null;
+        probe = null;
+      }
+    }, 250);
+  });
+  try {
+    return await Promise.race([prompt, firstEvent]);
+  } finally {
+    settled = true;
+    if (timeout) clearTimeout(timeout);
+    if (probe) clearInterval(probe);
+  }
 }
 
 const THINKING_LEVEL_ORDER = Object.freeze(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -1027,10 +1075,12 @@ class AgentManager extends EventEmitter {
         case "message_update":
           if (entry) entry.turnStarted = true;
           if (ev.assistantMessageEvent.type === "text_delta") {
+            if (entry && ev.assistantMessageEvent.delta) entry.firstResponseReceived = true;
             emit("token", { text: ev.assistantMessageEvent.delta });
           }
           // 思考过程转发
           if (ev.assistantMessageEvent.type === "thinking_delta") {
+            if (entry && ev.assistantMessageEvent.delta) entry.firstResponseReceived = true;
             emit("thinking", { text: ev.assistantMessageEvent.delta });
           }
           break;
@@ -1038,6 +1088,7 @@ class AgentManager extends EventEmitter {
           if (entry) {
             entry.turnStarted = true;
             entry.toolStarted = true;
+            entry.firstResponseReceived = true;
           }
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
@@ -1162,7 +1213,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: 0, lastUsage: null, autoCompacting: false };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: 0, lastUsage: null, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1238,6 +1289,7 @@ class AgentManager extends EventEmitter {
     if (!isStreaming) {
       entry.turnStarted = false;
       entry.toolStarted = false;
+      entry.firstResponseReceived = false;
     }
     try {
       // Skills/上下文目录在同一回合内不会变化；短时间内复用一次 reload，
@@ -1326,19 +1378,19 @@ class AgentManager extends EventEmitter {
           // 打断当前回合并插入新指令（steer 在 agent 停止后生效，或中断当前工具调用）
           opts.streamingBehavior = "steer";
           emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
-          await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, opts);
+          await promptWithFirstEventTimeout(entry, text, opts);
           return;
         }
         let transportAttempt = 0;
         let settledReplayAttempt = 0;
         while (true) {
           try {
-            await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, opts);
+            await promptWithFirstEventTimeout(entry, text, opts);
             const settledError = entry.lastSettledError;
             entry.lastSettledError = null;
             if (settledError) {
               const info = classifyAgentError(settledError);
-              const canReplay = info.retryable && !entry.toolStarted && settledReplayAttempt < SETTLED_AGENT_RETRY_DELAYS.length;
+              const canReplay = info.retryable && !settledError?.noRetry && !entry.toolStarted && settledReplayAttempt < SETTLED_AGENT_RETRY_DELAYS.length;
               if (!canReplay) throw createSettledAgentError(settledError);
               const delayMs = SETTLED_AGENT_RETRY_DELAYS[settledReplayAttempt];
               settledReplayAttempt += 1;
@@ -1354,6 +1406,7 @@ class AgentManager extends EventEmitter {
               entry.lastAssistantText = "";
               entry.turnStarted = false;
               entry.toolStarted = false;
+              entry.firstResponseReceived = false;
               await waitForAgentRetry(delayMs);
               continue;
             }
@@ -1371,12 +1424,12 @@ class AgentManager extends EventEmitter {
             // 此时 pi 的 isStreaming 仍为 true，重试走 steer 队列。
             if (e && typeof e.message === "string" && e.message.includes("Agent is already processing")) {
               emitChannelSafe(entry, "steer", { text: text.slice(0, 80) });
-              await piRuntimeManager.prompt(entry.runtimeId, entry.session, text, { ...opts, streamingBehavior: "steer" });
+              await promptWithFirstEventTimeout(entry, text, { ...opts, streamingBehavior: "steer" });
               break;
             }
 
             const info = classifyAgentError(e);
-            const canReplay = info.retryable && !entry.toolStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
+            const canReplay = info.retryable && !e?.noRetry && !entry.toolStarted && transportAttempt < APP_PROMPT_RETRY_DELAYS.length;
             if (!canReplay) throw e;
 
             const delayMs = APP_PROMPT_RETRY_DELAYS[transportAttempt];
@@ -1389,6 +1442,7 @@ class AgentManager extends EventEmitter {
               source: "workbench-transport",
               willRetry: true,
             });
+            entry.firstResponseReceived = false;
             await waitForAgentRetry(delayMs);
           }
         }

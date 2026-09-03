@@ -476,7 +476,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}`);
       
       es.onopen = () => {
-        if (mountedRef.current) setConnected(true);
+        // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
       };
       
       es.onmessage = (e) => {
@@ -537,6 +537,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       });
     };
     switch (type) {
+      case "connected":
+        setConnected(true);
+        break;
       // 文本 token：节流合并到 blocks
       case "token":
         setAgentPhase("生成回复");
@@ -959,6 +962,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const d = await res.json().catch(() => ({}));
       // 上报 pi 会话 id（App 持久化，刷新后恢复当前对话）
       if (d.sessionId) onSessionChange?.(d.sessionId);
+      if (d.accepted) {
+        setAgentPhase(d.queued ? `已排队（第 ${d.queuePosition || 1} 项）` : "已接收，等待模型响应");
+      }
       if (d.runId) {
         patch(aid, (m) => ({ ...m, runId: d.runId, task: d.task || null, references: d.task?.references || sendReferences }));
         setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences, task: d.task || s.task }));

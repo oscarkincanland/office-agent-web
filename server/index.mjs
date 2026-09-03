@@ -2097,6 +2097,77 @@ app.post("/api/agent/answer", (req, res) => {
   res.json(result);
 });
 
+/**
+ * 后台执行已被接收的 Agent Run。
+ * HTTP 只负责完成 admission；模型、工具和产物状态统一通过 SSE 回传，
+ * 这样供应商慢或断开时不会把浏览器的 prompt 请求长期挂住。
+ */
+async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId }) {
+  try {
+    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
+  } catch (e) {
+    const currentModel = entry?.session?.model;
+    const diagnostic = recordAgentDiagnostic({ requestId }, {
+      client,
+      thread,
+      runId: run?.id || null,
+      model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
+      error: e,
+    });
+    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
+    // 出错也检测产物（agent 可能已部分写入文件）
+    const changed = await waitForFlush(before, runWorkspace);
+    const validations = validateArtifacts(changed, runWorkspace);
+    const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
+    if (changed.length && entry) {
+      emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
+      emitChannel(entry, "agent_summary", {
+        products: changed,
+        summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+        runId: run?.id || null,
+        artifacts: [],
+      });
+    }
+    const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
+    if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
+    const cancelled = getRun(run.id)?.status === "cancel_requested";
+    const failed = finishRun(run.id, {
+      status: cancelled ? "cancelled" : "failed",
+      sessionId: entry?.session?.sessionId || null,
+      error: cancelled ? "用户请求取消" : e.message,
+      summary: cancelled ? "任务已取消" : "Agent 执行失败",
+      validations: [...validations, ...stagedValidations],
+    });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
+    return;
+  }
+
+  // officecli keeps files in a resident process — disk writes flush asynchronously.
+  // Poll until the workspace snapshot stabilizes, then diff.
+  const changed = await waitForFlush(before, runWorkspace);
+  const validations = validateArtifacts(changed, runWorkspace);
+  const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
+  const allValidations = [...validations, ...stagedValidations];
+  const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
+  const cancelled = run && getRun(run.id)?.status === "cancel_requested";
+  const finalStatus = cancelled ? "cancelled" : "completed";
+  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length || stagedValidations.length ? `本轮对话完成，共处理 ${changed.length + stagedValidations.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations }) : null;
+  if (entry) {
+    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
+    if (productPaths.length) {
+      emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
+      emitChannel(entry, "agent_summary", {
+        products: productPaths,
+        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
+        runId: run?.id || null,
+        artifacts: completed?.artifacts || [],
+        references: resolved,
+      });
+    }
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
+  }
+}
+
 app.post("/api/agent/prompt", async (req, res) => {
   const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput } = req.body || {};
   const hasImages = Array.isArray(images) && images.some((img) => img?.data);
@@ -2220,7 +2291,44 @@ app.post("/api/agent/prompt", async (req, res) => {
     recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
     if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
     emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
-    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
+    void executeAgentRun({
+      entry,
+      key,
+      client,
+      thread,
+      normalizedText,
+      images,
+      effort,
+      resolved,
+      task,
+      workflow,
+      run,
+      before,
+      runWorkspace,
+      effectiveModel,
+      capabilityPlan,
+      preflight,
+      requestId: req.requestId,
+    }).catch((error) => {
+      console.error("[agent] 后台 Run 收尾失败", error);
+    });
+    // 参考 pi-web：先返回“已接收”，最终模型/工具/产物状态由 SSE 事件驱动。
+    res.json({
+      ok: true,
+      accepted: true,
+      queued: Boolean(entry.busy || entry.queuedCount > 1),
+      queuePosition: Math.max(1, entry.queuedCount || 1),
+      changed: [],
+      runId: run?.id || null,
+      artifacts: [],
+      validations: [],
+      verificationStatus: "pending",
+      status: "accepted",
+      task,
+      sessionId: entry?.session?.sessionId || null,
+      thread: thread || null,
+    });
+    return;
   } catch (e) {
     if (e?.code === "SKILL_PREFLIGHT_FAILED" || e?.code === "OFFICE_PREFLIGHT_FAILED") {
       emitChannel(entry, "agent_error", { message: e.message, code: e.code, preflight });
@@ -2261,32 +2369,6 @@ app.post("/api/agent/prompt", async (req, res) => {
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
   }
-  // officecli keeps files in a resident process — disk writes flush asynchronously.
-  // Poll until the workspace snapshot stabilizes, then diff.
-  const changed = await waitForFlush(before, runWorkspace);
-  const validations = validateArtifacts(changed, runWorkspace);
-  const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
-  const allValidations = [...validations, ...stagedValidations];
-  const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
-  const cancelled = run && getRun(run.id)?.status === "cancel_requested";
-  const finalStatus = cancelled ? "cancelled" : "completed";
-  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length || stagedValidations.length ? `本轮对话完成，共处理 ${changed.length + stagedValidations.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations }) : null;
-  if (entry) {
-    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
-    if (productPaths.length) {
-      emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
-      emitChannel(entry, "agent_summary", {
-        products: productPaths,
-        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
-        runId: run?.id || null,
-        artifacts: completed?.artifacts || [],
-        references: resolved,
-      });
-    }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
-  }
-  // 返回 pi 会话 id，供前端持久化（刷新后恢复当前对话）
-  res.json({ ok: true, changed, runId: run?.id || null, artifacts: completed?.artifacts || [], validations: allValidations, verificationStatus: completed?.verificationStatus || "not_checked", status: completed?.status || finalStatus, task, sessionId: entry?.session?.sessionId || null, thread: thread || null });
 });
 
 const CONTINUABLE_RUN_STATUSES = new Set(["recovering", "failed", "cancelled", "aborted"]);
@@ -2483,6 +2565,9 @@ app.get("/api/agent/stream", async (req, res) => {
     res.write(`id: ${ev.id}\ndata: ${JSON.stringify({ type: ev.type, data: ev.data })}\n\n`);
   };
   const lastId = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
+  // 参考 pi-web：连接建立后发送可被客户端确认的应用层握手，
+  // 不把浏览器 EventSource 的 onopen 当作 Agent 已就绪。
+  res.write(`data: ${JSON.stringify({ type: "connected", data: { client, thread, sessionId: entry.session?.sessionId || null } })}\n\n`);
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
   res.write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
 
