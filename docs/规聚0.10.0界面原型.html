@@ -84,7 +84,7 @@
     .project-title { display: flex; align-items: center; gap: 8px; padding: 9px 9px; color: var(--text); font-size: 13px; font-weight: 650; }
     .project-title svg, .session svg, .file-row svg, .capability svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
     .project-title .chevron { margin-left: auto; color: var(--dim); width: 13px; }
-    .session { min-height: 52px; display: grid; grid-template-columns: 11px minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 3px 0 3px 8px; padding: 7px 8px; color: var(--muted); border-radius: 8px; background: transparent; text-align: left; }
+    .session { width: calc(100% - 8px); min-height: 52px; display: grid; grid-template-columns: 11px minmax(0,1fr) auto; gap: 8px; align-items: center; margin: 3px 0 3px 8px; padding: 7px 8px; color: var(--muted); border-radius: 8px; background: transparent; text-align: left; }
     .session:hover { background: var(--panel-2); color: var(--text); }
     .session.active { color: var(--text); background: var(--panel-3); box-shadow: inset 2px 0 var(--accent); }
     .session.running { box-shadow: inset 2px 0 var(--warm); }
@@ -93,15 +93,17 @@
     .session.running .session-dot { background: var(--warm); animation: pulse 1.3s infinite; }
     .session-copy { min-width: 0; }
     .session-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-    .session-meta { margin-top: 4px; color: var(--dim); font-size: 10px; }
-    .session-time { color: var(--dim); font-size: 10px; align-self: start; padding-top: 3px; }
+    .session-meta { overflow: hidden; margin-top: 4px; color: var(--dim); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+    .session-time { color: var(--dim); font-size: 10px; align-self: start; padding-top: 3px; white-space: nowrap; }
     .capability-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 4px; }
-    .capability { min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px; color: var(--muted); background: var(--panel-2); text-align: left; font-size: 12px; }
+    .capability { min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--line-soft); border-radius: 8px; color: var(--muted); background: var(--panel-2); text-align: left; font-size: 12px; line-height: 1.25; }
     .capability:hover { border-color: var(--line); color: var(--text); background: var(--panel-2); }
+    .capability > span:last-child { min-width: 0; }
     .capability small { display: block; margin-top: 2px; color: var(--dim); font-size: 8.5px; }
     .capability-list { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 0 4px; }
     .capability-list .capability { min-height: 44px; }
-    .capability-wide { grid-column: 1 / -1; }
+    .capability-wide, .capability-feature { grid-column: 1 / -1; }
+    .capability-feature { min-height: 44px; }
     .file-tree { padding: 0 5px; }
     .file-row { display: flex; align-items: center; gap: 8px; min-height: 31px; padding: 4px 7px; border-radius: 6px; color: var(--muted); font-size: 11px; }
     .file-row:hover { color: var(--text); background: var(--panel-2); }
@@ -241,17 +243,17 @@
           </div>
           <div class="section-head"><span>工作能力</span><span class="eyebrow">按需打开</span></div>
           <div class="capability-grid">
-            <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>检索与引用</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>技能搜索</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="file"></span><span>模板库<small>结构与样式</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>GIS 分析</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>预置 Agent</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>检索 · 引用 · 沉淀</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>搜索 · 读取 · 组合</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="file"></span><span>模板库<small>套用 · 管理 · 版本</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>图层 · 分析 · 标注</small></span></button>
+            <button class="capability capability-feature"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>选择 · 组合 · 运行 Agent</small></span></button>
           </div>
-          <div class="section-head"><span>运行管理</span><span class="eyebrow">0.9.xx</span></div>
+          <div class="section-head"><span>运行管理</span><span class="eyebrow">并行与恢复</span></div>
           <div class="capability-list">
             <button class="capability capability-wide"><span class="tool-icon" data-icon="list"></span><span>任务中心<small>并行任务 · 恢复与切换</small></span></button>
           </div>
-          <div class="section-head"><span>设置与管理</span><span class="eyebrow">0.9.xx 能力统一入口</span></div>
+          <div class="section-head"><span>设置与管理</span><span class="eyebrow">统一配置</span></div>
           <div class="capability-list">
             <button class="capability capability-wide"><span class="tool-icon" data-icon="gear"></span><span>设置<small>Office CLI · 项目记忆 · 命令面板 · 模型与主题</small></span></button>
           </div>
@@ -274,17 +276,17 @@
         <section class="tab-content hidden" data-content="tools">
           <div class="section-head"><span>通用能力</span><span class="eyebrow">Agent 可调用</span></div>
           <div class="capability-grid">
-            <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>搜索 / 阅读</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>搜索 / 读取</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="file"></span><span>模板库<small>结构 / 样式</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>读取 / 编辑</small></span></button>
-            <button class="capability"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>Agent 模板</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="book"></span><span>知识库<small>搜索 · 阅读 · 引用</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="skills"></span><span>Skills<small>搜索 · 读取 · 组合</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="file"></span><span>模板库<small>结构 · 样式 · 版本</small></span></button>
+            <button class="capability"><span class="tool-icon" data-icon="map"></span><span>地图<small>读取 · 编辑 · 分析</small></span></button>
+            <button class="capability capability-feature"><span class="tool-icon" data-icon="robot"></span><span>智能体广场<small>Agent 模板 · 能力组合</small></span></button>
           </div>
-          <div class="section-head"><span>运行管理</span><span class="eyebrow">原有模块仍保留</span></div>
+          <div class="section-head"><span>运行管理</span><span class="eyebrow">并行与恢复</span></div>
           <div class="capability-list">
             <button class="capability capability-wide"><span class="tool-icon" data-icon="list"></span><span>任务中心<small>并行任务 · 恢复与切换</small></span></button>
           </div>
-          <div class="section-head"><span>设置与管理</span><span class="eyebrow">原有模块仍保留</span></div>
+          <div class="section-head"><span>设置与管理</span><span class="eyebrow">统一配置</span></div>
           <div class="capability-list">
             <button class="capability capability-wide"><span class="tool-icon" data-icon="gear"></span><span>设置<small>Office CLI · 项目记忆 · 命令面板 · 模型与主题</small></span></button>
           </div>
