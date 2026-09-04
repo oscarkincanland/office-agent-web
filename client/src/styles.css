@@ -2557,6 +2557,27 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
+.agent-market-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-market-toolbar .agent-market-intro { flex: 1; border-bottom: 0; }
+.agent-editor {
+  margin: 10px 16px 4px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--selected);
+}
+.agent-editor-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+.agent-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.agent-editor-grid .sp-textarea { grid-column: 1 / -1; min-height: 72px; }
+.agent-editor-actions { display: flex; gap: 6px; margin-top: 8px; }
+.agent-admin-actions { display: flex; gap: 4px; margin-left: 4px; }
+.agent-builtin-label { color: var(--dim); font-size: 10px; white-space: nowrap; }
 .agent-item {
   display: flex;
   align-items: center;

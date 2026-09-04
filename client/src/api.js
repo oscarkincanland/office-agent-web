@@ -77,6 +77,10 @@ export const listSkills = () => api("/api/skills");
 export const preflightSkills = (workflowId, skills = []) => api("/api/skills/preflight", { method: "POST", body: JSON.stringify({ workflowId, skills }) });
 export const listWorkflows = () => api("/api/workflows");
 export const validateWorkflow = (id) => api(`/api/workflows/${encodeURIComponent(id)}/validate`);
+export const listAgents = () => api("/api/agents");
+export const createAgent = (payload) => api("/api/agents", { method: "POST", body: JSON.stringify(payload || {}) });
+export const updateAgent = (id, payload) => api(`/api/agents/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const deleteAgent = (id) => api(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const exportSkill = (name) =>
   api("/api/skills/export", { method: "POST", body: JSON.stringify({ name }) });
 export const importSkill = (payload) =>

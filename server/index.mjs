@@ -22,6 +22,7 @@ import { atomicWriteFile, ensureDirectory } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
+import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
 import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
 import { runRuntimeEvaluation } from "./运行评测.mjs";
 
@@ -1236,6 +1237,26 @@ app.get("/api/workflows/:id/validate", (req, res) => {
   const workflow = getWorkflow(req.params.id, scanSkills());
   if (!workflow) return res.status(404).json({ ok: false, error: "workflow not found" });
   res.json({ ok: workflow.valid, workflow, message: workflow.valid ? "工作流依赖完整" : `缺少技能：${workflow.missing.join(", ")}` });
+});
+
+// 智能体广场：内置 Agent 保留只读，自定义 Agent 写入项目 .oaw 配置并可再次编辑。
+app.get("/api/agents", (_req, res) => {
+  res.json({ agents: listAgents() });
+});
+
+app.post("/api/agents", (req, res) => {
+  const result = createAgent(req.body || {});
+  res.status(result.ok ? 201 : 400).json(result);
+});
+
+app.patch("/api/agents/:id", (req, res) => {
+  const result = updateAgent(req.params.id, req.body || {});
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
+app.delete("/api/agents/:id", (req, res) => {
+  const result = deleteAgent(req.params.id);
+  res.status(result.ok ? 200 : 400).json(result);
 });
 
 // ---------- 外部文件连接器 ----------

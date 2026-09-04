@@ -14,6 +14,17 @@ import { confirmArtifactAcceptance, inspectRunAcceptance } from "../server/成�
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-phase5-9-"));
 try {
+  // 智能体广场的内置模板保持只读，自定义 Agent 必须可创建、编辑和删除。
+  process.env.OAW_AGENTS_FILE = path.join(temp, "agents.json");
+  const agentStore = await import("../server/智能体管理.mjs");
+  assert.equal(agentStore.listAgents().some((item) => item.id === "agent-gongwen" && item.builtin), true);
+  const createdAgent = agentStore.createAgent({ name: "回归测试 Agent", description: "测试用", prompt: "只做测试", skills: ["text-summarizer"] });
+  assert.equal(createdAgent.ok, true);
+  const updatedAgent = agentStore.updateAgent(createdAgent.agent.id, { description: "已更新" });
+  assert.equal(updatedAgent.ok, true);
+  assert.equal(agentStore.deleteAgent(createdAgent.agent.id).ok, true);
+  assert.equal(agentStore.deleteAgent("agent-gongwen").ok, false);
+
   const refs = parseReferences("请分析 @文件[data/report.md] 和 @知识库[政策.md@本地库]");
   assert.equal(refs.length, 2);
   assert.equal(refs.some((r) => r.kind === "file"), true);

@@ -137,6 +137,7 @@ async function smokeTest() {
     ["GET", "/api/projects"],
     ["GET", "/api/workspaces"],
     ["GET", "/api/skills"],
+    ["GET", "/api/agents"],
     ["GET", "/api/map/traffic-bandwidth?project=zhejiang-map"],
     ["GET", "/api/map/od-lines?project=zhejiang-map"],
     ["GET", "/api/map/exchange-sankey?project=zhejiang-map"],
