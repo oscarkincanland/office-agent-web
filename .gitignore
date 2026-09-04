@@ -16,6 +16,8 @@ office-workspace/*
 !office-workspace/maps/
 # 矢量瓦片为生成产物（node scripts/build-vector-tiles.mjs 20s 重建，15k 文件不入库）
 office-workspace/maps/zhejiang-map/tiles/
+# OSM 道路原始导出超过 GitHub 单文件限制，保留本地使用但不纳入版本库
+office-workspace/maps/zhejiang-map/layers/gis_osm_roads_free_1.geojson
 .sessions/
 .规聚会话/
 
