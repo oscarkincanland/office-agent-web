@@ -5122,6 +5122,33 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   padding: 8px 10px;
   font-size: 12px;
 }
+.settings-section-nav {
+  position: sticky;
+  top: -8px;
+  z-index: 2;
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: -8px -10px 10px;
+  padding: 8px 10px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+}
+.settings-section-nav button {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.settings-section-nav button:hover,
+.settings-section-nav button.active {
+  border-color: var(--accent);
+  background: var(--selected);
+  color: var(--text);
+}
 .sp-section { margin-bottom: 10px; }
 .sp-section-title {
   display: flex;

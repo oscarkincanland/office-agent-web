@@ -547,24 +547,6 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             </button>
           ))}
           {!projects.length && <div className="empty">暂无项目，可在设置中创建</div>}
-          <div className="sidebar-session-section">
-            <div className="sidebar-view-title"><span>会话历史</span><span>{sessions.length}</span></div>
-            <div className="sidebar-session-summary">
-              <span><i className="running" /> 执行中 {sessions.filter((s) => ["running", "queued", "recovering", "waiting_user"].includes(s.runStatus)).length}</span>
-              <span><i className="completed" /> 已完成 {sessions.filter((s) => s.runStatus === "completed").length}</span>
-              <span><i className="unread" /> 未读 {Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}</span>
-            </div>
-            <SessionList
-              sessions={sessions}
-              unreadByThread={unreadByThread}
-              onSelect={onSelectSession}
-              onDelete={onDeleteSession}
-              onRename={onRenameSession}
-              onFork={onForkSession}
-              onPin={onPinSession}
-              onFreeze={onFreezeSession}
-            />
-          </div>
         </div>
       )}
 

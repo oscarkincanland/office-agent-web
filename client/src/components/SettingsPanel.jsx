@@ -222,6 +222,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
 
 export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], activeModel = "", onModelChange, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
+  const [settingsSection, setSettingsSection] = useState("appearance");
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
   const [commentHighlightMs, setCommentHighlightMs] = useSetting("commentHighlightMs");
   const [thinkingDefaultOpen, setThinkingDefaultOpen] = useSetting("thinkingDefaultOpen");
@@ -319,15 +320,29 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
 
   return (
     <div className="settings-panel">
-      <ProjectSettingsSection
+      <nav className="settings-section-nav" aria-label="设置分类">
+        {[
+          ["appearance", "外观与对话"],
+          ["model", "模型与连接"],
+          ["services", "服务集成"],
+          ["project", "项目设置与记忆"],
+          ["advanced", "命令面板与高级"],
+        ].map(([id, label]) => (
+          <button key={id} className={settingsSection === id ? "active" : ""} onClick={() => setSettingsSection(id)}>{label}</button>
+        ))}
+      </nav>
+
+      {settingsSection === "project" && <ProjectSettingsSection
         project={project}
         projects={projects}
         currentWorkspace={currentWorkspace}
         models={models}
         onProjectUpdated={onProjectUpdated}
         onProjectSelect={onProjectSelect}
-      />
-      <div className="sp-section">
+      />}
+
+      {settingsSection === "appearance" && <>
+      <div className="sp-section" id="settings-appearance">
         <div className="sp-section-title"><Icon name="sun" size={12} /> 外观</div>
         <div className="sp-row">
           <span className="sp-label">主题</span>
@@ -377,7 +392,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         </div>
       </div>
 
-      <div className="sp-section">
+      <div className="sp-section" id="settings-conversation">
         <div className="sp-section-title"><Icon name="tool" size={12} /> 对话行为</div>
         <div className="sp-row">
           <span className="sp-label">思考块默认展开</span>
@@ -388,8 +403,9 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
           <input type="checkbox" checked={showTimeline !== false} onChange={(e) => setShowTimeline(e.target.checked)} />
         </div>
       </div>
+      </>}
 
-      <div className="sp-section">
+      {settingsSection === "model" && <div className="sp-section" id="settings-model">
         <div className="sp-section-title"><Icon name="robot" size={12} /> 模型</div>
         <div className="sp-note">这里统一管理当前 Agent 模型；对话栏仍保留快速切换入口，选择结果自动记忆。</div>
         <div className="sp-row">
@@ -441,8 +457,10 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         )}
         <div className="sp-note">保存后写入 agent 配置 auth.json 并注入运行时，支持 Anthropic/OpenAI/Gemini 等 pi 支持的 provider。</div>
       </div>
+      }
 
-      <div className="sp-section">
+      {settingsSection === "services" && <>
+      <div className="sp-section" id="settings-basemap">
         <div className="sp-section-title"><Icon name="map" size={12} /> 底图服务</div>
         <div className="sp-row">
           <span className="sp-label">天地图 Key</span>
@@ -496,7 +514,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         </div>
       </div>
 
-      <div className="sp-section">
+      <div className="sp-section" id="settings-services">
         <div className="sp-section-title"><Icon name="cloud" size={12} /> 服务集成</div>
         <div className="sp-row">
           <span className="sp-label">officecli</span>
@@ -516,12 +534,15 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         </div>
         <div className="sp-note">等时圈优先使用 Geoapify Key，也兼容服务端 AMAP_KEY；Key 保存后立即生效。</div>
       </div>
+      </>}
 
-      <div className="sp-section">
+      {settingsSection === "advanced" && <div className="sp-section" id="settings-advanced">
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>
+        <div className="sp-note">命令面板：按 Ctrl/Cmd+K，或点击左侧顶部搜索按钮打开。</div>
         <button className="sp-danger" onClick={resetAll}>重置界面状态与设置</button>
         <div className="sp-note">版本 {version || "v0.10.0"}</div>
       </div>
+      }
     </div>
   );
 }
