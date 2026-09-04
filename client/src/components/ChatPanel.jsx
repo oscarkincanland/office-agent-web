@@ -148,7 +148,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, onAgentEnd, historyMessages, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
@@ -290,6 +290,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => {
     const previous = previousThreadRef.current;
     if (previous === threadId) return;
+    const hydratingHistory = Boolean(historyMessages && historyThreadId === threadId);
     threadCacheRef.current.set(previous, {
       messages,
       runState,
@@ -297,10 +298,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       editMode,
     });
     const cached = threadCacheRef.current.get(threadId);
-    setMessages(cached?.messages || []);
-    setRunState(cached?.runState ? { ...cached.runState, mode: normalizeUiMode(cached.runState.mode) } : { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
-    if (cached?.editMode) setEditMode(normalizeUiMode(cached.editMode));
-    setBusy(Boolean(cached?.busy));
+    if (!hydratingHistory) {
+      setMessages(cached?.messages || []);
+      setRunState(cached?.runState ? { ...cached.runState, mode: normalizeUiMode(cached.runState.mode) } : { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
+      if (cached?.editMode) setEditMode(normalizeUiMode(cached.editMode));
+      setBusy(Boolean(cached?.busy));
+    }
     setStopping(false);
     stoppingRef.current = false;
     assistantIdRef.current = null;
@@ -313,12 +316,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setImages([]);
     setAttachments([]);
     setInput("");
-    setLastPrompt(null);
-    setAgentPhase("");
+    if (!hydratingHistory) {
+      setLastPrompt(null);
+      setAgentPhase("");
+    }
     agentErrorRef.current = false;
     systemEventKeysRef.current.clear();
     previousThreadRef.current = threadId;
-  }, [threadId]);
+  }, [historyMessages, historyThreadId, threadId]);
 
   // 新建会话：清空消息
   const handleNewSession = useCallback(() => {
@@ -439,11 +444,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       applyModel(cur, nextModels);
+      onModelChange?.(cur);
       // 初始化只读取本地偏好，不主动触发 provider 初始化。真正发送时由服务端
       // 在同一个 admission 链路同步模型，避免页面加载/切换会话与 Agent 运行竞态。
     })();
     return () => { cancelled = true; };
-  }, [modelsProp, defaultModel, clientId, threadId]);
+  }, [modelsProp, defaultModel, clientId, threadId, onModelChange]);
+
+  // 设置面板与输入框共用同一个当前模型；真正切换仍沿用原有 Pi/Agent API。
+  useEffect(() => {
+    if (!selectedModel || selectedModel === model || !models.some((item) => item.id === selectedModel)) return;
+    void changeModel(selectedModel);
+  }, [selectedModel, model, models]);
 
   function applyModel(id, list) {
     const m = (list || models).find((x) => x.id === id);
@@ -454,12 +466,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const changeModel = async (id) => {
     setModel(id);
     applyModel(id);
+    onModelChange?.(id);
     setModelMsg("切换中...");
     try {
       const result = await setAgentModel(clientId, id, threadId);
       if (result?.model && result.model !== id) {
         setModel(result.model);
         applyModel(result.model);
+        onModelChange?.(result.model);
         setModelMsg(`连接失败，已切换到 ${result.model}`);
       } else setModelMsg("ok");
     }

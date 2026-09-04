@@ -189,7 +189,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], activeModel = "", onModelChange, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
   const [commentHighlightMs, setCommentHighlightMs] = useSetting("commentHighlightMs");
@@ -360,7 +360,15 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
 
       <div className="sp-section">
         <div className="sp-section-title"><Icon name="robot" size={12} /> 模型</div>
-        <div className="sp-note">默认模型在对话栏输入框下方选择（⚙ 图标），选择结果自动记忆。</div>
+        <div className="sp-note">这里统一管理当前 Agent 模型；对话栏仍保留快速切换入口，选择结果自动记忆。</div>
+        <div className="sp-row">
+          <span className="sp-label">当前模型</span>
+          <select className="sp-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
+            {!models.length && <option value="">模型列表加载中…</option>}
+            {models.length > 0 && <option value="">跟随系统默认</option>}
+            {models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id}>{item.provider ? `${item.provider} / ` : ""}{item.id}</option>)}
+          </select>
+        </div>
         <div className="sp-row">
           <span className="sp-label">API Key</span>
           <div className="sp-auth">
@@ -480,7 +488,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       <div className="sp-section">
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>
         <button className="sp-danger" onClick={resetAll}>重置界面状态与设置</button>
-        <div className="sp-note">版本 {version || "v0.9.29"}</div>
+        <div className="sp-note">版本 {version || "v0.10.0"}</div>
       </div>
     </div>
   );

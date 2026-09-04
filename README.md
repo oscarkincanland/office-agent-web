@@ -77,7 +77,7 @@
 └──────┬───────┴──────┬───────┴──────┬───────┘
        │ REST         │ REST/SSE     │ SSE/POST
 ┌──────┴──────────────┴──────────────┴─────────┐
-│   Node.js Express (localhost:3001)           │
+│   Node.js Express (localhost:3002)           │
 │   /api/files|doc|agent|sessions|kb|map|tpl   │
 │   /api/memory|templates|workspace            │
 ├──────────────────────────────────────────────┤
@@ -97,7 +97,7 @@
 ```bash
 npm install
 cd client && npm install && npm run build && cd ..
-npm start        # → http://localhost:3001
+npm start        # → http://localhost:3002
 ```
 
 ### 开发模式
@@ -113,7 +113,7 @@ npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
 
 ## 版本历史
 
-当前版本 **v0.9.34**，详见 [变更日志.md](变更日志.md)。
+当前版本 **v0.10.0**，详见 [变更日志.md](变更日志.md)。0.10.0 保留 0.9.x 的 Pi、会话、事件流、Office CLI、记忆与产物能力，并将三栏工作台、能力入口、历史会话和模型设置统一到新的界面层。
 
 关键里程碑：
 - **v0.5.0** Office Viewer 集成（批注/修订渲染）
@@ -129,6 +129,7 @@ npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
 - **v0.9.31–v0.9.32** Office 成果验收、Pi Runtime 管理、运行时快照和有限并发
 - **v0.9.33** 真实并发/取消/重启/模型故障回归、真实 Office 样本验收和浏览器多会话回归
 - **v0.9.34** Pi 结算错误传播、模型诊断接口和启动服务版本闸门
+- **v0.10.0** 三栏工作台迁移、历史会话恢复竞态修复、能力模块互斥切换和模型设置统一
 
 ## 分支说明
 

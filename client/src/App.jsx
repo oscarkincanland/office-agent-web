@@ -131,12 +131,14 @@ export default function App() {
   const currentMapContext = mapContexts[threadId] || null;
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("oaw_model") || "");
   const [workspaces, setWorkspaces] = useState([]);
   const [projects, setProjects] = useState([]);
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
+  const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
@@ -155,6 +157,23 @@ export default function App() {
   const eventNoticeKeysRef = useRef(new Set());
   const { theme, toggleTheme } = useTheme();
 
+  // 所有功能模块共用一个互斥入口，避免知识库、地图、智能体广场等弹层叠在一起。
+  const closeExternalModules = useCallback(() => {
+    setSkillsOpen(false);
+    setAgentsOpen(false);
+    setKbMode(false);
+    setTplMode(false);
+    setMapMode(false);
+  }, []);
+  const openExternalModule = useCallback((module) => {
+    closeExternalModules();
+    if (module === "skills") setSkillsOpen(true);
+    if (module === "agents") setAgentsOpen(true);
+    if (module === "knowledge") setKbMode(true);
+    if (module === "templates") setTplMode(true);
+    if (module === "map") setMapMode(true);
+  }, [closeExternalModules]);
+
   useEffect(() => {
     currentThreadRef.current = threadId;
   }, [threadId]);
@@ -168,10 +187,9 @@ export default function App() {
   // 知识库 / Skills 的只读 Chat 转 Agent：关闭入口后把问题、引用和上下文
   // 交给主 ChatPanel，用户确认后再发送，避免检索入口隐式产生写入。
   const handlePromoteToAgent = useCallback((payload = {}) => {
-    setKbMode(false);
-    setSkillsOpen(false);
+    closeExternalModules();
     window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120);
-  }, []);
+  }, [closeExternalModules]);
 
   // 新建会话：清空历史消息和当前文档
   const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
@@ -190,6 +208,7 @@ export default function App() {
     setThreadId(next);
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
+    setHistoryThreadId(null);
     setTabs([]);
     setActiveTab(null);
     setCurrentDir("");
@@ -457,7 +476,13 @@ export default function App() {
     }
     const conversationId = session.threadId || session.id;
     const cachedHistory = sessionHistoryCacheRef.current.get(session.id);
-    if (cachedHistory) setHistoryMessages(cachedHistory);
+    if (cachedHistory) {
+      setHistoryThreadId(conversationId);
+      setHistoryMessages(cachedHistory);
+    } else {
+      setHistoryThreadId(null);
+      setHistoryMessages(null);
+    }
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
     const historyPromise = Promise.all([
@@ -573,6 +598,7 @@ export default function App() {
         sessionHistoryCacheRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
+      setHistoryThreadId(conversationId);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
       if (fileMatch) {
@@ -756,6 +782,8 @@ export default function App() {
       mapContext={mapMode ? currentMapContext : null}
       models={models}
       defaultModel={defaultModel}
+      selectedModel={selectedModel}
+      onModelChange={setSelectedModel}
       onAgentEnd={() => {
         handleAgentEnd();
         mapBridgeRef.current?.onAgentEnd?.();
@@ -763,6 +791,7 @@ export default function App() {
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       historyMessages={historyMessages}
+      historyThreadId={historyThreadId}
       onNewSession={handleNewSession}
       onOpenFile={(name) => {
         if (mapMode) mapBridgeRef.current?.onOpenFile?.(name);
@@ -792,7 +821,7 @@ export default function App() {
             defaultModel={defaultModel}
             onPromoteToAgent={handlePromoteToAgent}
             onExit={(marks) => {
-              setKbMode(false);
+              closeExternalModules();
               if (marks?.length) {
                 setTimeout(() => {
                   for (const m of marks) chatInputRef.current?.insertText(m + " ");
@@ -808,7 +837,7 @@ export default function App() {
           <TemplateLibrary
             onExit={(marks) => {
               // 返回时统一把累积的 @标记 插入对话（支持一次多个）
-              setTplMode(false);
+              closeExternalModules();
               if (marks?.length) {
                 setTimeout(() => {
                   for (const m of marks) chatInputRef.current?.insertText(m + " ");
@@ -823,7 +852,7 @@ export default function App() {
         {mapMode && (
           <DeferredModule label="地图">
           <MapPanel
-            onExit={() => setMapMode(false)}
+            onExit={closeExternalModules}
             onOpenFile={open}
             clientId={clientId}
             threadId={threadId}
@@ -877,6 +906,10 @@ export default function App() {
               onNewSession={handleNewSession}
               onProjectUpdated={refreshProjects}
               models={models}
+              clientId={clientId}
+              threadId={threadId}
+              activeModel={selectedModel}
+              onModelChange={setSelectedModel}
               sessions={visibleSessions}
               unreadByThread={unreadByThread}
               onSelectSession={handleSelectSession}
@@ -886,12 +919,13 @@ export default function App() {
               onForkSession={handleForkSession}
               onPinSession={handlePinSession}
               onFreezeSession={handleFreezeSession}
-              onOpenSkills={() => setSkillsOpen(true)}
-              onOpenAgents={() => setAgentsOpen(true)}
-              onOpenKnowledgeBase={() => setKbMode(true)}
-              onOpenTemplates={() => setTplMode(true)}
-              onOpenMap={() => setMapMode(true)}
-              onOpenTasks={() => document.querySelector(".task-center-trigger")?.click()}
+              onOpenSkills={() => openExternalModule("skills")}
+              onOpenAgents={() => openExternalModule("agents")}
+              onOpenKnowledgeBase={() => openExternalModule("knowledge")}
+              onOpenTemplates={() => openExternalModule("templates")}
+              onOpenMap={() => openExternalModule("map")}
+              onOpenTasks={() => { closeExternalModules(); document.querySelector(".task-center-trigger")?.click(); }}
+              onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
               theme={theme}
@@ -973,12 +1007,14 @@ export default function App() {
         <DeferredModule label="技能管理">
         <SkillsManager
           open={skillsOpen}
-          onClose={() => setSkillsOpen(false)}
+          onClose={closeExternalModules}
           clientId={clientId}
           workspace={currentWorkspace}
           project={currentProject}
           models={models}
           defaultModel={defaultModel}
+          selectedModel={selectedModel}
+          onModelChange={setSelectedModel}
           onPromoteToAgent={handlePromoteToAgent}
           onAtMention={(value) => chatInputRef.current?.insertText(String(value || "").startsWith("@") ? value : `@${value}`)}
         />
@@ -986,7 +1022,7 @@ export default function App() {
         <DeferredModule label="智能体广场">
         <AgentMarket
           open={agentsOpen}
-          onClose={() => setAgentsOpen(false)}
+          onClose={closeExternalModules}
           onAtMention={(text) => chatInputRef.current?.insertText(text)}
         />
         </DeferredModule>
@@ -1000,9 +1036,9 @@ export default function App() {
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
           onOpenFile={open}
-          onKb={() => setKbMode(true)}
-          onTpl={() => setTplMode(true)}
-          onMap={() => setMapMode(true)}
+          onKb={() => openExternalModule("knowledge")}
+          onTpl={() => openExternalModule("templates")}
+          onMap={() => openExternalModule("map")}
           onSession={handleSelectSession}
         />
         </DeferredModule>

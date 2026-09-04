@@ -224,7 +224,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -530,7 +530,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {currentProject.unresolvedRunCount > 0 && <span className="project-context-status">未完成 {currentProject.unresolvedRunCount}</span>}
           <button
             className="project-memory-btn"
-            onClick={() => { setModal("settings"); setModalTab("memory"); }}
+            onClick={() => { onBeforeOpenModal?.(); setModal("settings"); setModalTab("memory"); }}
             title="打开当前工作区的记忆与沉淀"
           ><Icon name="book" size={11} /> 记忆</button>
         </div>
@@ -663,10 +663,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
       {/* 底部：产物 / 设置（弹窗） */}
       <div className="sidebar-bottom-tabs">
-        <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => setModal(modal === "artifacts" ? null : "artifacts")} title="产物（agent 生成的文件）">
+        <button className={`bt-btn ${modal === "artifacts" ? "active" : ""}`} onClick={() => { if (modal !== "artifacts") onBeforeOpenModal?.(); setModal(modal === "artifacts" ? null : "artifacts"); }} title="产物（agent 生成的文件）">
           <Icon name="file" size={13} /> 产物
         </button>
-        <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => setModal(modal === "settings" ? null : "settings")} title="设置（含记忆）">
+        <button className={`bt-btn ${modal === "settings" ? "active" : ""}`} onClick={() => { if (modal !== "settings") onBeforeOpenModal?.(); setModal(modal === "settings" ? null : "settings"); }} title="设置（含记忆）">
           <Icon name="gear" size={13} /> 设置
         </button>
       </div>
@@ -756,7 +756,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
             </div>
             <div className="sb-modal-body">
-              {modalTab === "settings" ? <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} onProjectUpdated={onProjectUpdated} onProjectSelect={onProjectChange} /> : <MemoryTab workspace={currentWorkspace} projectId={currentProjectId} />}
+              {modalTab === "settings" ? <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} clientId={clientId} threadId={threadId} activeModel={activeModel} onModelChange={onModelChange} onProjectUpdated={onProjectUpdated} onProjectSelect={onProjectChange} /> : <MemoryTab workspace={currentWorkspace} projectId={currentProjectId} />}
             </div>
           </div>
         </div>
