@@ -43,6 +43,46 @@ import {
 const SESSION_STORE = path.join(PROJECT_DIR, ".规聚会话");
 fs.mkdirSync(SESSION_STORE, { recursive: true });
 
+// Agent 运行时恢复不能依赖 index.mjs 中的路由辅助函数（两者会形成循环依赖）。
+// 这里仅在失败恢复时查找具体 JSONL 文件，避免把会话目录本身传给 Pi。
+function findSessionFileForAgent(id) {
+  const sessionId = String(id || "").trim();
+  if (!sessionId) return null;
+  const roots = [SESSION_STORE, path.join(AGENT_DIR, "sessions")];
+  const candidates = [];
+  const walk = (dir, depth, storeDir) => {
+    if (depth > 4) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath, depth + 1, storeDir);
+      } else if (entry.isFile() && /\.(?:jsonl|json)$/i.test(entry.name)) {
+        try {
+          const stat = fs.statSync(fullPath);
+          candidates.push({ fileName: entry.name, fullPath, storeDir, mtime: stat.mtimeMs });
+        } catch {}
+      }
+    }
+  };
+  for (const root of roots) walk(root, 0, root);
+
+  const byName = candidates
+    .filter((file) => file.fileName === `${sessionId}.jsonl` || file.fileName === `${sessionId}.json` || file.fileName.startsWith(sessionId))
+    .sort((a, b) => b.mtime - a.mtime);
+  if (byName[0]) return byName[0];
+
+  for (const file of candidates.sort((a, b) => b.mtime - a.mtime)) {
+    try {
+      const firstLine = fs.readFileSync(file.fullPath, "utf8").split(/\r?\n/)[0];
+      const header = JSON.parse(firstLine);
+      if (header?.id === sessionId || header?.sessionId === sessionId) return file;
+    } catch {}
+  }
+  return null;
+}
+
 /** 将只读的旧 Pi 会话复制到工作台会话目录后再打开，保留原历史文件作为只读来源。 */
 function materializeSessionPath(sessionPath) {
   if (!sessionPath) return sessionPath;
@@ -1247,7 +1287,7 @@ class AgentManager extends EventEmitter {
     const modelSpec = fallbackModel && fallbackModel !== failedModel
       ? fallbackModel
       : String(options.modelSpec || "").trim();
-    const found = findSessionFile(existing.session?.sessionId || "");
+    const found = findSessionFileForAgent(existing.session?.sessionId || "");
     const recovered = await this.restartRuntime(clientId, {
       threadId: options.threadId || existing.threadId || null,
       sessionPath: found?.fullPath || null,
