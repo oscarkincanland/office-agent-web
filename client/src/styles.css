@@ -1369,6 +1369,9 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 }
 .task-item.done { opacity: 0.55; }
 .task-item.done .task-text { text-decoration: line-through; color: var(--muted); }
+.task-item.failed { color: var(--error); }
+.task-item.failed .task-text { color: var(--error); text-decoration: none; }
+.task-item small { margin-left: auto; color: var(--accent); font-size: 9px; }
 .task-status {
   width: 16px;
   display: flex;
@@ -6177,6 +6180,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ask-input:focus { border-color: var(--accent); }
 .ask-submit { flex-shrink: 0; }
 .ask-answer { color: var(--success); font-size: 11px; }
+.ask-error { margin-top: 5px; color: var(--error); font-size: 10px; }
 
 /* ===== 对话栏历史抽屉（chat-hist，可折叠） ===== */
 .chat-hist {

@@ -1048,8 +1048,9 @@ class AgentManager extends EventEmitter {
         const opts = (params.options || []).map((o) => (typeof o === "string" ? o : o.label || JSON.stringify(o)));
         // 阻塞等待用户回答（最长 5 分钟），期间 SSE 推送 ask_user 事件
         return await new Promise((resolve) => {
+          const pendingAskId = `ask_${crypto.randomUUID()}`;
           persistPendingAsk({
-            id: `ask_${crypto.randomUUID()}`,
+            id: pendingAskId,
             clientId,
             runId: entry.activeRunId || null,
             question: String(params.question || ""),
@@ -1070,7 +1071,11 @@ class AgentManager extends EventEmitter {
             resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
           };
           this.pendingAsks.set(clientId, done);
-          emitChannelSafe(entry, "ask_user", { question: params.question, options: opts });
+          emitChannelSafe(entry, "ask_user", {
+            askId: pendingAskId,
+            question: params.question,
+            options: opts,
+          });
         });
       },
     });
@@ -1104,7 +1109,10 @@ class AgentManager extends EventEmitter {
     const channel = { history: [], seq: 0, emitter: new EventEmitter() };
     const emit = (type, data) => {
       const id = ++channel.seq;
-      const ev = { id, type, data: data ?? {} };
+      const eventData = data && typeof data === "object" && !Array.isArray(data)
+        ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
+        : { value: data, runId: entry?.activeRunId ?? null };
+      const ev = { id, type, data: eventData };
       channel.history.push(ev);
       if (channel.history.length > 2000) channel.history.shift();
       channel.emitter.emit("event", ev);
@@ -1904,7 +1912,10 @@ export async function removeApiKey(provider) {
 function emitChannelSafe(entry, type, data) {
   try {
     const id = ++entry.channel.seq;
-    const ev = { id, type, data: data ?? {} };
+    const eventData = data && typeof data === "object" && !Array.isArray(data)
+      ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
+      : { value: data, runId: entry?.activeRunId ?? null };
+    const ev = { id, type, data: eventData };
     entry.channel.history.push(ev);
     if (entry.channel.history.length > 2000) entry.channel.history.shift();
     entry.channel.emitter.emit("event", ev);

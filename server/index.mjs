@@ -2598,7 +2598,11 @@ app.get("/api/agent/stream", async (req, res) => {
   const send = (ev) => {
     res.write(`id: ${ev.id}\ndata: ${JSON.stringify({ type: ev.type, data: ev.data })}\n\n`);
   };
-  const lastId = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
+  // EventSource 新建连接时不会把上一次对象的 Last-Event-ID 带过来，
+  // 因此前端同时通过 query 传递游标；两者取最大值，避免重连重复消费历史事件。
+  const queryCursor = parseInt(req.query.after || "0", 10) || 0;
+  const headerCursor = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
+  const lastId = Math.max(queryCursor, headerCursor);
   // 参考 pi-web：连接建立后发送可被客户端确认的应用层握手，
   // 不把浏览器 EventSource 的 onopen 当作 Agent 已就绪。
   const connectedModel = entry.modelFallbackSpec || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null);
