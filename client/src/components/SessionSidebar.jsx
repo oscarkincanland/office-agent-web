@@ -95,6 +95,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const [pinned, setPinned] = useState(getPinnedSet);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [actionsId, setActionsId] = useState(null);
 
   const handleRename = async (id) => {
     await onRename(id, editValue);
@@ -126,7 +127,14 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   const renderItem = (s) => {
     const isPinned = s.pinned ?? pinned.has(s.id);
     return (
-    <div key={s.id} className="session-item" onClick={() => onSelect(s)}>
+    <div
+      key={s.id}
+      className="session-item"
+      onClick={() => onSelect(s)}
+      onMouseEnter={() => setActionsId(s.id)}
+      onMouseLeave={() => setActionsId((id) => id === s.id ? null : id)}
+      onFocus={() => setActionsId(s.id)}
+    >
       <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
         {editingId === s.id ? (
@@ -162,7 +170,8 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       </div>
       {(unreadByThread[s.threadId || s.id] || 0) > 0 && <span className="session-unread" title="有新的后台任务状态更新">{unreadByThread[s.threadId || s.id] > 99 ? "99+" : unreadByThread[s.threadId || s.id]}</span>}
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
-      <div className="session-actions" onClick={(e) => e.stopPropagation()}>
+      {actionsId === s.id && (
+        <div className="session-actions" onClick={(e) => e.stopPropagation()}>
         <button className="btn-icon" onClick={() => handleTogglePin(s)} title={isPinned ? "取消置顶" : "置顶"}>
           <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
         </button>
@@ -178,7 +187,8 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
           onClick={async () => { if (confirm("确认删除此会话?")) { await onDelete(s.id); } }}
           title="删除"
         ><Icon name="trash" size={12} /></button>
-      </div>
+        </div>
+      )}
     </div>
   );
   };

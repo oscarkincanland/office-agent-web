@@ -200,7 +200,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const mountedRef = useRef(true);
   // SSE 重连可能重放同一事件；按运行/文件/摘要去重，避免对话栏污染。
   const systemEventKeysRef = useRef(new Set());
-  const syncedModelRef = useRef("");
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -440,21 +439,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const cur = nextModels.some((m) => m.id === preferred) ? preferred : (nextModels[0]?.id || "");
       setModel(cur);
       applyModel(cur, nextModels);
-      // 模型是工作台级偏好；切换子会话不重复执行一次 setModel，避免历史恢复
-      // 后又额外等待 provider 初始化。用户主动换模型时 changeModel 仍会立即同步。
-      const syncKey = `${clientId}:${cur}`;
-      if (cur && syncKey !== syncedModelRef.current) {
-        syncedModelRef.current = syncKey;
-        try {
-          const result = await setAgentModel(clientId, cur, threadId);
-          if (result?.model && result.model !== cur) {
-            setModel(result.model);
-            applyModel(result.model, nextModels);
-            setModelMsg(`旧模型不可用，已切换到 ${result.model}`);
-            window.setTimeout(() => setModelMsg(""), 3600);
-          }
-        } catch (e) { if (mountedRef.current) setModelMsg(`模型同步失败：${e.message}`); }
-      }
+      // 初始化只读取本地偏好，不主动触发 provider 初始化。真正发送时由服务端
+      // 在同一个 admission 链路同步模型，避免页面加载/切换会话与 Agent 运行竞态。
     })();
     return () => { cancelled = true; };
   }, [modelsProp, defaultModel, clientId, threadId]);

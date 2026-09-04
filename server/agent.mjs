@@ -134,8 +134,10 @@ function searchLocalSkills(query = "", limit = 12) {
   return matched.slice(0, Math.max(1, Math.min(30, Number(limit) || 12)));
 }
 
-const APP_PROMPT_RETRY_DELAYS = [2000, 5000];
-const SETTLED_AGENT_RETRY_DELAYS = [1200];
+// Pi 已经负责一次短重试；工作台只做一次备用模型切换，不再对已结算回合
+// 或同一传输错误重复重放，避免一次断连叠加出多组失败气泡和长时间等待。
+const APP_PROMPT_RETRY_DELAYS = [];
+const SETTLED_AGENT_RETRY_DELAYS = [];
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
@@ -160,6 +162,7 @@ function safeAgentErrorMessage(message) {
 export function createSettledAgentError(message) {
   const error = new Error(safeAgentErrorMessage(message));
   error.code = "PI_SETTLED_ERROR";
+  error.noRetry = true;
   return error;
 }
 

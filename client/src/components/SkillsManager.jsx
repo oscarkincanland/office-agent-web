@@ -67,6 +67,7 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
   const [msg, setMsg] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSkill, setChatSkill] = useState(null);
+  const [skillLimit, setSkillLimit] = useState(48);
   const fileRef = React.useRef(null);
 
   const refresh = useCallback(async () => {
@@ -99,9 +100,11 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
     ? skills.filter((s) => s.name.includes(query.toLowerCase()) || (s.description || "").toLowerCase().includes(query.toLowerCase()))
     : skills;
 
-  const visibleCategories = category === "all"
-    ? Object.keys(grouped)
-    : [category];
+  const matchingSkills = filtered.filter((s) => category === "all" || (s.category || "other") === category);
+  const visibleSkills = matchingSkills.slice(0, skillLimit);
+  const visibleCategories = [...new Set(visibleSkills.map((s) => s.category || "other"))];
+
+  useEffect(() => { setSkillLimit(48); }, [query, category]);
 
   if (!open) return null;
 
@@ -253,7 +256,7 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
               {visibleCategories.map((cat) => (
                 <div className="skill-group" key={cat}>
                   <div className="skill-group-title">{CATEGORY_LABELS[cat] || cat}</div>
-                  {filtered.filter((s) => (s.category || "other") === cat).map((s) => (
+                  {visibleSkills.filter((s) => (s.category || "other") === cat).map((s) => (
                     <div className="skill-item" key={s.name}>
                       <div className="skill-info">
                         <div className="skill-name">
@@ -282,6 +285,11 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
                   ))}
                 </div>
               ))}
+              {matchingSkills.length > visibleSkills.length && (
+                <button className="btn-sm skill-load-more" onClick={() => setSkillLimit((limit) => limit + 48)}>
+                  显示更多（已显示 {visibleSkills.length} / {matchingSkills.length}）
+                </button>
+              )}
             </div>
           </>
         )}
