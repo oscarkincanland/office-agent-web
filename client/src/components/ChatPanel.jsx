@@ -1449,11 +1449,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                       .map((m) => (
                         <div
                           key={m.id}
-                          className={`ct-pop-item ${model === m.id ? "active" : ""}`}
-                          onClick={() => { changeModel(m.id); setModelOpen(false); }}
+                          className={`ct-pop-item ${model === m.id ? "active" : ""} ${m.available === false ? "disabled" : ""}`}
+                          onClick={() => { if (m.available === false) return; changeModel(m.id); setModelOpen(false); }}
                           title={m.id}
                         >
-                          {m.vision ? "[V] " : ""}{m.id}
+                          {m.vision ? "[V] " : ""}{m.id}{m.available === false ? " · 不可用" : ""}
                         </div>
                       ))}
                   </div>

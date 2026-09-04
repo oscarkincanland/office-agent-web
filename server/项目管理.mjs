@@ -8,6 +8,14 @@ const PROJECTS_FILE = process.env.OAW_PROJECTS_FILE || path.join(PROJECT_DIR, ".
 const PROJECT_TYPES = ["交通规划", "GIS / 地图分析", "调研报告", "Office 文档", "数据分析", "综合项目", "资料库"];
 const PROJECT_STATUSES = ["进行中", "待整理", "已完成", "已归档", "模板项目"];
 const PROJECT_PROFILES = ["通用 Agent", "创作", "研究", "Office", "GIS", "数据分析"];
+const PROFILE_POLICIES = Object.freeze({
+  "通用 Agent": { description: "完整工具链，按任务计划执行", allowedModes: ["chat", "agent"], preferredTools: ["read", "write", "edit", "bash", "officecli", "memory_update"], thinking: "medium", maxContextTokens: 64000, approval: "危险写入前确认", outputDir: "当前工作区" },
+  "创作": { description: "优先模板、素材和 Office 产出", allowedModes: ["chat", "agent"], preferredTools: ["read", "officecli", "write", "edit", "skills_read", "memory_update"], thinking: "medium", maxContextTokens: 48000, approval: "产物固定前确认", outputDir: "当前工作区" },
+  "研究": { description: "优先知识库、资料和可追溯引用", allowedModes: ["chat", "agent"], preferredTools: ["read", "grep", "find", "kb_search", "kb_read", "skills_search", "skills_read", "memory_update"], thinking: "high", maxContextTokens: 96000, approval: "记忆沉淀前确认", outputDir: "当前工作区" },
+  Office: { description: "优先 Office CLI，限制通用脚本写入", allowedModes: ["chat", "office", "agent"], preferredTools: ["read", "officecli", "skills_read"], thinking: "medium", maxContextTokens: 64000, approval: "文档写入前确认", outputDir: "当前工作区" },
+  GIS: { description: "优先地图、空间数据和分析产出", allowedModes: ["chat", "agent"], preferredTools: ["read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "officecli"], thinking: "high", maxContextTokens: 64000, approval: "图层写入前确认", outputDir: "当前工作区" },
+  "数据分析": { description: "优先数据读取、校验和图表产出", allowedModes: ["chat", "agent"], preferredTools: ["read", "grep", "find", "bash", "write", "edit", "officecli", "memory_update"], thinking: "high", maxContextTokens: 64000, approval: "数据覆盖前确认", outputDir: "当前工作区" },
+});
 const DEFAULT_PROJECT_SETTINGS = Object.freeze({
   defaultModel: "",
   agentProfile: "通用 Agent",
@@ -38,12 +46,45 @@ function projectIdFor(rootPath) {
 
 function inferType(name, rootPath) {
   const text = String(name || path.basename(rootPath) || "").toLowerCase();
-  if (/gis|map|地图|空间/.test(text)) return "GIS / 地图分析";
-  if (/交通|公交|\btransport\b|\bod\b/.test(text)) return "交通规划";
+  if (/gis|map|geo(?:json)?|地图|空间/.test(text)) return "GIS / 地图分析";
+  if (/交通|公交|水运|物流|\btransport\b|\bod\b/.test(text)) return "交通规划";
   if (/报告|research|调研/.test(text)) return "调研报告";
   if (/office|文档|word|excel|ppt/.test(text)) return "Office 文档";
   if (/资料|知识|knowledge|kb/.test(text)) return "资料库";
   return "综合项目";
+}
+
+/**
+ * 为历史上统一落成“综合项目”的工作区生成可解释的分类建议。
+ * 默认只返回预览；只有调用方明确 apply=true 才会写回 projects.json。
+ */
+export function classifyProjects({ apply = false } = {}) {
+  const projects = readProjects();
+  const changes = projects.map((project) => {
+    const suggestedType = inferType(project.name, project.rootPath);
+    const eligible = !project.type || project.type === "综合项目";
+    return {
+      id: project.id,
+      name: project.name,
+      currentType: project.type || "综合项目",
+      suggestedType: eligible ? suggestedType : project.type,
+      changed: Boolean(eligible && suggestedType !== (project.type || "综合项目")),
+      applied: false,
+    };
+  });
+  if (!apply) return { ok: true, applied: false, changes };
+  let changed = 0;
+  for (const item of changes) {
+    if (!item.changed) continue;
+    const project = projects.find((candidate) => candidate.id === item.id);
+    if (!project) continue;
+    project.type = item.suggestedType;
+    project.updatedAt = now();
+    item.applied = true;
+    changed += 1;
+  }
+  if (changed) saveProjects(projects);
+  return { ok: true, applied: true, changed, changes };
 }
 
 function normalizeType(type, name, rootPath) {
@@ -61,7 +102,13 @@ function normalizeSettings(settings = {}) {
   next.skills = [...new Set((Array.isArray(next.skills) ? next.skills : []).map((item) => String(item || "").trim()).filter(Boolean))].slice(0, 50);
   next.memoryPolicy = next.memoryPolicy === "manual" ? "manual" : "approval_required";
   next.artifactPolicy = next.artifactPolicy === "manual" ? "manual" : "validation_required";
+  next.profilePolicy = profilePolicyFor(next.agentProfile);
   return next;
+}
+
+export function profilePolicyFor(profile = "通用 Agent") {
+  const selected = PROFILE_POLICIES[String(profile)] || PROFILE_POLICIES["通用 Agent"];
+  return { ...selected, allowedModes: [...selected.allowedModes], preferredTools: [...selected.preferredTools] };
 }
 
 export function listProjectTypes() {
@@ -77,7 +124,7 @@ export function listProjectProfiles() {
 }
 
 export function defaultProjectSettings() {
-  return { ...DEFAULT_PROJECT_SETTINGS, skills: [] };
+  return { ...DEFAULT_PROJECT_SETTINGS, skills: [], profilePolicy: profilePolicyFor(DEFAULT_PROJECT_SETTINGS.agentProfile) };
 }
 
 /** 确保一个工作区有稳定的项目对象；兼容现有未迁移的 workspace。 */

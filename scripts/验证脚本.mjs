@@ -13,6 +13,7 @@ import { modeDescription, modeLabel, planTaskCapabilities, toolPolicyForMode } f
 import { clearReadCache, readReference } from "../server/context.mjs";
 import { validateArtifactFile } from "../server/产物验证.mjs";
 import { eventStoreInfo, listEvents } from "../server/事件存储.mjs";
+import { profilePolicyFor } from "../server/项目管理.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -111,6 +112,8 @@ async function smokeTest() {
     const chatDocumentPlan = planTaskCapabilities({ text: "查看报告.docx", task: { mode: "chat", currentFile: "报告.docx" } });
     if (chatDocumentPlan.routing.officecli !== "not_needed" || chatDocumentPlan.output.saveToWorkspace) throw new Error("Chat 文档请求错误触发 Office/写入路由");
     if (modeLabel("agent") !== "Agent") throw new Error("Agent 主模式标签异常");
+    const profile = profilePolicyFor("研究");
+    if (!profile.preferredTools.includes("kb_search") || profile.maxContextTokens < 1 || !profile.approval) throw new Error("Agent Profile 策略缺失");
     ok("第三阶段 Chat/Office/Agent 模式工具边界");
   } catch (e) {
     fail("第三阶段模式边界检查: " + e.message);
@@ -163,6 +166,15 @@ async function smokeTest() {
       if (NETWORK_BLOCKED) console.warn(`  ! ${method} ${url}：当前沙箱禁用回环网络，跳过 API 请求（${e.message}）`);
       else fail(`${method} ${url}: ${e.message}`);
     }
+  }
+
+  try {
+    const res = await fetch(`http://localhost:${PORT}/api/projects/classify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apply: false }) });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok && body.ok === true && body.applied === false && Array.isArray(body.changes) && body.changes.every((item) => item.id && item.suggestedType)) ok("POST /api/projects/classify -> 只读预览结构");
+    else fail(`POST /api/projects/classify -> 返回结构异常 (${res.status})`);
+  } catch (e) {
+    fail(`POST /api/projects/classify: ${e.message}`);
   }
 
   try {

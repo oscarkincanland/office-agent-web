@@ -52,7 +52,7 @@ function TaskCard({ run, selected, onSelect, projectName = "" }) {
   );
 }
 
-export default function TaskCenter({ sessions = [], projects = [], currentProjectId = "", currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun, onOpenRun }) {
+export default function TaskCenter({ sessions = [], projects = [], currentProjectId = "", currentWorkspace = "", currentThreadId = "", currentSessionId = "", eventVersion = 0, unreadCount = 0, onSelectSession, onFocusRun, onOpenRun, fullPage = false, onClose }) {
   const [open, setOpen] = useState(false);
   const [runs, setRuns] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -65,6 +65,10 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const [queryFilter, setQueryFilter] = useState("");
   const [opening, setOpening] = useState(false);
   const refreshInFlightRef = useRef(null);
+
+  useEffect(() => {
+    if (fullPage) setOpen(true);
+  }, [fullPage]);
 
   const refresh = useCallback(async () => {
     if (refreshInFlightRef.current) return refreshInFlightRef.current;
@@ -171,7 +175,8 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
       } else {
         throw new Error("任务没有关联的会话");
       }
-      setOpen(false);
+      if (fullPage) onClose?.();
+      else setOpen(false);
       setSelectedId(null);
       setDetail(null);
     } catch (e) {
@@ -183,9 +188,13 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
 
   const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
-  return (
-    <div className="task-center-wrap">
-      <button
+  const panel = open && (
+        <div className={`task-center-panel ${fullPage ? "task-center-page-panel" : ""}`}>
+          {fullPage && <div className="module-head task-center-page-head">
+            <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
+            <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
+          </div>}
+          {!fullPage && <button
         className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
         onClick={() => { setOpen((value) => !value); setSelectedId(null); setDetail(null); }}
         title={`任务：执行中 ${counts.running || 0}，恢复中 ${counts.recovering || 0}，已完成 ${counts.completed || 0}`}
@@ -195,9 +204,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         <span className="task-center-trigger-label">任务</span>
         {activeCount > 0 && <span className="task-center-badge">{activeCount}</span>}
         {unreadCount > 0 && <span className="task-center-unread" title="后台会话有新的任务状态">{unreadCount > 99 ? "99+" : unreadCount}</span>}
-      </button>
-      {open && (
-        <div className="task-center-panel">
+          </button>}
           <div className="task-center-head">
             <span><Icon name="list" size={13} /> 并行任务</span>
             <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={11} /></button>
@@ -260,7 +267,9 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             </div>
           )}
         </div>
-      )}
-    </div>
-  );
+      );
+
+  return fullPage
+    ? <div className="module-view task-center-module">{panel}</div>
+    : <div className="task-center-wrap">{panel}</div>;
 }

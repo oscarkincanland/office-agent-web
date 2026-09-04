@@ -54,6 +54,7 @@ export const listProjects = (options = {}) => {
   return api(`/api/projects${query ? `?${query}` : ""}`);
 };
 export const createProject = (payload) => api("/api/projects", { method: "POST", body: JSON.stringify(payload || {}) });
+export const classifyProjects = (apply = false) => api("/api/projects/classify", { method: "POST", body: JSON.stringify({ apply }) });
 export const updateProject = (id, patch) => api(`/api/projects/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
 export const pinProject = (id, pinned = true) => api(`/api/projects/${encodeURIComponent(id)}/pin`, { method: "POST", body: JSON.stringify({ pinned }) });
 export const archiveProject = (id, archived = true) => api(`/api/projects/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ archived }) });

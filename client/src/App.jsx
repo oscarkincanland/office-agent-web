@@ -12,6 +12,8 @@ const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 import Icon from "./components/Icon.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
+import SettingsPanel from "./components/SettingsPanel.jsx";
+import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
@@ -109,11 +111,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
   const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [skillsOpen, setSkillsOpen] = useState(false); // 技能管理弹层
-  const [agentsOpen, setAgentsOpen] = useState(false); // 智能体广场弹层
-  const [kbMode, setKbMode] = useState(false); // 知识库全屏模式
-  const [tplMode, setTplMode] = useState(false); // 模版库全屏模式
-  const [mapMode, setMapMode] = useState(false); // 地图全屏模式（三栏：图层树+地图+对话）
+  const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
+  const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
   const [previewTab, setPreviewTab] = useState("document");
   const [conversationMode, setConversationMode] = useState("chat");
@@ -159,20 +158,11 @@ export default function App() {
 
   // 所有功能模块共用一个互斥入口，避免知识库、地图、智能体广场等弹层叠在一起。
   const closeExternalModules = useCallback(() => {
-    setSkillsOpen(false);
-    setAgentsOpen(false);
-    setKbMode(false);
-    setTplMode(false);
-    setMapMode(false);
+    setActiveModule(null);
   }, []);
   const openExternalModule = useCallback((module) => {
-    closeExternalModules();
-    if (module === "skills") setSkillsOpen(true);
-    if (module === "agents") setAgentsOpen(true);
-    if (module === "knowledge") setKbMode(true);
-    if (module === "templates") setTplMode(true);
-    if (module === "map") setMapMode(true);
-  }, [closeExternalModules]);
+    setActiveModule(module);
+  }, []);
 
   useEffect(() => {
     currentThreadRef.current = threadId;
@@ -728,9 +718,10 @@ export default function App() {
         setCurrentDir(saved.currentDir);
         refreshFiles(saved.currentDir);
       }
-      if (saved.mapMode) setMapMode(true);
-      else if (saved.kbMode) setKbMode(true);
-      else if (saved.tplMode) setTplMode(true);
+      if (saved.activeModule) setActiveModule(saved.activeModule);
+      else if (saved.mapMode) setActiveModule("map");
+      else if (saved.kbMode) setActiveModule("knowledge");
+      else if (saved.tplMode) setActiveModule("templates");
       setSidebarOpen(saved.sidebarOpen !== false);
       setUiRestored(true);
     })();
@@ -755,15 +746,13 @@ export default function App() {
     saveUIState({
       tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
       activeTab,
-      kbMode,
-      tplMode,
-      mapMode,
+      activeModule,
       workspace: currentWorkspace,
       currentDir,
       sidebarOpen,
       lastSessionId: currentSessionId ?? lastSessionIdRef.current,
     });
-  }, [tabs, activeTab, kbMode, tplMode, mapMode, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
+  }, [tabs, activeTab, activeModule, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
   const sharedChatPanel = (
       <ChatPanel
@@ -778,8 +767,8 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
-      currentDoc={mapMode ? "地图模块" : current?.name}
-      mapContext={mapMode ? currentMapContext : null}
+       currentDoc={activeModule === "map" ? "地图模块" : current?.name}
+       mapContext={activeModule === "map" ? currentMapContext : null}
       models={models}
       defaultModel={defaultModel}
       selectedModel={selectedModel}
@@ -794,7 +783,7 @@ export default function App() {
       historyThreadId={historyThreadId}
       onNewSession={handleNewSession}
       onOpenFile={(name) => {
-        if (mapMode) mapBridgeRef.current?.onOpenFile?.(name);
+         if (activeModule === "map") mapBridgeRef.current?.onOpenFile?.(name);
         else open(name);
       }}
       sessions={visibleSessions}
@@ -811,7 +800,7 @@ export default function App() {
   return (
     <AppErrorBoundary>
       <div className="app">
-        {kbMode && (
+        {activeModule === "knowledge" && (
           <DeferredModule label="知识库">
           <KnowledgeBase
             clientId={clientId}
@@ -832,7 +821,7 @@ export default function App() {
           />
           </DeferredModule>
         )}
-        {tplMode && (
+        {activeModule === "templates" && (
           <DeferredModule label="模板库">
           <TemplateLibrary
             onExit={(marks) => {
@@ -849,7 +838,7 @@ export default function App() {
           />
           </DeferredModule>
         )}
-        {mapMode && (
+        {activeModule === "map" && (
           <DeferredModule label="地图">
           <MapPanel
             onExit={closeExternalModules}
@@ -874,7 +863,7 @@ export default function App() {
           />
           </DeferredModule>
         )}
-        {mapMode && (
+        {activeModule === "map" && (
           <Resizer
             className="map-chat-resizer"
             side="right"
@@ -883,7 +872,7 @@ export default function App() {
             cssVar="--map-chat-w"
           />
         )}
-        {!kbMode && !tplMode && !mapMode && (
+        {!["knowledge", "templates", "map"].includes(activeModule) && (
         <>
         {sidebarOpen && (
           <>
@@ -924,7 +913,9 @@ export default function App() {
               onOpenKnowledgeBase={() => openExternalModule("knowledge")}
               onOpenTemplates={() => openExternalModule("templates")}
               onOpenMap={() => openExternalModule("map")}
-              onOpenTasks={() => { closeExternalModules(); document.querySelector(".task-center-trigger")?.click(); }}
+               onOpenTasks={() => openExternalModule("tasks")}
+               onOpenSettings={(tab = "settings") => { setSettingsModuleTab(tab); openExternalModule("settings"); }}
+               onOpenArtifacts={() => openExternalModule("artifacts")}
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
               onToggleTheme={toggleTheme}
@@ -1006,7 +997,8 @@ export default function App() {
         )}
         <DeferredModule label="技能管理">
         <SkillsManager
-          open={skillsOpen}
+          open={activeModule === "skills"}
+          fullPage
           onClose={closeExternalModules}
           clientId={clientId}
           workspace={currentWorkspace}
@@ -1021,17 +1013,18 @@ export default function App() {
         </DeferredModule>
         <DeferredModule label="智能体广场">
         <AgentMarket
-          open={agentsOpen}
+          open={activeModule === "agents"}
+          fullPage
           onClose={closeExternalModules}
           onAtMention={(text) => chatInputRef.current?.insertText(text)}
         />
         </DeferredModule>
         </>
         )}
-        {!kbMode && !tplMode && !mapMode && !previewOpen && (
+         {!["knowledge", "templates", "map"].includes(activeModule) && !previewOpen && (
           <button className="preview-reopen" onClick={() => setPreviewOpen(true)} title="显示右侧预览"><Icon name="file" size={13} /> 预览</button>
         )}
-        <DeferredModule label="命令面板">
+         <DeferredModule label="命令面板">
         <CommandPalette
           open={paletteOpen}
           onClose={() => setPaletteOpen(false)}
@@ -1041,8 +1034,53 @@ export default function App() {
           onMap={() => openExternalModule("map")}
           onSession={handleSelectSession}
         />
-        </DeferredModule>
-      </div>
+         </DeferredModule>
+         {activeModule === "settings" && (
+           <div className="module-view">
+             <div className="module-head">
+               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
+               <div><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></div>
+               <div className="module-head-tabs">
+                 <button className={settingsModuleTab === "settings" ? "active" : ""} onClick={() => setSettingsModuleTab("settings")}>设置</button>
+                 <button className={settingsModuleTab === "memory" ? "active" : ""} onClick={() => setSettingsModuleTab("memory")}>记忆与沉淀</button>
+               </div>
+             </div>
+             <div className="module-body module-settings-body">
+               {settingsModuleTab === "memory"
+                 ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} activeModel={selectedModel} onModelChange={setSelectedModel} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+             </div>
+           </div>
+         )}
+         {activeModule === "artifacts" && (
+           <div className="module-view">
+             <div className="module-head">
+               <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
+               <div><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></div>
+             </div>
+             <div className="module-body module-artifacts-body">
+               <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} onOpenFile={(name) => { closeExternalModules(); open(name); }} />
+             </div>
+           </div>
+         )}
+         {activeModule === "tasks" && (
+           <DeferredModule label="任务中心"><TaskCenter
+             fullPage
+             onClose={closeExternalModules}
+             sessions={visibleSessions}
+             projects={projects}
+             currentProjectId={currentProject?.id || ""}
+             currentWorkspace={currentWorkspace}
+             currentThreadId={threadId}
+             currentSessionId={currentSessionId}
+             unreadCount={Object.values(unreadByThread).reduce((sum, count) => sum + Number(count || 0), 0)}
+             onSelectSession={handleSelectSession}
+             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
+             onOpenRun={handleOpenRun}
+             eventVersion={eventVersion}
+           /></DeferredModule>
+         )}
+       </div>
     </AppErrorBoundary>
   );
 }

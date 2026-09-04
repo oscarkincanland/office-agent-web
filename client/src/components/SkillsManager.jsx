@@ -57,7 +57,7 @@ const WORKFLOWS = [
   },
 ];
 
-export default function SkillsManager({ open, onClose, onAtMention, clientId, workspace = "", project = null, models = [], defaultModel = "", onPromoteToAgent }) {
+export default function SkillsManager({ open, onClose, onAtMention, clientId, workspace = "", project = null, models = [], defaultModel = "", onPromoteToAgent, fullPage = false }) {
   const [skills, setSkills] = useState([]);
   const [workflows, setWorkflows] = useState(WORKFLOWS);
   const [query, setQuery] = useState("");
@@ -162,7 +162,7 @@ export default function SkillsManager({ open, onClose, onAtMention, clientId, wo
     : "当前处于 Skills 搜索入口。请搜索并解释本地 Skill 的用途、依赖、输入输出和调用前置条件；只读，不执行写入。";
 
   return (
-    <div className="modal-overlay" onClick={onClose} role="presentation">
+    <div className={fullPage ? "module-view module-skills-view" : "modal-overlay"} onClick={onClose} role="presentation">
       <div className="skills-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="技能广场">
         <div className="modal-head">
           <span className="modal-title"><Icon name="skills" size={14} /> 技能广场 ({skills.length})</span>

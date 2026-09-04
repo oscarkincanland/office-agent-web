@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove, archiveProject, createProject, mapSettings, mapSettingsSave, pinProject, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -47,6 +47,14 @@ const FONT_OPTIONS = [
 const PROJECT_TYPES = ["交通规划", "GIS / 地图分析", "调研报告", "Office 文档", "数据分析", "综合项目", "资料库"];
 const PROJECT_STATUSES = ["进行中", "待整理", "已完成", "已归档", "模板项目"];
 const PROJECT_PROFILES = ["通用 Agent", "创作", "研究", "Office", "GIS", "数据分析"];
+const PROFILE_POLICY_HINTS = {
+  "通用 Agent": "完整工具链 · 标准推理 · 64K 上下文",
+  "创作": "模板与 Office 产出优先 · 48K 上下文",
+  "研究": "知识库与引用优先 · 深度推理 · 96K 上下文",
+  Office: "Office CLI 优先 · 文档写入前确认",
+  GIS: "地图与空间分析优先 · 图层写入前确认",
+  "数据分析": "数据校验与图表产出优先 · 深度推理",
+};
 
 function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
@@ -56,6 +64,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   const [newProject, setNewProject] = useState({ name: "", rootPath: currentWorkspace, type: "综合项目", status: "进行中", description: "" });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [classifying, setClassifying] = useState(false);
 
   useEffect(() => {
     setProjectDraft({
@@ -140,6 +149,27 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
     finally { setSaving(false); }
   };
 
+  const classify = async () => {
+    if (classifying) return;
+    setClassifying(true);
+    setMessage("");
+    try {
+      const preview = await classifyProjects(false);
+      const changes = (preview.changes || []).filter((item) => item.changed);
+      if (!changes.length) {
+        setMessage("没有可自动判断的项目，已保留现有分类");
+        return;
+      }
+      const result = await classifyProjects(true);
+      setMessage(`已按项目名称归类 ${result.changed || changes.length} 个项目`);
+      onProjectUpdated?.();
+    } catch (error) {
+      setMessage(`自动归类失败：${error.message}`);
+    } finally {
+      setClassifying(false);
+    }
+  };
+
   return (
     <div className="project-settings-section">
       <div className="sp-section-title"><Icon name="folder" size={12} /> 项目管理</div>
@@ -150,6 +180,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
             <select className="sp-select" value={projectFilter.sort} onChange={(e) => setProjectFilter((value) => ({ ...value, sort: e.target.value }))}><option value="recent">最近活跃</option><option value="name">名称</option></select>
             <label className="sp-check-label"><input type="checkbox" checked={projectFilter.pinned} onChange={(e) => setProjectFilter((value) => ({ ...value, pinned: e.target.checked }))} /> 置顶</label>
             <label className="sp-check-label"><input type="checkbox" checked={projectFilter.pending} onChange={(e) => setProjectFilter((value) => ({ ...value, pending: e.target.checked }))} /> 待处理</label>
+        <button className="btn-sm" onClick={classify} disabled={classifying}><Icon name="flow" size={12} /> {classifying ? "归类中…" : "自动归类"}</button>
         <button className="btn-sm primary" onClick={() => setCreateOpen((value) => !value)}><Icon name="plus" size={12} /> 新建项目</button>
       </div>
       {createOpen && (
@@ -179,7 +210,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
           <div className="sp-row"><span className="sp-label">项目说明</span><textarea className="sp-textarea" value={projectDraft.description} onChange={(e) => setProjectDraft((value) => ({ ...value, description: e.target.value }))} /></div>
           <div className="sp-section-title project-runtime-title"><Icon name="robot" size={12} /> 项目运行设置</div>
           <div className="sp-row"><span className="sp-label">默认模型</span><select className="sp-select" value={settingsDraft.defaultModel} onChange={(e) => setSettingsDraft((value) => ({ ...value, defaultModel: e.target.value }))}><option value="">跟随系统默认</option>{models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id}>{item.id}</option>)}</select></div>
-          <div className="sp-row"><span className="sp-label">Agent Profile</span><select className="sp-select" value={settingsDraft.agentProfile} onChange={(e) => setSettingsDraft((value) => ({ ...value, agentProfile: e.target.value }))}>{PROJECT_PROFILES.map((item) => <option key={item}>{item}</option>)}</select></div>
+           <div className="sp-row"><span className="sp-label">Agent Profile</span><select className="sp-select" value={settingsDraft.agentProfile} onChange={(e) => setSettingsDraft((value) => ({ ...value, agentProfile: e.target.value }))}>{PROJECT_PROFILES.map((item) => <option key={item}>{item}</option>)}</select><span className="sp-note-inline">{PROFILE_POLICY_HINTS[settingsDraft.agentProfile] || "按任务选择工具链"}</span></div>
           <div className="sp-row"><span className="sp-label">允许 Skills</span><input className="sp-input" placeholder="skill-a, skill-b（留空表示按需）" value={settingsDraft.skills.join(", ")} onChange={(e) => setSettingsDraft((value) => ({ ...value, skills: e.target.value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean) }))} /></div>
           <div className="sp-row"><span className="sp-label">记忆策略</span><select className="sp-select" value={settingsDraft.memoryPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, memoryPolicy: e.target.value }))}><option value="approval_required">必须审核后沉淀</option><option value="manual">仅手动维护</option></select><span className="sp-label">成果策略</span><select className="sp-select" value={settingsDraft.artifactPolicy} onChange={(e) => setSettingsDraft((value) => ({ ...value, artifactPolicy: e.target.value }))}><option value="validation_required">校验通过后固定</option><option value="manual">仅手动固定</option></select></div>
           <div className="sp-row"><span className="sp-label">操作</span><button className="btn-sm primary" onClick={saveProject} disabled={saving}>{saving ? "保存中…" : "保存项目设置"}</button>{message && <span className="sp-auth-msg">{message}</span>}</div>
@@ -366,8 +397,9 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
           <select className="sp-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
             {!models.length && <option value="">模型列表加载中…</option>}
             {models.length > 0 && <option value="">跟随系统默认</option>}
-            {models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id}>{item.provider ? `${item.provider} / ` : ""}{item.id}</option>)}
+            {models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${item.provider} / ` : ""}{item.id}{item.available === false ? "（不可用）" : item.vision ? " · 支持图片" : ""}</option>)}
           </select>
+          {activeModel && (() => { const selected = models.find((item) => item.id === activeModel); return selected ? <span className={`sp-badge ${selected.available === false ? "warn" : "ok"}`}>{selected.available === false ? "不可用" : "可用"}{selected.vision ? " · 支持图片" : ""}</span> : null; })()}
         </div>
         <div className="sp-row">
           <span className="sp-label">API Key</span>

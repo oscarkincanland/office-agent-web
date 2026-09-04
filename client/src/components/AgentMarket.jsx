@@ -44,7 +44,7 @@ const AGENTS = [
   },
 ];
 
-export default function AgentMarket({ open, onClose, onAtMention }) {
+export default function AgentMarket({ open, onClose, onAtMention, fullPage = false }) {
   if (!open) return null;
 
   const startAgent = (agent) => {
@@ -54,7 +54,7 @@ export default function AgentMarket({ open, onClose, onAtMention }) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className={fullPage ? "module-view module-agents-view" : "modal-overlay"} onClick={onClose}>
       <div className="skills-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
           <span className="modal-title"><Icon name="robot" size={14} /> 智能体广场 ({AGENTS.length})</span>

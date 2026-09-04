@@ -2237,6 +2237,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       projectId: project?.id || taskInput?.projectId || null,
       agentProfile: projectSettings.agentProfile,
       projectSettings,
+      profilePolicy: projectSettings.profilePolicy,
       skills: requestedSkills,
       workflowId,
     };
@@ -2372,6 +2373,14 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
+  }
+});
+
+app.post("/api/projects/classify", (req, res) => {
+  try {
+    res.json(projectManager.classifyProjects({ apply: req.body?.apply === true }));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
