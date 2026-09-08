@@ -37,6 +37,7 @@ import {
   mergeMemoryProposals,
   rejectMemoryProposal as rejectStoredMemoryProposal,
 } from "./记忆管理.mjs";
+import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
 // 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
@@ -187,6 +188,19 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
+// 服务重启后 entry.promptChars 会归零，但 Pi 已恢复的 JSONL 会话仍可能很长。
+// 仅在会话创建/恢复时估算一次，避免每次发送都遍历历史消息。
+function estimateRestoredContextChars(session) {
+  const messages = session?.agent?.state?.messages;
+  if (!Array.isArray(messages)) return 0;
+  let chars = 0;
+  for (const message of messages) {
+    try { chars += JSON.stringify(message).length; } catch { chars += 256; }
+    if (chars >= AUTO_COMPACT_PROMPT_CHARS) return chars;
+  }
+  return chars;
+}
+
 function rawAgentErrorMessage(error) {
   if (typeof error === "string") return error;
   return String(error?.message || error?.cause?.message || error || "模型连接失败");
@@ -216,15 +230,26 @@ export function captureSettledAgentError(entry) {
 export function classifyAgentError(error) {
   const message = rawAgentErrorMessage(error);
   const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status ?? 0) || null;
-  const terminal = TERMINAL_AGENT_ERROR_PATTERN.test(message);
+  const causeCode = error?.cause?.code ? String(error.cause.code) : null;
+  const authFailure = [401, 403].includes(status) || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message);
+  const timeout = error?.code === "MODEL_TIMEOUT" || error?.code === "MODEL_PROBE_TIMEOUT" || /(?:timed?.?out|timeout)/i.test(message);
+  const rateLimited = [408, 425, 429, 529].includes(status) || /(?:429|rate.?limit|overloaded)/i.test(message);
+  const network = /(?:network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|websocket.?closed)/i.test(message);
+  const terminal = authFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || [400, 404].includes(status);
   const retryable = !terminal && Boolean(
-    (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
+    error?.code === "MODEL_TIMEOUT"
+      || (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
       || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
   );
+  const category = authFailure ? "auth" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
   return {
     message: safeAgentErrorMessage(message),
     code: error?.code ? String(error.code) : null,
     status,
+    causeCode,
+    provider: error?.provider || error?.model?.provider || null,
+    model: error?.model?.id || (typeof error?.model === "string" ? error.model : null),
+    category,
     retryable,
   };
 }
@@ -256,7 +281,11 @@ async function promptWithFirstEventTimeout(entry, text, options = {}) {
       const error = createModelTimeoutError();
       // 不通过 AgentManager.abort，避免把用户主动中止事件误发给前端；
       // 这里的错误会由 _promptEntry 统一转成 agent_error/run_finished。
-      void piRuntimeManager.abort(entry.runtimeId, entry.session).catch(() => {});
+      const abortPromise = piRuntimeManager.abort(entry.runtimeId, entry.session).catch(() => {});
+      entry.pendingAbortPromise = abortPromise;
+      void abortPromise.finally(() => {
+        if (entry.pendingAbortPromise === abortPromise) entry.pendingAbortPromise = null;
+      });
       reject(error);
     };
     timeout = setTimeout(rejectTimeout, MODEL_FIRST_EVENT_TIMEOUT_MS);
@@ -622,6 +651,12 @@ class AgentManager extends EventEmitter {
         exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
+          if (isGlobalSearchCommand(commandText)) {
+            const error = new Error("禁止从系统根目录执行全盘搜索，请限定在当前工作区内，并使用绝对路径或当前工作区相对路径。");
+            error.code = "BASH_SCOPE_BLOCKED";
+            writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
+            throw error;
+          }
           const targetsProtectedMemory = isProtectedMemoryTarget(ctx.workspace, path.resolve(cwd || ctx.workspace, ".")) || /(?:memory[\\/]|(?:^|[\s"'\\/])AGENTS\.md\b)/i.test(commandText);
           if (targetsProtectedMemory && /(?:>|>>|tee|set-content|out-file|write[_-]?text|writefile|sed\s+-i|perl\s+-i|\b(?:mv|cp|rm|del)\b)/i.test(commandText)) {
             const error = new Error("长期记忆不能通过 Bash 直接修改，请使用 memory_update 提交待审核建议");
@@ -633,7 +668,7 @@ class AgentManager extends EventEmitter {
           writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: String(command || "").slice(0, 500) });
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
           try {
-            return await localBash.exec(command, cwd, options);
+            return await localBash.exec(command, cwd, normalizeBashOptions(options));
           } catch (error) {
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
             throw error;
@@ -1104,35 +1139,74 @@ class AgentManager extends EventEmitter {
       piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"]);
     } catch {}
 
-    const emitter = new EventEmitter();
     // event channel with history for SSE replay
     const channel = { history: [], seq: 0, emitter: new EventEmitter() };
     const emit = (type, data) => {
       const id = ++channel.seq;
+      const at = new Date().toISOString();
       const eventData = data && typeof data === "object" && !Array.isArray(data)
         ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
         : { value: data, runId: entry?.activeRunId ?? null };
-      const ev = { id, type, data: eventData };
+      const ev = { id, type, at, data: eventData };
       channel.history.push(ev);
       if (channel.history.length > 2000) channel.history.shift();
       channel.emitter.emit("event", ev);
-      if (entry?.activeRunId && ["tool_start", "tool_end", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end"].includes(type)) {
+      if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
         try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
       }
     };
     session.subscribe((ev) => {
       // forward interesting events
       switch (ev.type) {
+        case "agent_start":
+          emit("agent_started", {});
+          break;
+        case "turn_start":
+          emit("turn_started", { turnIndex: ev.turnIndex ?? null });
+          break;
+        case "turn_end":
+          emit("turn_ended", { turnIndex: ev.turnIndex ?? null, toolCount: Array.isArray(ev.toolResults) ? ev.toolResults.length : 0 });
+          break;
         case "message_update":
           if (entry) entry.turnStarted = true;
-          if (ev.assistantMessageEvent.type === "text_delta") {
-            if (entry && ev.assistantMessageEvent.delta) entry.firstResponseReceived = true;
-            emit("token", { text: ev.assistantMessageEvent.delta });
-          }
-          // 思考过程转发
-          if (ev.assistantMessageEvent.type === "thinking_delta") {
-            if (entry && ev.assistantMessageEvent.delta) entry.firstResponseReceived = true;
-            emit("thinking", { text: ev.assistantMessageEvent.delta });
+          {
+            const update = ev.assistantMessageEvent || {};
+            if (update.type === "text_delta") {
+              if (entry && update.delta) entry.firstResponseReceived = true;
+              emit("token", { text: update.delta, contentIndex: update.contentIndex ?? null });
+            } else if (update.type === "thinking_delta") {
+              if (entry && update.delta) entry.firstResponseReceived = true;
+              emit("thinking", { text: update.delta, contentIndex: update.contentIndex ?? null });
+            } else if (["text_start", "thinking_start", "toolcall_start"].includes(update.type)) {
+              // 这些边界事件已经来自 provider 的 assistant 流；即使首个 delta
+              // 还没到，也不能再被 watchdog 当作“模型没有响应”。
+              if (entry) entry.firstResponseReceived = true;
+              if (update.type === "text_start") {
+                emit("text_boundary", { phase: "start", contentIndex: update.contentIndex ?? null });
+              } else if (update.type === "thinking_start") {
+                emit("thinking_boundary", { phase: "start", contentIndex: update.contentIndex ?? null });
+              } else {
+                emit("tool_call_progress", {
+                  phase: "start",
+                  toolCallId: update.id || update.toolCall?.id || null,
+                  name: update.toolName || update.toolCall?.name || null,
+                  contentIndex: update.contentIndex ?? null,
+                  deltaLength: 0,
+                });
+              }
+            } else if (update.type === "text_end") {
+              emit("text_boundary", { phase: "end", contentIndex: update.contentIndex ?? null });
+            } else if (update.type === "thinking_end") {
+              emit("thinking_boundary", { phase: "end", contentIndex: update.contentIndex ?? null });
+            } else if (["toolcall_start", "toolcall_delta", "toolcall_end"].includes(update.type)) {
+              emit("tool_call_progress", {
+                phase: update.type.replace("toolcall_", ""),
+                toolCallId: update.id || update.toolCall?.id || null,
+                name: update.toolName || update.toolCall?.name || null,
+                contentIndex: update.contentIndex ?? null,
+                deltaLength: String(update.delta || "").length,
+              });
+            }
           }
           break;
         case "tool_execution_start":
@@ -1170,17 +1244,21 @@ class AgentManager extends EventEmitter {
         case "message_start":
           // Pi 的失败 assistant message 也会触发 message_start；它不代表
           // 已经执行了模型回合或工具副作用，允许上层做一次有限重放。
-          if (entry && !ev.message?.errorMessage && ev.message?.stopReason !== "error") entry.turnStarted = true;
-          emit("message_start", {});
+          if (entry && ev.message?.role === "assistant" && !ev.message?.errorMessage && ev.message?.stopReason !== "error") {
+            entry.turnStarted = true;
+            entry.firstResponseReceived = true;
+          }
+          emit("message_start", { messageId: ev.message?.id || null, role: ev.message?.role || null });
           break;
         case "message_end":
           if (entry && ev.message?.role === "assistant") {
             entry.lastAssistantText = assistantText(ev.message);
+            if (!ev.message.errorMessage && ev.message.stopReason !== "error") entry.firstResponseReceived = true;
             if (ev.message.errorMessage || ev.message.stopReason === "error") {
               entry.lastAgentError = ev.message.errorMessage || "模型调用失败";
             }
           }
-          emit("message_end", {});
+          emit("message_end", { messageId: ev.message?.id || null, role: ev.message?.role || null });
           break;
         case "usage":
         case "stats":
@@ -1222,6 +1300,31 @@ class AgentManager extends EventEmitter {
               cost: ev.cost ?? u.cost ?? 0,
             });
           }
+          emit("agent_turn_end", {});
+          break;
+        case "queue_update":
+          emit("agent_queue_update", {
+            steering: Boolean(ev.steering),
+            followUp: Boolean(ev.followUp),
+          });
+          break;
+        case "compaction_start":
+          emit("context_compacting", { source: "pi-sdk" });
+          break;
+        case "compaction_end":
+          emit("context_compacted", {
+            source: "pi-sdk",
+            tokensBefore: ev.tokensBefore || 0,
+            estimatedTokensAfter: ev.estimatedTokensAfter || 0,
+          });
+          break;
+        case "bash_execution_update":
+          emit("tool_output", {
+            toolCallId: ev.id || null,
+            name: "bash",
+            output: eventValueText(ev.output ?? ev.delta),
+            replace: false,
+          });
           break;
         case "auto_retry_start":
           // Pi SDK 已经判断这是可重试的完整模型回合；仅向前端播报，不能在这里再次手动 prompt。
@@ -1264,7 +1367,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: 0, lastUsage: null, autoCompacting: false };
+    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1328,7 +1431,7 @@ class AgentManager extends EventEmitter {
     entry.queuedCount += 1;
     const operation = entry.promptChain.then(async () => {
       entry.queuedCount = Math.max(0, entry.queuedCount - 1);
-      await this._maybeCompact(entry);
+      await this._maybeCompact(entry, payload.runContext);
       return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
     });
     // 保留链路继续执行，同时不让前一个失败阻断后续排队请求。
@@ -1336,24 +1439,26 @@ class AgentManager extends EventEmitter {
     return operation;
   }
 
-  async _maybeCompact(entry) {
+  async _maybeCompact(entry, runContext = null) {
     if (entry.autoCompacting || !entry.promptChars) return;
     const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
     if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && inputTokens < AUTO_COMPACT_INPUT_TOKENS) return;
     entry.autoCompacting = true;
-    emitChannelSafe(entry, "context_compacting", { promptChars: entry.promptChars, inputTokens });
+    const runId = runContext?.runId || entry.activeRunId || null;
+    emitChannelSafe(entry, "context_compacting", { runId, promptChars: entry.promptChars, inputTokens });
     try {
       const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
       entry.promptChars = 0;
       entry.lastUsage = null;
       emitChannelSafe(entry, "context_compacted", {
+        runId,
         automatic: true,
         tokensBefore: result?.tokensBefore || 0,
         estimatedTokensAfter: result?.estimatedTokensAfter || 0,
       });
     } catch (error) {
       // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
-      emitChannelSafe(entry, "context_compact_warning", { message: String(error?.message || error).slice(0, 300) });
+      emitChannelSafe(entry, "context_compact_warning", { runId, message: String(error?.message || error).slice(0, 300) });
     } finally {
       entry.autoCompacting = false;
     }
@@ -1449,6 +1554,11 @@ class AgentManager extends EventEmitter {
       }
       if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
       entry.promptChars += text.length;
+      emitChannelSafe(entry, "model_request_started", {
+        runId: entry.activeRunId,
+        mode: entry.mode,
+        contextChars: text.length,
+      });
       const opts = {};
       if (images && images.length) {
         // pi-ai v0.83 ImageContent: { type: "image", data, mimeType }
@@ -1521,10 +1631,18 @@ class AgentManager extends EventEmitter {
             const canFallbackModel = !modelFallbackAttempted
               && !entry.toolStarted
               && !entry.firstResponseReceived
-              && e?.code !== "MODEL_TIMEOUT"
               && info.retryable;
             if (canFallbackModel) {
               try {
+                // watchdog 会先 abort 当前 Pi 回合；等待其彻底收尾后再 setModel，
+                // 否则新的 provider 请求可能撞上旧的 isStreaming 状态。
+                if (entry.pendingAbortPromise) {
+                  await Promise.race([
+                    entry.pendingAbortPromise,
+                    waitForAgentRetry(3000),
+                  ]);
+                  entry.pendingAbortPromise = null;
+                }
                 const fallback = await this.fallbackModel(entry, currentSpec);
                 if (fallback) {
                   modelFallbackAttempted = true;
@@ -1648,17 +1766,22 @@ class AgentManager extends EventEmitter {
     try {
       const ws = entry?.workspace || getWorkspace();
       const memCtx = readMemoryContext(ws);
+      const mode = normalizeTaskMode(entry?.mode || "agent");
       const lines = [
         "[动态上下文]",
         `- 当前工作区（绝对路径）: ${ws}`,
-        "- Office 文档一律用 officecli 工具操作（文件名相对当前工作区根目录）；若 officecli 不可用，用 read 工具以绝对路径读取工作区文件（docx 可用服务端接口 GET /api/doc/<文件名>/text 提取文本）。",
         `- 当前工作文件: ${file || "（无）"}`,
-        "- 新建文件必须写入当前工作区绝对路径，禁止写入项目目录。",
-        "- 任务完成时必须按‘读取来源 / 修改文件 / 产物 / 假设 / 下一步’五项给出简短总结；引用缺失或未读取时必须明确说明。",
-        "- 复杂任务（预计超过两步）先输出 2-6 项 Markdown 待办清单（格式 `- [ ] 步骤`）。每完成一项后，必须在下一段重新输出完整清单，并只把已完成项改为 `- [x] 步骤`；不要只在最终总结时一次性勾选，也不要把工具调用拆成待办项。",
-        "- 本轮真正完成后，如果发现对后续任务仍有价值的新项目事实、工作规则、用户偏好或经验教训，主动调用一次 memory_update 提出一条待审核建议；没有稳定新信息时不要调用。不要记录临时状态、完整对话、敏感信息或大段原文。",
       ];
-      if (memCtx) lines.push("- 工作区记忆（AGENTS.md + memory/*.md）:\n" + memCtx.slice(0, 2000));
+      if (mode === "chat") {
+        lines.push("- 当前为 Chat：只读检索、解释与引用；不得修改文件、执行脚本、调用 Office CLI 或写入长期记忆。");
+      } else {
+        lines.push(
+          "- Office 文档一律用 officecli 工具操作；新建或修改文件必须写入当前工作区。",
+          "- 完成时简要列出读取来源、修改文件、产物、假设和下一步。",
+          "- 复杂任务先给出 2-6 项待办；只有稳定的新项目事实或偏好才提交 memory_update 建议。",
+        );
+      }
+      if (memCtx) lines.push("- 工作区记忆摘要：\n" + memCtx.slice(0, mode === "chat" ? 800 : 1500));
       return lines.join("\n");
     } catch {
       return "";
@@ -1772,11 +1895,57 @@ class AgentManager extends EventEmitter {
     }
   }
 
+  async probeModel(spec, options = {}) {
+    const value = String(spec || "").trim();
+    const separator = value.indexOf("/");
+    if (separator <= 0 || separator === value.length - 1) {
+      const error = new Error("模型标识必须是 provider/model");
+      error.code = "MODEL_SPEC_INVALID";
+      throw error;
+    }
+    const provider = value.slice(0, separator);
+    const id = value.slice(separator + 1);
+    if (!localModelProviders().has(provider)) {
+      const error = new Error("模型不在 Pi 本地目录中：" + value);
+      error.code = "MODEL_NOT_IN_CATALOG";
+      throw error;
+    }
+    const runtime = await this.modelRuntime();
+    const model = runtime.getModel(provider, id)
+      || localStoredModels().find((item) => item.provider === provider && item.id === id);
+    if (!model) {
+      const error = new Error("模型未找到：" + value);
+      error.code = "MODEL_NOT_FOUND";
+      throw error;
+    }
+    const result = await piRuntimeManager.probeModel(model, options);
+    const text = Array.isArray(result.response?.content)
+      ? result.response.content.filter((item) => item?.type === "text").map((item) => item.text || "").join("").trim().slice(0, 80)
+      : "";
+    return {
+      ok: true,
+      model: value,
+      provider,
+      latencyMs: result.latencyMs,
+      response: {
+        stopReason: result.response?.stopReason || null,
+        responseModel: result.response?.responseModel || result.response?.model || null,
+        preview: text,
+        usage: result.response?.usage ? {
+          input: result.response.usage.input || 0,
+          output: result.response.usage.output || 0,
+          totalTokens: result.response.usage.totalTokens || 0,
+        } : null,
+      },
+    };
+  }
+
   async fallbackModel(entry, failedSpec) {
     const current = String(failedSpec || "").trim();
     const catalog = await this.listModelCatalog();
     const available = new Map((catalog.available || []).map((item) => [item.id, item]));
     const preferred = [
+      configuredModelSpec(),
       "minimax-cn/MiniMax-M2.7-highspeed",
       "minimax-cn/MiniMax-M2.7",
       "deepseek/deepseek-v4-flash",
@@ -1912,10 +2081,11 @@ export async function removeApiKey(provider) {
 function emitChannelSafe(entry, type, data) {
   try {
     const id = ++entry.channel.seq;
+    const at = new Date().toISOString();
     const eventData = data && typeof data === "object" && !Array.isArray(data)
       ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
       : { value: data, runId: entry?.activeRunId ?? null };
-    const ev = { id, type, data: eventData };
+    const ev = { id, type, at, data: eventData };
     entry.channel.history.push(ev);
     if (entry.channel.history.length > 2000) entry.channel.history.shift();
     entry.channel.emitter.emit("event", ev);

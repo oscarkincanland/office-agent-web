@@ -114,6 +114,7 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
+  const [previewMaximized, setPreviewMaximized] = useState(false); // 工作产物放大，但保留中心对话区
   const [previewTab, setPreviewTab] = useState("document");
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
@@ -162,6 +163,13 @@ export default function App() {
   }, []);
   const openExternalModule = useCallback((module) => {
     setActiveModule(module);
+  }, []);
+
+  const refreshModelCatalog = useCallback(async () => {
+    const data = await refreshModels();
+    setModels(data.models || []);
+    setDefaultModel(data.default || "");
+    return data;
   }, []);
 
   useEffect(() => {
@@ -311,9 +319,7 @@ export default function App() {
     }, 30000);
     const syncModels = async () => {
       try {
-        const d = await refreshModels();
-        setModels(d.models || []);
-        setDefaultModel(d.default || "");
+        await refreshModelCatalog();
       } catch {
         // 扫描失败时保留上一次列表，避免模型下拉框瞬间清空。
       }
@@ -338,7 +344,7 @@ export default function App() {
       window.clearInterval(projectTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshFiles, refreshSessions, refreshProjects]);
+  }, [refreshFiles, refreshSessions, refreshProjects, refreshModelCatalog]);
 
   // 全局 Ctrl/Cmd+K 切换命令面板
   useEffect(() => {
@@ -799,7 +805,7 @@ export default function App() {
 
   return (
     <AppErrorBoundary>
-      <div className="app">
+      <div className={`app ${previewMaximized ? "preview-maximized" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
         {activeModule === "knowledge" && (
           <DeferredModule label="知识库">
           <KnowledgeBase
@@ -862,6 +868,11 @@ export default function App() {
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
           />
           </DeferredModule>
+        )}
+        {activeModule === "map" && (
+          <div className="app-chat-slot map">
+            {sharedChatPanel}
+          </div>
         )}
         {activeModule === "map" && (
           <Resizer
@@ -966,7 +977,12 @@ export default function App() {
           <aside className="app-preview-slot">
             <div className="preview-panel-head">
               <span><Icon name="file" size={15} /> 当前工作产物</span>
-              <button className="btn-icon" onClick={() => setPreviewOpen(false)} title="隐藏右侧预览"><Icon name="close" size={14} /></button>
+              <span className="preview-panel-actions">
+                <button className="btn-icon" onClick={() => setPreviewMaximized((value) => !value)} title={previewMaximized ? "恢复工作产物大小" : "放大工作产物（保留 Agent 对话）"} aria-label={previewMaximized ? "恢复工作产物大小" : "放大工作产物（保留 Agent 对话）"}>
+                  <Icon name={previewMaximized ? "minimize" : "maximize"} size={14} />
+                </button>
+                <button className="btn-icon" onClick={() => setPreviewOpen(false)} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
+              </span>
             </div>
             <div className="preview-panel-tabs">
               {[['document', '文档预览'], ['events', '事件流'], ['artifacts', '产物']].map(([id, label]) => (
@@ -1048,7 +1064,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} activeModel={selectedModel} onModelChange={setSelectedModel} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

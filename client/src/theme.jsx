@@ -4,6 +4,7 @@ const THEME_KEY = "oaw_theme";
 const THEMES = ["dark", "light"];
 const SKIN_KEY = "oaw_skin";
 const SKINS = [
+  { id: "proma", label: "Proma 清晰" },
   { id: "default", label: "默认（青绿）" },
   { id: "ocean", label: "海洋蓝" },
   { id: "forest", label: "森林绿" },

@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
+import { 计算展示字符数 } from "./流式文本队列.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
@@ -45,6 +46,9 @@ const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
+const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
+const MAX_VISIBLE_MESSAGES = 120;
+const MESSAGE_PAGE_SIZE = 80;
 
 const MODE_META = {
   chat: {
@@ -64,6 +68,56 @@ const MODE_META = {
     prefix: "[模式: Agent] 可以调用完整 skills 和工具执行分析、修改并生成新文件（文档/HTML/PPT 等），Office CLI 会按任务需要自动选择，产物保存到当前工作区。\n",
   },
 };
+
+// 中心对话区只保留能解释“任务进行到哪一步”的 SSE 事件；高频 token/thinking
+// 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。事件默认折叠，展开后
+// 可核对模型请求、工具调用、错误和收尾是否完整。
+const FLOW_EVENT_TYPES = new Set([
+  "run_admitting", "run_admitted", "model_request_started", "agent_started",
+  "turn_started", "tool_start", "tool_end", "ask_user", "agent_retry",
+  "agent_retry_end", "agent_model_fallback", "agent_model_fallback_failed",
+  "context_compacting", "context_compacted", "context_compact_warning",
+  "agent_turn_end", "agent_error", "file_changed", "agent_summary",
+  "assistant_final", "agent_end", "run_finished", "aborted", "write_rejected",
+]);
+
+function flowEventLabel(event) {
+  const data = event?.data || {};
+  const tool = data.name || data.toolName || "工具";
+  switch (event?.type) {
+    case "run_admitting": return "准备任务";
+    case "run_admitted": return "任务已受理";
+    case "model_request_started": return "请求模型";
+    case "agent_started": return "模型已开始处理";
+    case "turn_started": return "开始生成回合";
+    case "tool_start": return `调用 ${tool}`;
+    case "tool_end": return `${tool}${data.isError ? "失败" : "完成"}`;
+    case "ask_user": return "等待用户回答";
+    case "agent_retry": return "模型连接重试";
+    case "agent_retry_end": return data.success ? "模型连接已恢复" : "模型重试结束";
+    case "agent_model_fallback": return `切换备用模型${data.to ? `：${data.to}` : ""}`;
+    case "agent_model_fallback_failed": return "备用模型切换失败";
+    case "context_compacting": return "压缩上下文";
+    case "context_compacted": return "上下文压缩完成";
+    case "context_compact_warning": return "上下文压缩有提示";
+    case "agent_turn_end": return "整理当前回合";
+    case "agent_error": return data.message || "模型调用失败";
+    case "write_rejected": return data.message || "工具操作被拦截";
+    case "file_changed": return `文件已更新${data.files?.length ? `（${data.files.length}）` : ""}`;
+    case "agent_summary": return "生成任务总结";
+    case "assistant_final": return "收到最终回复";
+    case "agent_end": return "Agent 处理结束";
+    case "run_finished": return data.status === "completed" ? "任务完成" : `任务${data.status || "结束"}`;
+    case "aborted": return "任务已中断";
+    default: return event?.type || "事件";
+  }
+}
+
+function flowEventTone(event) {
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected"].includes(event?.type) || event?.data?.isError) return "error";
+  if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted"].includes(event?.type)) return "success";
+  return "running";
+}
 
 // Office 是历史任务/会话的兼容值，前端主入口不再暴露第三个模式。
 function normalizeUiMode(mode) {
@@ -150,6 +204,7 @@ function parseReferenceMarkers(text = "") {
 
 export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
+  const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
   const [references, setReferences] = useState([]);
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
@@ -180,6 +235,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [historyLoading, setHistoryLoading] = useState(false);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
+  const [executionEvents, setExecutionEvents] = useState([]);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
@@ -193,6 +249,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // streaming 累积缓冲（性能优化：避免每 token setState）
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
+  const textRevealRef = useRef(null);
+  const textRevealRafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
   const stoppingRef = useRef(false);
   const agentErrorRef = useRef(false);
@@ -203,10 +261,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const systemEventKeysRef = useRef(new Set());
   // 每个 SSE 事件都有单调递增的 channel id；重连从游标之后回放，避免旧事件污染当前回合。
   const eventCursorRef = useRef(0);
+  const eventCursorsRef = useRef(new Map());
   const activeRunIdRef = useRef(null);
   const agentEventAtRef = useRef(0);
   const streamReadyRef = useRef(null);
   const eventHandlerRef = useRef(null);
+  const reconciledRunIdsRef = useRef(new Set());
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
   const threadCacheRef = useRef(new Map());
   const previousThreadRef = useRef(threadId);
@@ -259,6 +319,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
+      if (textRevealRafRef.current) {
+        cancelAnimationFrame(textRevealRafRef.current);
+        textRevealRafRef.current = null;
+      }
+      textRevealRef.current = null;
     };
   }, []);
 
@@ -267,8 +332,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (historyMessages) {
       setMessages(historyMessages);
       const latestRun = [...historyMessages].reverse().find((item) => item?.runId && item?.runStatus);
-      const active = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
-      setBusy(Boolean(latestRun && active.has(latestRun.runStatus)));
+      const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
+      setMessageWindowSize(MAX_VISIBLE_MESSAGES);
+      setBusy(isLiveRun);
       setRunState({
         status: latestRun?.runStatus || "idle",
         runId: latestRun?.runId || null,
@@ -278,13 +344,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         mode: normalizeUiMode(latestRun?.task?.mode),
       });
       setTodoItems([]);
-      activeRunIdRef.current = latestRun?.runId || null;
+      setExecutionEvents([]);
+      // 已完成历史只用于展示，不能成为 SSE 的当前运行锚点；否则下一轮
+      // 的 run_finished/token 会被旧 runId 过滤掉。
+      activeRunIdRef.current = isLiveRun ? latestRun.runId : null;
       if (latestRun?.task?.mode) setEditMode(normalizeUiMode(latestRun.task.mode));
       stoppingRef.current = false;
       setStopping(false);
       assistantIdRef.current = null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
+      if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
+      textRevealRafRef.current = null;
+      textRevealRef.current = null;
       systemEventKeysRef.current.clear();
       queueRef.current = [];
       setQueuedMessages([]);
@@ -310,9 +382,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const cached = threadCacheRef.current.get(threadId);
     if (!hydratingHistory) {
       setMessages(cached?.messages || []);
+      setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setRunState(cached?.runState ? { ...cached.runState, mode: normalizeUiMode(cached.runState.mode) } : { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
       setTodoItems([]);
-      activeRunIdRef.current = cached?.runState?.runId || null;
+      setExecutionEvents([]);
+      activeRunIdRef.current = cached?.runState && LIVE_RUN_STATUSES.has(cached.runState.status)
+        ? cached.runState.runId || null
+        : null;
       if (cached?.editMode) setEditMode(normalizeUiMode(cached.editMode));
       setBusy(Boolean(cached?.busy));
     }
@@ -321,6 +397,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     assistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
+    if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
+    textRevealRafRef.current = null;
+    textRevealRef.current = null;
     if (hydratingHistory) activeRunIdRef.current = null;
     queueRef.current = [];
     setQueuedMessages([]);
@@ -342,12 +421,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 新建会话：清空消息
   const handleNewSession = useCallback(() => {
     setMessages([]);
+    setMessageWindowSize(MAX_VISIBLE_MESSAGES);
     setBusy(false);
     stoppingRef.current = false;
     setStopping(false);
     assistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
+    if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
+    textRevealRafRef.current = null;
+    textRevealRef.current = null;
     setInput("");
     setLastPrompt(null);
     setAgentPhase("");
@@ -361,6 +444,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setInjectedContext([]);
     setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
     setTodoItems([]);
+    setExecutionEvents([]);
     activeRunIdRef.current = null;
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
@@ -413,6 +497,91 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (!mountedRef.current) return;
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   }, []);
+
+  const cancelTextReveal = useCallback(({ preserveText = false } = {}) => {
+    const active = textRevealRef.current;
+    if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
+    textRevealRafRef.current = null;
+    textRevealRef.current = null;
+    // 已经拿到但尚未显示的字符不能因为下一轮输入而丢失。
+    if (preserveText && active?.pending && active?.id) {
+      patch(active.id, (m) => ({
+        ...m,
+        blocks: appendTextBlock([...(m.blocks || [])], active.pending),
+        status: active.completeWhenDrained ? (agentErrorRef.current ? "error" : "done") : m.status,
+      }));
+    }
+  }, [patch]);
+
+  const enqueueTextReveal = useCallback((id, value, { authoritative = false } = {}) => {
+    const text = String(value || "");
+    if (!id || !text) return;
+    let state = textRevealRef.current;
+    if (!state || state.id !== id) {
+      if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
+      state = { id, fullText: "", pending: "", lastAt: performance.now(), completeWhenDrained: false };
+      textRevealRef.current = state;
+      textRevealRafRef.current = null;
+    }
+
+    if (authoritative) {
+      if (text === state.fullText) return;
+      if (text.startsWith(state.fullText)) {
+        state.pending += text.slice(state.fullText.length);
+      } else {
+        // 最终消息是权威值：断线重连或缺失 token 时宁可从最终文本重放，
+        // 也不能保留截断回复。
+        state.pending = text;
+        patch(id, (m) => {
+          const blocks = [...(m.blocks || [])];
+          const textIndex = blocks.map((block) => block.type).lastIndexOf("text");
+          if (textIndex >= 0) blocks[textIndex] = { ...blocks[textIndex], text: "" };
+          else blocks.push({ type: "text", text: "" });
+          return { ...m, blocks };
+        });
+      }
+      state.fullText = text;
+    } else {
+      state.fullText += text;
+      state.pending += text;
+    }
+
+    const reveal = (now) => {
+      const active = textRevealRef.current;
+      if (!active || active.id !== id) return;
+      const elapsedMs = Math.max(1, now - active.lastAt);
+      active.lastAt = now;
+      const reducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      const count = 计算展示字符数({ remaining: active.pending.length, elapsedMs, reducedMotion });
+      if (count) {
+        const chunk = active.pending.slice(0, count);
+        active.pending = active.pending.slice(count);
+        patch(id, (m) => {
+          const blocks = appendTextBlock([...(m.blocks || [])], chunk);
+          return { ...m, blocks };
+        });
+      }
+      if (active.pending.length) {
+        textRevealRafRef.current = requestAnimationFrame(reveal);
+      } else {
+        textRevealRafRef.current = null;
+        if (active.completeWhenDrained) {
+          patch(id, (m) => ({ ...m, status: agentErrorRef.current ? "error" : "done" }));
+          textRevealRef.current = null;
+        }
+      }
+    };
+    if (!textRevealRafRef.current) textRevealRafRef.current = requestAnimationFrame(reveal);
+  }, [patch]);
+
+  const finishTextReveal = useCallback((id) => {
+    const state = textRevealRef.current;
+    if (!id || !state || state.id !== id || !state.pending.length) {
+      if (id) patch(id, (m) => ({ ...m, status: agentErrorRef.current ? "error" : "done" }));
+      return;
+    }
+    state.completeWhenDrained = true;
+  }, [patch]);
 
   const scheduleFlush = useCallback((type, data) => {
     if (!streamBufRef.current) return;
@@ -510,6 +679,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const promise = new Promise((done) => { resolve = done; });
       streamReadyRef.current = { promise, resolve };
     };
+    const streamKey = `${clientId}::${threadId || ""}`;
+    eventCursorRef.current = eventCursorsRef.current.get(streamKey) || 0;
     resetReady();
     const markReady = (value) => {
       streamReadyRef.current?.resolve?.(value);
@@ -527,14 +698,29 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
         retryDelay = 500;
       };
+
+      es.addEventListener("heartbeat", () => {
+        // 心跳只证明 SSE 通道仍存活；“Agent 已连接”由 connected 握手确认，
+        // 避免 Runtime 还在初始化时提前显示为已连接。
+      });
       
       es.onmessage = (e) => {
         if (!mountedRef.current) return;
         const eventId = Number(e.lastEventId || 0);
-        if (eventId > eventCursorRef.current) eventCursorRef.current = eventId;
+        if (eventId > eventCursorRef.current) {
+          eventCursorRef.current = eventId;
+          eventCursorsRef.current.set(streamKey, eventId);
+        }
         try { 
           const payload = JSON.parse(e.data);
-          if (payload?.type === "connected") markReady(true);
+          if (payload?.type === "connected") {
+            const connectedCursor = Number(payload?.data?.cursor || 0);
+            if (connectedCursor > eventCursorRef.current) {
+              eventCursorRef.current = connectedCursor;
+              eventCursorsRef.current.set(streamKey, connectedCursor);
+            }
+            markReady(true);
+          }
           eventHandlerRef.current?.(payload);
         } catch (err) {
           console.error("SSE message parse error:", err);
@@ -565,26 +751,69 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // Run 的 steps 是 Todo 的唯一事实来源。对话事件只负责实时刷新，
   // 这里在拿到 runId 后立即拉取，并在执行期间短轮询，避免 Todo 只存在于任务中心。
+  // 同时覆盖“后端已完成但 SSE 终结事件丢失”的情况：用当前 thread 找回 Run，
+  // 再注入一个幂等的 run_finished，让输入框和状态栏恢复可用。
   useEffect(() => {
     const runId = runState.runId;
-    if (!runId) {
+    const activeStatuses = ["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"];
+    const shouldReconcile = busy || activeStatuses.includes(runState.status);
+    if (!runId && !shouldReconcile) {
       setTodoItems([]);
       return undefined;
     }
     let cancelled = false;
+    let inFlight = false;
     const refresh = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
       try {
-        const result = await getRun(runId);
-        if (!cancelled && Array.isArray(result?.run?.steps)) setTodoItems(result.run.steps);
-      } catch {}
+        let run = null;
+        if (runId) {
+          run = (await getRun(runId))?.run || null;
+        } else {
+          const result = await listRuns(threadId, 12, { cwd: workspace });
+          run = (result?.runs || [])
+            .filter((item) => item?.clientId === clientId && activeStatuses.includes(item.status))
+            .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
+        }
+        if (cancelled || !run) return;
+        if (Array.isArray(run.steps)) setTodoItems(run.steps);
+        const terminal = ["completed", "failed", "cancelled", "aborted"].includes(run.status);
+        // 只有活动 Run 才能成为 SSE 过滤锚点；历史终态 Run 只用于展示，
+        // 否则切回历史会话后，下一轮新 Run 的事件会被旧 ID 丢弃。
+        if (!terminal && !activeRunIdRef.current && run.id) activeRunIdRef.current = run.id;
+        if (terminal && activeRunIdRef.current === run.id) activeRunIdRef.current = null;
+        if (run.id && run.id !== runState.runId) {
+          setRunState((state) => ({ ...state, runId: run.id, status: run.status, task: run.task || state.task, artifacts: run.artifacts || state.artifacts, references: run.references || state.references }));
+        }
+        if (terminal && !reconciledRunIdsRef.current.has(run.id)) {
+          reconciledRunIdsRef.current.add(run.id);
+          eventHandlerRef.current?.({
+            id: `reconcile-${run.id}`,
+            type: "run_finished",
+            at: run.finishedAt || run.updatedAt || new Date().toISOString(),
+            data: {
+              runId: run.id,
+              status: run.status,
+              artifacts: run.artifacts || [],
+              references: run.references || [],
+              verificationStatus: run.verificationStatus || "not_checked",
+              finalText: [...(run.events || [])].reverse().find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())?.data?.text || "",
+              recovered: true,
+            },
+          });
+        }
+      } catch {} finally {
+        inFlight = false;
+      }
     };
     void refresh();
-    const timer = busy ? window.setInterval(refresh, 900) : null;
+    const timer = shouldReconcile ? window.setInterval(refresh, 900) : null;
     return () => {
       cancelled = true;
       if (timer) window.clearInterval(timer);
     };
-  }, [runState.runId, busy]);
+  }, [clientId, threadId, workspace, runState.runId, runState.status, busy]);
 
   const acceptSystemEvent = useCallback((key) => {
     const value = String(key || "");
@@ -600,14 +829,42 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, []);
 
   function handleEvent(ev) {
-    const { type, data = {} } = ev?.event || ev || {};
+    const envelope = ev?.event || ev || {};
+    const { type, data = {} } = envelope;
     const eventRunId = data?.runId || null;
     // 重连会回放历史事件。已知当前 Run 时，旧 Run 的事件不能污染当前对话。
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
-    if (eventRunId && !activeRunIdRef.current && type === "capability_plan") activeRunIdRef.current = eventRunId;
+    // 断线重连可能从 capability_plan 之后开始回放；run_admitted 也可以作为
+    // 当前 Run 的锚点，否则后续 tool_start/token 会被误判为旧事件而丢弃。
+    if (eventRunId && !activeRunIdRef.current && busy && ["capability_plan", "run_admitted", "model_request_started"].includes(type)) {
+      activeRunIdRef.current = eventRunId;
+    }
     if (eventRunId && !activeRunIdRef.current && !["connected", "capability_plan", "run_finished"].includes(type)) return;
     if (type !== "connected") agentEventAtRef.current = Date.now();
-    const aid = assistantIdRef.current;
+    if (FLOW_EVENT_TYPES.has(type) && (busy || eventRunId === activeRunIdRef.current)) {
+      const sequence = Number(envelope.id || envelope.seq || 0);
+      const eventKey = sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${envelope.at || Date.now()}`;
+      setExecutionEvents((previous) => {
+        if (previous.some((item) => item.key === eventKey)) return previous;
+        return [...previous, { key: eventKey, type, data, at: envelope.at || new Date().toISOString() }].slice(-80);
+      });
+    }
+    let aid = assistantIdRef.current;
+    // 刷新、断线重连或切换回正在执行的子对话时，历史事件可能先于本地气泡到达。
+    // 只在本轮仍处于运行态时恢复气泡，避免把已完成历史重复渲染一遍。
+    const ensureAssistant = (force = false) => {
+      if (assistantIdRef.current) return assistantIdRef.current;
+      if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status)) return null;
+      const recoveredId = newId();
+      assistantIdRef.current = recoveredId;
+      streamingMsgIdRef.current = recoveredId;
+      streamBufRef.current = { text: "", thinking: "" };
+      setMessages((ms) => ms.some((message) => message.id === recoveredId)
+        ? ms
+        : [...ms, { id: recoveredId, role: "assistant", blocks: [], status: "streaming", images: [], createdAt: Date.now() }]);
+      aid = recoveredId;
+      return recoveredId;
+    };
     // 追加/更新 block 的辅助函数
     const appendToBlock = (type, field, text, makeNew) => {
       if (!aid) return;
@@ -634,19 +891,39 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           }
         }
         break;
+      case "run_admitting":
+        setAgentPhase("准备任务");
+        break;
+      case "run_admitted":
+        setAgentPhase("任务已受理");
+        if (data.runId) setRunState((s) => ({ ...s, runId: data.runId }));
+        break;
+      case "model_request_started":
+        setAgentPhase("正在请求模型");
+        break;
+      case "agent_started":
+        setAgentPhase("模型已开始处理");
+        ensureAssistant();
+        break;
+      case "turn_started":
+        setAgentPhase("模型正在生成");
+        break;
       // 文本 token：节流合并到 blocks
       case "token":
         setAgentPhase("生成回复");
-        if (aid) scheduleFlush("token", data);
+        if (!aid) aid = ensureAssistant();
+        if (aid) enqueueTextReveal(aid, data.text);
         break;
       // 思考过程：节流合并到 blocks
       case "thinking":
         setAgentPhase("模型思考");
+        if (!aid) aid = ensureAssistant();
         if (aid) scheduleFlush("thinking", data);
         break;
       // 工具调用开始：推入新 tool block
       case "tool_start":
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
+        if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
           patch(aid, (m) => ({
@@ -669,6 +946,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       // 工具输出流：更新最后一个 tool block
       case "tool_output":
+        if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
           const tool = data.toolCallId
@@ -680,6 +958,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       // 工具结束：标记完成
       case "tool_end":
+        if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
           const tool = data.toolCallId
@@ -696,6 +975,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       // agent 主动提问（ask_user 工具）：追加问题卡片，用户回答后 agent 继续
       case "ask_user":
+        if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
           setBusy(true);
@@ -718,14 +998,35 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       // 消息开始/结束
       case "message_start":
+        if (data.role === "assistant") setAgentPhase("模型已开始生成");
+        if (data.role === "assistant") aid = ensureAssistant();
         break;
       case "message_end":
+        break;
+      case "text_boundary":
+        if (data.phase === "start") setAgentPhase("模型已开始生成");
+        break;
+      case "thinking_boundary":
+        if (data.phase === "start") setAgentPhase("模型思考");
+        break;
+      case "tool_call_progress":
+        if (data.name) setAgentPhase(`准备工具：${data.name}`);
+        break;
+      case "agent_queue_update":
+        setAgentPhase(data.steering ? "正在调整当前任务" : "正在等待后续任务");
+        break;
+      case "agent_turn_end":
+        if (!agentErrorRef.current) setAgentPhase("整理回复");
+        break;
+      case "stats":
+        setRunState((s) => ({ ...s, usage: data.tokens || null, cost: data.cost ?? null }));
         break;
       case "agent_retry":
         // Pi 结算失败后，工作台可能会在同一请求内重放一次。失败回合
         // 已经发出 agent_end 并清空了 assistant 引用，这里重新建立一个
         // 流式气泡，避免恢复后的 token 被丢弃。
         agentErrorRef.current = false;
+        cancelTextReveal();
         stoppingRef.current = false;
         setStopping(false);
         setBusy(true);
@@ -790,11 +1091,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         }
         break;
       case "assistant_final":
-        if (aid && data.text) patch(aid, (m) => {
-          const blocks = [...(m.blocks || [])];
-          const hasText = blocks.some((block) => block.type === "text" && String(block.text || "").trim());
-          return hasText ? m : { ...m, blocks: appendTextBlock(blocks, data.text) };
-        });
+        if (!aid) aid = ensureAssistant();
+        if (aid && data.text) enqueueTextReveal(aid, data.text, { authoritative: true });
         break;
       case "context_compacted":
         pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${data.automatic ? "auto" : "manual"}:${data.tokensBefore || 0}`);
@@ -808,7 +1106,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       case "agent_end": {
         const endedWithError = agentErrorRef.current;
         if (streamBufRef.current) flushNow(aid);
-        if (aid) patch(aid, (m) => ({ ...m, status: endedWithError ? "error" : "done" }));
+        if (aid) finishTextReveal(aid);
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
@@ -823,6 +1121,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
       case "agent_error":
         agentErrorRef.current = true;
+        cancelTextReveal({ preserveText: true });
         if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText: data.message || "出错了" }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
@@ -879,6 +1178,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         }
         break;
       case "run_finished":
+        // SSE 可能只保留了终结事件，或 agent_end 先清理了本地气泡。
+        // 服务端从 Pi 的 assistant_final 事件带回权威全文，在这里补齐回复。
+        if (data.finalText) {
+          if (!aid) aid = ensureAssistant(true);
+          if (aid) enqueueTextReveal(aid, data.finalText, { authoritative: true });
+        }
         if (data.runId && activeRunIdRef.current === data.runId) activeRunIdRef.current = null;
         {
           const finalStatus = data.status || "completed";
@@ -933,6 +1238,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   const finalizeStopped = useCallback(() => {
     const id = assistantIdRef.current;
+    cancelTextReveal({ preserveText: true });
     if (id) patch(id, (m) => ({ ...m, status: "done", stopped: true }));
     assistantIdRef.current = null;
     streamBufRef.current = null;
@@ -941,7 +1247,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setStopping(false);
     setBusy(false);
     setRunState((s) => ({ ...s, status: "aborted" }));
-  }, [patch]);
+  }, [cancelTextReveal, patch]);
 
   const send = async (overrideText, options = {}) => {
     if (frozen) {
@@ -1015,8 +1321,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const mapContextPrefix = mapContext?.center
       ? `[当前地图视图: 中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}]\n`
       : "";
-    // 按模式注入指令提示
-    const modePrefix = (MODE_META[selectedEditMode] || MODE_META.chat).prefix;
     const contextPrefixText = [
       contextText ? `## 当前检索上下文\n${contextText}` : "",
       contextNotes.length ? `## 已注入上下文\n${contextNotes.map((note) => note.text).join("\n\n")}` : "",
@@ -1025,7 +1329,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const attachPrefix = allAttachments.length > 0
       ? `[已上传附件: ${allAttachments.map((a) => a.name).join(", ")}，文件已保存到工作区，可读取处理]\n`
       : "";
-    const fullText = contextPrefix + mapContextPrefix + modePrefix + contextPrefixWithSpacing + attachPrefix + (rawText || text);
+    // 能力规划必须只基于用户的原始意图、显式引用和结构化 task 字段。
+    // 不能把“Agent 可以使用 Skills / Office CLI”之类的 UI 说明混入 text，
+    // 否则普通输入也会被关键词规划器误判为 Office / Skills 任务。
+    const fullText = contextPrefix + mapContextPrefix + contextPrefixWithSpacing + attachPrefix + (rawText || text);
 
     if (!mountedRef.current) return;
 
@@ -1044,6 +1351,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
     setLastPrompt({ text: rawText || text, references: sendReferences, contextText, skills: source.skills || [] });
     const aid = newId();
+    cancelTextReveal({ preserveText: true });
     assistantIdRef.current = aid;
     streamingMsgIdRef.current = aid;
     streamBufRef.current = { text: "", thinking: "" };
@@ -1060,6 +1368,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     agentErrorRef.current = false;
     activeRunIdRef.current = null;
     agentEventAtRef.current = 0;
+    setExecutionEvents([]);
     setAgentPhase("连接模型");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
@@ -1287,6 +1596,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   const hint = currentDoc || "未打开文件";
   const hasDraft = Boolean(input.trim() || images.length || attachments.length);
+  const visibleStart = Math.max(0, messages.length - messageWindowSize);
+  const visibleMessages = messages.slice(visibleStart);
+  const hiddenMessageCount = visibleStart;
 
   return (
     <ErrorBoundary>
@@ -1347,6 +1659,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           <span>{frozen ? "会话已冻结" : runState.status === "running" ? (agentPhase || "任务执行中") : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
           <span className="task-status-meta task-mode-meta">{MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}</span>
           {runState.thinkingLevel && <span className="task-status-meta">推理 {runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}</span>}
+          {Number(runState.usage?.input) > 0 && <span className="task-status-meta" title={`本轮模型输入约 ${Number(runState.usage.input).toLocaleString()} tokens`}>上下文 {Math.round(Number(runState.usage.input) / 1000)}k</span>}
           {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
           {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
@@ -1371,6 +1684,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             }
           }}>
           {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} />}
+          {executionEvents.length > 0 && <ExecutionFlow events={executionEvents} running={busy} />}
           {messages.length === 0 && (
             <div className="chat-empty">
               <div>发送消息给 agent</div>
@@ -1381,7 +1695,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               </div>
             </div>
           )}
-          {messages.map((m, i) => <Message key={m.id} m={m} index={i} prevRole={messages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
+          {hiddenMessageCount > 0 && (
+            <button className="chat-load-older" type="button" onClick={() => setMessageWindowSize((size) => size + MESSAGE_PAGE_SIZE)}>
+              加载更早的 {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 {hiddenMessageCount} 条）
+            </button>
+          )}
+          {visibleMessages.map((m, i) => <Message key={m.id} m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
             patch(m.id, (msg) => ({ ...msg, blocks: (msg.blocks || []).map((block) => block.id === blockId ? { ...block, answer } : block) }));
             setBusy(true);
             setAgentPhase("继续执行");
@@ -1401,7 +1720,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           <div ref={bottomRef} />
           </div>
           {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
-          {loadSettings().showTimeline !== false && <ChatTimeline messages={messages} containerRef={bodyRef} />}
+          {loadSettings().showTimeline !== false && <ChatTimeline messages={visibleMessages} containerRef={bodyRef} />}
         </div>
 
         {images.length > 0 && !modelVision && (
@@ -1755,7 +2074,9 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
                 if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={onAskAnswered} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
-                    <SafeMarkdown text={b.text} />
+                    {streaming
+                      ? <div className="flow-stream-text" aria-live="polite">{b.text}</div>
+                      : <SafeMarkdown text={b.text} />}
                   </div>
                 );
                 return null;
@@ -1913,6 +2234,41 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
           </div>
           {error && <div className="ask-error" role="alert">{error}</div>}
         </>
+      )}
+    </div>
+  );
+}
+
+// ========== SSE 执行流（默认折叠，独立于消息气泡） ==========
+function ExecutionFlow({ events = [], running = false }) {
+  const [expanded, setExpanded] = useState(false);
+  const latest = events[events.length - 1];
+  if (!events.length) return null;
+  return (
+    <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
+      <button type="button" className="execution-flow-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
+        <Icon name="flow" size={12} />
+        <strong>执行过程</strong>
+        <span className="execution-flow-count">{events.length} 个事件</span>
+        <span className="execution-flow-current">{flowEventLabel(latest)}</span>
+        {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
+      </button>
+      {expanded && (
+        <div className="execution-flow-list">
+          {events.map((event) => {
+            const data = event.data || {};
+            const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
+            return (
+              <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key}>
+                <span className="execution-flow-dot" />
+                <span className="execution-flow-label">{flowEventLabel(event)}</span>
+                {detail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
+                <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

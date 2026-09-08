@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "maptiler-winter",
+  "basemap": "maptiler-basic",
   "layers": [
     {
       "id": "boundary-city",

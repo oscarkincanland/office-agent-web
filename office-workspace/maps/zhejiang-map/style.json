@@ -517,7 +517,7 @@
       "type": "raster",
       "source": "maptiler-winter",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -528,7 +528,7 @@
       "type": "raster",
       "source": "maptiler-basic",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1

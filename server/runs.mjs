@@ -175,11 +175,16 @@ function updateStepFromEvent(run, type, data = {}) {
   }
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [] } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full" } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
-  const before = snapshotWorkspace(cwd);
-  copyBeforeBlobs(id, before);
+  const normalizedSnapshotMode = snapshotMode === "none" ? "none" : "full";
+  // Chat 是只读边界，不应为每轮问答扫描并复制整个工作区。仍保留 Run、事件和
+  // 会话追溯记录；真正可能写文件的 Agent / Office Run 继续使用完整可回滚快照。
+  const before = normalizedSnapshotMode === "none"
+    ? { root: path.resolve(cwd), capturedAt: new Date().toISOString(), files: {}, size: 0 }
+    : snapshotWorkspace(cwd);
+  if (normalizedSnapshotMode === "full") copyBeforeBlobs(id, before);
   const run = {
     id,
     version: 1,
@@ -208,6 +213,7 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
     before,
     artifacts: [],
+    snapshotMode: normalizedSnapshotMode,
     staging: { directory: path.relative(PROJECT_DIR, staging.directory).replace(/\\/g, "/"), status: "open", files: [] },
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -355,9 +361,12 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.staging = { ...(run.staging || {}), status: "discarded", files: [] };
   }
   try {
-    const after = snapshotWorkspace(run.cwd);
-    const artifacts = changedFiles(run.before, after);
-    copyAfterBlobs(run, artifacts, after);
+    const shouldTrackWorkspace = run.snapshotMode !== "none";
+    const after = shouldTrackWorkspace
+      ? snapshotWorkspace(run.cwd)
+      : { root: path.resolve(run.cwd), capturedAt: new Date().toISOString(), files: {}, size: 0 };
+    const artifacts = shouldTrackWorkspace ? changedFiles(run.before, after) : [];
+    if (shouldTrackWorkspace) copyAfterBlobs(run, artifacts, after);
     run.after = after;
     run.artifacts = artifacts;
     run.status = finalStatus;

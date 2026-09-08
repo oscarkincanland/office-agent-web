@@ -19,6 +19,14 @@ function artifactName(path) {
   return String(path || "").split(/[\\/]/).pop() || "未命名产物";
 }
 
+function artifactStatusLabel({ publication, result, resultStatus }) {
+  if (publication) return `v${publication.version} 已固定`;
+  if (resultStatus === "failed") return "验收失败";
+  if (result?.readyToPublish) return "验收通过";
+  if (resultStatus === "accepted") return "已确认";
+  return "待验收";
+}
+
 function EventStream({ clientId, threadId }) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
@@ -92,6 +100,10 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, onOpenFile }) {
 
   const entries = useMemo(() => runs.flatMap((run) => (run.artifacts || []).filter((item) => item.status !== "deleted").map((artifact) => ({ artifact, run }))), [runs]);
   const publishedByArtifact = useMemo(() => new Map(published.map((item) => [item.artifactId, item])), [published]);
+  const readyCount = entries.filter(({ artifact, run }) => {
+    const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
+    return result?.readyToPublish;
+  }).length;
 
   const runAction = async (key, callback) => {
     setAction(key);
@@ -100,11 +112,21 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, onOpenFile }) {
   };
 
   return (
-    <div className="preview-artifact-panel">
-      <div className="preview-data-meta"><span>当前会话工作产物</span><button className="btn-icon" onClick={refresh} title="刷新产物"><Icon name="refresh" size={12} /></button></div>
-      {loading && <div className="preview-empty">正在读取产物清单…</div>}
-      {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />本轮暂未生成产物</div>}
-      {entries.map(({ artifact, run }, index) => {
+    <div className="preview-artifact-panel artifact-workspace">
+      <div className="artifact-workspace-head">
+        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果；所有操作都可回滚。</p></div>
+        <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新当前会话产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
+      </div>
+      <div className="artifact-summary-grid">
+        <div><strong>{entries.length}</strong><span>本轮产物</span></div>
+        <div><strong>{readyCount}</strong><span>待固定</span></div>
+        <div><strong>{published.length}</strong><span>正式版本</span></div>
+      </div>
+      <div className="artifact-list-card">
+        <div className="artifact-list-head"><span>本轮文件</span><small>{currentSessionId ? "已按当前会话筛选" : "当前工作区"}</small></div>
+        {loading && <div className="preview-empty">正在读取产物清单…</div>}
+        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />本轮暂未生成产物</div>}
+        {entries.map(({ artifact, run }, index) => {
         const name = artifactName(artifact.path);
         const publication = publishedByArtifact.get(artifact.artifactId);
         const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
@@ -115,15 +137,16 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, onOpenFile }) {
           <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
             <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path)} title={artifact.path}>
               <Icon name="file" size={14} />
-              <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · Run {String(run.id || "").slice(-8)}</small></span>
+              <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
             </button>
-            <span className={`preview-artifact-status ${publication ? "published" : resultStatus === "failed" ? "failed" : ""}`}>{publication ? `v${publication.version} 已固定` : result?.readyToPublish ? "验收通过" : "可回滚"}</span>
+            <span className={`preview-artifact-status ${publication ? "published" : resultStatus === "failed" ? "failed" : result?.readyToPublish ? "ready" : ""}`}>{artifactStatusLabel({ publication, result, resultStatus })}</span>
             {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
             {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
           </div>
         );
-      })}
-      {published.length > 0 && <div className="preview-publications"><div className="preview-data-meta">正式成果版本</div>{published.map((item) => <div className="preview-publication" key={item.id}><span title={item.path}>{artifactName(item.path)} · v{item.version}</span>{item.status !== "rolled_back" && item.rollbackTarget && <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button>}</div>)}</div>}
+        })}
+      </div>
+      {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>固定后仍可回滚</small></div>{published.map((item) => <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={11} /> {artifactName(item.path)} · v{item.version}</span>{item.status !== "rolled_back" && item.rollbackTarget && <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button>}</div>)}</div>}
     </div>
   );
 }

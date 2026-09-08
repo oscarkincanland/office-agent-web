@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -47,6 +47,19 @@ const FONT_OPTIONS = [
 const PROJECT_TYPES = ["交通规划", "GIS / 地图分析", "调研报告", "Office 文档", "数据分析", "综合项目", "资料库"];
 const PROJECT_STATUSES = ["进行中", "待整理", "已完成", "已归档", "模板项目"];
 const PROJECT_PROFILES = ["通用 Agent", "创作", "研究", "Office", "GIS", "数据分析"];
+const PROVIDER_LABELS = {
+  anthropic: "Anthropic（Claude）",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  deepseek: "DeepSeek",
+  moonshot: "Moonshot",
+  qwen: "Qwen（通义）",
+  "opencode-go": "OpenCode Go",
+  "minimax-cn": "MiniMax 国内",
+  "xiaomi-token-plan-cn": "小米 Token Plan",
+  "openai-codex": "OpenAI Codex",
+  custom: "自定义",
+};
 const PROFILE_POLICY_HINTS = {
   "通用 Agent": "完整工具链 · 标准推理 · 64K 上下文",
   "创作": "模板与 Office 产出优先 · 48K 上下文",
@@ -220,9 +233,9 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], activeModel = "", onModelChange, onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
-  const [settingsSection, setSettingsSection] = useState("appearance");
+  const [settingsSection, setSettingsSection] = useState("model");
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
   const [commentHighlightMs, setCommentHighlightMs] = useSetting("commentHighlightMs");
   const [thinkingDefaultOpen, setThinkingDefaultOpen] = useSetting("thinkingDefaultOpen");
@@ -233,12 +246,23 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [authKey, setAuthKey] = useState("");
   const [authMsg, setAuthMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [probeLoading, setProbeLoading] = useState(false);
+  const [probeMsg, setProbeMsg] = useState("");
+  const [modelList, setModelList] = useState(models);
+  const [modelRefreshLoading, setModelRefreshLoading] = useState(false);
+  const [modelRefreshMsg, setModelRefreshMsg] = useState("");
   const [version, setVersion] = useState("");
   // 底图服务 Key（服务端不回传明文，仅状态）
   const [basemapKeys, setBasemapKeys] = useState({ tianditu: "", maptiler: "", geoapify: "" });
   const [basemapStatus, setBasemapStatus] = useState({ tianditu: false, maptiler: false, geoapify: false });
   const [basemapMsg, setBasemapMsg] = useState("");
   const [basemapSaving, setBasemapSaving] = useState(false);
+
+  useEffect(() => { setModelList(models); }, [models]);
+
+  const availableModels = modelList.length ? modelList : models;
+  const selectedModelInfo = availableModels.find((item) => item.id === (activeModel || defaultModel)) || null;
+  const configuredProviderCount = providers ? Object.keys(providers).length : 0;
 
   // 消息字体大小 → CSS 变量（.msg 生效）
   useEffect(() => {
@@ -308,6 +332,55 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     setProviders(r.providers || {});
   };
 
+  const providerOptions = [...new Set([
+    ...availableModels.map((item) => item.provider).filter(Boolean),
+    ...Object.keys(providers || {}),
+    "anthropic", "openai", "gemini", "deepseek", "moonshot", "qwen", "custom",
+  ])];
+
+  useEffect(() => {
+    if (!providerOptions.includes(authProvider)) setAuthProvider(providerOptions[0] || "custom");
+  }, [authProvider, providerOptions.join("|")]);
+
+  const refreshModelCatalog = async () => {
+    if (modelRefreshLoading) return;
+    setModelRefreshLoading(true);
+    setModelRefreshMsg("正在读取 Pi 模型目录…");
+    try {
+      const result = onModelsRefresh ? await onModelsRefresh() : await refreshModels();
+      const nextModels = result?.models || [];
+      setModelList(nextModels);
+      setModelRefreshMsg(`已更新 · ${nextModels.length} 个模型`);
+    } catch (error) {
+      setModelRefreshMsg(`读取失败 · ${error.message}`);
+    } finally {
+      setModelRefreshLoading(false);
+    }
+  };
+
+  const probe = async () => {
+    const target = String(activeModel || defaultModel || "").trim();
+    if (!target || probeLoading) {
+      if (!target) setProbeMsg("请先选择模型");
+      return;
+    }
+    setProbeLoading(true);
+    setProbeMsg("正在测试真实模型链路…");
+    try {
+      const result = await probeAgentModel(target, 15000);
+      if (result.ok) {
+        setProbeMsg(`连接成功 · ${result.latencyMs} ms${result.response?.preview ? ` · ${result.response.preview}` : ""}`);
+      } else {
+        const detail = result.diagnostic || {};
+        setProbeMsg(`连接失败 · ${detail.category || "unknown"} · ${detail.message || "未返回错误"}`);
+      }
+    } catch (error) {
+      setProbeMsg(`连接测试请求失败 · ${error.message}`);
+    } finally {
+      setProbeLoading(false);
+    }
+  };
+
   const resetAll = () => {
     if (!confirm("确定恢复默认设置并清空界面状态？将刷新页面。")) return;
     try {
@@ -320,6 +393,30 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
 
   return (
     <div className="settings-panel">
+      <div className="settings-overview">
+        <div className="settings-overview-heading">
+          <div>
+            <span className="settings-eyebrow">工作台配置中心</span>
+            <h3>设置与运行状态</h3>
+            <p>模型、外观、项目记忆和服务能力在这里统一管理。</p>
+          </div>
+          <span className="settings-runtime-badge"><Icon name="robot" size={12} /> Pi 内核 {integration?.piPackageVersion || "0.85.1"}</span>
+        </div>
+        <div className="settings-status-grid">
+          <button type="button" className={`settings-status-card ${settingsSection === "model" ? "active" : ""}`} onClick={() => setSettingsSection("model")}>
+            <span className="settings-status-icon"><Icon name="robot" size={15} /></span>
+            <span><small>Agent 模型</small><strong>{selectedModelInfo?.name || selectedModelInfo?.id || activeModel || defaultModel || "未选择"}</strong><em>{selectedModelInfo?.provider || "等待配置"}</em></span>
+          </button>
+          <button type="button" className={`settings-status-card ${settingsSection === "appearance" ? "active" : ""}`} onClick={() => setSettingsSection("appearance")}>
+            <span className="settings-status-icon"><Icon name="sun" size={15} /></span>
+            <span><small>界面外观</small><strong>{theme === "dark" ? "暗色" : "亮色"} · {SKINS.find((item) => item.id === skin)?.label || "默认"}</strong><em>字体与对话显示</em></span>
+          </button>
+          <button type="button" className={`settings-status-card ${settingsSection === "project" ? "active" : ""}`} onClick={() => setSettingsSection("project")}>
+            <span className="settings-status-icon"><Icon name="folder" size={15} /></span>
+            <span><small>当前项目</small><strong>{project?.name || "未建立项目"}</strong><em>{configuredProviderCount ? `${configuredProviderCount} 个凭据已配置` : "项目与记忆策略"}</em></span>
+          </button>
+        </div>
+      </div>
       <nav className="settings-section-nav" aria-label="设置分类">
         {[
           ["appearance", "外观与对话"],
@@ -405,59 +502,49 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       </div>
       </>}
 
-      {settingsSection === "model" && <div className="sp-section" id="settings-model">
-        <div className="sp-section-title"><Icon name="robot" size={12} /> 模型</div>
-        <div className="sp-note">这里统一管理当前 Agent 模型；对话栏仍保留快速切换入口，选择结果自动记忆。</div>
-        <div className="sp-row">
-          <span className="sp-label">当前模型</span>
-          <select className="sp-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
-            {!models.length && <option value="">模型列表加载中…</option>}
-            {models.length > 0 && <option value="">跟随系统默认</option>}
-            {models.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${item.provider} / ` : ""}{item.id}{item.available === false ? "（不可用）" : item.vision ? " · 支持图片" : ""}</option>)}
-          </select>
-          {activeModel && (() => { const selected = models.find((item) => item.id === activeModel); return selected ? <span className={`sp-badge ${selected.available === false ? "warn" : "ok"}`}>{selected.available === false ? "不可用" : "可用"}{selected.vision ? " · 支持图片" : ""}</span> : null; })()}
+      {settingsSection === "model" && <div className="sp-section model-settings-section" id="settings-model">
+        <div className="sp-section-title"><Icon name="robot" size={12} /> 模型与连接</div>
+        <div className="model-settings-intro">
+          <div><strong>让 Agent 先连通，再开始工作</strong><p>模型目录由 Pi 运行时提供。切换模型只影响当前会话，不会改动历史会话。</p></div>
+          <button className="btn-sm" onClick={refreshModelCatalog} disabled={modelRefreshLoading}><Icon name="refresh" size={12} /> {modelRefreshLoading ? "刷新中…" : "刷新目录"}</button>
         </div>
-        <div className="sp-row">
-          <span className="sp-label">API Key</span>
-          <div className="sp-auth">
-            <select className="sp-select" value={authProvider} onChange={(e) => setAuthProvider(e.target.value)}>
-              <option value="anthropic">Anthropic（Claude）</option>
-              <option value="openai">OpenAI</option>
-              <option value="gemini">Gemini</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="moonshot">Moonshot</option>
-              <option value="qwen">Qwen（通义）</option>
-              <option value="custom">自定义</option>
+        <div className="model-control-grid">
+          <div className="model-control-card">
+            <span className="model-card-label">当前 Agent 模型</span>
+            <select className="sp-select model-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
+              {!availableModels.length && <option value="">模型列表加载中…</option>}
+              {availableModels.length > 0 && <option value="">跟随系统默认 · {defaultModel || "未设置"}</option>}
+              {availableModels.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${PROVIDER_LABELS[item.provider] || item.provider} / ` : ""}{item.name || item.id}{item.available === false ? "（不可用）" : item.vision ? " · 支持图片" : ""}</option>)}
             </select>
-            <input
-              className="sp-input"
-              type="password"
-              placeholder="sk-... 粘贴 API Key"
-              value={authKey}
-              onChange={(e) => setAuthKey(e.target.value)}
-            />
-            <button className="btn-sm primary" onClick={saveAuth} disabled={authLoading}>
-              {authLoading ? "保存中…" : "保存"}
-            </button>
+            <div className="model-card-meta">
+              <span className={`sp-badge ${selectedModelInfo?.available === false ? "warn" : selectedModelInfo ? "ok" : "warn"}`}>{selectedModelInfo?.available === false ? "不可用" : selectedModelInfo ? "目录可用" : "待配置"}</span>
+              {selectedModelInfo?.contextWindow && <span>上下文 {Number(selectedModelInfo.contextWindow).toLocaleString()} tokens</span>}
+              {selectedModelInfo?.vision && <span>支持图片</span>}
+            </div>
+            <button className="btn-sm primary model-probe-btn" onClick={probe} disabled={!(activeModel || defaultModel) || probeLoading}><Icon name="flow" size={12} /> {probeLoading ? "测试中…" : "测试真实连接"}</button>
+          </div>
+          <div className="model-runtime-card">
+            <span className="model-card-label">运行时状态</span>
+            <div className="model-runtime-status"><i className="status-dot" /> <strong>Pi Agent Runtime</strong><span>嵌入式</span></div>
+            <p>凭据保存在服务端安全边界内，页面只显示掩码；模型请求不会把 API Key 写入会话。</p>
+            <div className="model-runtime-version">SDK {integration?.piPackageVersion || "0.85.1"} · Node 22+</div>
+          </div>
+        </div>
+        {(probeMsg || modelRefreshMsg) && <div className="model-feedback">{probeMsg || modelRefreshMsg}</div>}
+        <div className="model-credentials-card">
+          <div className="model-credentials-head"><div><strong>供应商凭据</strong><p>仅填写当前使用的 Provider；保存后可用“测试真实连接”验证。</p></div><span className={`sp-badge ${configuredProviderCount ? "ok" : "warn"}`}>{configuredProviderCount ? `${configuredProviderCount} 个已配置` : "尚未配置"}</span></div>
+          <div className="sp-auth model-auth-row">
+            <select className="sp-select" value={authProvider} onChange={(e) => setAuthProvider(e.target.value)}>
+              {providerOptions.map((provider) => <option key={provider} value={provider}>{PROVIDER_LABELS[provider] || provider}</option>)}
+            </select>
+            <input className="sp-input" type="password" placeholder="粘贴 API Key（不会回显）" value={authKey} onChange={(e) => setAuthKey(e.target.value)} />
+            <button className="btn-sm primary" onClick={saveAuth} disabled={authLoading}>{authLoading ? "保存中…" : "保存凭据"}</button>
             {authMsg && <span className="sp-auth-msg">{authMsg}</span>}
           </div>
+          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button></span>)}</div>}
         </div>
-        {providers && Object.keys(providers).length > 0 && (
-          <div className="sp-row">
-            <span className="sp-label">已配置</span>
-            <div className="sp-auth-list">
-              {Object.entries(providers).map(([p, v]) => (
-                <span key={p} className="sp-auth-item">
-                  <code>{p}</code> {v.masked}
-                  <button className="btn-xs" onClick={() => removeAuth(p)} title="删除">✕</button>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="sp-note">保存后写入 agent 配置 auth.json 并注入运行时，支持 Anthropic/OpenAI/Gemini 等 pi 支持的 provider。</div>
-      </div>
-      }
+        <div className="sp-note">模型目录来自 Pi；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
+      </div>}
 
       {settingsSection === "services" && <>
       <div className="sp-section" id="settings-basemap">

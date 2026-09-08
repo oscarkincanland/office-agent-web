@@ -25,9 +25,11 @@ try {
   const settled = createSettledAgentError("Request timed out.");
   assert.equal(settled.code, "PI_SETTLED_ERROR");
   assert.equal(classifyAgentError(settled).retryable, true);
+  assert.equal(classifyAgentError(settled).category, "timeout");
 
   const terminal = createSettledAgentError("invalid api key");
   assert.equal(classifyAgentError(terminal).retryable, false);
+  assert.equal(classifyAgentError(terminal).category, "auth");
 
   const run = runs.beginRun({
     clientId: "final-model",
@@ -43,6 +45,12 @@ try {
 
   const agentSource = fs.readFileSync(path.join(repo, "server", "agent.mjs"), "utf8");
   assert.match(agentSource, /if \(settledError\) throw createSettledAgentError\(settledError\)/);
+  assert.match(agentSource, /async probeModel\(spec, options = \{\}\)/);
+  const indexSource = fs.readFileSync(path.join(repo, "server", "index.mjs"), "utf8");
+  assert.match(indexSource, /\/api\/agent\/model\/probe/);
+  const settingsSource = fs.readFileSync(path.join(repo, "client", "src", "components", "SettingsPanel.jsx"), "utf8");
+  assert.match(settingsSource, /providerOptions/);
+  assert.match(settingsSource, /连接测试/);
   const startupSource = fs.readFileSync(path.join(repo, "启动规聚服务.ps1"), "utf8");
   assert.match(startupSource, /LocalVersion/);
   assert.match(startupSource, /ExistingService\.version/);

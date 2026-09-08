@@ -25,6 +25,7 @@ import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
 import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
 import { runRuntimeEvaluation } from "./运行评测.mjs";
+import { PI_PACKAGE_VERSION } from "./Pi运行时管理.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -54,6 +55,8 @@ function recordAgentDiagnostic(req, details = {}) {
     model: details.model || null,
     providerStatus: info.status || null,
     errorCode: info.code || null,
+    errorCategory: info.category || null,
+    causeCode: info.causeCode || null,
     retryable: Boolean(info.retryable),
     message: info.message || "模型连接失败",
   };
@@ -230,6 +233,7 @@ app.get("/api/status", (req, res) => {
     ok: true,
     officecli: path.basename(OFFICECLI),
     version: pkg.version,
+    piPackageVersion: PI_PACKAGE_VERSION,
     host: HOST,
     authRequired: Boolean(API_TOKEN),
   });
@@ -990,6 +994,30 @@ app.post("/api/agent/model", async (req, res) => {
   } catch (e) {
     recordAgentDiagnostic(req, { client, thread, model: String(model), error: e });
     res.status(500).json({ error: e.message });
+  }
+});
+
+// 使用 Pi 的真实 ModelRuntime 做最小请求探测，不改写用户会话和工作区文件。
+app.post("/api/agent/model/probe", async (req, res) => {
+  const { model, timeoutMs } = req.body || {};
+  if (!model) return res.status(400).json({ ok: false, error: "model required", code: "MODEL_REQUIRED" });
+  const startedAt = Date.now();
+  try {
+    res.json(await agentManager.probeModel(model, { timeoutMs }));
+  } catch (error) {
+    const diagnostic = recordAgentDiagnostic(req, { model: String(model), error });
+    res.json({
+      ok: false,
+      model: String(model),
+      latencyMs: Date.now() - startedAt,
+      diagnostic: {
+        code: diagnostic.errorCode,
+        status: diagnostic.providerStatus,
+        category: diagnostic.errorCategory || null,
+        retryable: diagnostic.retryable,
+        message: diagnostic.message,
+      },
+    });
   }
 });
 
@@ -2123,7 +2151,15 @@ app.post("/api/agent/answer", (req, res) => {
  * HTTP 只负责完成 admission；模型、工具和产物状态统一通过 SSE 回传，
  * 这样供应商慢或断开时不会把浏览器的 prompt 请求长期挂住。
  */
+function getRunFinalText(run) {
+  return [...(run?.events || [])]
+    .reverse()
+    .find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())
+    ?.data?.text || "";
+}
+
 async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId }) {
+  const tracksWorkspace = run?.snapshotMode !== "none";
   try {
     await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
   } catch (e) {
@@ -2135,9 +2171,9 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
       error: e,
     });
-    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
+    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
     // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = await waitForFlush(before, runWorkspace);
+    const changed = tracksWorkspace ? await waitForFlush(before, runWorkspace) : [];
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length && entry) {
@@ -2159,13 +2195,13 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       summary: cancelled ? "任务已取消" : "Agent 执行失败",
       validations: [...validations, ...stagedValidations],
     });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
     return;
   }
 
   // officecli keeps files in a resident process — disk writes flush asynchronously.
   // Poll until the workspace snapshot stabilizes, then diff.
-  const changed = await waitForFlush(before, runWorkspace);
+  const changed = tracksWorkspace ? await waitForFlush(before, runWorkspace) : [];
   const validations = validateArtifacts(changed, runWorkspace);
   const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
   const allValidations = [...validations, ...stagedValidations];
@@ -2185,11 +2221,12 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked" });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
   }
 }
 
 app.post("/api/agent/prompt", async (req, res) => {
+  const admissionStartedAt = new Date().toISOString();
   const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput } = req.body || {};
   const hasImages = Array.isArray(images) && images.some((img) => img?.data);
   const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
@@ -2209,6 +2246,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
     return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
   }
+  emitChannel(entry, "run_admitting", { requestId: req.requestId, startedAt: admissionStartedAt });
   const runWorkspace = entry.workspace || requestedWorkspace;
   const project = projectManager.getProjectForWorkspace(runWorkspace) || initialProject;
   const projectSettings = project?.settings || initialProjectSettings;
@@ -2232,7 +2270,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       return res.status(409).json({ error: `模型同步失败：${diagnostic.message}`, requestId: req.requestId, retryable: diagnostic.retryable });
     }
   }
-  const before = snapshotWorkspace(runWorkspace);
+  let before = [];
   let run = null;
   let resolved = [];
   let task = null;
@@ -2289,12 +2327,28 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
+    // Chat 没有上传文件时是严格只读模式，不需要为每轮问答扫描工作区。
+    // 用户明确上传的附件需要在成功后发布为可追溯文件，因此保留完整快照。
+    const tracksWorkspace = task.mode !== "chat" || Boolean(attachments?.length);
+    before = tracksWorkspace ? snapshotWorkspace(runWorkspace) : [];
     const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
       profile: task.agentProfile,
       taskMode: task.mode,
       capabilityPlanVersion: capabilityPlan?.version || null,
     });
-    run = beginRun({ clientId: client, threadId: thread || null, sessionId: entry.session?.sessionId || null, cwd: runWorkspace, task, references: resolved, workflow, projectId: project?.id || null, capabilityPlan, runtimeSnapshot });
+    run = beginRun({
+      clientId: client,
+      threadId: thread || null,
+      sessionId: entry.session?.sessionId || null,
+      cwd: runWorkspace,
+      task,
+      references: resolved,
+      workflow,
+      projectId: project?.id || null,
+      capabilityPlan,
+      runtimeSnapshot,
+      snapshotMode: tracksWorkspace ? "full" : "none",
+    });
     // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
     if (Array.isArray(attachments) && attachments.length) {
       for (const att of attachments) {
@@ -2315,6 +2369,13 @@ app.post("/api/agent/prompt", async (req, res) => {
     recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
     if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
     emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
+    emitChannel(entry, "run_admitted", {
+      runId: run.id,
+      requestId: req.requestId,
+      startedAt: admissionStartedAt,
+      admittedAt: new Date().toISOString(),
+      snapshotMode: tracksWorkspace ? "full" : "none",
+    });
     void executeAgentRun({
       entry,
       key,
@@ -2369,7 +2430,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
       error: e,
     });
-    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
+    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
     // 出错也检测产物（agent 可能已部分写入文件）
     const changed = await waitForFlush(before, runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
@@ -2390,7 +2451,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
       const cancelled = getRun(run.id)?.status === "cancel_requested";
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations] });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked" });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -2458,7 +2519,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
         references,
       });
     }
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked" });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -2470,7 +2531,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       error: message,
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked" });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
     return finished;
   }
 }
@@ -2587,7 +2648,6 @@ app.get("/api/agent/stream", async (req, res) => {
   const workspace = normalizeWorkspace(req.query.cwd || getWorkspace()) || getWorkspace();
   const project = projectManager.getProjectForWorkspace(workspace);
   const defaultModel = String(project?.settings?.defaultModel || "").trim();
-  const entry = await agentManager.ensureRuntime(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -2595,8 +2655,46 @@ app.get("/api/agent/stream", async (req, res) => {
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
+  // 先刷新响应头，避免 Pi Runtime 初始化或失效会话恢复较慢时，
+  // 浏览器一直收不到 SSE 握手而停在“连接中”。Runtime 就绪状态仍由
+  // 后面的 connected 事件确认。
+  res.flushHeaders?.();
+  let closed = false;
+  let heartbeat = null;
+  let entry = null;
+  let onEvent = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    if (entry && onEvent) entry.channel.emitter.off("event", onEvent);
+  };
+  req.on("close", cleanup);
+  const write = (chunk) => {
+    if (closed) return false;
+    try {
+      res.write(chunk);
+      return true;
+    } catch {
+      cleanup();
+      return false;
+    }
+  };
+  write(`data: ${JSON.stringify({
+    type: "runtime_connecting",
+    at: new Date().toISOString(),
+    data: { client, thread },
+  })}\n\n`);
+  heartbeat = setInterval(() => {
+    write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
+  }, 15000);
+
+  try {
+    entry = await agentManager.ensureRuntime(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
+    if (closed) return;
   const send = (ev) => {
-    res.write(`id: ${ev.id}\ndata: ${JSON.stringify({ type: ev.type, data: ev.data })}\n\n`);
+    if (!ev || closed) return;
+    write(`id: ${ev.id}\ndata: ${JSON.stringify({ id: ev.id, type: ev.type, at: ev.at || null, data: ev.data })}\n\n`);
   };
   // EventSource 新建连接时不会把上一次对象的 Last-Event-ID 带过来，
   // 因此前端同时通过 query 传递游标；两者取最大值，避免重连重复消费历史事件。
@@ -2606,13 +2704,42 @@ app.get("/api/agent/stream", async (req, res) => {
   // 参考 pi-web：连接建立后发送可被客户端确认的应用层握手，
   // 不把浏览器 EventSource 的 onopen 当作 Agent 已就绪。
   const connectedModel = entry.modelFallbackSpec || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null);
-  res.write(`data: ${JSON.stringify({ type: "connected", data: { client, thread, sessionId: entry.session?.sessionId || null, model: connectedModel, modelFallbackFrom: entry.modelFallbackFrom || null } })}\n\n`);
+  write(`data: ${JSON.stringify({
+    type: "connected",
+    at: new Date().toISOString(),
+    data: {
+      client,
+      thread,
+      sessionId: entry.session?.sessionId || null,
+      model: connectedModel,
+      modelFallbackFrom: entry.modelFallbackFrom || null,
+      cursor: entry.channel.seq,
+      serverAt: new Date().toISOString(),
+    },
+  })}\n\n`);
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
-  res.write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
+  write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
 
-  const onEvent = (ev) => send(ev);
+  onEvent = (ev) => send(ev);
   entry.channel.emitter.on("event", onEvent);
-  req.on("close", () => entry.channel.emitter.off("event", onEvent));
+  } catch (error) {
+    if (!closed) {
+      const diagnostic = classifyAgentError(error);
+      write(`data: ${JSON.stringify({
+        type: "agent_error",
+        at: new Date().toISOString(),
+        data: {
+          code: diagnostic.code || "RUNTIME_CONNECT_FAILED",
+          message: diagnostic.message || "Agent Runtime 连接失败",
+          retryable: Boolean(diagnostic.retryable),
+          client,
+          thread,
+        },
+      })}\n\n`);
+      try { res.end(); } catch {}
+    }
+    cleanup();
+  }
 });
 
 function loadModelsStore() {
@@ -3084,14 +3211,18 @@ async function waitForFlush(before, workspace = getWorkspace()) {
 }
 function emitChannel(entry, type, data) {
   const id = ++entry.channel.seq;
-  const ev = { id, type, data };
+  const at = new Date().toISOString();
+  const eventData = data && typeof data === "object" && !Array.isArray(data)
+    ? { ...data, runId: data.runId ?? entry.activeRunId ?? null }
+    : { value: data, runId: entry.activeRunId ?? null };
+  const ev = { id, type, at, data: eventData };
   entry.channel.history.push(ev);
   if (entry.channel.history.length > 2000) entry.channel.history.shift();
   entry.channel.emitter.emit("event", ev);
   // capability_plan/run_finished 已由 recordRunEvent/finishRun 写入 Store，
   // 其余由 HTTP 层补发的摘要/错误/文件事件在这里进入根级事件流。
   if (! ["capability_plan", "run_finished"].includes(type)) {
-    appendEvent({ clientId: entry.clientId, threadId: entry.threadId, runId: data?.runId || entry.activeRunId || null, type, data });
+    appendEvent({ clientId: entry.clientId, threadId: entry.threadId, runId: eventData.runId, type, data: eventData });
   }
 }
 

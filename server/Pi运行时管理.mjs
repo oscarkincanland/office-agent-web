@@ -18,7 +18,7 @@ import { AGENT_DIR, PROJECT_DIR } from "./workspace.mjs";
 import { atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
 
 const RUNTIME_RECORD_FILE = process.env.OAW_RUNTIME_RECORD_FILE || path.join(PROJECT_DIR, ".oaw", "运行时记录.json");
-const PI_PACKAGE_VERSION = "0.84.3";
+export const PI_PACKAGE_VERSION = "0.85.1";
 const RUNTIME_RECORD_LIMIT = 120;
 const DEFAULT_AGENT_CONCURRENCY = 2;
 const DEFAULT_OFFICE_CONCURRENCY = 1;
@@ -322,6 +322,59 @@ export class PiRuntimeManager {
     } catch (error) {
       this.markFailure(runtimeId, error, { recovering: false, reason: "model_switch_failed" });
       throw error;
+    }
+  }
+
+  /**
+   * 只探测 provider 的真实请求链路，不创建/改写用户会话。
+   * 模型目录可见、凭据已配置并不等于当前网络和网关真的可用；
+   * 连接测试必须走和 Agent 相同的 Pi ModelRuntime。
+   */
+  async probeModel(model, { timeoutMs = 15000 } = {}) {
+    const runtime = await this.modelRuntime();
+    const limit = Math.max(5000, Math.min(30000, Number.parseInt(String(timeoutMs), 10) || 15000));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), limit);
+    const startedAt = Date.now();
+    const sessionId = `probe-${crypto.randomUUID()}`;
+    try {
+      const response = await runtime.completeSimple(model, {
+        messages: [{ role: "user", content: "Reply with OK only.", timestamp: Date.now() }],
+      }, {
+        signal: controller.signal,
+        timeoutMs: limit,
+        maxRetries: 0,
+        maxRetryDelayMs: 1000,
+        reasoning: "off",
+        maxTokens: 16,
+        // OpenCode Go 要求 x-opencode-session；Pi Agent 本身会自动传递
+        // SessionManager 的 ID，这个独立探测也必须保持同一请求语义。
+        sessionId,
+        ...(model?.provider === "opencode" || model?.provider === "opencode-go"
+          ? { headers: { "x-opencode-session": sessionId, "x-opencode-client": "pi" } }
+          : {}),
+      });
+      if (response?.stopReason === "error" || response?.errorMessage) {
+        const error = new Error(response.errorMessage || "模型返回错误");
+        error.code = "PI_SETTLED_ERROR";
+        error.provider = model?.provider || null;
+        error.model = model?.id || null;
+        throw error;
+      }
+      return { response, latencyMs: Date.now() - startedAt };
+    } catch (error) {
+      if (controller.signal.aborted && error?.name !== "AbortError") {
+        error.code = error.code || "MODEL_PROBE_TIMEOUT";
+      } else if (controller.signal.aborted) {
+        const timeoutError = new Error(`模型连接测试超过 ${Math.round(limit / 1000)} 秒没有响应`);
+        timeoutError.code = "MODEL_PROBE_TIMEOUT";
+        timeoutError.provider = model?.provider || null;
+        timeoutError.model = model?.id || null;
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

@@ -38,6 +38,8 @@ const PATHS = {
   download: (<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M7 10l5 5 5-5" /><path d="M12 15V3" /></>),
   upload: (<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M17 8l-5-5-5 5" /><path d="M12 3v12" /></>),
   folderOpen: (<><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /><path d="M2 11h20" /></>),
+  maximize: (<><path d="M8 3H3v5" /><path d="M3 3l6 6" /><path d="M16 3h5v5" /><path d="M21 3l-6 6" /><path d="M8 21H3v-5" /><path d="M3 21l6-6" /><path d="M16 21h5v-5" /><path d="M21 21l-6-6" /></>),
+  minimize: (<><path d="M9 3v6H3" /><path d="M3 9l6-6" /><path d="M15 3v6h6" /><path d="M21 9l-6-6" /><path d="M9 21v-6H3" /><path d="M3 15l6 6" /><path d="M15 21v-6h6" /><path d="M21 15l-6 6" /></>),
 
   // 状态
   check: (<path d="M20 6L9 17l-5-5" />),
