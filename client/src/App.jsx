@@ -124,6 +124,7 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState("model");
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
   const [previewMaximized, setPreviewMaximized] = useState(false); // 工作产物放大，但保留中心对话区
+  const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
@@ -876,17 +877,19 @@ export default function App() {
             onRefreshSessions={refreshSessions}
             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
             hideChat
+            chatVisible={mapChatVisible}
+            onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
           />
           </DeferredModule>
         )}
-        {activeModule === "map" && (
+        {activeModule === "map" && mapChatVisible && (
           <div className="app-chat-slot map">
             {sharedChatPanel}
           </div>
         )}
-        {activeModule === "map" && (
+        {activeModule === "map" && mapChatVisible && (
           <Resizer
             className="map-chat-resizer"
             side="right"

@@ -56,7 +56,7 @@ function setBasemapVisibility(map, ids, desired) {
  * - 导出 PNG / 导入 GeoJSON+SHP（外部 ref API）
  */
 const MapViewer = forwardRef(function MapViewer(
-  { project = "zhejiang-map", config, onConfigChange, onLayerTilesChanged, onDrillDown, onViewportChange },
+  { project = "zhejiang-map", config, onConfigChange, onBasemapResolved, onLayerTilesChanged, onDrillDown, onViewportChange },
   ref
 ) {
   const containerRef = useRef(null);
@@ -88,11 +88,22 @@ const MapViewer = forwardRef(function MapViewer(
   const analysisKindsRef = useRef(new Map());
   const analysisHistoryRef = useRef(new Map());
   const viewportCallbackRef = useRef(onViewportChange);
+  const basemapResolvedCallbackRef = useRef(onBasemapResolved);
   const viewportTimerRef = useRef(null);
 
   useEffect(() => {
     viewportCallbackRef.current = onViewportChange;
   }, [onViewportChange]);
+
+  useEffect(() => {
+    basemapResolvedCallbackRef.current = onBasemapResolved;
+  }, [onBasemapResolved]);
+
+  const publishBasemap = (selected) => {
+    basemapRef.current = selected;
+    setBasemap(selected);
+    basemapResolvedCallbackRef.current?.(selected);
+  };
 
   // 运行时标注不写回 style.json，避免 Agent 修改样式时反复覆盖分析状态。
   const runtimeLabelLayers = ["boundary-city-label", "boundary-county-label"];
@@ -456,8 +467,7 @@ const MapViewer = forwardRef(function MapViewer(
           const s = JSON.parse(text);
           syncLayerRefs(s);
           const selected = setBasemapVisibility(map, basemapIdsRef.current, basemapRef.current);
-          basemapRef.current = selected;
-          setBasemap(selected);
+          publishBasemap(selected);
         })
         .catch(() => {});
     };
@@ -537,8 +547,7 @@ const MapViewer = forwardRef(function MapViewer(
     basemapRef.current = desired;
     if (loaded && mapRef.current) {
       const selected = setBasemapVisibility(mapRef.current, basemapIdsRef.current, desired);
-      basemapRef.current = selected;
-      setBasemap(selected);
+      publishBasemap(selected);
     } else setBasemap(desired);
   }, [config?.basemap, loaded]);
 
@@ -641,8 +650,7 @@ const MapViewer = forwardRef(function MapViewer(
     const desired = basemapRef.current || normalizeBasemap(config?.basemap);
     const restoreBasemap = () => {
       const selected = setBasemapVisibility(map, basemapIdsRef.current, desired);
-      basemapRef.current = selected;
-      setBasemap(selected);
+      publishBasemap(selected);
     };
     if (map.isStyleLoaded?.()) restoreBasemap();
     else map.once("idle", restoreBasemap);
@@ -684,14 +692,21 @@ const MapViewer = forwardRef(function MapViewer(
         return true;
       } catch { return false; }
     },
+    /** 持久化样式后只更新轮询游标，不触发一次完整的 MapLibre setStyle。 */
+    syncStyleHash: async () => {
+      try {
+        const res = await fetch(STYLE_PATH(project));
+        styleHashRef.current = styleHash(await res.text());
+        return true;
+      } catch { return false; }
+    },
     setBasemap: (id) => {
       const map = mapRef.current;
       const desired = normalizeBasemap(id);
       basemapRef.current = desired;
       if (map) {
         const selected = setBasemapVisibility(map, basemapIdsRef.current, desired);
-        basemapRef.current = selected;
-        setBasemap(selected);
+        publishBasemap(selected);
       } else setBasemap(desired);
     },
     setProjection: (type = "mercator") => {
@@ -719,7 +734,7 @@ const MapViewer = forwardRef(function MapViewer(
       if (!applyDrillState(map, d)) map.once("idle", () => applyDrillState(map, d));
       window.setTimeout(() => {
         if (mapRef.current === map && drillRef.current?.code === d.code) applyDrillState(map, d);
-      }, 900);
+      }, 320);
     },
     /** 清除下钻 */
     clearDrill: () => {
@@ -742,7 +757,7 @@ const MapViewer = forwardRef(function MapViewer(
       const map = mapRef.current;
       if (!map || !Array.isArray(bbox) || bbox.length !== 4) return;
       try {
-        map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: options.padding || 56, maxZoom: options.maxZoom || 13, duration: 650 });
+        map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: options.padding || 56, maxZoom: options.maxZoom || 13, duration: options.duration ?? 280 });
       } catch {}
     },
     /** 标注总开关：只改运行时 symbol 图层。 */

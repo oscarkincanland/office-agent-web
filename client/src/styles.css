@@ -4216,6 +4216,11 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .mp-shared-chat .mp-iso-backdrop { right: var(--map-chat-w); }
 .mp-shared-chat .map-toolbar { max-width: calc(100% - 24px); overflow-x: auto; scrollbar-width: thin; }
 .mp-shared-chat .map-toolbar-title { flex: 0 0 auto; }
+.mp-shared-chat.mp-chat-hidden .mp-topbar { width: 100%; padding-right: 12px; }
+.mp-shared-chat.mp-chat-hidden .mp-body { padding-right: 0; }
+.mp-shared-chat.mp-chat-hidden .cambodia-overlay,
+.mp-shared-chat.mp-chat-hidden .m2-overlay { right: 12px; }
+.mp-shared-chat.mp-chat-hidden .mp-iso-backdrop { right: 0; }
 .cambodia-overlay {
   position: absolute;
   z-index: 18;
@@ -5549,6 +5554,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-provider-heading > span { display: inline-flex; align-items: center; gap: 5px; }
 .model-provider-heading small { font-weight: 400; }
 .model-option { display: flex; align-items: center; gap: 7px; width: 100%; border: 0; background: transparent; text-align: left; font: inherit; }
+.model-option > .model-provider-mark { flex: 0 0 auto; width: 17px !important; min-width: 17px; }
 .model-option > span { display: flex; flex-direction: column; min-width: 0; flex: 1; }
 .model-option > span strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .model-option > span small { overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }

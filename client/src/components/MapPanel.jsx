@@ -75,7 +75,7 @@ async function parseShapefile(shpjs, shpFile, selected) {
 export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
-  onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, bridgeRef, onViewportChange,
+  onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -105,6 +105,7 @@ export default function MapPanel({
   const [leftW, setLeftW] = useState(260);           // 左栏宽度（可拖拽）
   const [rightW, setRightW] = useState(360);         // 右栏宽度（可拖拽）
   const paneDragRef = useRef(null);
+  const regionOptionsCacheRef = useRef(new Map());   // 项目级行政区缓存，切换区域不重复读边界文件
 
   // 左右栏宽度拖拽（side: left|right）
   const startPaneDrag = useCallback((e, side) => {
@@ -262,6 +263,11 @@ export default function MapPanel({
     let cancelled = false;
     setRegionCode("");
     setRegionQuery("");
+    const cached = regionOptionsCacheRef.current.get(project);
+    if (cached) {
+      setRegionOptions(cached);
+      return undefined;
+    }
     setRegionOptions([{ value: "", label: "全省 / 全部区域" }]);
     if (project !== "zhejiang-map") return undefined;
     Promise.all([mapGetLayer(project, "boundary-city"), mapGetLayer(project, "boundary-county")])
@@ -290,7 +296,9 @@ export default function MapPanel({
           cityCode: `${String(f.properties?.adcode || "").slice(0, 4)}00`,
           cityGeometry: cityByCode.get(`${String(f.properties?.adcode || "").slice(0, 4)}00`)?.geometry,
         })).filter((x) => x.value && x.bbox);
-        setRegionOptions([{ value: "", label: "全省 / 全部区域" }, ...cityOptions, ...countyOptions]);
+        const options = [{ value: "", label: "全省 / 全部区域" }, ...cityOptions, ...countyOptions];
+        regionOptionsCacheRef.current.set(project, options);
+        setRegionOptions(options);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -314,7 +322,7 @@ export default function MapPanel({
       cityCode: item.cityCode || (item.level === "city" ? item.code : `${String(item.code).slice(0, 4)}00`),
       cityGeometry: item.cityGeometry || (item.level === "city" ? item.geometry : undefined),
     };
-    mapRef.current?.focusBounds(item.bbox, { maxZoom: item.level === "county" ? 13 : 11 });
+    mapRef.current?.focusBounds(item.bbox, { maxZoom: item.level === "county" ? 13 : 11, duration: 280 });
     setDrill(next);
     mapRef.current?.drillTo(next);
     flash(`已切换到${item.name}`);
@@ -788,8 +796,9 @@ export default function MapPanel({
     setTimeout(() => setImpMsg(""), 8000);
   }, [project, loadProject, impDir]);
   const switchBasemap = useCallback(async (id) => {
+    // 先只切换运行时图层，避免用户等待整份 style.json 重载。
     mapRef.current?.setBasemap(id);
-    // 同步写入 style 的底图显隐，避免轮询/Agent 热更新后恢复到旧的地形或卫星图层。
+    // 持久化仍保留在 style/config；下次轮询会感知样式变化，但不会阻塞本次切换。
     if (style?.layers) {
       const nextStyle = {
         ...style,
@@ -797,14 +806,17 @@ export default function MapPanel({
           ? { ...l, layout: { ...(l.layout || {}), visibility: l.id === `basemap-${id}` ? "visible" : "none" } }
           : l),
       };
-      await saveStyle(nextStyle);
+      setStyle(nextStyle);
+      mapSaveStyle(project, nextStyle)
+        .then(() => mapRef.current?.syncStyleHash?.())
+        .catch((e) => flash("保存底图选择失败: " + e.message));
     }
     setCfg((prev) => {
       const next = { ...(prev || {}), basemap: id };
       mapSaveConfig(project, next).catch(() => {});
       return next;
     });
-  }, [project, style, saveStyle]);
+  }, [project, style, flash]);
 
   const handleRebuild = useCallback(async () => {
     setMsg("重建瓦片中…");
@@ -1253,7 +1265,7 @@ export default function MapPanel({
   }, [bridgeRef, handleMapAction, handleFileChanged, handleAgentEnd, handleOpenFile]);
 
   return (
-    <div className={`mp ${hideChat ? "mp-shared-chat" : ""}`}>
+    <div className={`mp ${hideChat ? "mp-shared-chat" : ""} ${hideChat && !chatVisible ? "mp-chat-hidden" : ""}`}>
       {/* 顶栏：工具栏 */}
       <div className="mp-topbar">
         <Icon name="map" size={14} />
@@ -1349,6 +1361,11 @@ export default function MapPanel({
         <button className={`btn-sm ${globeMode ? "active" : ""}`} onClick={toggleGlobe} title="切换平面地图 / 地球视图">
           <Icon name="globe" size={13} /> {globeMode ? "平面" : "地球"}
         </button>
+        {hideChat && (
+          <button className={`btn-sm ${chatVisible ? "active" : ""}`} onClick={onToggleChat} title={chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"} aria-label={chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}>
+            <Icon name="comment" size={13} /> {chatVisible ? "隐藏 Agent" : "显示 Agent"}
+          </button>
+        )}
         <select
           className="mp-project-select mp-region-select"
           value={regionCode}
@@ -1491,6 +1508,7 @@ export default function MapPanel({
             ref={mapRef}
             project={project}
             config={cfg}
+            onBasemapResolved={(id) => setCfg((prev) => (prev && prev.basemap === id ? prev : { ...(prev || {}), basemap: id }))}
             onViewportChange={onViewportChange}
             onLayerTilesChanged={async (layerIds = []) => {
               await loadProject(project);
