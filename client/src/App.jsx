@@ -121,6 +121,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
+  const [settingsSection, setSettingsSection] = useState("model");
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
   const [previewMaximized, setPreviewMaximized] = useState(false); // 工作产物放大，但保留中心对话区
   const [previewTab, setPreviewTab] = useState("document");
@@ -389,7 +390,8 @@ export default function App() {
         return [...prev, { path: r.workspace, name }];
       });
       setFiles(r.files || []);
-      // 项目统计不参与工作区切换，交给定时刷新，避免切换时与会话扫描争用服务端。
+      // 工作区切换后异步刷新项目：让新打开的本地目录立即出现在项目栏，且不阻塞文件视图。
+      void refreshProjects();
       void handleNewSession(r.workspace);
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
@@ -935,7 +937,7 @@ export default function App() {
               onOpenTemplates={() => openExternalModule("templates")}
               onOpenMap={() => openExternalModule("map")}
                onOpenTasks={() => openExternalModule("tasks")}
-               onOpenSettings={(tab = "settings") => { setSettingsModuleTab(tab); openExternalModule("settings"); }}
+               onOpenSettings={(tab = "settings") => { if (tab === "memory") setSettingsModuleTab("memory"); else { setSettingsModuleTab("settings"); setSettingsSection(tab === "project" ? "project" : "model"); } openExternalModule("settings"); }}
                onOpenArtifacts={() => openExternalModule("artifacts")}
               onBeforeOpenModal={closeExternalModules}
               onOpenCommandPalette={() => setPaletteOpen(true)}
@@ -1074,7 +1076,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}

@@ -56,6 +56,43 @@ const COMPOSER_COMMANDS = [
   { insert: "/agent", label: "切换到 Agent", hint: "执行任务、调用工具并生成产物" },
   { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、& 的使用方式" },
 ];
+const THINKING_OPTIONS = [
+  { id: "low", label: "低", shortLabel: "快速", desc: "响应更快，适合简单任务" },
+  { id: "medium", label: "标准", shortLabel: "标准", desc: "速度与质量平衡" },
+  { id: "high", label: "高", shortLabel: "深度", desc: "适合复杂分析" },
+  { id: "max", label: "最大", shortLabel: "最大", desc: "使用模型允许的最高档位" },
+];
+const MODEL_PROVIDER_META = {
+  anthropic: { label: "Anthropic", mark: "◎" },
+  deepseek: { label: "DeepSeek", mark: "◈" },
+  gemini: { label: "Google", mark: "✦" },
+  google: { label: "Google", mark: "✦" },
+  minimax: { label: "MiniMax", mark: "≋" },
+  "minimax-cn": { label: "MiniMax", mark: "≋" },
+  openai: { label: "OpenAI", mark: "◉" },
+  "openai-codex": { label: "OpenAI", mark: "◉" },
+  qwen: { label: "Qwen", mark: "Q" },
+  alibaba: { label: "Qwen", mark: "Q" },
+};
+
+function modelProvider(model) {
+  return String(model?.provider || model?.id || "custom").split("/")[0].toLowerCase() || "custom";
+}
+
+function modelProviderMeta(model) {
+  const provider = modelProvider(model);
+  return MODEL_PROVIDER_META[provider] || { label: provider === "custom" ? "自定义供应商" : provider, mark: "•" };
+}
+
+function modelDisplayName(model) {
+  if (!model) return "按 Pi 配置";
+  return model.name || String(model.id || "").split("/").slice(1).join("/") || model.id;
+}
+
+function ModelProviderMark({ model, size = 18 }) {
+  const meta = modelProviderMeta(model);
+  return <span className={`model-provider-mark provider-${modelProvider(model)}`} style={{ width: size, height: size }} aria-hidden="true">{meta.mark}</span>;
+}
 
 const MODE_META = {
   chat: {
@@ -235,10 +272,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [lastPrompt, setLastPrompt] = useState(null);
   const [effort, setEffort] = useState(() => {
     const saved = localStorage.getItem(THINKING_KEY);
-    return ["low", "medium", "high"].includes(saved) ? saved : "low";
-  }); // 推理强度 low/medium/high
+    return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "low";
+  }); // Pi 标准推理档位：low/medium/high/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
-  const [effortOpen, setEffortOpen] = useState(false); // 思考程度浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
   const [agentPhase, setAgentPhase] = useState("");
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -283,6 +319,22 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const previousThreadRef = useRef(threadId);
 
   const currentMode = MODE_META[normalizeUiMode(editMode)] || MODE_META.chat;
+  const selectedModelInfo = models.find((item) => item.id === model) || null;
+  const selectedProviderMeta = modelProviderMeta(selectedModelInfo);
+  const selectedEffort = THINKING_OPTIONS.find((item) => item.id === effort) || THINKING_OPTIONS[0];
+  const selectedEffortIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === selectedEffort.id));
+  const modelGroups = useMemo(() => {
+    const query = modelQ.trim().toLowerCase();
+    const groups = new Map();
+    for (const item of models) {
+      const searchable = `${item.id || ""} ${item.name || ""} ${item.provider || ""}`.toLowerCase();
+      if (query && !searchable.includes(query)) continue;
+      const provider = modelProvider(item);
+      if (!groups.has(provider)) groups.set(provider, []);
+      groups.get(provider).push(item);
+    }
+    return [...groups.entries()];
+  }, [models, modelQ]);
 
   const composerItems = useMemo(() => {
     if (!composerMenu) return [];
@@ -1952,68 +2004,74 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               <span className="mode-current-hint">{currentMode.hint}</span>
             </div>
             <span className="ct-sep" />
-            {/* 模型选择：图标 + 浮层 */}
-            <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型 / 思考程度">
+            {/* 模型与思考程度：一个 Proma 式统一入口，底层仍使用 Pi 配置 */}
+            <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型与思考程度">
               <span className="chat-toolbar-label">Agent</span>
-            <div className="ct-popwrap">
-              <button className={`ct-btn ${modelOpen ? "active" : ""}`} onClick={() => { setModelOpen((v) => !v); setEffortOpen(false); }} title={model ? `模型: ${model}` : "选择模型"}>
-                <Icon name="robot" size={14} />
-                {model && <span className="ct-model-dot" title={model} />}
-              </button>
-              {modelOpen && (
-                <div className="ct-pop model-pop">
-                  <input
-                    className="ct-pop-search"
-                    placeholder="搜索模型…"
-                    value={modelQ}
-                    onChange={(e) => setModelQ(e.target.value)}
-                    autoFocus
-                  />
-                  <div className="ct-pop-list">
-                    <div className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
-                      <Icon name="refresh" size={11} /> 重新扫描模型
+              <div className="ct-popwrap model-control-wrap">
+                <button className={`model-control-trigger ${modelOpen ? "active" : ""}`} onClick={() => setModelOpen((value) => !value)} title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}>
+                  <ModelProviderMark model={selectedModelInfo} size={18} />
+                  <span className="model-control-current">
+                    <strong>{modelDisplayName(selectedModelInfo)}</strong>
+                    <small>{selectedEffort.shortLabel}</small>
+                  </span>
+                  <Icon name="chevronDown" size={11} />
+                </button>
+                {modelOpen && (
+                  <div className="ct-pop model-control-pop">
+                    <div className="model-control-head">
+                      <div><ModelProviderMark model={selectedModelInfo} size={22} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
+                      <span className="model-control-status">{selectedModelInfo?.available === false ? "不可用" : "可用"}</span>
                     </div>
-                    <div className="ct-model-meta">Pi Runtime：可用 {modelCounts.available || "—"} / 配置目录 {modelCounts.configured || models.length}</div>
-                    {models
-                      .filter((m) => !modelQ || m.id.toLowerCase().includes(modelQ.toLowerCase()))
-                      .map((m) => (
-                        <div
-                          key={m.id}
-                          className={`ct-pop-item ${model === m.id ? "active" : ""} ${m.available === false ? "disabled" : ""}`}
-                          onClick={() => { if (m.available === false) return; changeModel(m.id); setModelOpen(false); }}
-                          title={m.id}
-                        >
-                          {m.vision ? "[V] " : ""}{m.id}{m.available === false ? " · 不可用" : ""}
+                    <input
+                      className="ct-pop-search"
+                      placeholder="搜索模型…"
+                      value={modelQ}
+                      onChange={(e) => setModelQ(e.target.value)}
+                      autoFocus
+                    />
+                    <div className="ct-pop-list model-control-list">
+                      <button type="button" className="ct-pop-refresh" onClick={async (e) => { e.stopPropagation(); setModelMsg("扫描中…"); try { const d = await fetch("/api/models/refresh", { method: "POST" }).then((x) => x.json()); if (d.ok) { setModels(d.models || []); if (d.counts) setModelCounts(d.counts); setModelMsg(`可用 ${d.counts?.available ?? d.count ?? 0} / 配置 ${d.counts?.configured ?? "?"}`); } else setModelMsg("扫描失败: " + (d.error || "")); } catch (err) { setModelMsg("扫描失败: " + err.message); } setTimeout(() => setModelMsg(""), 2500); }} title="重新扫描 Pi 模型目录与可用模型">
+                        <Icon name="refresh" size={11} /> 重新扫描模型 <small>可用 {modelCounts.available || "—"}</small>
+                      </button>
+                      {modelGroups.map(([provider, providerModels]) => (
+                        <div className="model-provider-group" key={provider}>
+                          <div className="model-provider-heading"><span><ModelProviderMark model={providerModels[0]} size={15} /> {modelProviderMeta(providerModels[0]).label}</span><small>{providerModels.length}</small></div>
+                          {providerModels.map((m) => (
+                            <button
+                              type="button"
+                              key={m.id}
+                              className={`ct-pop-item model-option ${model === m.id ? "active" : ""} ${m.available === false ? "disabled" : ""}`}
+                              onClick={() => { if (m.available === false) return; changeModel(m.id); setModelOpen(false); }}
+                              title={m.id}
+                              disabled={m.available === false}
+                            >
+                              <ModelProviderMark model={m} size={17} />
+                              <span><strong>{modelDisplayName(m)}</strong><small>{m.vision ? "支持图片" : "文本"} · {m.id}</small></span>
+                              {model === m.id && <Icon name="check" size={12} />}
+                            </button>
+                          ))}
                         </div>
                       ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            {/* 思考程度：图标 + 浮层 */}
-            <div className="ct-popwrap">
-              <button className={`ct-btn ${effortOpen ? "active" : ""}`} onClick={() => { setEffortOpen((v) => !v); setModelOpen(false); }} title={`推理强度: ${effort === "low" ? "快速" : effort === "high" ? "深度" : "标准"}`}>
-                <Icon name="info" size={14} />
-              </button>
-              {effortOpen && (
-                <div className="ct-pop effort-pop">
-                  {[
-                    { id: "low", label: "快速", desc: "响应快，适合简单任务" },
-                    { id: "medium", label: "标准", desc: "平衡速度与质量" },
-                    { id: "high", label: "深度", desc: "深入推理，适合复杂任务" },
-                  ].map((e) => (
-                    <div
-                      key={e.id}
-                      className={`ct-pop-item ${effort === e.id ? "active" : ""}`}
-                      onClick={() => { setEffort(e.id); localStorage.setItem(THINKING_KEY, e.id); setEffortOpen(false); }}
-                    >
-                      <b>{e.label}</b>
-                      <span className="ct-pop-desc">{e.desc}</span>
+                      {!modelGroups.length && <div className="ct-pop-empty">没有匹配的模型</div>}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
+                    <div className="model-thinking-control">
+                      <div className="model-thinking-head"><span><Icon name="info" size={12} /> 思考深度</span><strong>{selectedEffort.label}</strong></div>
+                      <input
+                        type="range"
+                        min="0"
+                        max={THINKING_OPTIONS.length - 1}
+                        step="1"
+                        value={selectedEffortIndex}
+                        aria-label="思考深度"
+                        aria-valuetext={`${selectedEffort.label}（${selectedEffort.desc}）`}
+                        onChange={(e) => { const next = THINKING_OPTIONS[Number(e.target.value)] || THINKING_OPTIONS[0]; setEffort(next.id); localStorage.setItem(THINKING_KEY, next.id); }}
+                      />
+                      <div className="model-thinking-scale">{THINKING_OPTIONS.map((item) => <span key={item.id} className={item.id === effort ? "active" : ""}>{item.label}</span>)}</div>
+                      <small className="model-thinking-desc">{selectedEffort.desc}</small>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <span className="chat-toolbar-spacer" />
             <div className="chat-toolbar-group toolbar-session-group">

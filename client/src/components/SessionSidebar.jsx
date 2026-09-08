@@ -587,7 +587,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           </div>
         </div>
       )}
-      {currentProject && (
+      {currentProject && primaryTab !== "project" && (
         <div className="project-context-strip" title={`当前项目：${currentProject.name}`}>
           <span className="project-context-name">{currentProject.name}</span>
           <span className="project-context-type">{currentProject.type || "综合项目"}</span>
@@ -605,16 +605,23 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
       {primaryTab === "project" && (
         <div className="sidebar-project-list">
-          <div className="sidebar-view-title"><span>我的项目</span><span>{projects.length}</span></div>
+          <div className="sidebar-view-title sidebar-project-heading">
+            <span>项目 <em>{projects.length}</em></span>
+            <span className="sidebar-project-actions">
+              <button type="button" onClick={() => { setSwitcherOpen(true); setCustomMode(true); }} title="打开本地项目"><Icon name="folderOpen" size={12} /></button>
+              <button type="button" onClick={() => onOpenSettings?.("project")} title="新建项目"><Icon name="plus" size={12} /></button>
+            </span>
+          </div>
           {projects.map((project) => (
             <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
               <Icon name="folder" size={15} />
               <span className="sidebar-project-main"><strong>{project.name}</strong><small>{project.type || "综合项目"} · {project.status || "进行中"}</small></span>
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
+              <span className="sidebar-project-count">会话 {project.sessionCount ?? projectSessions(project).length}</span>
               {project.id === currentProjectId && projectSessions(project).length > 0 && (
                 <div className="project-session-preview" onClick={(e) => e.stopPropagation()}>
                   <div className="project-session-preview-head">
-                    <span><Icon name="history" size={11} /> 会话 {projectSessions(project).length}</span>
+                    <span><Icon name="history" size={11} /> 最近会话</span>
                     <button type="button" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>查看全部</button>
                   </div>
                   {projectSessions(project).slice(0, 4).map((session) => (

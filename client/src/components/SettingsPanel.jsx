@@ -233,7 +233,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
@@ -259,6 +259,9 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [basemapSaving, setBasemapSaving] = useState(false);
 
   useEffect(() => { setModelList(models); }, [models]);
+  useEffect(() => {
+    if (["appearance", "model", "services", "project", "advanced"].includes(initialSection)) setSettingsSection(initialSection);
+  }, [initialSection]);
 
   const availableModels = modelList.length ? modelList : models;
   const selectedModelInfo = availableModels.find((item) => item.id === (activeModel || defaultModel)) || null;
