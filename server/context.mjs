@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import JSZip from "jszip";
 import XLSX from "xlsx";
-import { getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "./workspace.mjs";
+import { AGENT_DIR, PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "./workspace.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_READ_CHARS = 50000;
@@ -85,6 +85,7 @@ export function parseReferences(text = "") {
   for (const m of source.matchAll(/@模板目录\[([^\]]+)\]/g)) add(makeRef("template_dir", m[1], { source: m[0] }));
   for (const m of source.matchAll(/@模板\[([^\]]+)\]/g)) add(makeRef("template", m[1], { source: m[0] }));
   for (const m of source.matchAll(/@文件\[([^\]]+)\]/g)) add(makeRef("file", m[1], { source: m[0] }));
+  for (const m of source.matchAll(/&会话\[([^\]]+)\]/g)) add(makeRef("session", m[1], { source: m[0] }));
   const ext = /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i;
   for (const m of source.matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
@@ -92,6 +93,63 @@ export function parseReferences(text = "") {
     if (target.includes("/") || target.includes("\\") || ext.test(target)) add(makeRef("file", target, { source: `@${target}` }));
   }
   return out;
+}
+
+function findSessionReferenceFile(target) {
+  const wanted = String(target || "").trim();
+  if (!wanted) return null;
+  const roots = [path.join(PROJECT_DIR, ".规聚会话"), path.join(AGENT_DIR, "sessions")];
+  const files = [];
+  const walk = (dir, depth = 0) => {
+    if (depth > 4) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full, depth + 1);
+      else if (entry.isFile() && /\.(?:jsonl|json)$/i.test(entry.name)) files.push(full);
+    }
+  };
+  roots.forEach((root) => walk(root));
+  const byName = files.find((file) => {
+    const name = path.basename(file);
+    return name === wanted + ".jsonl" || name === wanted + ".json" || name.startsWith(wanted);
+  });
+  if (byName) return byName;
+  for (const file of files) {
+    try {
+      const header = JSON.parse(fs.readFileSync(file, "utf8").split(/\r?\n/)[0]);
+      if (String(header?.id || header?.sessionId || "") === wanted) return file;
+    } catch {}
+  }
+  return null;
+}
+
+function sessionMessageText(message) {
+  const content = message?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content.filter((part) => part?.type === "text" || part?.type === "input_text")
+    .map((part) => part.text || part.content || "").join("\n").trim();
+}
+
+function readSessionReference(target) {
+  const file = findSessionReferenceFile(target);
+  if (!file) return null;
+  const chunks = [];
+  try {
+    for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.type !== "message") continue;
+      const role = entry.message?.role;
+      if (role !== "user" && role !== "assistant") continue;
+      const text = sessionMessageText(entry.message);
+      if (text) chunks.push((role === "user" ? "用户" : "助手") + "：" + text);
+    }
+  } catch { return null; }
+  return { file, text: chunks.join("\n\n").slice(0, MAX_READ_CHARS) };
 }
 
 function metadata(file, rootId = null, workspace = getWorkspace()) {
@@ -136,6 +194,12 @@ export function resolveReference(input, workspace = getWorkspace()) {
   ref.id ||= idFor(ref);
   if (["knowledge", "knowledge_dir", "template", "template_dir"].includes(ref.kind)) {
     return { ...ref, status: "deferred", message: "由知识库/模板索引解析", metadata: null };
+  }
+  if (ref.kind === "session") {
+    const session = readSessionReference(ref.target);
+    return session
+      ? { ...ref, status: "resolved", metadata: { path: session.file, name: path.basename(session.file), mime: "text/plain", sessionId: ref.target } }
+      : { ...ref, status: "missing", metadata: null, message: "未找到该历史会话" };
   }
   const file = resolveFile(ref, workspace);
   if (!file) return { ...ref, status: "missing", metadata: null, message: "文件不存在或不在已登记目录内" };
@@ -257,6 +321,13 @@ function applyRange(text, range = {}) {
 
 export async function readReference(input, query = "", range = null, workspace = getWorkspace()) {
   const resolved = resolveReference(input, workspace);
+  if (resolved.kind === "session") {
+    const session = readSessionReference(resolved.target);
+    if (!session) return { ...resolved, status: "missing", message: "未找到该历史会话" };
+    const q = String(query || "").trim().toLowerCase();
+    const text = q ? session.text.split(/\r?\n/).filter((line) => line.toLowerCase().includes(q)).join("\n") : session.text;
+    return { ...resolved, status: "resolved", text: text.slice(0, MAX_READ_CHARS), truncated: text.length > MAX_READ_CHARS };
+  }
   if (resolved.kind === "knowledge") {
     const kb = await import("./kb.mjs");
     await kb.scan();

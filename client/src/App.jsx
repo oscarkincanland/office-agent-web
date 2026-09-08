@@ -36,7 +36,15 @@ function historyReferences(text = "") {
     const target = m[2].replace(/[),;。！？]+$/, "");
     if (target.includes("/") || target.includes("\\") || /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(target)) add("file", target, `@${target}`);
   }
+  for (const m of String(text).matchAll(/&会话\[([^\]]+)\]/g)) add("session", m[1], m[0]);
   return refs;
+}
+
+function cleanPersistedMessage(text = "") {
+  const source = String(text || "");
+  const goal = source.match(/(?:^|\n)\s*-?\s*(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=\n\s*-?\s*(?:模式|引用|输出要求|当前文件|工作流)[:：]|$)/i);
+  if (goal?.[1]) return goal[1].trim();
+  return source.replace(/^##\s*当前任务[\s\S]*?\n边界：[^\n]+\n\n?/i, "").trim();
 }
 
 function DeferredModule({ children, label = "模块" }) {
@@ -557,9 +565,10 @@ export default function App() {
         }
         // 若 assistant 有纯文本且没有 text block，追加为文本块；用户消息仍保留原始文本。
         if (role === "assistant" && text && !blocks.some((b) => b.type === "text")) blocks.push({ type: "text", text });
+        const displayText = role === "user" ? cleanPersistedMessage(text) : text;
         const currentDocMatch = text.match(/当前(?:打开|工作)文件:\s*([^\]\n]+)/);
         msgs.push({
-          id: e.id, role, text, images, blocks, references: historyReferences(text),
+          id: e.id, role, text: displayText, images, blocks, references: historyReferences(text),
           currentDoc: currentDocMatch?.[1]?.trim() || null, status: "done", createdAt: entryCreatedAt(e, m),
         });
       }
@@ -792,6 +801,7 @@ export default function App() {
          if (activeModule === "map") mapBridgeRef.current?.onOpenFile?.(name);
         else open(name);
       }}
+      referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
       sessions={visibleSessions}
       onSelectSession={handleSelectSession}
       onSessionChange={handleSessionChange}
@@ -910,7 +920,7 @@ export default function App() {
               threadId={threadId}
               activeModel={selectedModel}
               onModelChange={setSelectedModel}
-              sessions={visibleSessions}
+              sessions={sessions}
               unreadByThread={unreadByThread}
               onSelectSession={handleSelectSession}
               onRefreshSessions={refreshSessions}

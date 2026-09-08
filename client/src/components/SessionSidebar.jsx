@@ -65,6 +65,12 @@ function shortenCwd(cwd) {
   return "\u2026/" + parts.slice(-2).join("/");
 }
 
+function samePath(a, b) {
+  if (!a || !b) return false;
+  const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return normalize(a) === normalize(b);
+}
+
 // 文件大小格式化（文件树展示）
 function formatSize(bytes) {
   if (!bytes && bytes !== 0) return "";
@@ -233,6 +239,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [historyProjectId, setHistoryProjectId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
   const [rootOpen, setRootOpen] = useState(false);
@@ -244,6 +252,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [primaryTab, setPrimaryTab] = useState("project");
   const projectTypes = [...new Set(projects.map((project) => project.type || "综合项目"))];
   const currentProject = projects.find((project) => project.id === currentProjectId) || null;
+  const projectSessions = (project) => sessions.filter((session) => session.projectId === project.id || samePath(session.cwd, project.rootPath));
+  const historyProject = projects.find((project) => project.id === historyProjectId) || currentProject;
+  const historySessions = historyProject ? projectSessions(historyProject) : [];
 
   const refreshArtifacts = useCallback(async () => {
     setArtifactLoading(true);
@@ -296,6 +307,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       if (!v.ok) { alert("无法打开: " + (v.error || "无效目录")); return; }
       await onWorkspaceChange(dir);
       setCustomMode(false);
+      setSwitcherOpen(false);
     } catch (e) { alert("验证失败: " + e.message); }
     finally { setApplying(false); }
   };
@@ -437,6 +449,17 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       </div>
       {/* 顶部：项目 / 工作区选择器 + 新建会话 */}
       <div className="workspace-selector">
+        <button
+          type="button"
+          className="workspace-switcher-trigger"
+          onClick={() => setSwitcherOpen(true)}
+          title="选择项目和工作区"
+        >
+          <Icon name="folder" size={13} />
+          <span>{currentProject?.name || "选择项目"}</span>
+          <small>{currentWorkspace ? shortenCwd(currentWorkspace) : "默认工作区"}</small>
+          <Icon name="chevronDown" size={11} />
+        </button>
         {projects.length > 0 && (
           <>
             <span className="ws-label">项目</span>
@@ -520,6 +543,50 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           </button>
         </div>
       )}
+      {switcherOpen && (
+        <div className="workspace-switcher-backdrop" onClick={() => setSwitcherOpen(false)}>
+          <div className="workspace-switcher-dialog" role="dialog" aria-label="选择项目和工作区" onClick={(e) => e.stopPropagation()}>
+            <div className="workspace-switcher-head">
+              <div><Icon name="folder" size={14} /><strong>选择项目和工作区</strong></div>
+              <button className="mp-op" onClick={() => setSwitcherOpen(false)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="workspace-switcher-body">
+              <div className="workspace-switcher-section">
+                <div className="workspace-switcher-section-title">项目</div>
+                {projectTypes.map((type) => (
+                  <div key={type}>
+                    <div className="workspace-switcher-type">{type}</div>
+                    {projects.filter((project) => (project.type || "综合项目") === type).map((project) => (
+                      <button type="button" key={project.id} className={"workspace-switcher-option " + (project.id === currentProjectId ? "active" : "")} onClick={() => { onProjectChange?.(project.id); setSwitcherOpen(false); }}>
+                        <Icon name="folder" size={13} />
+                        <span><strong>{project.name}</strong><small>{project.status || "进行中"} · 会话 {project.sessionCount ?? projectSessions(project).length}</small></span>
+                        {project.pendingMemoryCount > 0 && <em>待沉淀 {project.pendingMemoryCount}</em>}
+                      </button>
+                    ))}
+                  </div>
+                ))}
+                {!projects.length && <div className="empty">暂无项目</div>}
+              </div>
+              <div className="workspace-switcher-section">
+                <div className="workspace-switcher-section-title">工作区目录</div>
+                {workspaces.map((workspaceItem) => (
+                  <button type="button" key={workspaceItem.path} className={"workspace-switcher-option " + (samePath(workspaceItem.path, currentWorkspace) ? "active" : "")} onClick={() => { onWorkspaceChange?.(workspaceItem.path); setSwitcherOpen(false); }}>
+                    <Icon name="folderOpen" size={13} />
+                    <span><strong>{workspaceItem.name}</strong><small>{shortenCwd(workspaceItem.path)}</small></span>
+                  </button>
+                ))}
+                <button type="button" className="workspace-switcher-custom" onClick={() => setCustomMode(true)}><Icon name="plus" size={13} /> 打开自定义目录</button>
+                {customMode && (
+                  <div className="workspace-switcher-custom-form">
+                    <input autoFocus value={customPath} placeholder="输入文件夹绝对路径" onChange={(e) => setCustomPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyCustom(); }} />
+                    <button type="button" className="btn-xs" onClick={applyCustom} disabled={applying}>{applying ? "验证中…" : "打开"}</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {currentProject && (
         <div className="project-context-strip" title={`当前项目：${currentProject.name}`}>
           <span className="project-context-name">{currentProject.name}</span>
@@ -540,11 +607,27 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="sidebar-project-list">
           <div className="sidebar-view-title"><span>我的项目</span><span>{projects.length}</span></div>
           {projects.map((project) => (
-            <button key={project.id} className={`sidebar-project-card ${project.id === currentProjectId ? "active" : ""}`} onClick={() => onProjectChange?.(project.id)}>
+            <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
               <Icon name="folder" size={15} />
               <span className="sidebar-project-main"><strong>{project.name}</strong><small>{project.type || "综合项目"} · {project.status || "进行中"}</small></span>
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
-            </button>
+              {project.id === currentProjectId && projectSessions(project).length > 0 && (
+                <div className="project-session-preview" onClick={(e) => e.stopPropagation()}>
+                  <div className="project-session-preview-head">
+                    <span><Icon name="history" size={11} /> 会话 {projectSessions(project).length}</span>
+                    <button type="button" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>查看全部</button>
+                  </div>
+                  {projectSessions(project).slice(0, 4).map((session) => (
+                    <button type="button" className="project-session-row" key={session.id} onClick={() => onSelectSession?.(session)}>
+                      <i data-status={session.runStatus || "idle"} />
+                      <span>{session.title || session.label || "未命名会话"}</span>
+                      <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
+                    </button>
+                  ))}
+                  {projectSessions(project).length > 4 && <button type="button" className="project-history-more" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>还有 {projectSessions(project).length - 4} 个会话</button>}
+                </div>
+              )}
+            </div>
           ))}
           {!projects.length && <div className="empty">暂无项目，可在设置中创建</div>}
         </div>
@@ -652,6 +735,32 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <Icon name="gear" size={13} /> 设置
         </button>
       </div>
+
+      {/* 项目会话历史：会话归属项目，不再和文件列表混在一起 */}
+      {modal === "history" && (
+        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+          <div className="sb-modal project-history-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sb-modal-head">
+              <Icon name="history" size={13} />
+              <span className="sb-modal-title">{historyProject?.name || "项目"} · 会话历史</span>
+              <span className="sb-modal-sub">共 {historySessions.length} 个，会话可独立切换、分支和恢复</span>
+              <button className="mp-op" onClick={() => setModal(null)} title="关闭"><Icon name="close" size={14} /></button>
+            </div>
+            <div className="sb-modal-body project-history-body">
+              <SessionList
+                sessions={historySessions}
+                unreadByThread={unreadByThread}
+                onSelect={(session) => { setModal(null); onSelectSession?.(session); }}
+                onDelete={onDeleteSession}
+                onRename={onRenameSession}
+                onFork={onForkSession}
+                onPin={onPinSession}
+                onFreeze={onFreezeSession}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 产物弹窗 */}
       {modal === "artifacts" && (

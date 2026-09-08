@@ -140,19 +140,12 @@ export function createTaskEnvelope(input = {}) {
 export function taskSummary(task) {
   if (!task) return "";
   return [
-    "## 任务封装（TaskEnvelope）",
-    `- 任务 ID: ${task.id}`,
-    `- 目标: ${task.goal || "（未提供）"}`,
-    `- 模式: ${task.modeLabel || modeLabel(task.mode)}（${task.modeDescription || modeDescription(task.mode)}）`,
-    task.workflowId ? `- 工作流: ${task.workflowId}` : "",
-    task.agentProfile ? `- Agent Profile: ${task.agentProfile}` : "",
-    task.profilePolicy ? `- Profile 策略：${task.profilePolicy.description}；上下文上限 ${task.profilePolicy.maxContextTokens} tokens；${task.profilePolicy.approval}` : "",
-    task.recoveryOf ? `- 恢复来源: ${task.recoveryOf}（${task.recoveryAction === "retry" ? "重试" : "继续"}）` : "",
-    task.currentFile ? `- 当前文件: ${task.currentFile}` : "",
-    task.references?.length ? `- 引用数: ${task.references.length}` : "- 引用数: 0",
-    task.capabilityPlan?.capabilities?.length ? `- 本轮能力: ${task.capabilityPlan.capabilities.map((item) => item.label).join("、")}` : "",
-    task.mode === "chat"
-      ? "- 输出要求：回答检索结果并明确列出来源；不修改文件、不执行脚本、不写入长期记忆。"
-      : "- 输出要求：完成后明确列出读取来源、修改文件、产物、假设和下一步。",
+    "## 当前任务",
+    `目标：${task.goal || "（未提供）"}`,
+    `模式：${task.modeLabel || modeLabel(task.mode)}`,
+    task.workflowId ? `工作流：${task.workflowId}` : "",
+    task.currentFile ? `当前文件：${task.currentFile}` : "",
+    task.references?.length ? `引用：${task.references.length} 项` : "",
+    task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具并汇报来源、修改、产物、假设和下一步。",
   ].filter(Boolean).join("\n");
 }

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import XLSX from "xlsx";
 import { parseReferences } from "../server/context.mjs";
-import { createTaskEnvelope } from "../server/task.mjs";
+import { createTaskEnvelope, taskSummary } from "../server/task.mjs";
 import { listWorkflows } from "../server/workflows.mjs";
 import { beginRun, finishRun, getRun, rollbackRun, runsDir } from "../server/runs.mjs";
 import { evaluateArtifactFile } from "../server/成果验收.mjs";
@@ -28,6 +28,9 @@ try {
   const refs = parseReferences("请分析 @文件[data/report.md] 和 @知识库[政策.md@本地库]");
   assert.equal(refs.length, 2);
   assert.equal(refs.some((r) => r.kind === "file"), true);
+  const sessionRef = parseReferences("继续看 &会话[session-test]")[0];
+  assert.equal(sessionRef.kind, "session");
+  assert.equal(sessionRef.target, "session-test");
   const cellRef = parseReferences("请看 @文件[data.xlsx#Sheet1!A1:B2]").find((r) => r.kind === "file");
   assert.equal(cellRef.target, "data.xlsx");
   assert.equal(cellRef.range.cell, "A1:B2");
@@ -35,6 +38,7 @@ try {
   const task = createTaskEnvelope({ goal: "整理报告", mode: "agent", threadId: "thread-test", references: refs });
   assert.equal(task.version, 1);
   assert.equal(task.references.length, 2);
+  assert.equal(taskSummary(task).includes("任务封装"), false);
 
   const workflows = listWorkflows([{ name: "od-workflow" }]);
   assert.equal(workflows.length, 4);

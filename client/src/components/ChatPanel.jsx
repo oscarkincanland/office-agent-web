@@ -49,6 +49,13 @@ const THINKING_KEY = "oaw_thinking_level";
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
+const COMPOSER_COMMANDS = [
+  { insert: "/compact", label: "压缩上下文", hint: "保留摘要并缩短当前 Pi 会话" },
+  { insert: "/new", label: "新建会话", hint: "在当前项目下创建独立会话" },
+  { insert: "/chat", label: "切换到 Chat", hint: "只读检索知识库、Skills 和工作区资料" },
+  { insert: "/agent", label: "切换到 Agent", hint: "执行任务、调用工具并生成产物" },
+  { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、& 的使用方式" },
+];
 
 const MODE_META = {
   chat: {
@@ -126,7 +133,8 @@ function normalizeUiMode(mode) {
 
 function referenceMarker(reference) {
   if (!reference?.target) return "";
-  const kind = reference.kind === "knowledge_dir" ? "知识库目录" : reference.kind === "knowledge" ? "知识库" : reference.kind === "template_dir" ? "模板目录" : reference.kind === "template" ? "模板" : "文件";
+  if (reference.kind === "session") return reference.source || "&会话[" + reference.target + "]";
+  const kind = reference.kind === "knowledge_dir" ? "知识库目录" : reference.kind === "knowledge" ? "知识库" : reference.kind === "template_dir" ? "模板目录" : reference.kind === "template" ? "模板" : reference.kind === "session" ? "会话" : "文件";
   return reference.source || `@${kind}[${reference.target}]`;
 }
 
@@ -194,6 +202,7 @@ function parseReferenceMarkers(text = "") {
   for (const m of String(text).matchAll(/@模板目录\[([^\]]+)\]/g)) add("template_dir", m[1], m[0]);
   for (const m of String(text).matchAll(/@模板\[([^\]]+)\]/g)) add("template", m[1], m[0]);
   for (const m of String(text).matchAll(/@文件\[([^\]]+)\]/g)) add("file", m[1], m[0]);
+  for (const m of String(text).matchAll(/&会话\[([^\]]+)\]/g)) add("session", m[1], m[0]);
   for (const m of String(text).matchAll(/(^|[\s(])@([^\s@，。！？\]}]+)/g)) {
     const target = m[2].replace(/[),;。！？]+$/, "");
     if (/^(?:文件|知识库|模板|模板目录)\[/.test(target)) continue;
@@ -202,7 +211,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -239,6 +248,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
+  const [composerMenu, setComposerMenu] = useState(null);
+  const [composerIndex, setComposerIndex] = useState(0);
 
   useEffect(() => { onModeChange?.(normalizeUiMode(editMode)); }, [editMode, onModeChange]);
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
@@ -272,6 +283,42 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const previousThreadRef = useRef(threadId);
 
   const currentMode = MODE_META[normalizeUiMode(editMode)] || MODE_META.chat;
+
+  const composerItems = useMemo(() => {
+    if (!composerMenu) return [];
+    const query = composerMenu.query.toLowerCase();
+    if (composerMenu.symbol === "/") {
+      return COMPOSER_COMMANDS.filter((item) => !query || (item.insert + " " + item.label + " " + item.hint).toLowerCase().includes(query));
+    }
+    if (composerMenu.symbol === "@") {
+      return [...new Set(referenceFiles.map((file) => String(file || "").trim()).filter(Boolean))]
+        .filter((file) => !query || file.toLowerCase().includes(query))
+        .slice(0, 12)
+        .map((file) => ({ insert: "@" + file, label: file, hint: "引用当前工作区文件" }));
+    }
+    return sessions
+      .filter((session) => !query || String(session.title || "").concat(" ", session.label || "", " ", session.id).toLowerCase().includes(query))
+      .slice(0, 12)
+      .map((session) => ({ insert: "&会话[" + session.id + "]", label: session.title || session.label || "未命名会话", hint: "引用这段历史会话", session }));
+  }, [composerMenu, referenceFiles, sessions]);
+
+  useEffect(() => {
+    if (composerItems.length === 0) setComposerIndex(0);
+    else setComposerIndex((index) => Math.min(index, composerItems.length - 1));
+  }, [composerItems]);
+
+  const composerTrigger = (value) => {
+    const match = String(value || "").match(/(?:^|\s)([\/@&])([^\s]*)$/);
+    if (!match) return null;
+    return { symbol: match[1], query: match[2] || "", start: value.length - match[0].length + (match[0].startsWith(" ") ? 1 : 0) };
+  };
+
+  const insertComposerItem = (item) => {
+    if (!composerMenu || !item) return;
+    setInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
+    setComposerMenu(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
 
   useEffect(() => {
     if (!embedded || lastPrompt || !messages.length) return;
@@ -1262,6 +1309,21 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const sourceReferences = source.references || references;
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
+    if (!options.payload && /^\/(?:compact|new|chat|agent|help)$/i.test(rawText)) {
+      const command = rawText.toLowerCase();
+      setInput("");
+      setComposerMenu(null);
+      if (command === "/compact") return compactContext();
+      if (command === "/new") { onNewSession?.(workspace); return; }
+      if (command === "/chat" || command === "/agent") {
+        const mode = command.slice(1);
+        setEditMode(mode);
+        pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : "Agent（执行与产出）") + "。");
+        return;
+      }
+      pushSystem("输入帮助：/compact 压缩上下文；/new 新建会话；/chat 或 /agent 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
+      return;
+    }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
     const contextNotes = source.contextNotes || injectedContext;
     const contextImages = contextNotes.flatMap((note) => note.images || []);
@@ -1754,7 +1816,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             <span className="reference-bar-label">引用</span>
             {references.map((ref) => (
               <span className="reference-chip" key={ref.id} title={ref.target}>
-                <span className="reference-chip-kind">@</span>{ref.target}
+                <span className="reference-chip-kind">{ref.kind === "session" ? "&" : "@"}</span>{ref.target}
                 <button type="button" onClick={() => setReferences((prev) => prev.filter((r) => r.id !== ref.id))} aria-label={`移除引用 ${ref.target}`}>×</button>
               </span>
             ))}
@@ -1778,12 +1840,45 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             </div>
           )}
           <div className="chat-input-row">
+            {composerMenu && composerItems.length > 0 && (
+              <div className="composer-suggestions" role="listbox" aria-label="输入建议">
+                {composerItems.map((item, index) => (
+                  <button
+                    key={item.insert}
+                    type="button"
+                    role="option"
+                    aria-selected={index === composerIndex}
+                    className={index === composerIndex ? "active" : ""}
+                    onMouseDown={(e) => { e.preventDefault(); insertComposerItem(item); }}
+                  >
+                    <span className="composer-suggestion-main">{item.insert}</span>
+                    <span className="composer-suggestion-label">{item.label}</span>
+                    <small>{item.hint}</small>
+                  </button>
+                ))}
+              </div>
+            )}
             <textarea
               ref={textareaRef}
               value={input}
               disabled={frozen}
               placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…  @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话"}
               onKeyDown={(e) => {
+                if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault();
+                  setComposerIndex((index) => (index + (e.key === "ArrowDown" ? 1 : -1) + composerItems.length) % composerItems.length);
+                  return;
+                }
+                if (composerMenu && composerItems.length && e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  insertComposerItem(composerItems[composerIndex]);
+                  return;
+                }
+                if (composerMenu && e.key === "Escape") {
+                  e.preventDefault();
+                  setComposerMenu(null);
+                  return;
+                }
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   send();
@@ -1795,7 +1890,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               }}
               onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; }}
               onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setInput(value);
+                setComposerMenu(composerTrigger(value));
+              }}
             />
             <div className="input-send">
               {busy ? (
