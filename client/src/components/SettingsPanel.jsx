@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -233,7 +233,7 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
   );
 }
 
-export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
+export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
@@ -246,11 +246,26 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [authKey, setAuthKey] = useState("");
   const [authMsg, setAuthMsg] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [customProviderDraft, setCustomProviderDraft] = useState({ provider: "custom-api", baseUrl: "https://api.openai.com/v1", api: "openai-completions", modelId: "custom-model", modelName: "自定义模型", contextWindow: "", reasoning: true, vision: false });
+  const [customProviderMsg, setCustomProviderMsg] = useState("");
+  const [customProviderSaving, setCustomProviderSaving] = useState(false);
   const [probeLoading, setProbeLoading] = useState(false);
   const [probeMsg, setProbeMsg] = useState("");
   const [modelList, setModelList] = useState(models);
   const [modelRefreshLoading, setModelRefreshLoading] = useState(false);
   const [modelRefreshMsg, setModelRefreshMsg] = useState("");
+  const [piConfig, setPiConfig] = useState(null);
+  const [piImport, setPiImport] = useState(null);
+  const [piImporting, setPiImporting] = useState(false);
+  const [piImportSessions, setPiImportSessions] = useState(false);
+  const [piImportMsg, setPiImportMsg] = useState("");
+  const [networkDraft, setNetworkDraft] = useState({ mode: "direct", proxyUrl: "", noProxy: "localhost,127.0.0.1,::1" });
+  const [networkStatus, setNetworkStatus] = useState(null);
+  const [networkSaving, setNetworkSaving] = useState(false);
+  const [networkMsg, setNetworkMsg] = useState("");
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsMsg, setDiagnosticsMsg] = useState("");
   const [version, setVersion] = useState("");
   // 底图服务 Key（服务端不回传明文，仅状态）
   const [basemapKeys, setBasemapKeys] = useState({ tianditu: "", maptiler: "", geoapify: "" });
@@ -266,6 +281,39 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const availableModels = modelList.length ? modelList : models;
   const selectedModelInfo = availableModels.find((item) => item.id === (activeModel || defaultModel)) || null;
   const configuredProviderCount = providers ? Object.keys(providers).length : 0;
+
+  const loadDiagnostics = useCallback(async () => {
+    if (diagnosticsLoading) return;
+    setDiagnosticsLoading(true);
+    try {
+      const result = await agentDiagnostics(clientId, threadId);
+      setDiagnostics(result);
+      setDiagnosticsMsg("");
+    } catch (error) {
+      setDiagnosticsMsg(`诊断读取失败 · ${error.message}`);
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }, [clientId, threadId, diagnosticsLoading]);
+
+  const loadPiConfiguration = useCallback(async () => {
+    const [statusResult, previewResult, networkResult] = await Promise.allSettled([
+      agentConfigStatus(),
+      agentImportPreview(),
+      agentNetworkSettings(),
+    ]);
+    if (statusResult.status === "fulfilled") setPiConfig(statusResult.value);
+    if (previewResult.status === "fulfilled") setPiImport(previewResult.value);
+    if (networkResult.status === "fulfilled") {
+      const value = networkResult.value || {};
+      setNetworkStatus(value);
+      setNetworkDraft({
+        mode: value.mode || "direct",
+        proxyUrl: "",
+        noProxy: value.noProxy || "localhost,127.0.0.1,::1",
+      });
+    }
+  }, []);
 
   // 消息字体大小 → CSS 变量（.msg 生效）
   useEffect(() => {
@@ -283,6 +331,8 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     })();
     // 已配置的 API Key（掩码）
     agentAuth().then((r) => setProviders(r.providers || {})).catch(() => {});
+    loadPiConfiguration().catch(() => {});
+    loadDiagnostics().catch(() => {});
     // 底图服务 Key 状态
     mapSettings()
       .then((r) => {
@@ -290,7 +340,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey, geoapify: !!b.geoapifyKey });
       })
       .catch(() => {});
-  }, []);
+  }, [loadPiConfiguration]);
 
   const saveBasemaps = async () => {
     setBasemapSaving(true);
@@ -316,11 +366,19 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     if (!key) { setAuthMsg("请输入 API Key"); return; }
     setAuthLoading(true);
     try {
-      await agentAuthSave(authProvider, key);
+      let provider = authProvider;
+      let targetModel = activeModel || defaultModel;
+      if (authProvider === "custom") {
+        targetModel = await saveCustomProvider();
+        provider = customProviderDraft.provider.trim();
+      }
+      await agentAuthSave(provider, key);
       const r = await agentAuth();
       setProviders(r.providers || {});
       setAuthKey("");
-      setAuthMsg("已保存 ✓");
+      if (targetModel && targetModel !== activeModel) onModelChange?.(targetModel);
+      setAuthMsg(`已保存 ${provider} ✓`);
+      await loadDiagnostics();
     } catch (e) {
       setAuthMsg("保存失败: " + e.message);
     }
@@ -333,6 +391,59 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     await agentAuthRemove(provider).catch(() => {});
     const r = await agentAuth();
     setProviders(r.providers || {});
+    await loadDiagnostics();
+  };
+
+  const importLocalPi = async () => {
+    if (piImporting) return;
+    if (!piImport?.available) {
+      setPiImportMsg("没有检测到可导入的本地 Pi 配置");
+      return;
+    }
+    const providerCount = Number(piImport.credentialCount ?? piImport.providers?.length ?? 0);
+    const sessionCount = Number(piImport.sessionCount ?? piImport.sessions?.count ?? 0);
+    const sessionNotice = piImportSessions ? `，并导入最多 ${sessionCount} 个历史会话` : "；历史会话暂不导入";
+    if (!confirm(`将本地 Pi 的模型配置和 ${providerCount} 个供应商凭据复制为规聚独立快照${sessionNotice}。源配置不会被修改。`)) return;
+    setPiImporting(true);
+    setPiImportMsg("正在复制配置快照…");
+    try {
+      const result = await agentImportConfig({ includeModels: true, includeSettings: true, includeCredentials: true, includeSessions: piImportSessions });
+      const sessionResult = result.sessions || {};
+      setPiImportMsg(`导入完成 · ${result.imported?.length || 0} 项配置${piImportSessions ? ` · ${sessionResult.imported || 0} 个会话` : ""}`);
+      const authResult = await agentAuth();
+      setProviders(authResult.providers || {});
+      await loadPiConfiguration();
+      await refreshModelCatalog();
+    } catch (error) {
+      setPiImportMsg(`导入失败 · ${error.message}`);
+    } finally {
+      setPiImporting(false);
+    }
+  };
+
+  const saveNetworkSettings = async () => {
+    if (networkSaving) return;
+    if (networkDraft.mode === "manual" && !networkDraft.proxyUrl.trim() && !networkStatus?.hasProxy) {
+      setNetworkMsg("手动代理模式需要填写代理地址");
+      return;
+    }
+    setNetworkSaving(true);
+    setNetworkMsg("正在应用模型网络设置…");
+    try {
+      const result = await agentNetworkSettingsSave({
+        mode: networkDraft.mode,
+        noProxy: networkDraft.noProxy,
+        ...(networkDraft.proxyUrl.trim() ? { proxyUrl: networkDraft.proxyUrl.trim() } : { keepExistingProxy: true }),
+      });
+      setNetworkStatus(result);
+      setNetworkDraft((value) => ({ ...value, proxyUrl: "", noProxy: result.noProxy || value.noProxy }));
+      setNetworkMsg("网络设置已保存，新建 Agent 请求将使用该设置");
+      await loadPiConfiguration();
+    } catch (error) {
+      setNetworkMsg(`保存失败 · ${error.message}`);
+    } finally {
+      setNetworkSaving(false);
+    }
   };
 
   const providerOptions = [...new Set([
@@ -340,6 +451,30 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     ...Object.keys(providers || {}),
     "anthropic", "openai", "gemini", "deepseek", "moonshot", "qwen", "custom",
   ])];
+
+  const saveCustomProvider = async () => {
+    if (customProviderSaving) return null;
+    const draft = { ...customProviderDraft, provider: customProviderDraft.provider.trim(), baseUrl: customProviderDraft.baseUrl.trim(), modelId: customProviderDraft.modelId.trim(), modelName: customProviderDraft.modelName.trim() };
+    if (!draft.provider || !draft.baseUrl || !draft.modelId) {
+      setCustomProviderMsg("请填写供应商 ID、接口地址和模型 ID");
+      throw new Error("自定义模型信息不完整");
+    }
+    setCustomProviderSaving(true);
+    setCustomProviderMsg("正在保存自定义模型…");
+    try {
+      const result = await agentCustomProvider(draft);
+      const target = result.model || `${draft.provider}/${draft.modelId}`;
+      setCustomProviderMsg(`已保存 ${target}；现在可以保存凭据并测试`);
+      onModelChange?.(target);
+      await refreshModelCatalog();
+      return target;
+    } catch (error) {
+      setCustomProviderMsg(`保存失败 · ${error.message}`);
+      throw error;
+    } finally {
+      setCustomProviderSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!providerOptions.includes(authProvider)) setAuthProvider(providerOptions[0] || "custom");
@@ -361,8 +496,8 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     }
   };
 
-  const probe = async () => {
-    const target = String(activeModel || defaultModel || "").trim();
+  const probe = async (targetOverride = "") => {
+    const target = String(targetOverride || activeModel || defaultModel || "").trim();
     if (!target || probeLoading) {
       if (!target) setProbeMsg("请先选择模型");
       return;
@@ -372,7 +507,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     try {
       const result = await probeAgentModel(target, 15000);
       if (result.ok) {
-        setProbeMsg(`连接成功 · ${result.latencyMs} ms${result.response?.preview ? ` · ${result.response.preview}` : ""}`);
+      setProbeMsg(`连接成功 · ${result.latencyMs} ms${result.response?.preview ? ` · ${result.response.preview}` : ""}`);
       } else {
         const detail = result.diagnostic || {};
         setProbeMsg(`连接失败 · ${detail.category || "unknown"} · ${detail.message || "未返回错误"}`);
@@ -381,8 +516,20 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       setProbeMsg(`连接测试请求失败 · ${error.message}`);
     } finally {
       setProbeLoading(false);
+      await loadDiagnostics();
     }
   };
+
+  const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model?.selected || "").trim();
+  const diagnosticModelReady = Boolean(diagnosticModel && (diagnostics?.model?.selectedInCatalog || selectedModelInfo) && diagnostics?.model?.selectedAvailable !== false);
+  const diagnosticRuntimeStatus = String(diagnostics?.runtime?.health?.status || "");
+  const diagnosticRuntimeReady = ["idle", "running", "busy"].includes(diagnosticRuntimeStatus);
+  const diagnosticCards = [
+    { label: "Pi SDK", value: integration?.piPackageVersion || diagnostics?.service?.version ? "已加载" : "未加载", ok: Boolean(integration?.piPackageVersion || diagnostics?.service?.version) },
+    { label: "模型目录", value: diagnosticModelReady ? "已就绪" : diagnosticModel ? "未匹配" : "未选择", ok: diagnosticModelReady },
+    { label: "供应商凭据", value: diagnostics?.model?.authConfigured || configuredProviderCount ? "已配置" : "未配置", ok: Boolean(diagnostics?.model?.authConfigured || configuredProviderCount) },
+    { label: "真实调用", value: probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试", ok: probeMsg.startsWith("连接成功") },
+  ];
 
   const resetAll = () => {
     if (!confirm("确定恢复默认设置并清空界面状态？将刷新页面。")) return;
@@ -533,20 +680,97 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
             <div className="model-runtime-version">SDK {integration?.piPackageVersion || "0.85.1"} · Node 22+</div>
           </div>
         </div>
+        <div className="model-credentials-card model-config-source-card">
+          <div className="model-credentials-head">
+            <div>
+              <strong>规聚独立配置</strong>
+              <p>模型和凭据由 Open Plan 自己管理；本地 Pi 只作为一次性导入来源，不会持续同步。</p>
+            </div>
+            <span className={`sp-badge ${piConfig?.configured ? "ok" : "warn"}`}>
+              {piConfig?.source === "environment-override" ? "环境覆盖" : piConfig?.configured ? "规聚配置" : "尚未配置"}
+            </span>
+          </div>
+          <div className="model-health-grid">
+            <span><i className={`status-dot ${integration?.piPackageVersion ? "" : "idle"}`} />Pi SDK<strong>{integration?.piPackageVersion ? "已加载" : "未加载"}</strong></span>
+            <span><i className={`status-dot ${piConfig?.modelsConfigured ? "" : "idle"}`} />模型配置<strong>{piConfig?.modelsConfigured ? "已就绪" : "待导入"}</strong></span>
+            <span><i className={`status-dot ${configuredProviderCount ? "" : "idle"}`} />供应商凭据<strong>{configuredProviderCount ? `${configuredProviderCount} 个` : "未配置"}</strong></span>
+            <span><i className={`status-dot ${probeMsg.startsWith("连接成功") ? "" : "idle"}`} />真实调用<strong>{probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试"}</strong></span>
+          </div>
+          <div className="model-config-path" title={piConfig?.dataDir || ""}>{piConfig?.dataDir || "正在读取规聚配置目录…"}</div>
+          {piConfig?.storage?.fallback && <div className="model-feedback model-config-fallback">{piConfig.storage.message || "默认配置目录不可写，当前使用项目内备用目录"}</div>}
+          <div className="model-import-row">
+            <span>{piImport?.available ? `检测到本地 Pi · ${piImport.credentialCount ?? piImport.providers?.length ?? 0} 个供应商 · ${piImport.sessionCount ?? piImport.sessions?.count ?? 0} 个会话` : "未检测到本地 Pi 配置；可以直接在下方填写供应商凭据"}</span>
+            <div className="model-import-actions">
+              <label title="默认只导入模型与凭据，避免大量旧会话挤入当前历史列表"><input type="checkbox" checked={piImportSessions} onChange={(event) => setPiImportSessions(event.target.checked)} /> 同时导入历史会话</label>
+              <button className="btn-sm" onClick={importLocalPi} disabled={!piImport?.available || piImporting}><Icon name="download" size={12} /> {piImporting ? "导入中…" : "从本地 Pi 导入配置"}</button>
+            </div>
+          </div>
+          {piImportMsg && <div className="model-feedback">{piImportMsg}</div>}
+        </div>
         {(probeMsg || modelRefreshMsg) && <div className="model-feedback">{probeMsg || modelRefreshMsg}</div>}
+        <div className="model-credentials-card model-diagnostics-card">
+          <div className="model-credentials-head">
+            <div><strong>连接诊断</strong><p>把“SDK 已加载、模型已配置、凭据已配置、真实调用”分开显示，避免只看到“正在连接模型”。</p></div>
+            <button className="btn-sm" onClick={loadDiagnostics} disabled={diagnosticsLoading}><Icon name="refresh" size={12} /> {diagnosticsLoading ? "读取中…" : "刷新诊断"}</button>
+          </div>
+          {diagnostics ? <>
+            <div className="model-diagnostics-grid">
+              {diagnosticCards.map((item) => <span key={item.label} className={item.ok ? "ok" : "warn"}><i className={`status-dot ${item.ok ? "" : "idle"}`} /><span>{item.label}</span><strong>{item.value}</strong></span>)}
+            </div>
+            <div className="model-diagnostics-meta">
+              <span>服务 v{diagnostics.service?.version || integration?.version || "未知"} · PID {diagnostics.service?.pid || "未知"}</span>
+              <span>Runtime：{diagnosticRuntimeStatus || "未创建"}{diagnostics.runtime?.health?.message ? ` · ${diagnostics.runtime.health.message}` : diagnosticRuntimeReady ? " · 可用" : ""}</span>
+              <span>当前模型：{diagnosticModel || "未选择"}</span>
+            </div>
+            {diagnostics.model?.catalogError && <div className="model-diagnostics-error">模型目录读取失败：{diagnostics.model.catalogError}</div>}
+            {Array.isArray(diagnostics.recentFailures) && diagnostics.recentFailures.length > 0 && <details className="model-diagnostics-failures">
+              <summary>最近失败 {diagnostics.recentFailures.length} 条</summary>
+              {diagnostics.recentFailures.slice(0, 3).map((failure, index) => <div key={`${failure.requestId || failure.timestamp || "failure"}-${index}`}><code>{failure.errorCode || failure.code || "MODEL_ERROR"}</code><span>{failure.message || "未提供错误信息"}</span></div>)}
+            </details>}
+          </> : <div className="model-diagnostics-empty">{diagnosticsLoading ? "正在读取服务、模型目录和 Runtime 状态…" : "尚未读取诊断状态"}</div>}
+          {diagnosticsMsg && <div className="model-feedback">{diagnosticsMsg}</div>}
+          <div className="sp-note">诊断接口只返回版本、状态、错误码和掩码信息，不返回 API Key；Runtime 尚未创建通常表示还没有在当前会话启动 Agent。</div>
+        </div>
         <div className="model-credentials-card">
           <div className="model-credentials-head"><div><strong>供应商凭据</strong><p>仅填写当前使用的 Provider；保存后可用“测试真实连接”验证。</p></div><span className={`sp-badge ${configuredProviderCount ? "ok" : "warn"}`}>{configuredProviderCount ? `${configuredProviderCount} 个已配置` : "尚未配置"}</span></div>
+          {authProvider === "custom" && <div className="custom-provider-editor">
+            <label><span>供应商 ID</span><input className="sp-input" value={customProviderDraft.provider} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, provider: e.target.value }))} placeholder="例如 my-gateway" /></label>
+            <label><span>接口协议</span><select className="sp-select" value={customProviderDraft.api} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, api: e.target.value }))}><option value="openai-completions">OpenAI Chat Completions</option><option value="anthropic-messages">Anthropic Messages</option><option value="openai-codex-responses">OpenAI Responses</option></select></label>
+            <label className="custom-provider-url"><span>接口地址</span><input className="sp-input" value={customProviderDraft.baseUrl} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, baseUrl: e.target.value }))} placeholder="https://你的网关/v1" /></label>
+            <label><span>模型 ID</span><input className="sp-input" value={customProviderDraft.modelId} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, modelId: e.target.value }))} placeholder="例如 gpt-4o-mini" /></label>
+            <label><span>显示名称</span><input className="sp-input" value={customProviderDraft.modelName} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, modelName: e.target.value }))} placeholder="自定义模型" /></label>
+            <label><span>上下文上限</span><input className="sp-input" type="number" min="1" value={customProviderDraft.contextWindow} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, contextWindow: e.target.value }))} placeholder="可选，如 128000" /></label>
+            <label className="custom-provider-check"><input type="checkbox" checked={customProviderDraft.reasoning} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, reasoning: e.target.checked }))} /> 支持思考</label>
+            <label className="custom-provider-check"><input type="checkbox" checked={customProviderDraft.vision} onChange={(e) => setCustomProviderDraft((value) => ({ ...value, vision: e.target.checked }))} /> 支持图片</label>
+            <button className="btn-sm" onClick={() => saveCustomProvider().catch(() => {})} disabled={customProviderSaving}>{customProviderSaving ? "保存中…" : "保存自定义模型"}</button>
+            {customProviderMsg && <span className="sp-auth-msg custom-provider-msg">{customProviderMsg}</span>}
+          </div>}
           <div className="sp-auth model-auth-row">
             <select className="sp-select" value={authProvider} onChange={(e) => setAuthProvider(e.target.value)}>
               {providerOptions.map((provider) => <option key={provider} value={provider}>{PROVIDER_LABELS[provider] || provider}</option>)}
             </select>
             <input className="sp-input" type="password" placeholder="粘贴 API Key（不会回显）" value={authKey} onChange={(e) => setAuthKey(e.target.value)} />
             <button className="btn-sm primary" onClick={saveAuth} disabled={authLoading}>{authLoading ? "保存中…" : "保存凭据"}</button>
+            <button className="btn-sm" onClick={() => probe()} disabled={probeLoading || (!activeModel && !defaultModel)} title="使用已保存的凭据发送最小请求">{probeLoading ? "测试中…" : "测试已保存凭据"}</button>
             {authMsg && <span className="sp-auth-msg">{authMsg}</span>}
           </div>
           {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button></span>)}</div>}
         </div>
-        <div className="sp-note">模型目录来自 Pi；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
+        <div className="model-credentials-card model-network-card">
+          <div className="model-credentials-head">
+            <div><strong>模型网络</strong><p>只影响 Pi 模型请求，不改变地图、Office CLI 和浏览器网络。</p></div>
+            <span className={`sp-badge ${networkStatus ? "ok" : "warn"}`}>{networkStatus?.mode === "manual" ? "手动代理" : networkStatus?.mode === "system" ? "系统代理" : "直接连接"}</span>
+          </div>
+          <div className="model-network-grid">
+            <label><span>连接方式</span><select className="sp-select" value={networkDraft.mode} onChange={(event) => setNetworkDraft((value) => ({ ...value, mode: event.target.value }))}><option value="direct">直接连接</option><option value="system">读取系统环境代理</option><option value="manual">手动代理</option></select></label>
+            {networkDraft.mode === "manual" && <label><span>代理地址</span><input className="sp-input" type="password" value={networkDraft.proxyUrl} onChange={(event) => setNetworkDraft((value) => ({ ...value, proxyUrl: event.target.value }))} placeholder={networkStatus?.hasProxy ? "已保存代理；留空保持不变" : "http://127.0.0.1:端口"} /></label>}
+            <label className="model-network-bypass"><span>不使用代理</span><input className="sp-input" value={networkDraft.noProxy} onChange={(event) => setNetworkDraft((value) => ({ ...value, noProxy: event.target.value }))} placeholder="localhost,127.0.0.1,::1" /></label>
+            <button className="btn-sm primary" onClick={saveNetworkSettings} disabled={networkSaving}>{networkSaving ? "保存中…" : "保存网络设置"}</button>
+          </div>
+          {networkStatus?.proxy && <div className="model-config-path">当前代理：{networkStatus.proxy}</div>}
+          {networkMsg && <div className="model-feedback">{networkMsg}</div>}
+        </div>
+        <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
       </div>}
 
       {settingsSection === "services" && <>

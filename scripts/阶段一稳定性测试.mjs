@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteJson, readJsonFile } from "../server/持久化工具.mjs";
-import { beginRun, finishRun, getRun, recoverActiveRuns } from "../server/runs.mjs";
+import { beginRun, finishRun, getRun, normalizeTodoItems, recoverActiveRuns, updateRunTodo } from "../server/runs.mjs";
 import { listEvents } from "../server/事件存储.mjs";
 import { validateArtifactFile } from "../server/产物验证.mjs";
 import {
@@ -105,6 +105,19 @@ try {
   const recoveredIds = recoverActiveRuns({ onlyIds: [recoverableRun.id] });
   assert.ok(recoveredIds.includes(recoverableRun.id), "服务重启后活动 Run 应进入恢复态");
   assert.equal(getRun(recoverableRun.id).status, "recovering");
+
+  const normalizedTodos = normalizeTodoItems([
+    { title: "读取资料", status: "running" },
+    { title: "形成结论", status: "done", note: "已完成" },
+  ]);
+  assert.equal(normalizedTodos[0].status, "in_progress", "Todo running 应归一化为 in_progress");
+  assert.equal(normalizedTodos[1].status, "completed", "Todo done 应归一化为 completed");
+  const todoRun = beginRun({ clientId: "client_phase1", threadId: "thread_phase1", cwd: workspace, task: { goal: "结构化待办测试" } });
+  createdRunIds.add(todoRun.id);
+  const todoState = updateRunTodo(todoRun.id, normalizedTodos);
+  assert.equal(todoState.todoVersion, 1);
+  assert.equal(todoState.todoProgress.completed, 1);
+  assert.ok(listEvents({ runId: todoRun.id }).events.some((item) => item.type === "todo_updated"), "Todo 更新应进入持久化事件流");
 
   console.log("phase1 stability: ok");
 } finally {

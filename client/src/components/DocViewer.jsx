@@ -490,10 +490,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       )}
       <div className="docview-body">
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+          <DocxViewer name={doc.name} revision={doc.previewRevision} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
-          <PptxViewer name={doc.name} />
+          <PptxViewer name={doc.name} revision={doc.previewRevision} />
         )}
         {doc.kind === "html" && doc.ext !== "docx" && doc.ext !== "pptx" && (
           <div className="docframe-container">

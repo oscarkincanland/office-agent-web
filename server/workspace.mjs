@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -21,7 +20,7 @@ function resolveOfficecli() {
   if (fs.existsSync(bundled)) return bundled;
   const onPath = process.platform === "win32" ? null : (() => { try { return requireResolveInPath("officecli"); } catch { return null; } })();
   if (onPath) return onPath;
-  return path.join(process.env.LOCALAPPDATA || "C:\\Users\\admin\\AppData\\Local", "OfficeCLI", "officecli.exe");
+  return path.join(process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || process.env.HOME || ".", "AppData", "Local"), "OfficeCLI", "officecli.exe");
 }
 
 function requireResolveInPath(name) {
@@ -37,11 +36,9 @@ function requireResolveInPath(name) {
 
 export const OFFICECLI = resolveOfficecli();
 
-export const AGENT_DIR =
-  process.env.PI_AGENT_DIR ||
-  (process.platform === "win32"
-    ? "C:\\Users\\admin\\.pi\\agent"
-    : path.join(os.homedir(), ".pi", "agent"));
+// AGENT_DIR 是规聚自己的配置目录；LOCAL_PI_AGENT_DIR 仅用于检测/显式导入。
+// 两者由配置管理器统一解析，避免业务模块继续绑定某台机器的用户目录。
+export { AGENT_DIR, LOCAL_PI_AGENT_DIR } from "./Pi配置管理.mjs";
 
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 

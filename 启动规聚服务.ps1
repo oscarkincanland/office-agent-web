@@ -1,6 +1,7 @@
 param(
   [switch]$OpenPage,
-  [switch]$AllowOffline
+  [switch]$AllowOffline,
+  [switch]$StrictNetwork
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,18 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ServiceUrl = "http://127.0.0.1:3002"
 $PackagePath = Join-Path $ProjectRoot "package.json"
 $LocalVersion = ([string](Get-Content -LiteralPath $PackagePath -Raw | ConvertFrom-Json).version).Trim()
+$LogDirectoryName = -join ([char[]]@(0x8FD0, 0x884C, 0x65E5, 0x5FD7))
+$LogFileName = (-join ([char[]]@(0x670D, 0x52A1, 0x76D1, 0x7763))) + ".log"
+$SupervisorLog = Join-Path (Join-Path $ProjectRoot $LogDirectoryName) $LogFileName
+$RestartDelaySeconds = 3
+$MaxRapidRestarts = 5
+
+New-Item -ItemType Directory -Path (Split-Path -Parent $SupervisorLog) -Force | Out-Null
+function Write-SupervisorLog([string]$Message) {
+  $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
+  Add-Content -LiteralPath $SupervisorLog -Value $line -Encoding UTF8
+  Write-Host $line
+}
 
 function Test-Service([string]$Url) {
   try {
@@ -40,18 +53,46 @@ if (-not $AllowOffline) {
     $Details = $_.Exception.Message
     if ($Details -match "401|403|Unauthorized|Forbidden") {
       Write-Host "Model network check passed: OpenCode Go is reachable (authentication response is expected)." -ForegroundColor Green
-    } else {
-      Write-Error "Model network is unreachable; startup stopped to prevent repeated Agent connection failures. Details: $Details`nUse -AllowOffline only for offline map/document work."
+    } elseif ($StrictNetwork) {
+      Write-Error "Model network is unreachable; strict startup check stopped the service. Details: $Details`nRemove -StrictNetwork to start the local UI and let Agent requests retry at runtime."
       exit 2
+    } else {
+      Write-Warning "Model network check failed; the local UI will still start. Agent requests will report and retry the provider failure at runtime. Details: $Details"
     }
   }
 }
 
 Push-Location $ProjectRoot
 try {
-  Write-Host "Starting Open Plan service: $ServiceUrl" -ForegroundColor Cyan
-  & node.exe server/index.mjs
-  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $rapidRestarts = 0
+  while ($true) {
+    $listening = @()
+    $listening = @(Get-NetTCPConnection -LocalPort 3002 -State Listen -ErrorAction SilentlyContinue)
+    if ($listening.Count -gt 0) {
+      Write-SupervisorLog "Port 3002 is already occupied. Supervisor stopped to avoid duplicate services."
+      exit 3
+    }
+    $startAt = Get-Date
+    Write-SupervisorLog "Starting Open Plan service at $ServiceUrl (version $LocalVersion)."
+    & node.exe server/index.mjs
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -eq 0) {
+      Write-SupervisorLog "Service stopped normally (exit code $exitCode)."
+      break
+    }
+
+    $endedAt = Get-Date
+    if (($endedAt - $startAt).TotalSeconds -lt 30) { $rapidRestarts++ } else { $rapidRestarts = 0 }
+    if ($rapidRestarts -ge $MaxRapidRestarts) {
+      Write-SupervisorLog "Service exited rapidly $rapidRestarts times. Retrying after 30 seconds."
+      Start-Sleep -Seconds 30
+      $rapidRestarts = 0
+    } else {
+      Write-SupervisorLog "Service exited unexpectedly (exit code $exitCode). Restarting after $RestartDelaySeconds seconds."
+      Start-Sleep -Seconds $RestartDelaySeconds
+    }
+  }
 } finally {
   Pop-Location
 }

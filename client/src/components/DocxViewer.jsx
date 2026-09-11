@@ -41,7 +41,7 @@ const HEADING_OPTIONS = [
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
 
-export default function DocxViewer({ name, onInsertContext, onSendToAgent }) {
+export default function DocxViewer({ name, revision = 0, onInsertContext, onSendToAgent }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -137,7 +137,7 @@ export default function DocxViewer({ name, onInsertContext, onSendToAgent }) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw`);
+      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
       const data = new Uint8Array(buf);
@@ -165,11 +165,11 @@ export default function DocxViewer({ name, onInsertContext, onSendToAgent }) {
     } finally {
       setLoading(false);
     }
-  }, [name, showComments, showChanges]);
+  }, [name, revision, showComments, showChanges]);
 
   const loadComments = async () => {
     try {
-      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/comments`);
+      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/comments?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
       const d = await res.json();
       if (d.comments) setComments(d.comments);
     } catch (e) {

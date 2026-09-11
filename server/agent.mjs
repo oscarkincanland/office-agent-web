@@ -171,10 +171,10 @@ function searchLocalSkills(query = "", limit = 12) {
   return matched.slice(0, Math.max(1, Math.min(30, Number(limit) || 12)));
 }
 
-// Pi 已经负责一次短重试；工作台只做一次备用模型切换，不再对已结算回合
-// 或同一传输错误重复重放，避免一次断连叠加出多组失败气泡和长时间等待。
+// Pi 已经负责一次短重试；工作台只对“无副作用首轮请求收到空 400”做一次安全重放。
+// 已开始工具执行的回合绝不重放，避免 Office 写入等副作用被重复执行。
 const APP_PROMPT_RETRY_DELAYS = [];
-const SETTLED_AGENT_RETRY_DELAYS = [];
+const SETTLED_AGENT_RETRY_DELAYS = [1200];
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
@@ -205,6 +205,22 @@ function rawAgentErrorMessage(error) {
   return String(error?.message || error?.cause?.message || error || "模型连接失败");
 }
 
+function agentErrorStatus(error, message = rawAgentErrorMessage(error)) {
+  const direct = Number(error?.status ?? error?.statusCode ?? error?.response?.status ?? 0) || null;
+  if (direct) return direct;
+  const match = String(message || "").match(/\b([1-5]\d{2})\s+status\s+code\b/i);
+  return match ? Number(match[1]) : null;
+}
+
+/** 供应商偶发返回空 400；只有首轮、无工具副作用时允许安全重试。 */
+export function isEmptyBadRequestError(error) {
+  const message = rawAgentErrorMessage(error);
+  const body = error?.responseBody || error?.body || "";
+  const combined = `${message} ${body}`;
+  return agentErrorStatus(error, combined) === 400
+    && /\b400\s+status\s+code\s*\(\s*(?:no body|empty(?:\s+response)?\s+body)\s*\)/i.test(combined);
+}
+
 function safeAgentErrorMessage(message) {
   return String(message || "模型连接失败")
     .replace(/(api[_-]?key|authorization|bearer|access[_-]?token|refresh[_-]?token)([\s=:]+)[^\s,;]+/gi, "$1$2[已隐藏]")
@@ -215,6 +231,10 @@ function safeAgentErrorMessage(message) {
 export function createSettledAgentError(message) {
   const error = new Error(safeAgentErrorMessage(message));
   error.code = "PI_SETTLED_ERROR";
+  const classification = classifyAgentError(error);
+  error.status = classification.status;
+  error.errorCategory = classification.category;
+  error.oawClassification = classification;
   error.noRetry = true;
   return error;
 }
@@ -228,18 +248,19 @@ export function captureSettledAgentError(entry) {
 /** 将 SDK/网关错误归一化，供有限重试和诊断日志复用。 */
 export function classifyAgentError(error) {
   const message = rawAgentErrorMessage(error);
-  const status = Number(error?.status ?? error?.statusCode ?? error?.response?.status ?? 0) || null;
+  const status = agentErrorStatus(error, message);
+  const safeEmpty400 = isEmptyBadRequestError(error);
   const causeCode = error?.cause?.code ? String(error.cause.code) : null;
   const authFailure = [401, 403].includes(status) || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message);
   const timeout = ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT", "MODEL_PROBE_TIMEOUT"].includes(String(error?.code || "")) || /(?:timed?.?out|timeout)/i.test(message);
   const rateLimited = [408, 425, 429, 529].includes(status) || /(?:429|rate.?limit|overloaded)/i.test(message);
   const network = /(?:network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|websocket.?closed)/i.test(message);
-  const terminal = authFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || [400, 404].includes(status);
-  const retryable = !terminal && Boolean(
+  const terminal = authFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || ([400, 404].includes(status) && !safeEmpty400);
+  const retryable = safeEmpty400 || (!terminal && Boolean(
     ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT"].includes(String(error?.code || ""))
       || (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
       || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
-  );
+  ));
   const category = authFailure ? "auth" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
   return {
     message: safeAgentErrorMessage(message),

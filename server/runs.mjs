@@ -20,6 +20,26 @@ const MAX_FILES = 1200;
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
 const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
+const TODO_STATUS_ALIASES = Object.freeze({
+  pending: "planned",
+  todo: "planned",
+  ready: "planned",
+  planned: "planned",
+  running: "in_progress",
+  active: "in_progress",
+  in_progress: "in_progress",
+  "in-progress": "in_progress",
+  completed: "completed",
+  complete: "completed",
+  done: "completed",
+  skipped: "skipped",
+  blocked: "blocked",
+  failed: "failed",
+});
+const TODO_STATUSES = new Set(["planned", "in_progress", "completed", "skipped", "blocked", "failed"]);
+const MAX_TODO_ITEMS = 12;
+const MAX_TODO_TITLE = 300;
+const MAX_TODO_NOTE = 500;
 
 function ensureDir(dir) {
   return ensureDirectory(dir);
@@ -127,8 +147,70 @@ function stepTitleForTool(name) {
     kb_read: "读取知识内容",
     context_read: "读取上下文",
     memory_update: "整理记忆建议",
+    todo: "更新任务清单",
   };
   return labels[name] || (name ? `执行 ${name}` : "执行 Agent 任务");
+}
+
+function normalizeTodoStatus(value, done = false) {
+  if (done === true) return "completed";
+  const normalized = TODO_STATUS_ALIASES[String(value || "").trim().toLowerCase()];
+  return normalized && TODO_STATUSES.has(normalized) ? normalized : "planned";
+}
+
+function todoIdFor(title, index) {
+  const digest = crypto.createHash("sha1").update(`${index}:${title}`).digest("hex").slice(0, 10);
+  return `todo-${index + 1}-${digest}`;
+}
+
+export function normalizeTodoItems(items = []) {
+  if (!Array.isArray(items)) return [];
+  const seen = new Set();
+  return items.slice(0, MAX_TODO_ITEMS).flatMap((item, index) => {
+    const title = String(item?.title ?? item?.name ?? item?.text ?? "").trim().slice(0, MAX_TODO_TITLE);
+    if (!title) return [];
+    let id = String(item?.id || "").trim().replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 80) || todoIdFor(title, index);
+    while (seen.has(id)) id = `${id}-${index + 1}`;
+    seen.add(id);
+    const dependsOn = Array.isArray(item?.dependsOn)
+      ? [...new Set(item.dependsOn.map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 8)
+      : [];
+    return [{
+      id,
+      index,
+      title,
+      status: normalizeTodoStatus(item?.status, item?.done),
+      note: String(item?.note ?? item?.details ?? "").trim().slice(0, MAX_TODO_NOTE),
+      dependsOn,
+    }];
+  });
+}
+
+function todoSignature(items = []) {
+  return JSON.stringify(normalizeTodoItems(items).map(({ id, title, status, note, dependsOn }) => ({ id, title, status, note, dependsOn })));
+}
+
+/**
+ * 持久化 Agent 的结构化 Todo。Todo 是“计划事实”，和 steps 的底层工具执行事实分开。
+ * 事件只在这里写入一次；调用方可以再通过会话 SSE 把同一快照推给前端。
+ */
+export function updateRunTodo(id, items = [], { source = "agent" } = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const next = normalizeTodoItems(items);
+  if (todoSignature(run.todos || []) === todoSignature(next) && run.todoVersion === 1) return getRun(id);
+  const updatedAt = new Date().toISOString();
+  run.todoVersion = 1;
+  run.todos = next;
+  run.todoUpdatedAt = updatedAt;
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const data = { source: String(source || "agent"), todos: next };
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  run.events.push({ seq, type: "todo_updated", data, at: updatedAt });
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "todo_updated", data });
+  return getRun(saved.id);
 }
 
 function ensureStep(run, stepId, name, status = "pending") {
@@ -208,6 +290,8 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
       updatedAt: new Date().toISOString(),
     },
     workflow: workflow ? { id: workflow.id, name: workflow.name, valid: workflow.valid, missing: workflow.missing || [] } : null,
+    todoVersion: 1,
+    todos: [],
     steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
     events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
@@ -332,6 +416,9 @@ function copyAfterBlobs(run, artifacts, after) {
 export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null, validations = [] } = {}) {
   const run = loadRun(id);
   if (!run) return null;
+  // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
+  // 否则第二次会重复发布/丢失产物并再次追加 run_finished，前端恢复时就会出现两条结论。
+  if (["completed", "failed", "cancelled", "aborted"].includes(run.status) && run.finishedAt) return run;
   const persistWriteEvent = (type, data) => appendEvent({
     clientId: run.clientId,
     threadId: run.threadId,
@@ -467,6 +554,8 @@ export function getRun(id) {
   const { before, after, ...publicRun } = run;
   const steps = Array.isArray(publicRun.steps) ? publicRun.steps : [];
   const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
+  const todos = Array.isArray(publicRun.todos) ? publicRun.todos : [];
+  const todoCompleted = todos.filter((item) => ["completed", "skipped"].includes(item.status)).length;
   return {
     ...publicRun,
     actions: {
@@ -475,6 +564,7 @@ export function getRun(id) {
       canRetry: ["failed", "cancelled", "aborted"].includes(publicRun.status),
     },
     progress: { completed, total: steps.length, running: steps.filter((step) => step.status === "running").length },
+    todoProgress: { completed: todoCompleted, total: todos.length, running: todos.filter((item) => item.status === "in_progress").length, blocked: todos.filter((item) => item.status === "blocked").length, failed: todos.filter((item) => item.status === "failed").length },
     currentStep: steps.find((step) => step.id === publicRun.currentStepId) || steps.find((step) => step.status === "running") || null,
     workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
   };
@@ -490,7 +580,7 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = 
     .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || path.resolve(r.cwd || "") === path.resolve(cwd)))
     .filter((r) => (!projectId || r.projectId === projectId) && (!status || status === "all" || r.status === status))
     .filter((r) => (!mode || mode === "all" || r.task?.mode === mode))
-    .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
+    .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error), ...(r.todos || []).map((item) => `${item.title} ${item.note || ""}`)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
     .slice(0, Math.max(1, Math.min(200, limit)))
     .map((run) => getRun(run.id))

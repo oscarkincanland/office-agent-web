@@ -2879,15 +2879,20 @@ app.get("/api/agent/stream", async (req, res) => {
   try {
     entry = await agentManager.ensureRuntime(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
     if (closed) return;
-  const send = (ev) => {
-    if (!ev || closed) return;
-    write(`id: ${ev.id}\ndata: ${JSON.stringify({ id: ev.id, type: ev.type, at: ev.at || null, data: ev.data })}\n\n`);
-  };
   // EventSource 新建连接时不会把上一次对象的 Last-Event-ID 带过来，
   // 因此前端同时通过 query 传递游标；两者取最大值，避免重连重复消费历史事件。
   const queryCursor = parseInt(req.query.after || "0", 10) || 0;
   const headerCursor = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
   const lastId = Math.max(queryCursor, headerCursor);
+  // 监听和历史回放之间存在一个竞态窗口：实时事件可能先发出，随后又被
+  // history 回放一次。以同一条 SSE 连接的最大已发送 id 做幂等门闩，
+  // 保证断线重连只补缺失事件，不重复追加 Token/工具输出。
+  let lastSentId = lastId;
+  const send = (ev) => {
+    if (!ev || closed || Number(ev.id || 0) <= lastSentId) return;
+    if (!write(`id: ${ev.id}\ndata: ${JSON.stringify({ id: ev.id, type: ev.type, at: ev.at || null, data: ev.data })}\n\n`)) return;
+    lastSentId = Number(ev.id || lastSentId);
+  };
   // 先挂实时监听，再回放历史。回放前没有 await，但注册顺序仍然很关键：
   // 如果先回放、后监听，另一条请求在这段窗口内产生的事件会被永久漏掉，
   // 前端只能靠刷新重新读取历史才能“恢复”。

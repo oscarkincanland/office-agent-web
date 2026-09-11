@@ -19,7 +19,7 @@ const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
   "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis",
-  "memory_update",
+  "memory_update", "todo",
 ]);
 
 export function normalizeTaskMode(mode) {
@@ -140,7 +140,7 @@ export function createTaskEnvelope(input = {}) {
 export function taskSummary(task) {
   if (!task) return "";
   return [
-    "## 当前任务",
+    "当前任务",
     `目标：${task.goal || "（未提供）"}`,
     `模式：${task.modeLabel || modeLabel(task.mode)}`,
     task.workflowId ? `工作流：${task.workflowId}` : "",

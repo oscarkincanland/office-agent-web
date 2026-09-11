@@ -20,6 +20,22 @@ export const agentAuthSave = (provider, key) =>
   api("/api/agent/auth", { method: "POST", body: JSON.stringify({ provider, key }) });
 export const agentAuthRemove = (provider) =>
   api("/api/agent/auth/remove", { method: "POST", body: JSON.stringify({ provider }) });
+export const agentCustomProvider = (payload = {}) =>
+  api("/api/agent/custom-provider", { method: "POST", body: JSON.stringify(payload) });
+export const agentConfigStatus = () => api("/api/agent/config-status");
+export const agentImportPreview = () => api("/api/agent/import-preview");
+export const agentImportConfig = (options = {}) =>
+  api("/api/agent/import-config", { method: "POST", body: JSON.stringify(options) });
+export const agentDiagnostics = (client = "", thread = "", runId = "") => {
+  const params = new URLSearchParams();
+  if (client) params.set("client", client);
+  if (thread) params.set("thread", thread);
+  if (runId) params.set("runId", runId);
+  return api(`/api/agent/diagnostics${params.toString() ? `?${params.toString()}` : ""}`);
+};
+export const agentNetworkSettings = () => api("/api/agent/network-settings");
+export const agentNetworkSettingsSave = (settings = {}) =>
+  api("/api/agent/network-settings", { method: "PATCH", body: JSON.stringify(settings) });
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
@@ -90,6 +106,8 @@ export const importSkill = (payload) =>
 export const getSession = (id) => api(`/api/sessions/${encodeURIComponent(id)}`);
 export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
+export const deleteSessions = (ids) =>
+  api("/api/sessions/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const pinSession = (id, pinned = true) =>

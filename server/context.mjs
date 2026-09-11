@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import JSZip from "jszip";
 import XLSX from "xlsx";
-import { AGENT_DIR, PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "./workspace.mjs";
+import { PROJECT_DIR, getWorkspace, resolveExternalPath, resolvePath, listFileRoots } from "./workspace.mjs";
 
 const execFileAsync = promisify(execFile);
 const MAX_READ_CHARS = 50000;
@@ -98,7 +98,7 @@ export function parseReferences(text = "") {
 function findSessionReferenceFile(target) {
   const wanted = String(target || "").trim();
   if (!wanted) return null;
-  const roots = [path.join(PROJECT_DIR, ".规聚会话"), path.join(AGENT_DIR, "sessions")];
+  const roots = [path.join(PROJECT_DIR, ".规聚会话")];
   const files = [];
   const walk = (dir, depth = 0) => {
     if (depth > 4) return;
@@ -107,7 +107,7 @@ function findSessionReferenceFile(target) {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, depth + 1);
-      else if (entry.isFile() && /\.(?:jsonl|json)$/i.test(entry.name)) files.push(full);
+      else if (entry.isFile() && /\.jsonl$/i.test(entry.name)) files.push(full);
     }
   };
   roots.forEach((root) => walk(root));

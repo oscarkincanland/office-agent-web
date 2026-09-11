@@ -13,7 +13,7 @@ process.env.OAW_WRITE_LOCK_DIR = path.join(temp, "写入锁");
 fs.mkdirSync(path.join(temp, "工作区"), { recursive: true });
 
 try {
-  const [{ classifyAgentError, createSettledAgentError, captureSettledAgentError }, runs] = await Promise.all([
+  const [{ classifyAgentError, createSettledAgentError, captureSettledAgentError, isEmptyBadRequestError }, runs] = await Promise.all([
     import("../server/agent.mjs"),
     import("../server/runs.mjs"),
   ]);
@@ -30,6 +30,13 @@ try {
   const terminal = createSettledAgentError("invalid api key");
   assert.equal(classifyAgentError(terminal).retryable, false);
   assert.equal(classifyAgentError(terminal).category, "auth");
+
+  const empty400 = "400 status code (no body)";
+  assert.equal(isEmptyBadRequestError(empty400), true);
+  assert.equal(classifyAgentError(empty400).status, 400);
+  assert.equal(classifyAgentError(empty400).category, "request");
+  assert.equal(classifyAgentError(empty400).retryable, true, "空 400 允许首轮安全重试");
+  assert.equal(classifyAgentError("400 status code: invalid request").retryable, false, "有具体原因的 400 不得盲目重试");
 
   const run = runs.beginRun({
     clientId: "final-model",

@@ -95,13 +95,34 @@ function groupByDate(sessions) {
 }
 
 // 会话列表：置顶区 + 日期分组（Proma 风格，供左侧栏与对话栏历史抽屉共用）
-export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onRename, onFork, onPin, onFreeze }) {
+export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete, onBatchDelete, onRename, onFork, onPin, onFreeze, initialEditingId = null }) {
   const [editingId, setEditingId] = useState(null);
   const [editValue, setEditValue] = useState("");
   const [pinned, setPinned] = useState(getPinnedSet);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [actionsId, setActionsId] = useState(null);
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const initialEditAppliedRef = useRef(null);
+
+  useEffect(() => {
+    const available = new Set(sessions.map((session) => session.id));
+    setSelectedIds((current) => new Set([...current].filter((id) => available.has(id))));
+  }, [sessions]);
+
+  useEffect(() => {
+    if (!initialEditingId) {
+      initialEditAppliedRef.current = null;
+      return;
+    }
+    if (initialEditAppliedRef.current === initialEditingId) return;
+    const target = sessions.find((session) => session.id === initialEditingId);
+    if (!target) return;
+    initialEditAppliedRef.current = initialEditingId;
+    setEditingId(initialEditingId);
+    setEditValue(target.label || target.title || "");
+  }, [initialEditingId, sessions]);
 
   const handleRename = async (id) => {
     await onRename(id, editValue);
@@ -117,6 +138,14 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
 
   const handleToggleFreeze = async (session) => {
     if (onFreeze) await onFreeze(session.id, !session.frozen);
+  };
+
+  const toggleSelected = (id) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
   };
 
   const searched = search.trim()
@@ -135,12 +164,13 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
     return (
     <div
       key={s.id}
-      className="session-item"
-      onClick={() => onSelect(s)}
+      className={`session-item ${selecting && selectedIds.has(s.id) ? "selected" : ""}`}
+      onClick={() => selecting ? toggleSelected(s.id) : onSelect(s)}
       onMouseEnter={() => setActionsId(s.id)}
       onMouseLeave={() => setActionsId((id) => id === s.id ? null : id)}
       onFocus={() => setActionsId(s.id)}
     >
+      {selecting && <button type="button" className="session-select" onClick={(e) => { e.stopPropagation(); toggleSelected(s.id); }} aria-pressed={selectedIds.has(s.id)} title={selectedIds.has(s.id) ? "取消选择" : "选择会话"}>{selectedIds.has(s.id) ? "✓" : ""}</button>}
       <div className="session-indicator" data-status={s.runStatus && s.runStatus !== "idle" ? s.runStatus : "idle"} />
       <div className="session-info">
         {editingId === s.id ? (
@@ -176,7 +206,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
       </div>
       {(unreadByThread[s.threadId || s.id] || 0) > 0 && <span className="session-unread" title="有新的后台任务状态更新">{unreadByThread[s.threadId || s.id] > 99 ? "99+" : unreadByThread[s.threadId || s.id]}</span>}
       {s.cwd && <div className="session-cwd" title={s.cwd}>{shortenCwd(s.cwd)}</div>}
-      {actionsId === s.id && (
+      {!selecting && actionsId === s.id && (
         <div className="session-actions" onClick={(e) => e.stopPropagation()}>
         <button className="btn-icon" onClick={() => handleTogglePin(s)} title={isPinned ? "取消置顶" : "置顶"}>
           <Icon name="pin" size={12} className={isPinned ? "pinned" : ""} />
@@ -205,6 +235,20 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
         <Icon name="search" size={11} />
         <input placeholder="搜索会话…" value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
+      <div className="session-batch-toolbar">
+        <button type="button" className={`session-batch-toggle ${selecting ? "active" : ""}`} onClick={() => { setSelecting((value) => !value); setSelectedIds(new Set()); }}>{selecting ? "取消选择" : "选择会话"}</button>
+        {selecting && <>
+          <button type="button" onClick={() => setSelectedIds(new Set(filtered.map((session) => session.id)))}>全选</button>
+          <button type="button" onClick={() => setSelectedIds(new Set())}>清空</button>
+          <button type="button" className="danger" disabled={!selectedIds.size || !onBatchDelete} onClick={async () => {
+            if (!selectedIds.size || !onBatchDelete) return;
+            if (!window.confirm(`确认删除已选的 ${selectedIds.size} 个会话吗？运行中的会话会自动跳过。`)) return;
+            await onBatchDelete([...selectedIds]);
+            setSelectedIds(new Set());
+            setSelecting(false);
+          }}>批量删除{selectedIds.size ? `（${selectedIds.size}）` : ""}</button>
+        </>}
+      </div>
       <div className="session-filters" role="tablist" aria-label="会话状态筛选">
         {[{ id: "all", label: "全部" }, { id: "running", label: "执行中" }, { id: "recovering", label: "恢复中" }, { id: "completed", label: "已完成" }, { id: "failed", label: "失败" }, { id: "aborted", label: "已中断" }].map((item) => (
           <button key={item.id} className={`session-filter ${statusFilter === item.id ? "active" : ""}`} onClick={() => setStatusFilter(item.id)}>{item.label}</button>
@@ -230,7 +274,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -245,6 +289,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [newFiles, setNewFiles] = useState(new Set()); // 跟踪新创建的文件
   const [rootOpen, setRootOpen] = useState(false);
   const [rootPath, setRootPath] = useState("");
+  const [historyEditSessionId, setHistoryEditSessionId] = useState(null);
   const [fileRoots, setFileRoots] = useState([]);
   const [artifactRuns, setArtifactRuns] = useState([]);
   const [publishedArtifacts, setPublishedArtifacts] = useState([]);
@@ -625,11 +670,14 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                     <button type="button" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>查看全部</button>
                   </div>
                   {projectSessions(project).slice(0, 4).map((session) => (
-                    <button type="button" className="project-session-row" key={session.id} onClick={() => onSelectSession?.(session)}>
-                      <i data-status={session.runStatus || "idle"} />
-                      <span>{session.title || session.label || "未命名会话"}</span>
-                      <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
-                    </button>
+                    <div className="project-session-row" key={session.id}>
+                      <button type="button" className="project-session-open" onClick={() => onSelectSession?.(session)} title="打开会话">
+                        <i data-status={session.runStatus || "idle"} />
+                        <span>{session.title || session.label || "未命名会话"}</span>
+                        <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
+                      </button>
+                      <button type="button" className="project-session-edit" onClick={() => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); }} title="编辑会话名称" aria-label="编辑会话名称"><Icon name="penTool" size={11} /></button>
+                    </div>
                   ))}
                   {projectSessions(project).length > 4 && <button type="button" className="project-history-more" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>还有 {projectSessions(project).length - 4} 个会话</button>}
                 </div>
@@ -745,7 +793,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
       {/* 项目会话历史：会话归属项目，不再和文件列表混在一起 */}
       {modal === "history" && (
-        <div className="sb-modal-backdrop" onClick={() => setModal(null)}>
+        <div className="sb-modal-backdrop" onClick={() => { setModal(null); setHistoryEditSessionId(null); }}>
           <div className="sb-modal project-history-modal" onClick={(e) => e.stopPropagation()}>
             <div className="sb-modal-head">
               <Icon name="history" size={13} />
@@ -756,9 +804,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             <div className="sb-modal-body project-history-body">
               <SessionList
                 sessions={historySessions}
+                initialEditingId={historyEditSessionId}
                 unreadByThread={unreadByThread}
-                onSelect={(session) => { setModal(null); onSelectSession?.(session); }}
+                onSelect={(session) => { setModal(null); setHistoryEditSessionId(null); onSelectSession?.(session); }}
                 onDelete={onDeleteSession}
+                onBatchDelete={onBatchDeleteSession}
                 onRename={onRenameSession}
                 onFork={onForkSession}
                 onPin={onPinSession}

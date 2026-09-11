@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
 
@@ -71,32 +71,38 @@ function EventStream({ clientId, threadId }) {
   );
 }
 
-function ArtifactPanel({ workspace, projectId, currentSessionId, onOpenFile }) {
+function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 0, onOpenFile }) {
   const [runs, setRuns] = useState([]);
   const [published, setPublished] = useState([]);
   const [loading, setLoading] = useState(false);
   const [action, setAction] = useState("");
   const [acceptance, setAcceptance] = useState({});
+  const refreshSeqRef = useRef(0);
 
   const refresh = async () => {
+    const requestSeq = ++refreshSeqRef.current;
     setLoading(true);
     try {
       const [runData, publishedData] = await Promise.all([
         listRuns("", 100, { cwd: workspace, projectId }),
         listPublishedArtifacts(workspace, projectId),
       ]);
+      if (requestSeq !== refreshSeqRef.current) return;
       const nextRuns = (runData.runs || []).filter((run) => run?.artifacts?.length && (!currentSessionId || run.sessionId === currentSessionId));
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
       const acceptanceEntries = await Promise.all(nextRuns.slice(0, 12).map(async (run) => {
         try { const result = await getRunAcceptance(run.id); return [run.id, result.run?.acceptance || result.acceptance || null]; } catch { return [run.id, null]; }
       }));
+      if (requestSeq !== refreshSeqRef.current) return;
       setAcceptance(Object.fromEntries(acceptanceEntries.filter(([, value]) => value)));
     } catch {}
-    setLoading(false);
+    if (requestSeq === refreshSeqRef.current) setLoading(false);
   };
 
-  useEffect(() => { refresh(); }, [workspace, projectId, currentSessionId]);
+  // 根级事件流每收到一次重要事件都会递增 refreshToken；任务完成后必须立即
+  // 重新读取 Run 和固定成果，否则用户会看到旧的“暂无产物”，直到手动刷新。
+  useEffect(() => { refresh(); }, [workspace, projectId, currentSessionId, refreshToken]);
 
   const entries = useMemo(() => runs.flatMap((run) => (run.artifacts || []).filter((item) => item.status !== "deleted").map((artifact) => ({ artifact, run }))), [runs]);
   const publishedByArtifact = useMemo(() => new Map(published.map((item) => [item.artifactId, item])), [published]);
@@ -151,8 +157,8 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, onOpenFile }) {
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, onOpenFile, children }) {
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, refreshToken = 0, onOpenFile, children }) {
   if (tab === "events") return <EventStream clientId={clientId} threadId={threadId} />;
-  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} onOpenFile={onOpenFile} />;
+  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   return children;
 }

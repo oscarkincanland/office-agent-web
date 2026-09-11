@@ -24,7 +24,7 @@ const PERSISTED_TYPES = new Set([
   "write_started", "write_locked", "write_rejected", "artifact_staged", "artifact_materialized", "write_cleaned",
   "memory_proposal_created", "memory_proposal_edited", "memory_proposal_rejected", "memory_proposal_approved",
   "memory_proposal_merged", "memory_proposal_failed", "memory_written",
-  "memory_file_edited", "memory_initialized",
+  "memory_file_edited", "memory_initialized", "todo_updated", "officecli_failed",
 ]);
 
 const emitter = new EventEmitter();

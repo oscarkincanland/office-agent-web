@@ -398,6 +398,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
   const textRevealRef = useRef(null);
+  // 保留已经真正展示到消息气泡中的文本。agent_end 清理动画状态后，
+  // run_finished 仍可能补发同一份最终全文，不能因此重新追加一遍。
+  const displayedTextRef = useRef(new Map());
   const textRevealRafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
   const stoppingRef = useRef(false);
@@ -717,6 +720,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   }, []);
 
+  const rememberDisplayedText = useCallback((id, text) => {
+    if (!id) return;
+    displayedTextRef.current.set(id, String(text || ""));
+    if (displayedTextRef.current.size > 600) {
+      const oldest = displayedTextRef.current.keys().next().value;
+      if (oldest) displayedTextRef.current.delete(oldest);
+    }
+  }, []);
+
   const cancelTextReveal = useCallback(({ preserveText = false } = {}) => {
     const active = textRevealRef.current;
     if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
@@ -724,13 +736,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     textRevealRef.current = null;
     // 已经拿到但尚未显示的字符不能因为下一轮输入而丢失。
     if (preserveText && active?.pending && active?.id) {
+      const displayed = displayedTextRef.current.get(active.id) || "";
+      rememberDisplayedText(active.id, displayed + active.pending);
       patch(active.id, (m) => ({
         ...m,
         blocks: appendTextBlock([...(m.blocks || [])], active.pending),
         status: active.completeWhenDrained ? (agentErrorRef.current ? "error" : "done") : m.status,
       }));
     }
-  }, [patch]);
+  }, [patch, rememberDisplayedText]);
 
   const enqueueTextReveal = useCallback((id, value, { authoritative = false } = {}) => {
     const text = String(value || "");
@@ -738,19 +752,25 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let state = textRevealRef.current;
     if (!state || state.id !== id) {
       if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
-      state = { id, fullText: "", pending: "", lastAt: performance.now(), completeWhenDrained: false };
+      state = { id, fullText: displayedTextRef.current.get(id) || "", pending: "", lastAt: performance.now(), completeWhenDrained: false };
       textRevealRef.current = state;
       textRevealRafRef.current = null;
     }
 
     if (authoritative) {
-      if (text === state.fullText) return;
+      const displayed = displayedTextRef.current.get(id) || "";
+      if (text === displayed || text === state.fullText) return;
       if (text.startsWith(state.fullText)) {
         state.pending += text.slice(state.fullText.length);
+      } else if (text.startsWith(displayed)) {
+        // 动画状态可能已经在 agent_end 后清理，但消息气泡已经显示了前缀。
+        // 只排队缺失后缀，不能把最终全文再次追加到气泡末尾。
+        state.pending = text.slice(displayed.length);
       } else {
         // 最终消息是权威值：断线重连或缺失 token 时宁可从最终文本重放，
         // 也不能保留截断回复。
         state.pending = text;
+        rememberDisplayedText(id, "");
         patch(id, (m) => {
           const blocks = [...(m.blocks || [])];
           const textIndex = blocks.map((block) => block.type).lastIndexOf("text");
@@ -775,6 +795,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (count) {
         const chunk = active.pending.slice(0, count);
         active.pending = active.pending.slice(count);
+        rememberDisplayedText(id, (displayedTextRef.current.get(id) || "") + chunk);
         patch(id, (m) => {
           const blocks = appendTextBlock([...(m.blocks || [])], chunk);
           return { ...m, blocks };
@@ -791,7 +812,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
     };
     if (!textRevealRafRef.current) textRevealRafRef.current = requestAnimationFrame(reveal);
-  }, [patch]);
+  }, [patch, rememberDisplayedText]);
 
   const finishTextReveal = useCallback((id) => {
     const state = textRevealRef.current;
@@ -2190,22 +2211,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               </button>
             </div>
             <span className="ct-sep" />
-            <div className="chat-toolbar-group toolbar-mode-group" title={currentMode.title}>
-              <span className="chat-toolbar-label">模式</span>
-              <div className="mode-switch mode-switch-wide">
-              {(forcedMode ? [normalizeUiMode(forcedMode)] : ["chat", "agent"]).map((id) => {
-                const meta = MODE_META[id];
-                return (
-                <button
-                  key={id}
-                  className={`mode-btn ${editMode === id ? "active" : ""}`}
-                  onClick={() => !forcedMode && setEditMode(id)}
-                  title={meta.title}
-                ><Icon name={meta.icon} size={12} /><span className="mode-label">{meta.shortLabel}</span></button>
-                );
-              })}
-              </div>
-              <span className="mode-current-hint">{currentMode.hint}</span>
+            <div className="chat-toolbar-group toolbar-work-mode-group" title={forcedMode ? "当前嵌入模式已锁定" : (editMode === "agent" ? "Work：可读取、写入和编辑当前工作区；最终仍受操作系统权限限制" : "Chat：只读检索，不执行文件写入")}>
+              <button
+                type="button"
+                className={`ct-btn ct-work-mode-btn ${editMode === "agent" ? "active" : ""}`}
+                aria-pressed={editMode === "agent"}
+                aria-label={editMode === "agent" ? "切换到 Chat 只读模式" : "切换到 Work 文件编辑模式"}
+                disabled={Boolean(forcedMode)}
+                onClick={() => !forcedMode && setEditMode((mode) => mode === "agent" ? "chat" : "agent")}
+              >
+                <Icon name={editMode === "agent" ? "penTool" : "search"} size={13} />
+                <span>{editMode === "agent" ? "Work" : "Chat"}</span>
+              </button>
             </div>
             <span className="ct-sep" />
             {/* 模型与思考程度：一个 Proma 式统一入口，底层仍使用 Pi 配置 */}
@@ -2636,11 +2653,13 @@ function ExecutionFlow({ events = [], running = false }) {
           {visibleEvents.map((event) => {
             const data = event.data || {};
             const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
+            const label = flowEventLabel(event);
+            const showDetail = detail && String(detail).trim() !== String(label).trim();
             return (
               <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key}>
                 <span className="execution-flow-dot" />
-                <span className="execution-flow-label">{flowEventLabel(event)}</span>
-                {detail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
+                <span className="execution-flow-label">{label}</span>
+                {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
                 <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
               </div>
             );

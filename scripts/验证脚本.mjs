@@ -106,7 +106,7 @@ async function smokeTest() {
     if (modeLabel("chat") !== "Chat" || !modeDescription("office")) throw new Error("模式元数据缺失");
     if (!has(chat, "kb_search") || !has(chat, "context_read") || !has(chat, "skills_search") || !has(chat, "skills_read") || has(chat, "bash") || has(chat, "write") || has(chat, "officecli")) throw new Error("Chat 不是只读工具集");
     if (!has(office, "officecli") || has(office, "bash") || has(office, "write") || has(office, "edit")) throw new Error("Office 工具边界异常");
-    if (!has(agent, "bash") || !has(agent, "write") || !has(agent, "memory_update")) throw new Error("Agent 完整工具集缺失");
+    if (!has(agent, "bash") || !has(agent, "write") || !has(agent, "memory_update") || !has(agent, "todo")) throw new Error("Agent 完整工具集缺失");
     const chatPlan = planTaskCapabilities({ text: "搜索知识库", task: { mode: "chat" } });
     if (chatPlan.mode !== "chat" || chatPlan.capabilities[0]?.label !== "Chat 检索") throw new Error("Chat 能力计划未标识");
     const chatDocumentPlan = planTaskCapabilities({ text: "查看报告.docx", task: { mode: "chat", currentFile: "报告.docx" } });
@@ -156,6 +156,7 @@ async function smokeTest() {
     ["GET", "/api/agent/events/state?client=verify"],
     ["GET", "/api/agent/runtimes"],
     ["GET", "/api/agent/runtime?client=verify&thread=verify"],
+    ["GET", "/api/agent/diagnostics?client=verify&thread=verify"],
     ["GET", "/api/agent/evaluations"],
   ];
   for (const [method, url] of endpoints) {
@@ -167,6 +168,17 @@ async function smokeTest() {
       if (NETWORK_BLOCKED) console.warn(`  ! ${method} ${url}：当前沙箱禁用回环网络，跳过 API 请求（${e.message}）`);
       else fail(`${method} ${url}: ${e.message}`);
     }
+  }
+
+  try {
+    const diagnosticsRes = await fetch(`http://localhost:${PORT}/api/agent/diagnostics?client=verify&thread=verify`);
+    const diagnostics = await diagnosticsRes.json();
+    const serialized = JSON.stringify(diagnostics);
+    if (!diagnosticsRes.ok || diagnostics.ok !== true) throw new Error("诊断接口未返回成功结构");
+    if (/\b(apiKey|password|secret)\b/i.test(serialized)) throw new Error("诊断接口疑似返回敏感字段");
+    ok("模型诊断状态脱敏结构");
+  } catch (e) {
+    fail("模型诊断脱敏检查: " + e.message);
   }
 
   try {

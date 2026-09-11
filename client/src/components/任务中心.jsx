@@ -28,7 +28,7 @@ function taskTitle(run) {
 }
 
 function progressText(run) {
-  const p = run?.progress || {};
+  const p = run?.todoProgress?.total ? run.todoProgress : (run?.progress || {});
   if (!p.total) {
     if (run?.status === "completed") return "已完成";
     if (run?.status === "failed") return "执行失败";
@@ -248,10 +248,24 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                 {detail.actions?.canRetry && <button className="btn-xs" onClick={() => runAction("retry")} disabled={!!action}>{action === "retry" ? "重试中…" : "重试任务"}</button>}
               </div>
               {detail.error && <div className="task-center-detail-error">失败原因：{detail.error}</div>}
+              {detail.todoVersion === 1 && <div className="task-center-todos">
+                <div className="task-center-section-title">
+                  <span>任务清单</span>
+                  <small>{detail.todoProgress?.completed || 0}/{detail.todoProgress?.total || 0} 完成</small>
+                </div>
+                {(detail.todos || []).map((todo) => (
+                  <div className={`task-center-todo ${todo.status}`} key={todo.id}>
+                    <span>{["completed", "skipped"].includes(todo.status) ? "✓" : todo.status === "failed" ? "!" : todo.status === "blocked" ? "×" : todo.status === "in_progress" ? "•" : "○"}</span>
+                    <span>{todo.title}</span>
+                    {todo.note && <small title={todo.note}>{todo.note}</small>}
+                  </div>
+                ))}
+              </div>}
               <div className="task-center-steps">
+                <div className="task-center-section-title"><span>执行步骤</span><small>{detail.steps?.length || 0} 项</small></div>
                 {(detail.steps || []).map((step) => (
                   <div className={`task-center-step ${step.status}`} key={step.id}>
-                    <span>{step.status === "completed" ? "✓" : step.status === "running" ? "•" : "○"}</span>
+                    <span>{step.status === "completed" ? "✓" : ["running", "in_progress"].includes(step.status) ? "•" : step.status === "failed" ? "!" : "○"}</span>
                     <span>{step.name}</span>
                     {step.error && <small>{step.error}</small>}
                   </div>

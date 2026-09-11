@@ -8,7 +8,7 @@ const LARGE_PPT_BYTES = 100 * 1024 * 1024;
  * PPT 预览：普通文件使用 Canvas，超大文件自动切换 OfficeCLI 高保真 HTML。
  * 关键点是给 pptxviewjs 传入明确的 px 尺寸；传入 100% 会被库解析为 100px，导致整页内容缩成一点。
  */
-export default function PptxViewer({ name }) {
+export default function PptxViewer({ name, revision = 0 }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
   const viewerRef = useRef(null);
@@ -67,7 +67,7 @@ export default function PptxViewer({ name }) {
     viewerRef.current = null;
     const load = async () => {
       try {
-        const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw`);
+        const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
         if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
         const fileSize = Number(res.headers.get("content-length") || 0);
         if (fileSize > LARGE_PPT_BYTES) {
@@ -96,7 +96,7 @@ export default function PptxViewer({ name }) {
     };
     load();
     return () => { cancelled = true; };
-  }, [name]);
+  }, [name, revision]);
 
   const go = async (dir) => {
     const viewer = viewerRef.current;
@@ -143,7 +143,7 @@ export default function PptxViewer({ name }) {
         {renderer === "canvas" ? (
           <div className="oaw-pptx-stage"><canvas ref={canvasRef} /></div>
         ) : (
-          <iframe className="oaw-pptx-frame" title={`${name} 高保真预览`} src={`/api/doc/${encodeURIComponent(name)}/html`} onLoad={() => setLoading(false)} onError={() => { setLoading(false); setError("OfficeCLI 高保真预览加载失败，请切回浏览器渲染"); }} />
+          <iframe className="oaw-pptx-frame" title={`${name} 高保真预览`} src={`/api/doc/${encodeURIComponent(name)}/html?v=${encodeURIComponent(revision || Date.now())}`} onLoad={() => setLoading(false)} onError={() => { setLoading(false); setError("OfficeCLI 高保真预览加载失败，请切回浏览器渲染"); }} />
         )}
       </div>
     </div>

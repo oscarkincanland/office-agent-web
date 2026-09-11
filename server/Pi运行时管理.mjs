@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
@@ -15,7 +14,15 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { AGENT_DIR, PROJECT_DIR } from "./workspace.mjs";
+import { getPiConfigPaths, loadNetworkSettings, readCredentials as readConfigCredentials, writeCredentials as writeConfigCredentials } from "./Pi配置管理.mjs";
 import { atomicWriteJson, ensureDirectory, readJsonFile } from "./持久化工具.mjs";
+import {
+  classifyPiError,
+  createPiNetworkAdapter,
+  redactProxyUrl,
+  resolvePiNetworkSettings,
+  wrapPiAgentStreamFunction,
+} from "./Pi网络代理.mjs";
 
 const RUNTIME_RECORD_FILE = process.env.OAW_RUNTIME_RECORD_FILE || path.join(PROJECT_DIR, ".oaw", "运行时记录.json");
 export const PI_PACKAGE_VERSION = "0.85.1";
@@ -33,11 +40,11 @@ function positiveInteger(value, fallback) {
 }
 
 function readCredentials() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(AGENT_DIR, "auth.json"), "utf8"));
-  } catch {
-    return {};
-  }
+  return readCredentialsFromConfig();
+}
+
+function readCredentialsFromConfig() {
+  return readConfigCredentials({ dir: AGENT_DIR });
 }
 
 function localCredentialStore() {
@@ -45,19 +52,17 @@ function localCredentialStore() {
     read: async (provider) => readCredentials()[provider],
     list: async () => Object.entries(readCredentials()).map(([providerId, value]) => ({ providerId, type: value?.type })),
     modify: async (provider, fn) => {
-      const authPath = path.join(AGENT_DIR, "auth.json");
       const auth = readCredentials();
       const next = await fn(auth[provider]);
       if (next === undefined) return auth[provider];
       auth[provider] = next;
-      atomicWriteJson(authPath, auth);
+      writeConfigCredentials(auth, { dir: AGENT_DIR });
       return next;
     },
     delete: async (provider) => {
-      const authPath = path.join(AGENT_DIR, "auth.json");
       const auth = readCredentials();
       delete auth[provider];
-      atomicWriteJson(authPath, auth);
+      writeConfigCredentials(auth, { dir: AGENT_DIR });
     },
   };
 }
@@ -76,9 +81,16 @@ function modelSnapshot(model) {
 function safeRuntimeRecord(record) {
   if (!record || typeof record !== "object") return null;
   const { session, modelRuntime, error, ...publicRecord } = record;
+  const classification = error?.classification || null;
   return {
     ...publicRecord,
-    error: error ? { code: error.code || null, message: String(error.message || error).slice(0, 500) } : null,
+    error: error ? {
+      code: error.code || null,
+      category: error.category || classification?.code || null,
+      retryable: error.retryable ?? classification?.retryable ?? false,
+      status: error.status ?? classification?.status ?? null,
+      message: String(error.message || classification?.message || error).slice(0, 500),
+    } : null,
   };
 }
 
@@ -151,8 +163,10 @@ export const runtimeCapabilities = Object.freeze({
  * Pi SDK 的依赖、凭据目录以及能力降级都集中在这里，后续可以替换为 Pi 原生 runtime。
  */
 export class PiRuntimeManager {
-  constructor({ recordFile = RUNTIME_RECORD_FILE, agentConcurrency = process.env.OAW_MAX_AGENT_RUNS, officeConcurrency = process.env.OAW_MAX_OFFICECLI } = {}) {
+  constructor({ recordFile = RUNTIME_RECORD_FILE, agentConcurrency = process.env.OAW_MAX_AGENT_RUNS, officeConcurrency = process.env.OAW_MAX_OFFICECLI, network = {} } = {}) {
     this.recordFile = recordFile;
+    this.networkSettings = resolvePiNetworkSettings(Object.keys(network || {}).length ? network : loadNetworkSettings());
+    this.networkAdapterInstance = null;
     this.modelRuntimePromise = null;
     this.records = loadRuntimeRecordsFrom(recordFile);
     this.agentLimiter = new AsyncLimiter(positiveInteger(agentConcurrency, DEFAULT_AGENT_CONCURRENCY), "agent");
@@ -160,12 +174,38 @@ export class PiRuntimeManager {
     this.markPersistedRuntimesRecovering();
   }
 
+  networkAdapter() {
+    if (!this.networkAdapterInstance) this.networkAdapterInstance = createPiNetworkAdapter(this.networkSettings);
+    return this.networkAdapterInstance;
+  }
+
+  networkDiagnostics() {
+    return this.networkAdapterInstance?.diagnostics?.() || {
+      mode: this.networkSettings.mode,
+      noProxy: this.networkSettings.noProxy,
+      proxy: redactProxyUrl(this.networkSettings.mode === "manual"
+        ? this.networkSettings.proxyUrl
+        : this.networkSettings.httpsProxy || this.networkSettings.httpProxy),
+      hasProxy: Boolean(this.networkSettings.proxyUrl || this.networkSettings.httpsProxy || this.networkSettings.httpProxy),
+      closed: false,
+    };
+  }
+
+  /** 更新网络配置时先关闭旧连接池；会话通过动态 fetch 在下一次请求使用新配置。 */
+  updateNetworkSettings(settings = loadNetworkSettings()) {
+    this.networkAdapterInstance?.close?.();
+    this.networkAdapterInstance = null;
+    this.networkSettings = resolvePiNetworkSettings(settings || {});
+    return this.networkDiagnostics();
+  }
+
   modelRuntime() {
     if (!this.modelRuntimePromise) {
+      const paths = getPiConfigPaths(AGENT_DIR);
       this.modelRuntimePromise = ModelRuntime.create({
-        authPath: path.join(AGENT_DIR, "auth.json"),
-        modelsPath: path.join(AGENT_DIR, "models.json"),
-        modelsStorePath: path.join(AGENT_DIR, "models-store.json"),
+        authPath: paths.authPath,
+        modelsPath: paths.modelsPath,
+        modelsStorePath: paths.modelsStorePath,
         credentials: localCredentialStore(),
       }).catch((error) => {
         this.modelRuntimePromise = null;
@@ -188,7 +228,12 @@ export class PiRuntimeManager {
       // 避免供应商不可达时叠加多层指数退避，把界面长时间卡在“连接模型”。
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 800, provider: { maxRetries: 0 } },
     });
-    const result = await createAgentSession({ ...options, cwd, modelRuntime: options.modelRuntime || await this.modelRuntime(), sessionManager, settingsManager });
+    const modelRuntime = options.modelRuntime || await this.modelRuntime();
+    const result = await createAgentSession({ ...options, cwd, modelRuntime, sessionManager, settingsManager });
+    const dynamicFetch = (...args) => this.networkAdapter().fetch(...args);
+    if (!wrapPiAgentStreamFunction(result.session, dynamicFetch)) {
+      throw new Error("Pi AgentSession 未提供可注入网络适配器的 agent.streamFunction");
+    }
     return { ...result, sessionManager };
   }
 
@@ -214,6 +259,8 @@ export class PiRuntimeManager {
       createdAt: now(),
       updatedAt: now(),
       lastActivityAt: now(),
+      networkMode: this.networkSettings.mode,
+      errorCategory: null,
       error: null,
     };
     this.records.push(record);
@@ -250,9 +297,29 @@ export class PiRuntimeManager {
   markFailure(runtimeId, error, { recovering = false, reason = "runtime_error" } = {}) {
     const record = this.find(runtimeId);
     if (!record) return null;
+    const classification = classifyPiError(error, {
+      mode: this.networkSettings.mode,
+      provider: record.provider,
+      model: record.model?.id,
+    });
     record.status = recovering ? "recovering" : "failed";
-    record.health = { status: recovering ? "degraded" : "failed", checkedAt: now(), message: String(error?.message || error || "运行时失败").slice(0, 500) };
-    record.error = { code: error?.code || "PI_RUNTIME_FAILED", message: String(error?.message || error || "运行时失败").slice(0, 500) };
+    record.health = {
+      status: recovering ? "degraded" : "failed",
+      checkedAt: now(),
+      message: classification.message,
+      category: classification.code,
+    };
+    record.errorCategory = classification.code;
+    record.error = {
+      code: error?.code && ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT", "MODEL_PROBE_TIMEOUT"].includes(String(error.code))
+        ? String(error.code)
+        : classification.code,
+      category: classification.code,
+      retryable: classification.retryable,
+      status: classification.status,
+      message: classification.message,
+      classification,
+    };
     record.recoveryChain = [...(record.recoveryChain || []), { at: now(), reason, status: record.status }].slice(-20);
     this.trimAndPersist();
     return record;
@@ -347,6 +414,7 @@ export class PiRuntimeManager {
         maxRetryDelayMs: 1000,
         reasoning: "off",
         maxTokens: 16,
+        fetch: this.networkAdapter().fetch,
         // OpenCode Go 要求 x-opencode-session；Pi Agent 本身会自动传递
         // SessionManager 的 ID，这个独立探测也必须保持同一请求语义。
         sessionId,
@@ -372,6 +440,10 @@ export class PiRuntimeManager {
         timeoutError.model = model?.id || null;
         throw timeoutError;
       }
+      const classification = classifyPiError(error, { mode: this.networkSettings.mode, provider: model?.provider, model: model?.id });
+      error.errorCategory = classification.code;
+      error.oawClassification = classification;
+      if (!error.code || !["PI_SETTLED_ERROR", "MODEL_PROBE_TIMEOUT"].includes(String(error.code))) error.code = classification.code;
       throw error;
     } finally {
       clearTimeout(timer);
@@ -446,6 +518,8 @@ export class PiRuntimeManager {
   async disposeAll(entries = []) {
     for (const entry of entries) this.dispose(entry.runtimeId, entry.session);
     this.modelRuntimePromise = null;
+    this.networkAdapterInstance?.close?.();
+    this.networkAdapterInstance = null;
   }
 
   find(runtimeId) {
