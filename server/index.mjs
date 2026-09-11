@@ -2,9 +2,10 @@ import express from "express";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
-import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
+import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { agentManager, classifyAgentError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
@@ -25,7 +26,20 @@ import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
 import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
 import { runRuntimeEvaluation } from "./运行评测.mjs";
-import { PI_PACKAGE_VERSION } from "./Pi运行时管理.mjs";
+import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
+import {
+  getConfigStatus,
+  importLocalPiConfig,
+  importLocalPiSessions,
+  loadNetworkSettings,
+  previewLocalPiConfig,
+  readModelsStore,
+  readModelsConfig,
+  writeModelsConfig,
+  readNetworkSettings,
+  readRuntimeSettings,
+  saveNetworkSettings,
+} from "./Pi配置管理.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
@@ -34,6 +48,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = process.env.PORT || 3002;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 const AGENT_DIAGNOSTIC_LOG = path.join(process.env.TEMP || PROJECT_DIR, "open-plan-agent连接诊断.log");
+const SERVICE_STARTED_AT = new Date().toISOString();
 
 const recoveredRunIds = recoverActiveRuns();
 if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
@@ -236,6 +251,11 @@ app.get("/api/status", (req, res) => {
     piPackageVersion: PI_PACKAGE_VERSION,
     host: HOST,
     authRequired: Boolean(API_TOKEN),
+    service: {
+      pid: process.pid,
+      startedAt: SERVICE_STARTED_AT,
+      uptimeSec: Math.round(process.uptime()),
+    },
   });
 });
 
@@ -675,6 +695,7 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const ext = path.extname(p).slice(1).toLowerCase();
   const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
   try {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
     res.sendFile(p);
@@ -720,16 +741,21 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   try {
     if (ext === "xlsx") {
       const wb = await readWorkbook(p);
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, ...wb });
     } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
       const content = fs.readFileSync(p, "utf8");
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "text", name: fileName, content, ext });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "htmlfile", name: fileName, content });
     } else if (ext === "pdf") {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw` });
     } else {
+      res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
     }
   } catch (e) {
@@ -744,6 +770,7 @@ app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   if (!p) return res.status(404).send("not found");
   try {
     const html = await renderHtml(p);
+    res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     res.send(html);
@@ -758,6 +785,7 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
   const p = resolvePath(fileName);
   if (!p) return res.status(404).json({ error: "not found" });
+  res.setHeader("Cache-Control", "no-store, max-age=0");
   const ext = path.extname(p).slice(1).toLowerCase();
   try {
     if (ext === "md" || ext === "markdown" || ext === "txt") {
@@ -794,7 +822,7 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
       const unique = comments.filter((c) => { if (seen.has(c.text)) return false; seen.add(c.text); return true; });
       return res.json({ comments: unique.slice(0, 20) });
     }
-    const r = await runOfficecli(["query", p, "comment", "--json"]);
+    const r = await queryComments(p);
     const results = r.json?.data?.results || [];
     const comments = results.map((c) => ({
       path: c.path,
@@ -814,6 +842,7 @@ app.get(/^\/api\/doc\/(.+)\/watch$/, async (req, res) => {
   if (!p) return res.status(404).json({ error: "not found" });
   try {
     const entry = await startWatch(p);
+    if (entry.error) return res.status(500).json({ ok: false, error: entry.error });
     res.json({ ok: true, url: `http://localhost:${entry.port}`, port: entry.port });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -862,9 +891,20 @@ app.post("/api/office", async (req, res) => {
   }
   try {
     const r = await runOfficecli(normalizedArgs, { cwd: getWorkspace() });
-    res.json({ code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
+    if (Number(r.code) !== 0) {
+      return res.status(502).json({
+        ok: false,
+        code: "OFFICECLI_FAILED",
+        exitCode: r.code,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        json: r.json,
+        requestId: req.requestId,
+      });
+    }
+    res.json({ ok: true, code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
   } catch (e) {
-    res.status(500).json({ error: e.message, requestId: req.requestId });
+    res.status(e?.code === "OFFICECLI_TIMEOUT" ? 504 : 500).json({ ok: false, code: e?.code || "OFFICECLI_START_FAILED", error: e.message, requestId: req.requestId });
   }
 });
 
@@ -994,6 +1034,47 @@ app.post("/api/agent/model", async (req, res) => {
   } catch (e) {
     recordAgentDiagnostic(req, { client, thread, model: String(model), error: e });
     res.status(500).json({ error: e.message });
+  }
+});
+
+// 保存 OpenAI/Anthropic 兼容的自定义供应商模型配置；API Key 仍单独存入凭据文件。
+app.post("/api/agent/custom-provider", (req, res) => {
+  const provider = String(req.body?.provider || "").trim();
+  const baseUrl = String(req.body?.baseUrl || "").trim().replace(/\/+$/, "");
+  const api = String(req.body?.api || "openai-completions").trim();
+  const modelId = String(req.body?.modelId || "").trim();
+  const modelName = String(req.body?.modelName || modelId).trim() || modelId;
+  const allowedApis = new Set(["openai-completions", "anthropic-messages", "openai-codex-responses"]);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(provider)) return res.status(400).json({ ok: false, error: "供应商 ID 需为 2-64 位英文、数字、点、下划线或短横线", code: "CUSTOM_PROVIDER_INVALID" });
+  if (!/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "CUSTOM_BASE_URL_INVALID" });
+  if (!allowedApis.has(api)) return res.status(400).json({ ok: false, error: "暂只支持 OpenAI Completions、Anthropic Messages 或 OpenAI Responses", code: "CUSTOM_API_INVALID" });
+  if (!/^[^/\\\s]{1,160}$/.test(modelId)) return res.status(400).json({ ok: false, error: "模型 ID 不能为空，且不能包含斜线或空格", code: "CUSTOM_MODEL_INVALID" });
+  try {
+    const config = readModelsConfig() || {};
+    const providers = config.providers && typeof config.providers === "object" ? config.providers : {};
+    const previous = providers[provider] && typeof providers[provider] === "object" ? providers[provider] : {};
+    const previousModels = Array.isArray(previous.models) ? previous.models : [];
+    const previousModel = previousModels.find((item) => item?.id === modelId) || {};
+    const model = {
+      ...previousModel,
+      id: modelId,
+      name: modelName.slice(0, 160),
+      api,
+      baseUrl,
+      reasoning: req.body?.reasoning !== false,
+      ...(req.body?.vision === true ? { input: ["text", "image"] } : { input: ["text"] }),
+      ...(Number(req.body?.contextWindow) > 0 ? { contextWindow: Math.floor(Number(req.body.contextWindow)) } : {}),
+    };
+    // 凭据只允许进入 auth.json；即使更新旧模型，也清理历史上可能残留的密钥字段。
+    delete model.apiKey;
+    delete model.api_key;
+    const nextProvider = { ...previous, api, baseUrl, models: [...previousModels.filter((item) => item?.id !== modelId), model] };
+    delete nextProvider.apiKey;
+    writeModelsConfig({ ...config, providers: { ...providers, [provider]: nextProvider } });
+    piRuntimeManager.resetModelRuntime();
+    res.json({ ok: true, provider, model: `${provider}/${modelId}`, modelName: model.name, api, baseUrl });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message, code: "CUSTOM_PROVIDER_SAVE_FAILED" });
   }
 });
 
@@ -1133,14 +1214,76 @@ app.post("/api/agent/auth/remove", async (req, res) => {
 });
 
 // ---------- sessions ----------
-// 新会话写入项目内可写目录；旧 Pi 全局目录只作为只读历史来源。
+// 新会话和显式导入的旧会话都只存放在项目目录；常态运行不扫描本地 Pi 会话。
 const SESSIONS_DIR = path.join(PROJECT_DIR, ".规聚会话");
-const LEGACY_SESSIONS_DIR = path.join(AGENT_DIR, "sessions");
-const SESSION_READ_DIRS = [SESSIONS_DIR, LEGACY_SESSIONS_DIR];
+const SESSION_READ_DIRS = [SESSIONS_DIR];
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 const SESSION_TEXT_CACHE_LIMIT = 160;
 const sessionTextCache = new Map();
 const sessionIdIndex = new Map();
+
+// ---------- 规聚独立 Pi 配置 ----------
+app.get("/api/agent/config-status", (_req, res) => {
+  try {
+    res.json(getConfigStatus());
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: "CONFIG_STATUS_FAILED" });
+  }
+});
+
+app.get("/api/agent/import-preview", (_req, res) => {
+  try {
+    res.json(previewLocalPiConfig());
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: "IMPORT_PREVIEW_FAILED" });
+  }
+});
+
+app.post("/api/agent/import-config", async (req, res) => {
+  try {
+    const preview = previewLocalPiConfig();
+    if (!preview.available) return res.status(404).json({ ok: false, error: "未检测到可导入的本地 Pi 配置", code: "LOCAL_PI_NOT_FOUND" });
+    const enabled = (name, fallback = true) => req.body?.[name] === undefined ? fallback : req.body[name] === true;
+    const result = importLocalPiConfig({
+      includeModels: enabled("includeModels"),
+      includeSettings: enabled("includeSettings"),
+      includeCredentials: enabled("includeCredentials"),
+    });
+    if (!result.ok) return res.status(409).json(result);
+    const sessions = enabled("includeSessions") ? importLocalPiSessions({ targetDir: SESSIONS_DIR }) : { ok: true, imported: 0, files: [] };
+    sessionTextCache.clear();
+    sessionIdIndex.clear();
+    piRuntimeManager.resetModelRuntime();
+    res.json({ ...result, sessions, status: getConfigStatus() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message, code: "PI_IMPORT_FAILED" });
+  }
+});
+
+app.get("/api/agent/network-settings", (_req, res) => {
+  try {
+    res.json(readNetworkSettings());
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: "NETWORK_SETTINGS_READ_FAILED" });
+  }
+});
+
+app.patch("/api/agent/network-settings", (req, res) => {
+  try {
+    const mode = String(req.body?.mode || "").trim().toLowerCase();
+    if (!["direct", "system", "manual"].includes(mode)) return res.status(400).json({ error: "连接方式必须是 direct、system 或 manual", code: "NETWORK_MODE_INVALID" });
+    const current = readNetworkSettings();
+    const keepExistingProxy = req.body?.keepExistingProxy === true;
+    if (mode === "manual" && !String(req.body?.proxyUrl || "").trim() && !(keepExistingProxy && current.hasProxy)) {
+      return res.status(400).json({ error: "手动代理模式需要填写代理地址", code: "PROXY_REQUIRED" });
+    }
+    const saved = saveNetworkSettings(req.body || {}, { preserveProxy: keepExistingProxy });
+    const runtime = piRuntimeManager.updateNetworkSettings(loadNetworkSettings());
+    res.json({ ...saved, runtime });
+  } catch (error) {
+    res.status(500).json({ error: error.message, code: "NETWORK_SETTINGS_SAVE_FAILED" });
+  }
+});
 
 // ---------- skills ----------
 // 交通规划工程师工作台：按技能用途分类
@@ -1168,8 +1311,8 @@ function classifySkill(name, desc = "") {
 function scanSkills() {
   const roots = [
     path.join(AGENT_DIR, "skills"),
-    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".agents", "skills"),
-    path.join(process.env.USERPROFILE || "C:\\Users\\admin", ".claude", "skills"),
+    path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
+    path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
     path.join(PROJECT_DIR, ".agents", "skills"),
     path.join(PROJECT_DIR, ".pi", "skills"),
     path.join(PROJECT_DIR, ".claude", "skills"),
@@ -1366,7 +1509,7 @@ function sessionBaseName(fileName) {
   return String(fileName || "").replace(/\.(?:jsonl|json)$/i, "");
 }
 
-// 递归扫描工作台目录和旧 Pi 目录下的会话文件；工作台目录优先，避免迁移后重复显示。
+// 递归扫描规聚项目会话目录；旧 Pi 会话只有显式导入后才会进入这里。
 function listSessionFiles() {
   const candidates = [];
   function walk(dir, depth, storeDir) {
@@ -1377,7 +1520,7 @@ function listSessionFiles() {
       const full = path.join(dir, e.name);
       if (e.isDirectory()) {
         walk(full, depth + 1, storeDir);
-      } else if (e.isFile() && /\.(?:jsonl|json)$/i.test(e.name)) {
+      } else if (e.isFile() && /\.jsonl$/i.test(e.name)) {
         try {
           const st = fs.statSync(full);
           candidates.push({ fileName: e.name, fullPath: full, storeDir, mtime: st.mtimeMs, size: st.size });
@@ -1843,11 +1986,18 @@ app.post("/api/workspace/validate", (req, res) => {
 // 清洗会话标题：去掉前端注入的前缀标记（[当前打开文件]/[模式]/[已上传附件]），按句子智能截断
 function cleanSessionTitle(raw) {
   let t = String(raw || "").trim();
+  // 兼容旧版本把任务目标直接写成“## 当前任务目标：...”的会话首条消息。
+  // 这类标题是内部封装，不应污染项目列表和会话历史。
+  const inlineTaskGoal = t.match(/^#{1,6}\s*当前任务目标\s*[:：]\s*([^\n]+)/i);
+  if (inlineTaskGoal?.[1]) t = inlineTaskGoal[1].trim();
   // 新版 agent 会把用户原始指令包在 TaskEnvelope 中；优先取“目标”字段，
   // 否则整段动态上下文会被误判为系统提示，历史列表就只剩“空会话”。
-  const goal = t.match(/(?:^|\n)\s*-?\s*(?:目标|任务目标)\s*:\s*([\s\S]*?)(?=\n\s*-?\s*(?:模式|引用数|输出要求|本轮结构化引用|动态上下文)\s*:|$)/i);
+  const envelopeGoal = t.match(/^\s*#{1,6}\s*当前任务(?:\s+|\n)+(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=(?:\s+|\n)-?\s*(?:模式|引用数|输出要求|本轮结构化引用|动态上下文)\s*[:：]|$)/i);
+  if (envelopeGoal?.[1]) t = envelopeGoal[1].trim();
+  const goal = t.match(/(?:^|\n)\s*-?\s*(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=\n\s*-?\s*(?:模式|引用数|输出要求|本轮结构化引用|动态上下文)\s*[:：]|$)/i);
   if (goal?.[1]) t = goal[1].trim();
   t = t.replace(/^##\s*任务封装\s*/i, "").trim();
+  t = t.replace(/^#{1,6}\s*当前任务目标\s*[:：]?\s*/i, "").trim();
   // 动态上下文可能包含整份 AGENTS.md；只保留模式标记之后的用户指令。
   t = t.replace(/^\[动态上下文\][\s\S]*?\[模式:\s*[^\]]*\]\s*/i, "");
   t = t.replace(/^\[当前打开文件:[^\]]*\]\s*/g, "");
@@ -2062,6 +2212,40 @@ app.get("/api/sessions/:id", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// POST /api/sessions/batch-delete - 批量删除会话历史（运行中的会话跳过）
+app.post("/api/sessions/batch-delete", (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean))].slice(0, 200);
+  if (!ids.length) return res.status(400).json({ error: "ids required" });
+  const activeSessionIds = new Set(listRuns({ limit: 500 })
+    .filter((run) => ["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(run?.status))
+    .map((run) => String(run.sessionId || ""))
+    .filter(Boolean));
+  const deleted = [];
+  const skipped = [];
+  const missing = [];
+  for (const id of ids) {
+    if (activeSessionIds.has(id)) {
+      skipped.push({ id, reason: "会话正在运行" });
+      continue;
+    }
+    const found = findSessionFile(id);
+    if (!found) {
+      missing.push(id);
+      continue;
+    }
+    try {
+      fs.unlinkSync(found.fullPath);
+      sessionTextCache.delete(found.fullPath);
+      deleted.push(id);
+    } catch (error) {
+      skipped.push({ id, reason: error.message || "删除失败" });
+    }
+  }
+  res.json({ ok: true, deleted, skipped, missing });
 });
 
 // DELETE /api/sessions/:id - 删除会话文件
@@ -2376,7 +2560,9 @@ app.post("/api/agent/prompt", async (req, res) => {
       admittedAt: new Date().toISOString(),
       snapshotMode: tracksWorkspace ? "full" : "none",
     });
-    void executeAgentRun({
+    // 先启动入队，再返回 admission 响应。executeAgentRun 在现有 entry 上
+    // 会同步登记 queuedCount，避免响应里的 queued/queuePosition 与真实状态错位。
+    const execution = executeAgentRun({
       entry,
       key,
       client,
@@ -2394,7 +2580,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       capabilityPlan,
       preflight,
       requestId: req.requestId,
-    }).catch((error) => {
+    });
+    execution.catch((error) => {
       console.error("[agent] 后台 Run 收尾失败", error);
     });
     // 参考 pi-web：先返回“已接收”，最终模型/工具/产物状态由 SSE 事件驱动。
@@ -2701,6 +2888,11 @@ app.get("/api/agent/stream", async (req, res) => {
   const queryCursor = parseInt(req.query.after || "0", 10) || 0;
   const headerCursor = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
   const lastId = Math.max(queryCursor, headerCursor);
+  // 先挂实时监听，再回放历史。回放前没有 await，但注册顺序仍然很关键：
+  // 如果先回放、后监听，另一条请求在这段窗口内产生的事件会被永久漏掉，
+  // 前端只能靠刷新重新读取历史才能“恢复”。
+  onEvent = (ev) => send(ev);
+  entry.channel.emitter.on("event", onEvent);
   // 参考 pi-web：连接建立后发送可被客户端确认的应用层握手，
   // 不把浏览器 EventSource 的 onopen 当作 Agent 已就绪。
   const connectedModel = entry.modelFallbackSpec || (entry.session?.model?.provider && entry.session?.model?.id ? `${entry.session.model.provider}/${entry.session.model.id}` : null);
@@ -2719,9 +2911,6 @@ app.get("/api/agent/stream", async (req, res) => {
   })}\n\n`);
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
-
-  onEvent = (ev) => send(ev);
-  entry.channel.emitter.on("event", onEvent);
   } catch (error) {
     if (!closed) {
       const diagnostic = classifyAgentError(error);
@@ -2743,19 +2932,11 @@ app.get("/api/agent/stream", async (req, res) => {
 });
 
 function loadModelsStore() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(AGENT_DIR, "models-store.json"), "utf8"));
-  } catch {
-    return {};
-  }
+  return readModelsStore();
 }
 function loadSettingsDefault() {
-  try {
-    const s = JSON.parse(fs.readFileSync(path.join(AGENT_DIR, "settings.json"), "utf8"));
-    return (s.defaultProvider ? s.defaultProvider + "/" : "") + (s.defaultModel || "");
-  } catch {
-    return "";
-  }
+  const settings = readRuntimeSettings();
+  return (settings.defaultProvider ? settings.defaultProvider + "/" : "") + (settings.defaultModel || "");
 }
 
 // ---------- 记忆系统 API（Proma WorkspaceMemory 风格） ----------
@@ -3162,10 +3343,21 @@ app.get("/api/bus/stats", (req, res) => {
   res.json(map.getBusStats());
 });
 
-  app.use(express.static(dist));
+  app.use(express.static(dist, {
+    setHeaders: (res, filePath) => {
+      // index.html 负责引用当前构建的资源；不缓存它，避免前端继续运行旧的
+      // SSE 事件过滤逻辑。带 hash 的 assets 仍由 Vite 自己长期缓存。
+      if (path.basename(filePath).toLowerCase() === "index.html") {
+        res.setHeader("Cache-Control", "no-store, max-age=0");
+      }
+    },
+  }));
   // 构建产物缺失时返回明确 404，避免旧缓存请求拿到 index.html。
   app.use("/assets", (_req, res) => res.status(404).json({ error: "asset not found" }));
-  app.get("/*splat", (_req, res) => res.sendFile(path.join(dist, "index.html")));
+  app.get("/*splat", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.sendFile(path.join(dist, "index.html"));
+  });
 }
 
 // ---------- helpers for file change detection ----------
@@ -3304,18 +3496,69 @@ if (!API_TOKEN && !["127.0.0.1", "localhost", "::1"].includes(String(HOST))) {
   console.warn("[security] HOST is not loopback and OAW_API_TOKEN is not set; API requests are unauthenticated.");
 }
 
+let httpServer = null;
+let shuttingDown = false;
+
+function recordProcessFault(kind, error) {
+  const message = String(error?.message || error || "未知服务异常");
+  const record = {
+    time: new Date().toISOString(),
+    requestId: null,
+    clientId: null,
+    threadId: null,
+    runId: null,
+    model: null,
+    providerStatus: null,
+    errorCode: error?.code ? String(error.code) : "SERVICE_PROCESS_FAULT",
+    errorCategory: "service",
+    causeCode: error?.cause?.code ? String(error.cause.code) : null,
+    retryable: false,
+    message: message.slice(0, 1200),
+    processFault: kind,
+    pid: process.pid,
+    uptimeSec: Math.round(process.uptime()),
+  };
+  try { fs.appendFileSync(AGENT_DIAGNOSTIC_LOG, JSON.stringify(record) + "\n", "utf8"); } catch {}
+  console.error(`[service] ${kind}:`, error?.stack || error);
+}
+
+async function shutdownService(reason, exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.warn(`[service] 正在关闭（${reason}）...`);
+  try { await agentManager.disposeAll(); } catch (error) { recordProcessFault("shutdown_dispose_failed", error); }
+  try { stopAllWatches(); } catch (error) { recordProcessFault("shutdown_watch_failed", error); }
+  if (memoryWatcher) { try { memoryWatcher.close(); } catch (error) { recordProcessFault("shutdown_memory_watch_failed", error); } }
+  if (httpServer) {
+    await new Promise((resolve) => {
+      try { httpServer.close(() => resolve()); } catch { resolve(); }
+    });
+  }
+  process.exit(exitCode);
+}
+
+// 未捕获异常后继续复用同一个 Node 进程是不安全的：Pi 会话、SSE 订阅或文件锁
+// 可能已经处于不一致状态。记录后退出，由启动脚本的监督循环拉起干净进程。
 process.on("uncaughtException", (error) => {
-  console.error("[fatal] 未捕获异常：", error?.stack || error);
+  recordProcessFault("uncaught_exception", error);
+  void shutdownService("uncaught_exception", 1);
 });
+// 未处理拒绝通常来自单个 provider/SSE 请求，不能让整个本地工作台退出；先留痕，
+// 由具体 Agent/HTTP 链路完成有限重试和错误收敛。
 process.on("unhandledRejection", (reason) => {
-  console.error("[fatal] 未处理的 Promise 异常：", reason?.stack || reason);
+  recordProcessFault("unhandled_rejection", reason);
 });
 
-const httpServer = app.listen(PORT, HOST, () => {
+httpServer = app.listen(PORT, HOST, () => {
   console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
   if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
 });
+// SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
+// 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。
+httpServer.requestTimeout = 0;
+httpServer.timeout = 0;
+httpServer.keepAliveTimeout = 65000;
 httpServer.on("error", (error) => {
   console.error(`[server] 监听 ${HOST}:${PORT} 失败：`, error?.stack || error);
   if (error?.code === "EADDRINUSE") {
@@ -3324,12 +3567,8 @@ httpServer.on("error", (error) => {
   }
 });
 
-process.on("SIGINT", async () => {
-  await agentManager.disposeAll();
-  stopAllWatches();
-  if (memoryWatcher) { try { memoryWatcher.close(); } catch {} }
-  process.exit(0);
-});
+process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });
+process.on("SIGTERM", () => { void shutdownService("SIGTERM", 0); });
 
 // ---------- M3 公交数据分析 API ----------
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
-import Icon from "./Icon.jsx";
+import Icon, { ProviderIcon } from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import { 计算展示字符数 } from "./流式文本队列.js";
@@ -63,16 +63,18 @@ const THINKING_OPTIONS = [
   { id: "max", label: "最大", shortLabel: "最大", desc: "使用模型允许的最高档位" },
 ];
 const MODEL_PROVIDER_META = {
-  anthropic: { label: "Anthropic", mark: "◎" },
-  deepseek: { label: "DeepSeek", mark: "◈" },
-  gemini: { label: "Google", mark: "✦" },
-  google: { label: "Google", mark: "✦" },
-  minimax: { label: "MiniMax", mark: "≋" },
-  "minimax-cn": { label: "MiniMax", mark: "≋" },
-  openai: { label: "OpenAI", mark: "◉" },
-  "openai-codex": { label: "OpenAI", mark: "◉" },
-  qwen: { label: "Qwen", mark: "Q" },
-  alibaba: { label: "Qwen", mark: "Q" },
+  anthropic: { label: "Anthropic", icon: "anthropic" },
+  deepseek: { label: "DeepSeek", icon: "deepseek" },
+  gemini: { label: "Google", icon: "gemini" },
+  google: { label: "Google", icon: "gemini" },
+  minimax: { label: "MiniMax", icon: "minimax" },
+  "minimax-cn": { label: "MiniMax", icon: "minimax" },
+  openai: { label: "OpenAI", icon: "openai" },
+  "openai-codex": { label: "OpenAI", icon: "openai" },
+  qwen: { label: "Qwen", icon: "qwen" },
+  alibaba: { label: "Qwen", icon: "qwen" },
+  "opencode-go": { label: "OpenCode Go", icon: "opencode" },
+  "xiaomi-token-plan-cn": { label: "MiMo", icon: "xiaomi" },
 };
 
 function modelProvider(model) {
@@ -81,7 +83,7 @@ function modelProvider(model) {
 
 function modelProviderMeta(model) {
   const provider = modelProvider(model);
-  return MODEL_PROVIDER_META[provider] || { label: provider === "custom" ? "自定义供应商" : provider, mark: "•" };
+  return MODEL_PROVIDER_META[provider] || { label: provider === "custom" ? "自定义供应商" : provider, icon: "custom" };
 }
 
 function modelDisplayName(model) {
@@ -90,8 +92,9 @@ function modelDisplayName(model) {
 }
 
 function ModelProviderMark({ model, size = 18 }) {
+  const provider = modelProvider(model);
   const meta = modelProviderMeta(model);
-  return <span className={`model-provider-mark provider-${modelProvider(model)}`} style={{ width: size, height: size }} aria-hidden="true">{meta.mark}</span>;
+  return <span className={`model-provider-mark provider-${provider}`} style={{ width: size, height: size }} aria-hidden="true"><ProviderIcon provider={meta.icon} size={Math.max(11, size - 4)} /></span>;
 }
 
 const MODE_META = {
@@ -114,28 +117,118 @@ const MODE_META = {
 };
 
 // 中心对话区只保留能解释“任务进行到哪一步”的 SSE 事件；高频 token/thinking
-// 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。事件默认折叠，展开后
-// 可核对模型请求、工具调用、错误和收尾是否完整。
+// 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。运行期间展开，完成后
+// 自动收成一行，用户仍可点击核对模型请求、工具调用、写入和收尾是否完整。
 const FLOW_EVENT_TYPES = new Set([
   "run_admitting", "run_admitted", "model_request_started", "agent_started",
-  "turn_started", "tool_start", "tool_end", "ask_user", "agent_retry",
+  "turn_started", "turn_ended", "tool_start", "tool_end", "ask_user", "agent_retry",
   "agent_retry_end", "agent_model_fallback", "agent_model_fallback_failed",
   "context_compacting", "context_compacted", "context_compact_warning",
   "agent_turn_end", "agent_error", "file_changed", "agent_summary",
   "assistant_final", "agent_end", "run_finished", "aborted", "write_rejected",
+  "write_started", "write_locked", "artifact_staged", "artifact_materialized", "write_cleaned",
+  "capability_plan", "mode_policy", "thinking_level", "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed",
 ]);
+
+// 恢复 Pi JSONL 时可能同时存在空 assistant 占位、SSE 重试留下的重复消息，
+// 以及同一条最终回复被 assistant_final/run_finished 各写入一次。历史层只做
+// 相邻同内容去重，保留原始顺序和真正被工具/用户消息隔开的重复提问。
+function historyMessageFingerprint(message) {
+  const blocks = Array.isArray(message?.blocks) ? message.blocks : [];
+  const compact = (value) => String(value || "").replace(/\s+/g, " ").trim();
+  return JSON.stringify({
+    role: message?.role || "",
+    text: compact(message?.text),
+    images: (message?.images || []).map((item) => typeof item === "string" ? item.slice(0, 80) : item?.name || "image"),
+    blocks: blocks.map((block) => ({
+      type: block?.type || "",
+      text: compact(block?.text),
+      name: block?.name || "",
+      input: compact(block?.input),
+      output: compact(block?.output || block?.result),
+      question: compact(block?.question),
+      answer: compact(block?.answer),
+    })),
+    runId: message?.role === "system" ? message?.runId || "" : "",
+    summary: Boolean(message?.summary),
+  });
+}
+
+function historyMessageScore(message) {
+  const blocks = Array.isArray(message?.blocks) ? message.blocks : [];
+  return String(message?.text || "").length
+    + (message?.images?.length || 0) * 100
+    + blocks.reduce((sum, block) => sum + String(block?.text || block?.output || block?.result || "").length + 40, 0);
+}
+
+export function normalizeHistoryMessages(items) {
+  if (!Array.isArray(items)) return [];
+  const result = [];
+  const assistantFingerprints = new Set();
+  for (const message of items) {
+    if (!message || !message.role) continue;
+    const blocks = Array.isArray(message.blocks) ? message.blocks : [];
+    const meaningful = Boolean(
+      String(message.text || "").trim()
+      || (message.images || []).length
+      || blocks.length
+      || message.memoryProposal
+      || message.summary,
+    );
+    // Pi 的 assistant 空消息只是占位符，恢复时不应占据一条对话记录。
+    if (message.role === "assistant" && !meaningful && !message.errorText) continue;
+    const previous = result[result.length - 1];
+    const fingerprint = historyMessageFingerprint(message);
+    // 一次用户提问可能因恢复/重试生成两条相同 assistant 结论，系统提示夹在
+    // 中间时不再是“相邻”重复；直到下一条用户消息前，仅合并相同 assistant 结果。
+    if (message.role === "assistant" && assistantFingerprints.has(fingerprint)) continue;
+    // 运行总结在实时 SSE 和历史 Run 列表中各有一份；同一 run 只保留一个，
+    // 避免恢复会话后“本轮结论”挤在一起或重复出现。
+    if (message.role === "system" && message.summary && message.runId) {
+      const existingIndex = result.findIndex((item) => item.role === "system" && item.summary && item.runId === message.runId);
+      if (existingIndex >= 0) {
+        if (historyMessageScore(message) > historyMessageScore(result[existingIndex])) result[existingIndex] = message;
+        continue;
+      }
+    }
+    if (previous && historyMessageFingerprint(previous) === fingerprint) {
+      if (historyMessageScore(message) > historyMessageScore(previous)) result[result.length - 1] = message;
+      continue;
+    }
+    result.push(message);
+    if (message.role === "user") assistantFingerprints.clear();
+    if (message.role === "assistant") assistantFingerprints.add(fingerprint);
+  }
+  return result;
+}
 
 function flowEventLabel(event) {
   const data = event?.data || {};
   const tool = data.name || data.toolName || "工具";
+  const toolLabels = {
+    read: "读取文件", write: "写入文件", edit: "编辑文件", bash: "执行命令",
+    officecli: "执行 Office CLI", find: "查找文件", grep: "搜索内容", ls: "列出文件",
+    ask_user: "等待用户回答",
+  };
+  const toolLabel = toolLabels[String(tool).toLowerCase()] || tool;
   switch (event?.type) {
     case "run_admitting": return "准备任务";
+    case "stream_waiting": return "正在接收事件流";
     case "run_admitted": return "任务已受理";
     case "model_request_started": return "请求模型";
     case "agent_started": return "模型已开始处理";
     case "turn_started": return "开始生成回合";
-    case "tool_start": return `调用 ${tool}`;
-    case "tool_end": return `${tool}${data.isError ? "失败" : "完成"}`;
+    case "turn_ended": return "回合结束";
+    case "write_started": return "准备写入";
+    case "write_locked": return "写入已锁定";
+    case "artifact_staged": return "产物已暂存";
+    case "artifact_materialized": return "产物已发布";
+    case "write_cleaned": return "清理暂存产物";
+    case "steer": return "插入新指令";
+    case "tool_start": return `调用 ${toolLabel}`;
+    case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
+    case "todo_updated": return `任务清单已更新${data.todoProgress ? `（${data.todoProgress.completed || 0}/${data.todoProgress.total || 0}）` : ""}`;
+    case "officecli_failed": return `Office CLI 失败${data.message ? `：${String(data.message).slice(0, 60)}` : ""}`;
     case "ask_user": return "等待用户回答";
     case "agent_retry": return "模型连接重试";
     case "agent_retry_end": return data.success ? "模型连接已恢复" : "模型重试结束";
@@ -153,12 +246,17 @@ function flowEventLabel(event) {
     case "agent_end": return "Agent 处理结束";
     case "run_finished": return data.status === "completed" ? "任务完成" : `任务${data.status || "结束"}`;
     case "aborted": return "任务已中断";
+    case "capability_plan": return "能力准备完成";
+    case "mode_policy": return `模式：${normalizeUiMode(data.mode) === "agent" ? "Agent" : "Chat"}`;
+    case "thinking_level": return `思考深度：${data.effective || data.requested || "默认"}`;
+    case "agent_queued": return `任务已排队${data.position ? `（第 ${data.position} 项）` : ""}`;
+    case "agent_queue_update": return data.steering ? "正在调整任务" : "等待后续任务";
     default: return event?.type || "事件";
   }
 }
 
 function flowEventTone(event) {
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected"].includes(event?.type) || event?.data?.isError) return "error";
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed"].includes(event?.type) || event?.data?.isError) return "error";
   if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted"].includes(event?.type)) return "success";
   return "running";
 }
@@ -179,7 +277,7 @@ function loadEmbeddedMessages(threadId, embedded) {
   if (!embedded || !threadId) return [];
   try {
     const cached = JSON.parse(localStorage.getItem(`oaw_embedded_messages_${threadId}`) || "[]");
-    return Array.isArray(cached) ? cached : [];
+    return normalizeHistoryMessages(cached);
   } catch {
     return [];
   }
@@ -248,7 +346,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -291,6 +389,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
   const bottomRef = useRef(null);
   const assistantIdRef = useRef(null);
+  // agent_end 可能先于 run_finished 到达；保留本轮最后一个气泡，
+  // 让服务端补发的权威全文继续写入原气泡，避免出现两条结论。
+  const lastAssistantIdRef = useRef(null);
   const fileInputRef = useRef(null);
   const attInputRef = useRef(null);
   // streaming 累积缓冲（性能优化：避免每 token setState）
@@ -310,6 +411,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const eventCursorRef = useRef(0);
   const eventCursorsRef = useRef(new Map());
   const activeRunIdRef = useRef(null);
+  // 发送请求后立即标记运行态，不能等 React 的 busy 状态提交；
+  // 否则首批 run_admitted/model_request_started 事件会被误当成历史事件丢弃。
+  const runInProgressRef = useRef(false);
   const agentEventAtRef = useRef(0);
   const streamReadyRef = useRef(null);
   const eventHandlerRef = useRef(null);
@@ -429,8 +533,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 加载历史会话消息（点击历史列表时触发）
   useEffect(() => {
     if (historyMessages) {
-      setMessages(historyMessages);
-      const latestRun = [...historyMessages].reverse().find((item) => item?.runId && item?.runStatus);
+      const normalizedHistory = normalizeHistoryMessages(historyMessages);
+      setMessages(normalizedHistory);
+      const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setBusy(isLiveRun);
@@ -443,14 +548,24 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         mode: normalizeUiMode(latestRun?.task?.mode),
       });
       setTodoItems([]);
-      setExecutionEvents([]);
+      setExecutionEvents((latestRun?.events || [])
+        .filter((event) => FLOW_EVENT_TYPES.has(event?.type))
+        .map((event, eventIndex) => ({
+          ...event,
+          key: event.key || `history:${latestRun.runId}:${event.seq || eventIndex}`,
+          data: event.data || {},
+          at: event.at || new Date().toISOString(),
+        }))
+        .slice(-80));
       // 已完成历史只用于展示，不能成为 SSE 的当前运行锚点；否则下一轮
       // 的 run_finished/token 会被旧 runId 过滤掉。
       activeRunIdRef.current = isLiveRun ? latestRun.runId : null;
+      runInProgressRef.current = isLiveRun;
       if (latestRun?.task?.mode) setEditMode(normalizeUiMode(latestRun.task.mode));
       stoppingRef.current = false;
       setStopping(false);
       assistantIdRef.current = null;
+      lastAssistantIdRef.current = null;
       streamBufRef.current = null;
       streamingMsgIdRef.current = null;
       if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
@@ -475,6 +590,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     threadCacheRef.current.set(previous, {
       messages,
       runState,
+      todoItems,
       busy,
       editMode,
     });
@@ -483,7 +599,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setMessages(cached?.messages || []);
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setRunState(cached?.runState ? { ...cached.runState, mode: normalizeUiMode(cached.runState.mode) } : { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
-      setTodoItems([]);
+      setTodoItems(cached?.todoItems || []);
       setExecutionEvents([]);
       activeRunIdRef.current = cached?.runState && LIVE_RUN_STATUSES.has(cached.runState.status)
         ? cached.runState.runId || null
@@ -494,12 +610,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setStopping(false);
     stoppingRef.current = false;
     assistantIdRef.current = null;
+    lastAssistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
     if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
     textRevealRafRef.current = null;
     textRevealRef.current = null;
     if (hydratingHistory) activeRunIdRef.current = null;
+    runInProgressRef.current = hydratingHistory ? false : Boolean(cached?.busy);
     queueRef.current = [];
     setQueuedMessages([]);
     setInjectedContext([]);
@@ -525,6 +643,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     stoppingRef.current = false;
     setStopping(false);
     assistantIdRef.current = null;
+    lastAssistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
     if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
@@ -545,6 +664,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setTodoItems([]);
     setExecutionEvents([]);
     activeRunIdRef.current = null;
+    runInProgressRef.current = false;
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
   }, [onNewSession]);
@@ -772,6 +892,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let reconnectTimer = null;
     let stopped = false;
     let retryDelay = 500;
+    let connectionSerial = 0;
+    let watchdogTimer = null;
 
     const resetReady = () => {
       let resolve;
@@ -784,27 +906,49 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     const markReady = (value) => {
       streamReadyRef.current?.resolve?.(value);
     };
+
+    const scheduleReconnect = (source) => {
+      if (stopped || !mountedRef.current || !source || source !== es) return;
+      setConnected(false);
+      markReady(false);
+      source.close();
+      es = null;
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, retryDelay);
+      retryDelay = Math.min(5000, retryDelay * 2);
+    };
     
     const connect = () => {
       if (stopped || !mountedRef.current) return;
       resetReady();
+      const serial = ++connectionSerial;
+      let lastSignalAt = Date.now();
       
       const workspaceQuery = workspace ? `&cwd=${encodeURIComponent(workspace)}` : "";
       const cursorQuery = eventCursorRef.current ? `&after=${eventCursorRef.current}` : "";
-      es = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}`);
+      const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}`);
+      es = nextSource;
       
-      es.onopen = () => {
+      nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
-        retryDelay = 500;
       };
 
-      es.addEventListener("heartbeat", () => {
+      nextSource.addEventListener("heartbeat", () => {
         // 心跳只证明 SSE 通道仍存活；“Agent 已连接”由 connected 握手确认，
         // 避免 Runtime 还在初始化时提前显示为已连接。
+        lastSignalAt = Date.now();
       });
       
-      es.onmessage = (e) => {
+      nextSource.onmessage = (e) => {
         if (!mountedRef.current) return;
+        lastSignalAt = Date.now();
         const eventId = Number(e.lastEventId || 0);
         if (eventId > eventCursorRef.current) {
           eventCursorRef.current = eventId;
@@ -818,6 +962,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               eventCursorRef.current = connectedCursor;
               eventCursorsRef.current.set(streamKey, connectedCursor);
             }
+            // 只有应用层握手成功后才清除退避；HTTP onopen 过早重置会让
+            // Runtime 初始化失败时进入 500ms 高频重连循环。
+            retryDelay = 500;
             markReady(true);
           }
           eventHandlerRef.current?.(payload);
@@ -826,23 +973,26 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         }
       };
       
-      es.onerror = () => {
-        if (!stopped && mountedRef.current) {
-          setConnected(false);
-          markReady(false);
-          es.close();
-          reconnectTimer = setTimeout(connect, retryDelay);
-          retryDelay = Math.min(5000, retryDelay * 2);
+      nextSource.onerror = () => {
+        if (!stopped && mountedRef.current && serial === connectionSerial && es === nextSource) {
+          scheduleReconnect(nextSource);
         }
       };
+      watchdogTimer = setInterval(() => {
+        // 某些代理/浏览器会保持 TCP 为 open，却不再触发 EventSource.onerror；
+        // 服务端 heartbeat 正常时不会触发这里，静默超过 45 秒才强制重连。
+        if (Date.now() - lastSignalAt > 45000) scheduleReconnect(nextSource);
+      }, 10000);
     };
     
     connect();
     
     return () => {
       stopped = true;
+      connectionSerial += 1;
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (watchdogTimer) clearInterval(watchdogTimer);
       markReady(false);
       streamReadyRef.current = null;
     };
@@ -876,7 +1026,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             .sort((a, b) => String(b.startedAt || "").localeCompare(String(a.startedAt || "")))[0] || null;
         }
         if (cancelled || !run) return;
-        if (Array.isArray(run.steps)) setTodoItems(run.steps);
+        const nextTodos = run.todoVersion === 1 && Array.isArray(run.todos)
+          ? run.todos
+          : (Array.isArray(run.steps) ? run.steps : []);
+        setTodoItems(nextTodos);
         const terminal = ["completed", "failed", "cancelled", "aborted"].includes(run.status);
         // 只有活动 Run 才能成为 SSE 过滤锚点；历史终态 Run 只用于展示，
         // 否则切回历史会话后，下一轮新 Run 的事件会被旧 ID 丢弃。
@@ -935,12 +1088,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (eventRunId && activeRunIdRef.current && eventRunId !== activeRunIdRef.current) return;
     // 断线重连可能从 capability_plan 之后开始回放；run_admitted 也可以作为
     // 当前 Run 的锚点，否则后续 tool_start/token 会被误判为旧事件而丢弃。
-    if (eventRunId && !activeRunIdRef.current && busy && ["capability_plan", "run_admitted", "model_request_started"].includes(type)) {
+    const runInProgress = runInProgressRef.current || busy || LIVE_RUN_STATUSES.has(runState.status);
+    if (eventRunId && !activeRunIdRef.current && runInProgress && ["capability_plan", "run_admitted", "model_request_started"].includes(type)) {
       activeRunIdRef.current = eventRunId;
     }
     if (eventRunId && !activeRunIdRef.current && !["connected", "capability_plan", "run_finished"].includes(type)) return;
     if (type !== "connected") agentEventAtRef.current = Date.now();
-    if (FLOW_EVENT_TYPES.has(type) && (busy || eventRunId === activeRunIdRef.current)) {
+    if (FLOW_EVENT_TYPES.has(type) && (runInProgress || eventRunId === activeRunIdRef.current)) {
       const sequence = Number(envelope.id || envelope.seq || 0);
       const eventKey = sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${envelope.at || Date.now()}`;
       setExecutionEvents((previous) => {
@@ -952,10 +1106,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     // 刷新、断线重连或切换回正在执行的子对话时，历史事件可能先于本地气泡到达。
     // 只在本轮仍处于运行态时恢复气泡，避免把已完成历史重复渲染一遍。
     const ensureAssistant = (force = false) => {
-      if (assistantIdRef.current) return assistantIdRef.current;
+      if (assistantIdRef.current) {
+        lastAssistantIdRef.current = assistantIdRef.current;
+        return assistantIdRef.current;
+      }
       if (!force && !busy && !LIVE_RUN_STATUSES.has(runState.status)) return null;
       const recoveredId = newId();
       assistantIdRef.current = recoveredId;
+      lastAssistantIdRef.current = recoveredId;
       streamingMsgIdRef.current = recoveredId;
       streamBufRef.current = { text: "", thinking: "" };
       setMessages((ms) => ms.some((message) => message.id === recoveredId)
@@ -1133,6 +1291,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         if (!assistantIdRef.current) {
           const retryAid = newId();
           assistantIdRef.current = retryAid;
+          lastAssistantIdRef.current = retryAid;
           streamingMsgIdRef.current = retryAid;
           streamBufRef.current = { text: "", thinking: "" };
           setMessages((ms) => [...ms, {
@@ -1162,29 +1321,32 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       case "agent_model_fallback_failed":
         pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`);
         break;
+      case "todo_updated":
+        setTodoItems(Array.isArray(data.todos) ? data.todos : []);
+        setRunState((s) => ({
+          ...s,
+          runId: data.runId || s.runId,
+          todoProgress: data.todoProgress || s.todoProgress,
+        }));
+        break;
       case "thinking_level":
         setRunState((s) => ({ ...s, thinkingLevel: data.effective || null }));
         break;
       case "agent_queued":
-        pushSystem(`当前 Agent 正在执行，本轮已进入队列（第 ${data.position || 2} 项）。`, `agent_queued:${data.runId || "current"}:${data.position || 2}`);
+        setAgentPhase(`任务排队${data.position ? `（第 ${data.position} 项）` : ""}`);
+        setRunState((s) => ({ ...s, status: "queued", runId: data.runId || s.runId || null }));
         break;
       case "capability_plan":
         {
           const plan = data.plan || {};
           if (data.runId) activeRunIdRef.current = data.runId;
           setAgentPhase("准备执行");
-          const labels = (plan.capabilities || []).map((item) => item.label).filter(Boolean);
-          if (labels.length) pushSystem(`本轮能力已就绪：${labels.join("、")}`, `capability_plan:${data.runId || "current"}`);
           setRunState((s) => ({ ...s, capabilityPlan: plan }));
         }
         break;
       case "mode_policy":
         {
           const mode = normalizeUiMode(data.mode);
-          const policyText = data.description || MODE_META[mode].hint;
-          if (acceptSystemEvent(`mode_policy:${data.runId || "current"}:${mode}`)) {
-            pushSystem(`当前模式：${MODE_META[mode].label} · ${policyText}`, `mode_policy:${data.runId || "current"}:${mode}`);
-          }
           setEditMode(forcedMode ? normalizeUiMode(forcedMode) : mode);
           setRunState((s) => ({ ...s, mode, modePolicy: data }));
         }
@@ -1209,13 +1371,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
-        setBusy(false);
+        // agent_end 只表示 Pi 当前回合结束；工作区快照、产物发布和
+        // run_finished 仍可能在后台收尾。保持 busy 到权威终结事件，
+        // 避免下一条排队消息抢先启动后又被旧 run_finished 清掉状态。
+        setBusy(true);
+        runInProgressRef.current = true;
         stoppingRef.current = false;
         setStopping(false);
         setAgentPhase(endedWithError ? "模型调用失败" : "");
         setRunState((s) => ({ ...s, status: endedWithError ? "failed" : "finishing" }));
         if (!endedWithError && onAgentEnd) onAgentEnd();
-        if (!endedWithError) flushQueued(true);
         break;
       }
       case "agent_error":
@@ -1225,11 +1390,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
-        setBusy(false);
+        // 有 runId 时等待 run_finished 统一收尾；若只是 Runtime 握手错误
+        // 没有关联 Run，才立即恢复输入框。
+        const errorRunId = data.runId || runState.runId;
+        setBusy(Boolean(errorRunId));
+        runInProgressRef.current = Boolean(errorRunId);
         stoppingRef.current = false;
         setStopping(false);
         setAgentPhase("模型调用失败");
-        setRunState((s) => ({ ...s, status: "failed" }));
+        setRunState((s) => ({ ...s, status: "failed", runId: data.runId || s.runId || null }));
         break;
       case "steer":
         pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
@@ -1261,26 +1430,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
           if (!acceptSystemEvent(key)) break;
         }
-        {
-          setMessages((ms) => [...ms, {
-            id: newId(),
-            role: "system",
-            text: `${data.summary || "本轮对话完成"}`,
-            products: data.products || [],
-            runId: data.runId,
-            artifacts: data.artifacts || [],
-            runMode: data.task?.mode || runState.mode || "agent",
-            status: "done",
-            summary: true,
-            createdAt: Date.now(),
-          }]);
-        }
+        upsertRunSummary({ ...data, status: data.status || "completed" });
         break;
       case "run_finished":
         // SSE 可能只保留了终结事件，或 agent_end 先清理了本地气泡。
         // 服务端从 Pi 的 assistant_final 事件带回权威全文，在这里补齐回复。
         if (data.finalText) {
-          if (!aid) aid = ensureAssistant(true);
+          if (!aid) aid = assistantIdRef.current || lastAssistantIdRef.current || ensureAssistant(true);
           if (aid) enqueueTextReveal(aid, data.finalText, { authoritative: true });
         }
         if (data.runId && activeRunIdRef.current === data.runId) activeRunIdRef.current = null;
@@ -1289,12 +1445,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           setRunState((s) => ({ ...s, status: finalStatus, runId: data.runId || s.runId || null, artifacts: data.artifacts || [], references: data.references || [], verificationStatus: data.verificationStatus || "not_checked" }));
           if (!["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(finalStatus)) {
             setBusy(false);
+            runInProgressRef.current = false;
             setStopping(false);
             setAgentPhase("");
             if (aid) patch(aid, (m) => ({ ...m, status: finalStatus === "failed" ? "error" : "done" }));
           }
         }
-        if (data.runId) setMessages((ms) => ms.map((m) => m.runId === data.runId ? { ...m, artifacts: data.artifacts || m.artifacts, references: data.references || m.references, runStatus: data.status || "completed" } : m));
+        upsertRunSummary(data);
+        if (data.runId && !["cancelled", "aborted"].includes(data.status)) flushQueued(true);
         break;
       case "memory_proposal":
         if (data.proposal && acceptSystemEvent(`memory_proposal:${data.proposal.id || JSON.stringify(data.proposal)}`)) {
@@ -1335,6 +1493,42 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setMessages((ms) => [...ms, { id: newId(), role: "system", text, status: "done", createdAt: Date.now() }]);
   }, [acceptSystemEvent]);
 
+  const upsertRunSummary = useCallback((data = {}) => {
+    const runId = data.runId || null;
+    if (!runId) return;
+    const status = data.status || "completed";
+    const statusText = status === "failed" ? "失败" : status === "cancelled" ? "已取消" : status === "aborted" ? "已中断" : status === "running" ? "执行中" : "完成";
+    const summaryText = String(data.summary || `本轮任务${statusText}`).trim();
+    const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+    const products = Array.isArray(data.products) && data.products.length
+      ? data.products
+      : artifacts.map((item) => item?.path).filter(Boolean);
+    setMessages((messages) => {
+      const index = messages.findIndex((item) => item.summary && item.runId === runId);
+      const previous = index >= 0 ? messages[index] : null;
+      const next = {
+        ...(previous || {}),
+        id: previous?.id || newId(),
+        role: "system",
+        text: summaryText,
+        products,
+        artifacts,
+        runId,
+        runStatus: status,
+        references: data.references || previous?.references || [],
+        task: data.task || previous?.task || null,
+        runMode: data.task?.mode || previous?.runMode || runState.mode || "agent",
+        eventCount: Number(data.eventCount || previous?.eventCount || 0),
+        status: "done",
+        summary: true,
+        createdAt: previous?.createdAt || Date.now(),
+        expanded: true,
+      };
+      if (index < 0) return [...messages, next];
+      return messages.map((item, itemIndex) => itemIndex === index ? next : item);
+    });
+  }, [runState.mode]);
+
   const finalizeStopped = useCallback(() => {
     const id = assistantIdRef.current;
     cancelTextReveal({ preserveText: true });
@@ -1342,9 +1536,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     assistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
+    activeRunIdRef.current = null;
     stoppingRef.current = false;
     setStopping(false);
     setBusy(false);
+    runInProgressRef.current = false;
     setRunState((s) => ({ ...s, status: "aborted" }));
   }, [cancelTextReveal, patch]);
 
@@ -1466,7 +1662,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setLastPrompt({ text: rawText || text, references: sendReferences, contextText, skills: source.skills || [] });
     const aid = newId();
     cancelTextReveal({ preserveText: true });
+    lastAssistantIdRef.current = null;
     assistantIdRef.current = aid;
+    lastAssistantIdRef.current = aid;
     streamingMsgIdRef.current = aid;
     streamBufRef.current = { text: "", thinking: "" };
     setMessages((ms) => [...ms, {
@@ -1479,6 +1677,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAttachments([]);
     setInjectedContext([]);
     setBusy(true);
+    runInProgressRef.current = true;
     agentErrorRef.current = false;
     activeRunIdRef.current = null;
     agentEventAtRef.current = 0;
@@ -1542,6 +1741,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (!res.ok) {
         patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
         assistantIdRef.current = null;
+        lastAssistantIdRef.current = null;
         if (mountedRef.current) setBusy(false);
         setAgentPhase("请求失败");
         setRunState((s) => ({ ...s, status: "failed" }));
@@ -1550,6 +1750,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (!mountedRef.current) return;
       patch(aid, (m) => ({ ...m, status: "error", text: "网络错误: " + e.message }));
       assistantIdRef.current = null;
+      lastAssistantIdRef.current = null;
       if (mountedRef.current) setBusy(false);
       setAgentPhase("网络请求失败");
     }
@@ -1741,7 +1942,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                   try { await onSelectSession(s); setHistOpen(false); }
                   finally { setHistoryLoading(false); }
                 }}
-                onDelete={async (id) => { try { await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
+                onDelete={async (id) => { try { if (onDeleteSession) await onDeleteSession(id); else await deleteSession(id); onRefreshSessions(); } catch (e) { alert("删除失败: " + e.message); } }}
+                onBatchDelete={onBatchDeleteSession || (async (ids) => { const result = await deleteSessions(ids); onRefreshSessions(); return result; })}
                 onRename={async (id, label) => { try { await renameSession(id, label); onRefreshSessions(); } catch (e) { alert("重命名失败: " + e.message); } }}
                 onFork={onForkSession || (async (id) => { try { await forkSession(id); onRefreshSessions(); } catch (e) { alert("创建分支失败: " + e.message); } })}
                 onPin={onPinSession}
@@ -1780,14 +1982,16 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           {runState.verificationStatus && runState.verificationStatus !== "not_checked" && <span className={`task-status-meta verification-${runState.verificationStatus}`}>产物校验 {runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}</span>}
         </div>
         {editMode === "agent" && (
-          <div className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
-            <span>Agent</span>
-            <span>Profile：{project?.settings?.agentProfile || project?.agentProfile || "通用 Agent"}</span>
-            <span>模型：{model || defaultModel || "按 Pi 配置"}</span>
-            <span>Skills：{project?.settings?.skills?.length ? `${project.settings.skills.length} 项` : "按任务加载"}</span>
-            <span>Office CLI：自动判断</span>
-            <span>写入：当前工作区</span>
-          </div>
+          <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
+            <summary><span>Agent</span><span>能力已就绪 · 点击查看配置</span></summary>
+            <div className="agent-capability-details">
+              <span>Profile：{project?.settings?.agentProfile || project?.agentProfile || "通用 Agent"}</span>
+              <span>模型：{model || defaultModel || "按 Pi 配置"}</span>
+              <span>Skills：{project?.settings?.skills?.length ? `${project.settings.skills.length} 项` : "按任务加载"}</span>
+              <span>Office CLI：自动判断</span>
+              <span>写入：当前工作区</span>
+            </div>
+          </details>
         )}
 
         <div className="chat-stream-shell">
@@ -1797,8 +2001,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               userScrolledUpRef.current = true;
             }
           }}>
-          {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} />}
-          {executionEvents.length > 0 && <ExecutionFlow events={executionEvents} running={busy} />}
+          {(executionEvents.length > 0 || busy) && <ExecutionFlow events={executionEvents} running={busy} />}
           {messages.length === 0 && (
             <div className="chat-empty">
               <div>发送消息给 agent</div>
@@ -1883,6 +2086,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           </div>
         )}
         <div className="chat-input">
+          {todoItems.length > 0 && <TaskProgressCard tasks={todoItems} running={busy} />}
           {busy && (
             <div className="busy-input-mode" role="group" aria-label="当前任务中的新输入处理方式">
               <span>当前任务中新输入：</span>
@@ -2108,7 +2312,12 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "running" ? "执行中" : "已完成";
   const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "office" ? "Office" : "Agent";
   const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
-  const title = m.task?.goal || m.task?.text || "本轮任务";
+  const title = String(m.conclusion || m.text || m.task?.text || m.task?.goal || "本轮任务")
+    .replace(/^\s*#{1,6}\s*/, "")
+    .trim() || "本轮任务";
+  // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
+  // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
+  const [open, setOpen] = useState(m.expanded !== false);
   return (
     <div className="msg system summary-msg">
       <div className="bubble run-summary-bubble">
@@ -2116,11 +2325,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
           <span className={`run-summary-dot ${m.runStatus || "done"}`} />
           <strong>任务轮次 {m.runIndex ? `${m.runIndex}/${m.runCount || m.runIndex}` : ""}</strong>
           <span className="run-summary-title" title={title}>{title}</span>
-          <span className="run-summary-meta">{modeLabel} · {statusLabel}{time ? ` · ${time}` : ""}</span>
+          <span className="run-summary-meta">{modeLabel} · {statusLabel}{m.eventCount ? ` · 过程 ${m.eventCount} 事件` : ""}{time ? ` · ${time}` : ""}</span>
         </div>
-        <details className="run-summary-details" defaultOpen={Boolean(m.expanded)}>
+        <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>查看本轮对话与产物</summary>
-          <div className="run-summary-content">{m.text}</div>
+          {m.text && m.text.trim() !== title && <div className="run-summary-content">{m.text}</div>}
           {m.products?.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
@@ -2398,22 +2607,33 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
 
 // ========== SSE 执行流（默认折叠，独立于消息气泡） ==========
 function ExecutionFlow({ events = [], running = false }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(running);
+  const wasRunningRef = useRef(running);
   const latest = events[events.length - 1];
-  if (!events.length) return null;
+  const visibleEvents = events.length > 0
+    ? events
+    : (running ? [{ key: "local:stream_waiting", type: "stream_waiting", data: {}, at: new Date().toISOString() }] : []);
+  useEffect(() => {
+    // 运行期间直接展开，方便确认事件流没有卡住；收到终结事件后自动
+    // 回到一行摘要，避免几十条启动/工具事件把正文和输入框顶出视口。
+    if (!wasRunningRef.current && running) setExpanded(true);
+    if (wasRunningRef.current && !running) setExpanded(false);
+    wasRunningRef.current = running;
+  }, [running]);
+  if (!visibleEvents.length) return null;
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <button type="button" className="execution-flow-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
         <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
         <Icon name="flow" size={12} />
         <strong>执行过程</strong>
-        <span className="execution-flow-count">{events.length} 个事件</span>
-        <span className="execution-flow-current">{flowEventLabel(latest)}</span>
+        <span className="execution-flow-count">{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
+        <span className="execution-flow-current">{flowEventLabel(latest || visibleEvents[0])}</span>
         {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
       </button>
       {expanded && (
         <div className="execution-flow-list">
-          {events.map((event) => {
+          {visibleEvents.map((event) => {
             const data = event.data || {};
             const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
             return (
@@ -2431,20 +2651,44 @@ function ExecutionFlow({ events = [], running = false }) {
   );
 }
 
-// ========== 旧版消息内任务卡（保留组件，兼容历史代码） ==========
-function TaskProgressCard({ tasks }) {
-  const [open, setOpen] = useState(true);
+// ========== 输入框上方任务入口：点击查看，离开后自动收起 ==========
+function TaskProgressCard({ tasks, running = false }) {
+  const [open, setOpen] = useState(false);
+  const cardRef = useRef(null);
+  const closeTimerRef = useRef(null);
   const done = tasks.filter((t) => t.done || ["completed", "skipped"].includes(t.status)).length;
   const failed = tasks.filter((t) => t.status === "failed").length;
 
+  useEffect(() => {
+    if (!running) setOpen(false);
+  }, [running]);
+  useEffect(() => () => {
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+  }, []);
+  useEffect(() => {
+    if (!open) return undefined;
+    const handleOutsidePointer = (event) => {
+      if (!cardRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", handleOutsidePointer);
+    return () => document.removeEventListener("pointerdown", handleOutsidePointer);
+  }, [open]);
+  const keepOpen = () => {
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+  };
+  const scheduleClose = () => {
+    if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 350);
+  };
+
   return (
-    <div className={`task-card ${open ? "open" : ""}`}>
-      <div className="task-head" onClick={() => setOpen((v) => !v)}>
+    <div className={`task-card ${open ? "open" : ""}`} ref={cardRef} onMouseEnter={keepOpen} onMouseLeave={scheduleClose}>
+      <button type="button" className="task-head" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-label="查看任务进度">
         <span className="task-chevron">{open ? "▾" : "▸"}</span>
-        <Icon name="grid" size={11} />
-        <span className="task-title">任务进度</span>
+        <Icon name="list" size={12} />
+        <span className="task-title">任务</span>
         <span className="task-progress">{done}/{tasks.length} 完成{failed ? ` · ${failed} 失败` : ""}</span>
-      </div>
+      </button>
       {open && (
         <div className="task-body">
           <div className="task-bar">
@@ -2453,8 +2697,9 @@ function TaskProgressCard({ tasks }) {
           {tasks.map((t, i) => (
             <div key={t.id || i} className={`task-item ${t.done || ["completed", "skipped"].includes(t.status) ? "done" : ""} ${t.status === "failed" ? "failed" : ""}`}>
               <span className="task-status">{t.status === "failed" ? <Icon name="warning" size={11} /> : (t.done || ["completed", "skipped"].includes(t.status) ? <Icon name="check" size={11} /> : <span className="task-pending-dot" />)}</span>
-              <span className="task-text">{t.name || t.text || "执行 Agent 任务"}</span>
-              {t.status === "running" && <small>进行中</small>}
+              <span className="task-text">{t.title || t.name || t.text || "执行 Agent 任务"}</span>
+              {t.note && <small title={t.note}>{t.note}</small>}
+              {t.status === "running" || t.status === "in_progress" ? <small>进行中</small> : null}
             </div>
           ))}
         </div>
@@ -2479,6 +2724,7 @@ function toolPhrase(name, input, done) {
     case "edit": return `${loading}编辑文件${tail}`;
     case "bash": return `执行命令${tail}`;
     case "officecli": return `操作 Office 文档${tail}`;
+    case "todo": return `${loading}更新任务清单`;
     case "grep": return `${loading}搜索内容${tail}`;
     case "kb_search": return `${loading}搜索知识库${tail}`;
     case "kb_read": return `${loading}读取知识库${tail}`;
@@ -2506,7 +2752,8 @@ function ToolCard({ tool, onToggle }) {
     }
   } catch {}
   const isCmd = name === "bash" || name === "officecli" || name === "find" || name === "grep" || name === "ls" || name === "cat";
-  const cmdPreview = isCmd ? inputStr : inputStr.slice(0, 80);
+  const fullInput = inputStr.replace(/\s+/g, " ").trim();
+  const cmdPreview = isCmd ? `${fullInput.slice(0, 96)}${fullInput.length > 96 ? "…" : ""}` : fullInput.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
 
   return (
@@ -2516,7 +2763,7 @@ function ToolCard({ tool, onToggle }) {
           {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
         <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
-        {isCmd && <code className="cmd-code">$ {cmdPreview}</code>}
+        {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
         <span className={`tool-chevron ${expanded ? "open" : ""}`}>{expanded ? "▾" : "▸"}</span>
       </div>

@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
 import DocViewer from "./components/DocViewer.jsx";
-import ChatPanel from "./components/ChatPanel.jsx";
+import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
 const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
@@ -16,7 +16,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -42,7 +42,11 @@ function historyReferences(text = "") {
 
 function cleanPersistedMessage(text = "") {
   const source = String(text || "");
-  const goal = source.match(/(?:^|\n)\s*-?\s*(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=\n\s*-?\s*(?:模式|引用|输出要求|当前文件|工作流)[:：]|$)/i);
+  const inlineTaskGoal = source.match(/^#{1,6}\s*当前任务目标\s*[:：]\s*([^\n]+)/i);
+  if (inlineTaskGoal?.[1]) return inlineTaskGoal[1].trim();
+  const envelopeGoal = source.match(/^\s*#{1,6}\s*当前任务(?:\s+|\n)+(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=(?:\s+|\n)-?\s*(?:模式|引用|输出要求|当前文件|工作流)\s*[:：]|$)/i);
+  if (envelopeGoal?.[1]) return envelopeGoal[1].trim();
+  const goal = source.match(/(?:^|\n)\s*-?\s*(?:目标|任务目标)\s*[:：]\s*([\s\S]*?)(?=\n\s*-?\s*(?:模式|引用|输出要求|当前文件|工作流)\s*[:：]|$)/i);
   if (goal?.[1]) return goal[1].trim();
   return source.replace(/^##\s*当前任务[\s\S]*?\n边界：[^\n]+\n\n?/i, "").trim();
 }
@@ -115,6 +119,7 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [unreadByThread, setUnreadByThread] = useState({});
   const [eventVersion, setEventVersion] = useState(0);
+  const [artifactVersion, setArtifactVersion] = useState(0);
   const [tabs, setTabs] = useState([]); // [{ name, kind, url?, sheets?, grids?, content? }]
   const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
   const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
@@ -272,6 +277,9 @@ export default function App() {
           eventCursorRef.current = seq;
           localStorage.setItem(cursorKey, String(seq));
           setEventVersion((value) => value + 1);
+          if (["run_finished", "file_changed", "artifact_published"].includes(event.type)) {
+            setArtifactVersion((value) => value + 1);
+          }
           const thread = event.threadId || "";
           const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
           if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
@@ -432,14 +440,19 @@ export default function App() {
   const open = useCallback(async (name, thread = threadId) => {
     setDocLoading(true);
     try {
-      const doc = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}`).then((r) => r.json());
+      const revision = Date.now();
+      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}&v=${revision}`, { cache: "no-store" });
+      const doc = await response.json();
+      if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
+      const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
+      const nextDoc = { ...doc, url: previewUrl, previewRevision: revision };
       // 单次 setTabs：避免 React 批处理导致重复 tab
       setTabs((prev) => {
         const exists = prev.find((t) => t.name === name);
         if (exists) {
-          return prev.map((t) => (t.name === name ? { ...t, ...doc } : t));
+          return prev.map((t) => (t.name === name ? { ...t, ...nextDoc } : t));
         }
-        return [...prev, { name, ...doc }];
+        return [...prev, { name, ...nextDoc }];
       });
       setActiveTab(name);
       setDocLoading(false);
@@ -594,10 +607,21 @@ export default function App() {
           runIndex: index + 1,
           runCount: list.length,
           runMode: run.task?.mode || "agent",
-          expanded: run.status === "running",
+          eventCount: Array.isArray(run.events) ? run.events.length : 0,
+          events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
+            ...event,
+            key: `history:${run.id}:${event.seq || eventIndex}`,
+          })) : [],
+          expanded: true,
           createdAt: run.finishedAt || run.startedAt || null,
         }));
-      const loadedHistory = [...msgs, ...runMessages];
+      // Run 总结按完成/开始时间插回原始消息流。之前把所有 Run 总结直接
+      // append 到消息末尾，恢复会话后就会出现“对话一坨、产物一坨”。
+      const loadedHistory = normalizeHistoryMessages([...msgs, ...runMessages].sort((a, b) => {
+        const left = Date.parse(a.createdAt || "") || 0;
+        const right = Date.parse(b.createdAt || "") || 0;
+        return left - right;
+      }));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
       while (sessionHistoryCacheRef.current.size > 8) {
@@ -656,6 +680,20 @@ export default function App() {
     await refreshSessions();
   }, [currentSessionId, refreshSessions]);
 
+  const handleBatchDeleteSessions = useCallback(async (ids) => {
+    const result = await deleteSessions(ids);
+    if (currentSessionId && result.deleted?.includes(currentSessionId)) {
+      setHistoryMessages(null);
+      setCurrentSessionId(null);
+    }
+    await refreshSessions();
+    if (result.skipped?.length) {
+      const names = result.skipped.map((item) => item.reason).filter(Boolean);
+      if (names.length) window.setTimeout(() => alert(`部分会话未删除：${names.join("、")}`), 0);
+    }
+    return result;
+  }, [currentSessionId, refreshSessions]);
+
   const handleRenameSession = useCallback(async (id, label) => {
     await renameSession(id, label);
     await refreshSessions();
@@ -680,8 +718,9 @@ export default function App() {
   }, [currentProject?.id, currentWorkspace, handleSelectSession]);
 
   const handleFileChanged = useCallback((changed) => {
+    const changedPaths = new Set((Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")));
     refreshFiles();
-    if (activeTab && changed.includes(activeTab)) {
+    if (activeTab && changedPaths.has(String(activeTab).replace(/\\/g, "/"))) {
       // 添加延迟避免与 agent_end 竞态
       setTimeout(() => {
         open(activeTab);
@@ -809,6 +848,8 @@ export default function App() {
       onSelectSession={handleSelectSession}
       onSessionChange={handleSessionChange}
       onRefreshSessions={refreshSessions}
+      onDeleteSession={handleDeleteSession}
+      onBatchDeleteSession={handleBatchDeleteSessions}
       unreadByThread={unreadByThread}
       onForkSession={handleForkSession}
       onPinSession={handlePinSession}
@@ -930,6 +971,7 @@ export default function App() {
               onSelectSession={handleSelectSession}
               onRefreshSessions={refreshSessions}
               onDeleteSession={handleDeleteSession}
+              onBatchDeleteSession={handleBatchDeleteSessions}
               onRenameSession={handleRenameSession}
               onForkSession={handleForkSession}
               onPinSession={handlePinSession}
@@ -984,7 +1026,7 @@ export default function App() {
                 eventVersion={eventVersion}
               />
             </div>
-            <div className="center-chat-slot">{sharedChatPanel}</div>
+            <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>
           </div>
         </div>
         {previewOpen && <Resizer side="right" min={280} max={680} cssVar="--preview-w" />}
@@ -1011,6 +1053,7 @@ export default function App() {
               workspace={currentWorkspace}
               projectId={currentProject?.id || ""}
               currentSessionId={currentSessionId}
+              refreshToken={artifactVersion}
               onOpenFile={open}
             >
               <DocViewer
@@ -1079,7 +1122,7 @@ export default function App() {
              <div className="module-body module-settings-body">
                {settingsModuleTab === "memory"
                  ? <MemoryTab workspace={currentWorkspace} projectId={currentProject?.id || ""} />
-                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
+                 : <SettingsPanel project={currentProject} projects={projects} currentWorkspace={currentWorkspace} models={models} defaultModel={defaultModel} activeModel={selectedModel} clientId={clientId} threadId={threadId} initialSection={settingsSection} onModelChange={setSelectedModel} onModelsRefresh={refreshModelCatalog} onProjectUpdated={refreshProjects} onProjectSelect={(id) => { closeExternalModules(); handleProjectChange(id); }} />}
              </div>
            </div>
          )}
@@ -1090,7 +1133,7 @@ export default function App() {
                <div><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></div>
              </div>
              <div className="module-body module-artifacts-body">
-               <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} onOpenFile={(name) => { closeExternalModules(); open(name); }} />
+               <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} refreshToken={artifactVersion} onOpenFile={(name) => { closeExternalModules(); open(name); }} />
              </div>
            </div>
          )}

@@ -386,6 +386,35 @@ export function listStagedFilesForValidation(runId) {
   }));
 }
 
+function isTransientPublishError(error) {
+  return ["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"].includes(error?.code);
+}
+
+function materializeStagedFile(target, content, existed) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      atomicWriteFile(target, content);
+      return { fallback: false };
+    } catch (error) {
+      lastError = error;
+      if (!isTransientPublishError(error)) throw error;
+    }
+  }
+  // Windows security scanners can briefly reject the adjacent temp file. For
+  // a new target only, direct creation is safe and avoids losing the staged
+  // artifact; existing files still fail closed so rollback remains reliable.
+  if (!existed && isTransientPublishError(lastError)) {
+    try {
+      fs.writeFileSync(target, content);
+      return { fallback: true };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 export function publishStagedRun(runId, workspace, { onEvent, threadId = null } = {}) {
   const { root } = validateTarget(workspace, workspace);
   const { info, manifest } = loadManifest(runId);
@@ -412,9 +441,9 @@ export function publishStagedRun(runId, workspace, { onEvent, threadId = null } 
       }
       backups.push({ target: entry.target, backupPath, existed });
       const content = fs.readFileSync(entry.stagedPath);
-      atomicWriteFile(entry.target, content);
+      const materialized = materializeStagedFile(entry.target, content, existed);
       entry.publishedAt = now();
-      emitWriteEvent(onEvent, "artifact_materialized", { runId: safeRunId(runId), path: entry.path, kind: entry.kind, size: content.length });
+      emitWriteEvent(onEvent, "artifact_materialized", { runId: safeRunId(runId), path: entry.path, kind: entry.kind, size: content.length, fallback: materialized.fallback || undefined });
     }
   } catch (error) {
     for (const backup of backups.reverse()) {
