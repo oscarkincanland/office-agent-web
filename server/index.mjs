@@ -6,6 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
+import { getApprovalMode, listPendingApprovals, listPermissionRules, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
@@ -24,8 +25,9 @@ import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs"
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
 import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体管理.mjs";
-import { listStagedFilesForValidation, stageWrite } from "./写入协调.mjs";
-import { runRuntimeEvaluation } from "./运行评测.mjs";
+import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
+import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
+import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import {
   getConfigStatus,
@@ -49,6 +51,42 @@ const PORT = process.env.PORT || 3002;
 const API_TOKEN = String(process.env.OAW_API_TOKEN || "").trim();
 const AGENT_DIAGNOSTIC_LOG = path.join(process.env.TEMP || PROJECT_DIR, "open-plan-agent连接诊断.log");
 const SERVICE_STARTED_AT = new Date().toISOString();
+
+// 服务进程的 Windows 身份。从 Codex/沙箱环境启动时会继承 CodexSandboxOffline 等
+// 受限账户，对工作区外目录（如 E 盘）写入会被 OS 以 EPERM 拒绝；暴露给 /api/status
+// 便于前端和排查日志直接判断"服务进程身份"而非误归因于 Office CLI。
+function serviceIdentity() {
+  try { return os.userInfo().username || String(process.env.USERNAME || "").trim() || "unknown"; } catch { return String(process.env.USERNAME || "").trim() || "unknown"; }
+}
+
+const SERVICE_IDENTITY = serviceIdentity();
+const IS_SANDBOX_IDENTITY = /sandbox|CodexSandbox/i.test(SERVICE_IDENTITY);
+if (IS_SANDBOX_IDENTITY) {
+  console.warn(`[identity] 警告：当前服务以受限身份 "${SERVICE_IDENTITY}" 运行（通常是 Codex 沙箱账户）。该身份可能无法写入工作区之外的目录（如 E 盘），如遇 EPERM/Access denied 请改用普通终端启动服务。`);
+}
+
+// Runtime 冷启动（首次创建 Pi 会话）在极端情况下可能长时间不完成，此前只会让
+// 前端永远停在“正在准备会话运行时”。这里给初始化加超时：超时后取消等待并抛出
+// RUNTIME_INIT_TIMEOUT（后台创建任务仍在继续，重试会复用或重新尝试）。
+const RUNTIME_INIT_TIMEOUT_MS = 45000;
+
+async function ensureRuntimeWithTimeout(key, options = {}) {
+  let timer = null;
+  const operation = agentManager.ensureRuntime(key, options);
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`会话运行时初始化超过 ${Math.round(RUNTIME_INIT_TIMEOUT_MS / 1000)} 秒未完成，已自动取消等待；可重试或检查模型配置与网络`);
+      error.code = "RUNTIME_INIT_TIMEOUT";
+      error.retryable = true;
+      reject(error);
+    }, RUNTIME_INIT_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 const recoveredRunIds = recoverActiveRuns();
 if (recoveredRunIds.length) console.warn(`[runs] 已将 ${recoveredRunIds.length} 个中断前活动 Run 标记为 recovering，等待用户继续。`);
@@ -255,6 +293,8 @@ app.get("/api/status", (req, res) => {
       pid: process.pid,
       startedAt: SERVICE_STARTED_AT,
       uptimeSec: Math.round(process.uptime()),
+      identity: SERVICE_IDENTITY,
+      sandboxIdentity: IS_SANDBOX_IDENTITY,
     },
   });
 });
@@ -393,12 +433,11 @@ app.post(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
   const p = annotationsPath(fileName);
   if (!p) return res.status(400).json({ error: "invalid name" });
   try {
-    fs.mkdirSync(path.join(getWorkspace(), ".annotations"), { recursive: true });
     const list = Array.isArray(req.body?.annotations) ? req.body.annotations : [];
-    fs.writeFileSync(p, JSON.stringify(list, null, 2), "utf8");
-    res.json({ ok: true, count: list.length });
+    const result = writeWorkspaceFile({ workspace: getWorkspace(), targetPath: p, content: JSON.stringify(list, null, 2), kind: "ui_annotations" });
+    res.json({ ...result, count: list.length });
   } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
+    respondWorkspaceFileError(req, res, e);
   }
 });
 
@@ -670,21 +709,69 @@ app.delete("/api/file-roots/:id", (req, res) => {
   res.status(result.ok ? 200 : 404).json(result);
 });
 
+function respondWorkspaceFileError(req, res, error) {
+  const normalized = normalizeWorkspaceWriteError(error);
+  return res.status(workspaceWriteHttpStatus(normalized)).json({
+    ok: false,
+    code: normalized.code || "WORKSPACE_FILE_OPERATION_FAILED",
+    error: normalized.message,
+    requestId: req.requestId,
+  });
+}
+
+function requireWorkspaceWriteForTask(capabilityPlan, workspace) {
+  if (!capabilityPlan?.output?.expected || capabilityPlan.output.saveToWorkspace === false) return null;
+  const writeAccess = evaluateWorkspaceWrite(workspace);
+  capabilityPlan.workspaceWrite = writeAccess;
+  if (writeAccess.status === "passed") return writeAccess;
+  const failure = normalizeWorkspaceWriteError(Object.assign(new Error(writeAccess.message), { code: writeAccess.details?.code || undefined }));
+  if (!["WORKSPACE_PERMISSION_DENIED", "OFFICE_DOCUMENT_LOCKED"].includes(failure.code)) failure.code = "WORKSPACE_WRITE_UNAVAILABLE";
+  failure.writeAccess = writeAccess;
+  throw failure;
+}
+
+// OfficeCLI 会为打开过的文档保留常驻进程并持有文件句柄，导致随后 UI 的删除/覆盖
+// 上传出现 EBUSY。遇到文档锁定时先执行 `officecli close` 释放句柄，再重试一次。
+async function withOfficecliReleaseRetry(workspace, fileName, operation) {
+  try {
+    return await operation();
+  } catch (error) {
+    const normalized = normalizeWorkspaceWriteError(error);
+    if (normalized.code !== "OFFICE_DOCUMENT_LOCKED") throw normalized;
+    try { await runOfficecli(["close", fileName], { cwd: workspace, timeoutMs: 15000 }); } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return await operation();
+  }
+}
+
 app.post("/api/files/upload", async (req, res) => {
   const { name, base64 } = req.body || {};
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
   if (!/\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
-  fs.writeFileSync(path.join(getWorkspace(), safe), buf);
-  res.json({ ok: true, file: safe });
+  try {
+    const workspace = getWorkspace();
+    const result = await withOfficecliReleaseRetry(workspace, safe, () =>
+      writeWorkspaceFile({ workspace, targetPath: path.join(workspace, safe), content: buf, kind: "ui_upload" }));
+    res.json({ ...result, file: safe });
+  } catch (error) {
+    respondWorkspaceFileError(req, res, error);
+  }
 });
 
 app.post("/api/files/delete", async (req, res) => {
   const p = resolvePath(req.body?.name);
   if (!p) return res.status(404).json({ error: "not found" });
-  fs.unlinkSync(p);
-  res.json({ ok: true });
+  try {
+    const workspace = getWorkspace();
+    const rel = path.relative(workspace, p);
+    await withOfficecliReleaseRetry(workspace, rel, () =>
+      withWriteLockAsync({ workspace, targetPath: p, runId: `ui_${crypto.randomUUID()}`, kind: "ui_delete" }, () => fs.unlinkSync(p)));
+    res.json({ ok: true, file: rel.replace(/\\/g, "/") });
+  } catch (error) {
+    respondWorkspaceFileError(req, res, error);
+  }
 });
 
 // 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
@@ -870,10 +957,13 @@ app.post(/^\/api\/doc\/(.+)\/cells$/, async (req, res) => {
     return { command: "set", path: `/${sheet}/${ref[0]}`, props: { value: String(c.value ?? "") } };
   }).filter(Boolean);
   try {
-    const r = await batch(p, commands);
+    const r = await withWriteLockAsync({ workspace: getWorkspace(), targetPath: p, runId: `ui_${crypto.randomUUID()}`, kind: "office_ui" }, () => batch(p, commands));
+    if (r.json?.error || (r.code != null && Number(r.code) !== 0) || r.json?.data?.results?.some((item) => item.error)) {
+      return respondWorkspaceFileError(req, res, normalizeOfficeFailure(new Error(r.stderr || r.text || r.json?.error || "Excel 单元格保存失败"), commands, r));
+    }
     res.json({ ok: !r.json?.error, result: r.json || r.text });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondWorkspaceFileError(req, res, e);
   }
 });
 
@@ -882,29 +972,34 @@ app.post("/api/office", async (req, res) => {
   const { args } = req.body || {};
   if (!Array.isArray(args)) return res.status(400).json({ error: "args required" });
   const normalizedArgs = args.map(String);
-  const allowedCommands = new Set(["view", "get", "set", "batch", "query", "watch"]);
+  const allowedCommands = new Set(["view", "get", "set", "batch", "query", "watch", "close"]);
   if (!allowedCommands.has(normalizedArgs[0])) {
     return res.status(400).json({ error: "unsupported office command", allowed: [...allowedCommands] });
   }
-  if (normalizedArgs.some((arg) => path.isAbsolute(arg) || arg.split(/[\\/]/).includes(".."))) {
+// 只校验文件参数（args[1]）：DOM 路径如 /、/body/p[1] 在 Windows 上会被
+  // path.isAbsolute 误判为绝对路径，不能对整个 args 做绝对路径检查。
+  const fileArg = normalizedArgs[1] || "";
+  if (fileArg && (path.isAbsolute(fileArg) || fileArg.split(/[\\/]/).includes(".."))) {
     return res.status(400).json({ error: "office paths must stay inside the workspace" });
   }
+  const mutating = new Set(["set", "batch"]).has(normalizedArgs[0]);
+  const workspace = getWorkspace();
+  const targetPath = mutating ? resolvePath(normalizedArgs[1], workspace) : null;
+  if (mutating && !targetPath) return res.status(400).json({ ok: false, code: "WRITE_SCOPE_ERROR", error: "Office 文件必须是当前工作区内的现有文件" });
   try {
-    const r = await runOfficecli(normalizedArgs, { cwd: getWorkspace() });
+    const execute = () => runOfficecli(normalizedArgs, { cwd: workspace });
+    const r = mutating
+      ? await withWriteLockAsync({ workspace, targetPath, runId: `ui_${crypto.randomUUID()}`, kind: "office_ui" }, execute)
+      : await execute();
     if (Number(r.code) !== 0) {
-      return res.status(502).json({
-        ok: false,
-        code: "OFFICECLI_FAILED",
-        exitCode: r.code,
-        stdout: r.stdout,
-        stderr: r.stderr,
-        json: r.json,
-        requestId: req.requestId,
-      });
+      const officeError = new Error(r.stderr || r.text || `Office CLI 退出码 ${r.code}`);
+      officeError.exitCode = r.code;
+      return respondWorkspaceFileError(req, res, normalizeOfficeFailure(officeError, normalizedArgs, r));
     }
     res.json({ ok: true, code: r.code, stdout: r.stdout, stderr: r.stderr, json: r.json, requestId: req.requestId });
   } catch (e) {
-    res.status(e?.code === "OFFICECLI_TIMEOUT" ? 504 : 500).json({ ok: false, code: e?.code || "OFFICECLI_START_FAILED", error: e.message, requestId: req.requestId });
+    if (e?.code === "OFFICECLI_TIMEOUT") return res.status(504).json({ ok: false, code: e.code, error: e.message, requestId: req.requestId });
+    respondWorkspaceFileError(req, res, e);
   }
 });
 
@@ -931,13 +1026,13 @@ app.post("/api/doc/edit", async (req, res) => {
       }
       return item;
     });
-    const r = await batch(p, normalized);
-    if (r.json?.error || (r.code !== 0 && r.json?.data?.results?.some((x) => x.error))) {
-      return res.status(500).json({ error: r.stderr || r.text || "编辑失败" });
+    const r = await withWriteLockAsync({ workspace: getWorkspace(), targetPath: p, runId: `ui_${crypto.randomUUID()}`, kind: "office_ui" }, () => batch(p, normalized));
+    if (r.json?.error || (r.code != null && Number(r.code) !== 0) || r.json?.data?.results?.some((x) => x.error)) {
+      return respondWorkspaceFileError(req, res, normalizeOfficeFailure(new Error(r.stderr || r.text || r.json?.error || "编辑失败"), normalized, r));
     }
     res.json({ ok: true, result: r.json || r.text });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondWorkspaceFileError(req, res, e);
   }
 });
 
@@ -954,10 +1049,10 @@ app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
     if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) {
       return res.status(400).json({ error: "不是有效的 docx 文件" });
     }
-    fs.writeFileSync(p, buf);
-    res.json({ ok: true, size: buf.length });
+    const result = writeWorkspaceFile({ workspace: getWorkspace(), targetPath: p, content: buf, kind: "ui_docx_save" });
+    res.json({ ...result, size: buf.length });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    respondWorkspaceFileError(req, res, e);
   }
 });
 
@@ -1308,20 +1403,38 @@ function classifySkill(name, desc = "") {
 }
 
 // 扫描用户所有 skills 目录（含 .pi/agent/skills、.agents/skills、项目 .agents/skills）
+const SKILL_ROOTS = [
+  path.join(AGENT_DIR, "skills"),
+  path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
+  path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
+  path.join(PROJECT_DIR, ".agents", "skills"),
+  path.join(PROJECT_DIR, ".pi", "skills"),
+  path.join(PROJECT_DIR, ".claude", "skills"),
+  // 用户实际工作根目录的 .claude skills（F:\Claude code本地文件\.claude\skills）
+  "F:\\Claude code本地文件\\.claude\\skills",
+];
+// scanSkills 在每次 prompt admission 都会被调用；技能目录内容在会话期间基本不变，
+// 用根目录 mtime 签名 + 短 TTL 缓存，避免每轮读取数百个 SKILL.md 拖慢首字节。
+const SKILLS_CACHE_TTL_MS = 30000;
+let skillsCache = { signature: "", results: null, expiresAt: 0 };
+
+function skillsRootSignature() {
+  let sig = "";
+  for (const root of SKILL_ROOTS) {
+    try { sig += `${root}:${fs.statSync(root).mtimeMs};`; } catch { sig += `${root}:missing;`; }
+  }
+  return sig;
+}
+
 function scanSkills() {
-  const roots = [
-    path.join(AGENT_DIR, "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".agents", "skills"),
-    path.join(process.env.USERPROFILE || os.homedir(), ".claude", "skills"),
-    path.join(PROJECT_DIR, ".agents", "skills"),
-    path.join(PROJECT_DIR, ".pi", "skills"),
-    path.join(PROJECT_DIR, ".claude", "skills"),
-    // 用户实际工作根目录的 .claude skills（F:\Claude code本地文件\.claude\skills）
-    "F:\\Claude code本地文件\\.claude\\skills",
-  ];
+  const nowMs = Date.now();
+  const signature = skillsRootSignature();
+  if (skillsCache.results && skillsCache.signature === signature && nowMs < skillsCache.expiresAt) {
+    return skillsCache.results;
+  }
   const out = [];
   const seen = new Set();
-  for (const root of roots) {
+  for (const root of SKILL_ROOTS) {
     if (!fs.existsSync(root)) continue;
     for (const e of fs.readdirSync(root, { withFileTypes: true })) {
       if (!e.isDirectory()) continue;
@@ -1349,7 +1462,9 @@ function scanSkills() {
       });
     }
   }
-  return out.sort((a, b) => a.name.localeCompare(b.name));
+  const sorted = out.sort((a, b) => a.name.localeCompare(b.name));
+  skillsCache = { signature, results: sorted, expiresAt: nowMs + SKILLS_CACHE_TTL_MS };
+  return sorted;
 }
 
 function preflightSkill(name, skills = scanSkills()) {
@@ -1967,20 +2082,31 @@ app.post("/api/workspace/switch", (req, res) => {
 });
 
 // POST /api/workspace/validate - 验证自定义路径是否可作为工作区
-app.post("/api/workspace/validate", (req, res) => {
+app.post("/api/workspace/validate", async (req, res) => {
   const { path: dir } = req.body || {};
   if (!dir) return res.status(400).json({ error: "path required" });
-  try {
-    const st = fs.statSync(dir);
-    if (!st.isDirectory()) return res.json({ ok: false, error: "不是文件夹" });
-    // 可写检查：尝试创建临时文件
-    const probe = path.join(dir, ".oaw-probe-" + Date.now());
-    fs.writeFileSync(probe, "");
-    fs.unlinkSync(probe);
-    res.json({ ok: true });
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
+  const workspace = normalizeWorkspace(dir);
+  if (!workspace) return res.json({ ok: false, code: "WORKSPACE_INVALID", workspace: String(dir), error: "路径不存在或不是可访问的文件夹" });
+  const write = evaluateWorkspaceWrite(workspace);
+  const officecli = await checkOfficecli();
+  const checks = [
+    write,
+    {
+      id: "officecli",
+      label: "Office CLI",
+      status: officecli.available ? "passed" : "failed",
+      message: officecli.available ? `Office CLI 可运行：${officecli.version || officecli.path}` : (officecli.message || "Office CLI 不可用"),
+      details: { path: officecli.path, version: officecli.version || null, code: officecli.code ?? null },
+    },
+  ];
+  res.json({
+    ok: write.status === "passed",
+    workspace,
+    writeAccess: write,
+    officecli: checks[1],
+    checks,
+    note: "探针以当前服务进程身份执行；Office CLI 可运行不代表目标工作区允许保存。",
+  });
 });
 
 // 清洗会话标题：去掉前端注入的前缀标记（[当前打开文件]/[模式]/[已上传附件]），按句子智能截断
@@ -2330,6 +2456,36 @@ app.post("/api/agent/answer", (req, res) => {
   res.json(result);
 });
 
+// ---------- 工具审批（参考 opencode 的 allow/ask/deny 三值模型） ----------
+app.get("/api/agent/approvals", (_req, res) => {
+  res.json({ approvals: listPendingApprovals() });
+});
+
+app.get("/api/agent/permissions", (_req, res) => {
+  res.json(listPermissionRules());
+});
+
+app.get("/api/agent/approval-mode", (_req, res) => {
+  res.json({ mode: getApprovalMode() });
+});
+
+app.patch("/api/agent/approval-mode", (req, res) => {
+  const mode = String(req.body?.mode || "ask");
+  if (!["ask", "auto"].includes(mode)) return res.status(400).json({ error: "mode must be ask or auto" });
+  res.json(setApprovalMode(mode));
+});
+
+// 提交工具审批决定：allow（允许一次）/ always（总是允许）/ deny（拒绝）
+app.post("/api/agent/approval", (req, res) => {
+  const { id, decision } = req.body || {};
+  if (!id || !["allow", "always", "deny"].includes(String(decision || ""))) {
+    return res.status(400).json({ error: "id and decision (allow/always/deny) required" });
+  }
+  const result = resolveToolApproval(id, decision);
+  if (!result.ok) return res.status(404).json(result);
+  res.json(result);
+});
+
 /**
  * 后台执行已被接收的 Agent Run。
  * HTTP 只负责完成 admission；模型、工具和产物状态统一通过 SSE 回传，
@@ -2420,12 +2576,24 @@ app.post("/api/agent/prompt", async (req, res) => {
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
   const key = agentKey(client, thread);
   const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
+  const initialWritePlan = planTaskCapabilities({ text: normalizedText, task: taskInput || {}, attachments });
+  let writeAccessPreflight = null;
+  try {
+    writeAccessPreflight = requireWorkspaceWriteForTask(initialWritePlan, requestedWorkspace);
+  } catch (error) {
+    return res.status(workspaceWriteHttpStatus(error)).json({
+      error: error.message,
+      code: error.code || "WORKSPACE_WRITE_UNAVAILABLE",
+      writeAccess: error.writeAccess || null,
+      requestId: req.requestId,
+    });
+  }
   const initialProject = projectManager.getProjectForWorkspace(requestedWorkspace);
   const initialProjectSettings = initialProject?.settings || projectManager.defaultProjectSettings();
   const initialModel = String(requestedModel || initialProjectSettings.defaultModel || "").trim();
   let entry;
   try {
-    entry = await agentManager.ensureRuntime(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
+    entry = await ensureRuntimeWithTimeout(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
   } catch (e) {
     const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
     return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -2485,6 +2653,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       workflowId,
     };
     capabilityPlan = planTaskCapabilities({ text: normalizedText, task: effectiveTaskInput, references: resolved, attachments });
+    if (writeAccessPreflight) capabilityPlan.workspaceWrite = writeAccessPreflight;
     if (capabilityPlan.routing.officecli === "preferred") {
       capabilityPlan.officecli = await checkOfficecli();
       if (!capabilityPlan.officecli.available) {
@@ -2588,7 +2757,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     res.json({
       ok: true,
       accepted: true,
-      queued: Boolean(entry.busy || entry.queuedCount > 1),
+      queued: Boolean(entry.busy || entry.compacting || entry.queuedCount > 1),
       queuePosition: Math.max(1, entry.queuedCount || 1),
       changed: [],
       runId: run?.id || null,
@@ -2607,6 +2776,11 @@ app.post("/api/agent/prompt", async (req, res) => {
     if (e?.code === "SKILL_PREFLIGHT_FAILED" || e?.code === "OFFICE_PREFLIGHT_FAILED") {
       emitChannel(entry, "agent_error", { message: e.message, code: e.code, preflight });
       res.status(409).json({ error: e.message, code: e.code, preflight, capabilityPlan, requestId: req.requestId });
+      return;
+    }
+    if (["WORKSPACE_PERMISSION_DENIED", "WORKSPACE_WRITE_UNAVAILABLE", "OFFICE_DOCUMENT_LOCKED"].includes(e?.code)) {
+      emitChannel(entry, "agent_error", { message: e.message, code: e.code, writeAccess: e.writeAccess || null });
+      res.status(workspaceWriteHttpStatus(e)).json({ error: e.message, code: e.code, writeAccess: e.writeAccess || null, requestId: req.requestId });
       return;
     }
     const currentModel = entry?.session?.model;
@@ -2740,6 +2914,7 @@ async function startContinuation(sourceRun, action) {
     throw error;
   }
   const capabilityPlan = planTaskCapabilities({ text: goal, task: { ...oldTask, mode: oldTask.mode, workflowId }, references });
+  requireWorkspaceWriteForTask(capabilityPlan, entry.workspace || sourceRun.cwd || getWorkspace());
   if (capabilityPlan.routing.officecli === "preferred") {
     capabilityPlan.officecli = await checkOfficecli();
     if (!capabilityPlan.officecli.available) {
@@ -2876,8 +3051,8 @@ app.get("/api/agent/stream", async (req, res) => {
     write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
   }, 15000);
 
-  try {
-    entry = await agentManager.ensureRuntime(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
+try {
+    entry = await ensureRuntimeWithTimeout(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });
     if (closed) return;
   // EventSource 新建连接时不会把上一次对象的 Last-Event-ID 带过来，
   // 因此前端同时通过 query 传递游标；两者取最大值，避免重连重复消费历史事件。
@@ -2910,13 +3085,27 @@ app.get("/api/agent/stream", async (req, res) => {
       sessionId: entry.session?.sessionId || null,
       model: connectedModel,
       modelFallbackFrom: entry.modelFallbackFrom || null,
-      cursor: entry.channel.seq,
+      // connected 只能确认客户端请求的游标；历史事件尚未逐条写入响应。
+      // 若这里提前宣称最新 seq，回放中途断线会让重连跳过未真正送达的事件。
+      cursor: lastSentId,
       serverAt: new Date().toISOString(),
     },
   })}\n\n`);
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
-  } catch (error) {
+} catch (error) {
+    if (error?.code === "RUNTIME_INIT_TIMEOUT") {
+      if (!closed) {
+        write(`data: ${JSON.stringify({
+          type: "runtime_init_failed",
+          at: new Date().toISOString(),
+          data: { client, thread, code: error?.code, retryable: error?.retryable !== false, message: String(error?.message || error).slice(0, 500) },
+        })}\n\n`);
+        try { res.end(); } catch {}
+      }
+      cleanup();
+      return;
+    }
     if (!closed) {
       const diagnostic = classifyAgentError(error);
       write(`data: ${JSON.stringify({
@@ -3558,6 +3747,11 @@ httpServer = app.listen(PORT, HOST, () => {
   console.log(`Open Plan（规聚）running at http://${HOST}:${PORT}`);
   console.log(`workspace: ${WORKSPACE_DIR}`);
   if (API_TOKEN) console.log("API authentication enabled (use /?token=<OAW_API_TOKEN> for the browser UI).");
+  // 预热共享 ModelRuntime（模型目录/凭据/供应商缓存为全局单例）：
+  // 让第一个会话的冷启动成本在服务启动时先行承担，用户首条消息不再等待目录加载。
+  void agentManager.modelRuntime().catch((error) => {
+    console.warn(`[prewarm] ModelRuntime 预热失败（将在会话创建时重试）：${String(error?.message || error).slice(0, 300)}`);
+  });
 });
 // SSE 连接由 15 秒 heartbeat 保活；关闭 Node 默认的请求/Socket 空闲超时，
 // 避免长文档任务超过默认时限后断流，而 Agent 实际仍在继续执行。

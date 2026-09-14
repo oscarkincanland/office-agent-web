@@ -40,6 +40,8 @@ import {
   rejectMemoryProposal as rejectStoredMemoryProposal,
 } from "./记忆管理.mjs";
 import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
+import { normalizeOfficeFailure } from "./文件权限错误.mjs";
+import { requireToolApproval } from "./审批策略.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
 // 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
@@ -642,7 +644,7 @@ class AgentManager extends EventEmitter {
               "- **工作区与当前文件**: 每次对话前服务端都会刷新项目根 `.agent-context.md`，其中包含「**当前工作区**」绝对路径与「**当前工作文件**」。操作文件前必须先 read `.agent-context.md` 获取这两个信息（工作区可能被用户切换，不要假设默认路径）。",
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
-              "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若返回 Access denied，先提示用户关闭 WPS/Word 和 OfficeCLI 预览，不要改用 bash 绕过。",
+              "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
               "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入 `.agent-context.md` 中的「当前工作区」绝对路径，禁止写入项目目录。否则产物不会被前端检测到。",
               "- **知识库（kb）**: 本地知识库索引了多个 Markdown 根目录（如 柬埔寨公交项目/义乌物流专题资料/_knowledge_base）。可用 kb_search 搜索、kb_read 读取全文。用户引用格式 `@知识库[路径@根目录名]`——例如 `@知识库[OD出行分析报告_完整版.md@柬埔寨公交项目]`，分析知识库内容时优先调用这两个工具，不要靠猜测。",
               "- **地图（GIS）**: 地图项目位于 `当前工作区/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图，含高速公路/国省道/农村公路/收费站/枢纽/市县边界图层，矢量瓦片 + MapLibre 渲染）。用户在地图模式下对话时：用 map_read 查看项目状态与图层清单；用 map_edit 修改样式（图层显隐/颜色/线宽/透明度/顺序/新增图层），修改会实时反映到前端地图；用 map_import 把工作区里的 GeoJSON 导入为新图层（自动生成瓦片）。也可直接读写 style.json / map.config.json / layers/*.geojson（相对 maps/{project}/）。若改了 layers/*.geojson 数据，可运行 `node scripts/build-vector-tiles.mjs --layer=<图层名>` 重建瓦片（在项目根目录 `" + PROJECT_DIR + "` 下执行）。底图源：carto/osm/dark/satellite。",
@@ -688,7 +690,15 @@ class AgentManager extends EventEmitter {
     const managedWriteTool = createWriteToolDefinition(workspace, {
       operations: {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
-        writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("write"), targetPath: absolutePath, content, onEvent: writeEvent }),
+        writeFile: async (absolutePath, content) => {
+          const ctx = activeWriteContext("write");
+          // 敏感文件（.env 等）写入被规则表直接拒绝
+          await requireToolApproval({
+            entry, tool: "write", input: String(absolutePath || ""),
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
+          return stageWrite({ ...ctx, targetPath: absolutePath, content, onEvent: writeEvent });
+        },
       },
     });
     const managedEditTool = createEditToolDefinition(workspace, {
@@ -708,9 +718,14 @@ class AgentManager extends EventEmitter {
     const localBash = createLocalBashOperations();
     const managedBashTool = createBashToolDefinition(workspace, {
       operations: {
-        exec: async (command, cwd, options) => {
+exec: async (command, cwd, options) => {
           const ctx = activeWriteContext("bash");
           const commandText = String(command || "");
+          // 删除/破坏类命令默认进入用户审批（规则表见 审批策略.mjs）
+          await requireToolApproval({
+            entry, tool: "bash", input: commandText,
+            runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+          });
           if (isGlobalSearchCommand(commandText)) {
             const error = new Error("禁止从系统根目录执行全盘搜索，请限定在当前工作区内，并使用绝对路径或当前工作区相对路径。");
             error.code = "BASH_SCOPE_BLOCKED";
@@ -741,14 +756,19 @@ class AgentManager extends EventEmitter {
       name: "officecli",
       label: "Office CLI",
       description:
-        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"请核对这段内容\\\" --json', 'add deck.pptx /slide[1] --type shape --prop text=... --prop size=24pt'. For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If an Office document returns Access denied, the file is locked by WPS/Word or another Office process; tell the user to save and close it, then retry. Use --json for structured output. Prefer this tool over bash for all document operations.",
+        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"请核对这段内容\\\" --json', 'add deck.pptx /slide[1] --type shape --prop text=... --prop size=24pt'. For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
-      execute: async (_toolCallId, params) => {
+execute: async (_toolCallId, params) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
         const args = parseArgs(String(params.args || ""));
         const ctx = activeWriteContext("officecli");
+        // 写入/删除类 Office 命令默认进入用户审批（规则表见 审批策略.mjs）
+        await requireToolApproval({
+          entry, tool: "officecli", input: String(params.args || ""),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
         let parsed;
         try {
           parsed = validateOfficecliArgs(args, entry.workspace);
@@ -1000,6 +1020,10 @@ class AgentManager extends EventEmitter {
         const path = (await import("node:path")).default;
         const stylePath = path.join(dir, "style.json");
         const ctx = activeWriteContext("map_edit");
+        await requireToolApproval({
+          entry, tool: "map_edit", input: `${params.action} ${params.layerId || ""}`.trim(),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
         holdWorkspaceWriteLock({ ...ctx, kind: "map_edit" });
         writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
@@ -1069,6 +1093,10 @@ class AgentManager extends EventEmitter {
           return { content: [{ type: "text", text: `文件不存在: ${rel}` }], details: {} };
         }
         const ctx = activeWriteContext("map_import");
+        await requireToolApproval({
+          entry, tool: "map_import", input: String(rel || ""),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
         holdWorkspaceWriteLock({ ...ctx, kind: "map_import" });
         writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
@@ -1439,11 +1467,21 @@ class AgentManager extends EventEmitter {
           });
           break;
         case "compaction_start":
-          emit("context_compacting", { source: "pi-sdk" });
+          emit("context_compacting", {
+            source: "pi-sdk",
+            automatic: entry?.compactionKind !== "manual",
+            runId: entry?.compactionRunId || entry?.activeRunId || null,
+          });
           break;
         case "compaction_end":
+          if (entry) {
+            entry.promptChars = 0;
+            entry.lastUsage = null;
+          }
           emit("context_compacted", {
             source: "pi-sdk",
+            automatic: entry?.compactionKind !== "manual",
+            runId: entry?.compactionRunId || entry?.activeRunId || null,
             tokensBefore: ev.tokensBefore || 0,
             estimatedTokensAfter: ev.estimatedTokensAfter || 0,
           });
@@ -1497,7 +1535,7 @@ class AgentManager extends EventEmitter {
       }
     });
 
-    entry = { session, channel, busy: false, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, autoCompacting: false };
+    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1553,7 +1591,7 @@ class AgentManager extends EventEmitter {
   }
 
   _enqueuePrompt(entry, payload) {
-    const wasOccupied = entry.busy || entry.queuedCount > 0;
+    const wasOccupied = entry.busy || entry.compacting || entry.queuedCount > 0;
     if (wasOccupied) {
       const position = entry.queuedCount + 1;
       emitChannelSafe(entry, "agent_queued", {
@@ -1565,6 +1603,8 @@ class AgentManager extends EventEmitter {
     entry.queuedCount += 1;
     const operation = entry.promptChain.then(async () => {
       entry.queuedCount = Math.max(0, entry.queuedCount - 1);
+      // 手动压缩不在 promptChain 内执行；新消息必须等它完成后再进入 Runtime。
+      if (entry.compactionPromise) await entry.compactionPromise.catch(() => {});
       await this._maybeCompact(entry, payload.runContext);
       return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
     });
@@ -1574,32 +1614,36 @@ class AgentManager extends EventEmitter {
   }
 
   async _maybeCompact(entry, runContext = null) {
-    if (entry.autoCompacting || !entry.promptChars) return;
+    if (entry.compacting || !entry.promptChars) return;
     const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
     const cacheReadTokens = Number(entry.lastUsage?.cacheReadTokens ?? entry.lastUsage?.cacheRead ?? entry.lastUsage?.cache_read ?? 0);
     const cacheWriteTokens = Number(entry.lastUsage?.cacheWriteTokens ?? entry.lastUsage?.cacheWrite ?? entry.lastUsage?.cache_write ?? 0);
     // Pi 的 usage.input 只包含未命中缓存的 token；长会话的大部分上下文会
     // 出现在 cacheRead 中。只看 input 会让 4 万 token 的会话误判为很短。
     const contextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
-    if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && contextTokens < AUTO_COMPACT_INPUT_TOKENS) return;
+    const modelContextWindow = Number(entry.session?.model?.contextWindow || entry.session?.model?.contextLength || 0);
+    const compactTokenThreshold = modelContextWindow > 0
+      ? Math.floor(modelContextWindow * 0.78)
+      : AUTO_COMPACT_INPUT_TOKENS;
+    if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && contextTokens < compactTokenThreshold) return;
+    entry.compacting = true;
     entry.autoCompacting = true;
+    entry.compactionKind = "automatic";
     const runId = runContext?.runId || entry.activeRunId || null;
-    emitChannelSafe(entry, "context_compacting", { runId, promptChars: entry.promptChars, inputTokens, cacheReadTokens, cacheWriteTokens, contextTokens });
+    entry.compactionRunId = runId;
     try {
-      const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
-      entry.promptChars = 0;
-      entry.lastUsage = null;
-      emitChannelSafe(entry, "context_compacted", {
-        runId,
-        automatic: true,
-        tokensBefore: result?.tokensBefore || 0,
-        estimatedTokensAfter: result?.estimatedTokensAfter || 0,
-      });
+      const compactPromise = piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
+      entry.compactionPromise = compactPromise;
+      await compactPromise;
     } catch (error) {
       // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
       emitChannelSafe(entry, "context_compact_warning", { runId, message: String(error?.message || error).slice(0, 300) });
     } finally {
+      entry.compactionPromise = null;
+      entry.compactionRunId = null;
+      entry.compactionKind = null;
       entry.autoCompacting = false;
+      entry.compacting = false;
     }
   }
 
@@ -1900,19 +1944,27 @@ class AgentManager extends EventEmitter {
   /** 手动压缩当前会话上下文。压缩属于 pi session 能力，不通过伪造 /compact 文本实现。 */
   async compact(clientId, customInstructions = "") {
     const entry = await this.getOrCreate(clientId);
-    if (entry.busy || entry.queuedCount > 0 || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
+    if (entry.busy || entry.compacting || entry.queuedCount > 0 || (typeof entry.session.isIdle === "function" && !entry.session.isIdle())) {
       throw new Error("agent busy — wait for the current task to finish");
     }
-    const result = await piRuntimeManager.compact(entry.runtimeId, entry.session, String(customInstructions || "").trim());
-    emitChannelSafe(entry, "context_compacted", {
-      tokensBefore: result?.tokensBefore || 0,
-      estimatedTokensAfter: result?.estimatedTokensAfter || 0,
-    });
-    return {
-      ok: true,
-      tokensBefore: result?.tokensBefore || 0,
-      estimatedTokensAfter: result?.estimatedTokensAfter || 0,
-    };
+    entry.compacting = true;
+    entry.compactionKind = "manual";
+    entry.compactionRunId = entry.activeRunId || null;
+    const compactPromise = piRuntimeManager.compact(entry.runtimeId, entry.session, String(customInstructions || "").trim());
+    entry.compactionPromise = compactPromise;
+    try {
+      const result = await compactPromise;
+      return {
+        ok: true,
+        tokensBefore: result?.tokensBefore || 0,
+        estimatedTokensAfter: result?.estimatedTokensAfter || 0,
+      };
+    } finally {
+      entry.compactionPromise = null;
+      entry.compactionRunId = null;
+      entry.compactionKind = null;
+      entry.compacting = false;
+    }
   }
 
   async newThread(clientId, threadId, cwd = getWorkspace()) {
@@ -1920,7 +1972,7 @@ class AgentManager extends EventEmitter {
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
+      if (old.busy || old.compacting || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -1933,7 +1985,7 @@ class AgentManager extends EventEmitter {
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
     if (old) {
-      if (old.busy || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
+      if (old.busy || old.compacting || old.queuedCount > 0) throw new Error("当前会话仍有任务排队，不能替换活动会话");
       piRuntimeManager.dispose(old.runtimeId, old.session);
       this.sessions.delete(clientId);
     }
@@ -1960,7 +2012,7 @@ class AgentManager extends EventEmitter {
       } else {
         lines.push(
         "- Office 文档一律用 officecli 工具操作；新建或修改文件必须写入当前工作区。",
-        "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。Access denied 表示 WPS/Word/OfficeCLI 占用文件，提示关闭后重试。",
+        "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。sharing violation 或另一个进程占用才表示文件锁；Access denied、is denied、EPERM 或 EACCES 表示当前服务进程缺少系统写权限。",
           "- 完成时简要列出读取来源、修改文件、产物、假设和下一步。",
           "- 复杂任务先调用 todo 创建 2-6 项结构化待办；每完成一项就用完整快照更新 todo。只有稳定的新项目事实或偏好才提交 memory_update 建议。",
         );
@@ -1985,7 +2037,7 @@ class AgentManager extends EventEmitter {
         "",
         `- **当前工作区（绝对路径）**: ${ws}`,
         "- Office files live in the current workspace folder above. ALWAYS operate on office documents through the `officecli` tool — it resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
-        "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。Access denied 时关闭 WPS/Word/OfficeCLI 预览后重试。",
+        "- Word 批注：先 get/query 找真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，完成后 query comment 校验。仅在 sharing violation 或明确的进程占用错误时关闭 WPS/Word/OfficeCLI 预览；Access denied/is denied/EPERM/EACCES 应说明服务进程写权限受限。",
         "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
         "- **写文件规范**: 创建任何新文件（HTML/文档/图表等）时，必须写入当前工作区（绝对路径见上），禁止写入项目目录。否则产物不会被前端检测到。",
         "- **地图（GIS）**: 地图项目位于 `" + ws + "/maps/{project}/`（默认项目 zhejiang-map 浙江省交通地图）。用户在地图模式下对话时用 map_read/map_edit/map_import 工具。",
@@ -2028,7 +2080,7 @@ class AgentManager extends EventEmitter {
 
   async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace(), modelSpec = "" } = {}) {
     const old = this.sessions.get(clientId);
-    if (old?.busy || old?.queuedCount > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
+    if (old?.busy || old?.compacting || old?.queuedCount > 0) throw new Error("当前 Runtime 仍有任务排队，不能重启");
     if (old) {
       piRuntimeManager.markRecovery(old.runtimeId, "manual_runtime_restart");
       piRuntimeManager.dispose(old.runtimeId, old.session);
@@ -2049,7 +2101,7 @@ class AgentManager extends EventEmitter {
       cwd: existing?.workspace || getWorkspace(),
       modelSpec: spec,
     });
-    if (entry.busy || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
+    if (entry.busy || entry.compacting || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
     const [provider, id] = String(spec).split("/");
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
@@ -2167,6 +2219,9 @@ class AgentManager extends EventEmitter {
       name: m.name || m.id,
       vision: !!m.vision,
       available: availableKeys.has(`${m.provider}/${m.id}`),
+      ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
+        ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
+        : {}),
     });
     const merged = new Map();
     for (const model of configured) merged.set(`${model.provider}/${model.id}`, normalize(model));
@@ -2268,22 +2323,6 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
       try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
     }
   } catch {}
-}
-
-function normalizeOfficeFailure(error, args = [], result = null) {
-  const raw = String(error?.message || result?.stderr || result?.text || error || "Office CLI 执行失败").trim();
-  if (/access (?:to|ing) the path|access denied|sharing violation|used by another process|另一个进程|拒绝访问/i.test(raw)) {
-    const locked = new Error("Office 文档写入失败：目标文件可能正被 WPS/Word 或 OfficeCLI 预览占用。请先保存并关闭该文档及预览窗口，再重试批注或修改。原始信息：" + raw.slice(0, 400));
-    locked.code = "OFFICE_DOCUMENT_LOCKED";
-    locked.cause = raw;
-    locked.args = Array.isArray(args) ? args.slice(0, 8) : [];
-    return locked;
-  }
-  if (error?.code) return error;
-  const failure = new Error(raw);
-  failure.code = "OFFICECLI_FAILED";
-  failure.args = Array.isArray(args) ? args.slice(0, 8) : [];
-  return failure;
 }
 
 /**

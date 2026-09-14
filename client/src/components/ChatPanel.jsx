@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
-import { fileToBase64, listModels, setAgentModel, compactAgentContext, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
+import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
-import { 计算展示字符数 } from "./流式文本队列.js";
+import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
@@ -46,6 +46,9 @@ const newId = () => `m${++msgSeq}`;
 const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
+const APPROVAL_MODE_KEY = "oaw_approval_mode";
+const EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
+const DEFAULT_CONTEXT_WINDOW = 128000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
@@ -107,12 +110,12 @@ const MODE_META = {
     prefix: "[模式: Chat] 只进行知识库、Skills 和工作区资料检索；不要修改文件、执行脚本或生成产物。若用户要求修改，请转为 Agent 任务。\n",
   },
   agent: {
-    label: "Agent",
-    shortLabel: "Agent",
-    icon: "penTool",
-    title: "Agent：调用完整工具链执行分析、修改并生成工作产物",
+    label: "Work",
+    shortLabel: "Work",
+    icon: "tool",
+    title: "Work：调用工具执行分析、编辑并生成工作产物，实际权限由运行环境决定",
     hint: "执行与产出",
-    prefix: "[模式: Agent] 可以调用完整 skills 和工具执行分析、修改并生成新文件（文档/HTML/PPT 等），Office CLI 会按任务需要自动选择，产物保存到当前工作区。\n",
+    prefix: "[模式: Work] 可以调用完整 skills 和工具执行分析、修改并生成新文件（文档/HTML/PPT 等），Office CLI 会按任务需要自动选择；实际写入和联网能力以运行环境预检结果为准。\n",
   },
 };
 
@@ -120,6 +123,7 @@ const MODE_META = {
 // 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。运行期间展开，完成后
 // 自动收成一行，用户仍可点击核对模型请求、工具调用、写入和收尾是否完整。
 const FLOW_EVENT_TYPES = new Set([
+"runtime_connecting", "runtime_init_failed", "tool_approval_request", "tool_approval_resolved",
   "run_admitting", "run_admitted", "model_request_started", "agent_started",
   "turn_started", "turn_ended", "tool_start", "tool_end", "ask_user", "agent_retry",
   "agent_retry_end", "agent_model_fallback", "agent_model_fallback_failed",
@@ -212,6 +216,7 @@ function flowEventLabel(event) {
   };
   const toolLabel = toolLabels[String(tool).toLowerCase()] || tool;
   switch (event?.type) {
+    case "runtime_connecting": return "正在准备会话运行时";
     case "run_admitting": return "准备任务";
     case "stream_waiting": return "正在接收事件流";
     case "run_admitted": return "任务已受理";
@@ -230,6 +235,8 @@ function flowEventLabel(event) {
     case "todo_updated": return `任务清单已更新${data.todoProgress ? `（${data.todoProgress.completed || 0}/${data.todoProgress.total || 0}）` : ""}`;
     case "officecli_failed": return `Office CLI 失败${data.message ? `：${String(data.message).slice(0, 60)}` : ""}`;
     case "ask_user": return "等待用户回答";
+    case "tool_approval_request": return `等待审批：${toolLabel}`;
+    case "tool_approval_resolved": return data.decision === "allow" ? "审批已通过" : "审批已拒绝";
     case "agent_retry": return "模型连接重试";
     case "agent_retry_end": return data.success ? "模型连接已恢复" : "模型重试结束";
     case "agent_model_fallback": return `切换备用模型${data.to ? `：${data.to}` : ""}`;
@@ -259,6 +266,19 @@ function flowEventTone(event) {
   if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed"].includes(event?.type) || event?.data?.isError) return "error";
   if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted"].includes(event?.type)) return "success";
   return "running";
+}
+
+function usageDetails(usage) {
+  const input = Number(usage?.inputTokens ?? usage?.input ?? 0) || 0;
+  const output = Number(usage?.outputTokens ?? usage?.output ?? 0) || 0;
+  const cacheRead = Number(usage?.cacheReadTokens ?? usage?.cacheRead ?? usage?.cache_read ?? 0) || 0;
+  const cacheWrite = Number(usage?.cacheWriteTokens ?? usage?.cacheWrite ?? usage?.cache_write ?? 0) || 0;
+  return { input, output, cacheRead, cacheWrite, context: input + cacheRead + cacheWrite };
+}
+
+function formatTokenCount(value) {
+  const count = Number(value) || 0;
+  return count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : String(count);
 }
 
 // Office 是历史任务/会话的兼容值，前端主入口不再暴露第三个模式。
@@ -363,6 +383,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [modelMsg, setModelMsg] = useState("");
   const [modelCounts, setModelCounts] = useState({ available: 0, configured: 0 });
   const [compacting, setCompacting] = useState(false);
+  const [approvalMode, setApprovalModeState] = useState(() => localStorage.getItem(APPROVAL_MODE_KEY) === "auto" ? "auto" : "ask");
+  const [approvalModeSaving, setApprovalModeSaving] = useState(false);
   const [editMode, setEditMode] = useState(() => {
     const saved = localStorage.getItem(MODE_KEY);
     return forcedMode ? normalizeUiMode(forcedMode) : normalizeUiMode(saved);
@@ -374,7 +396,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }); // Pi 标准推理档位：low/medium/high/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
   const [modelQ, setModelQ] = useState(""); // 模型搜索
-  const [agentPhase, setAgentPhase] = useState("");
+  const [agentPhase, setAgentPhaseState] = useState("");
+  const agentPhaseRef = useRef("");
+  const setAgentPhase = useCallback((next) => {
+    const value = typeof next === "function" ? next(agentPhaseRef.current) : next;
+    if (Object.is(agentPhaseRef.current, value)) return;
+    agentPhaseRef.current = value;
+    setAgentPhaseState(value);
+  }, []);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
@@ -387,7 +416,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   useEffect(() => { onModeChange?.(normalizeUiMode(editMode)); }, [editMode, onModeChange]);
   useEffect(() => { onPhaseChange?.(busy ? (agentPhase || "正在处理") : ""); }, [agentPhase, busy, onPhaseChange]);
-  const bottomRef = useRef(null);
+  const bodyRef = useRef(null);
+  const followLatestRef = useRef(true);
   const assistantIdRef = useRef(null);
   // agent_end 可能先于 run_finished 到达；保留本轮最后一个气泡，
   // 让服务端补发的权威全文继续写入原气泡，避免出现两条结论。
@@ -397,6 +427,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // streaming 累积缓冲（性能优化：避免每 token setState）
   const streamBufRef = useRef(null);
   const rafRef = useRef(null);
+  const toolOutputQueueRef = useRef(new Map());
+  const toolOutputRafRef = useRef(null);
   const textRevealRef = useRef(null);
   // 保留已经真正展示到消息气泡中的文本。agent_end 清理动画状态后，
   // run_finished 仍可能补发同一份最终全文，不能因此重新追加一遍。
@@ -414,6 +446,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const eventCursorRef = useRef(0);
   const eventCursorsRef = useRef(new Map());
   const activeRunIdRef = useRef(null);
+  const runtimeConnectingEventRef = useRef(null);
   // 发送请求后立即标记运行态，不能等 React 的 busy 状态提交；
   // 否则首批 run_admitted/model_request_started 事件会被误当成历史事件丢弃。
   const runInProgressRef = useRef(false);
@@ -430,6 +463,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const selectedProviderMeta = modelProviderMeta(selectedModelInfo);
   const selectedEffort = THINKING_OPTIONS.find((item) => item.id === effort) || THINKING_OPTIONS[0];
   const selectedEffortIndex = Math.max(0, THINKING_OPTIONS.findIndex((item) => item.id === selectedEffort.id));
+  const selectedContextWindow = Number(selectedModelInfo?.contextWindow) || DEFAULT_CONTEXT_WINDOW;
+  const selectedUsage = usageDetails(runState.usage);
+  const selectedContextRatio = Math.min(1, selectedUsage.context / selectedContextWindow);
+  const selectedCompactThreshold = Math.floor(selectedContextWindow * 0.78);
   const modelGroups = useMemo(() => {
     const query = modelQ.trim().toLowerCase();
     const groups = new Map();
@@ -490,6 +527,33 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [forcedMode]);
 
   useEffect(() => {
+    let cancelled = false;
+    getApprovalMode().then((result) => {
+      if (cancelled || !["ask", "auto"].includes(result?.mode)) return;
+      setApprovalModeState(result.mode);
+      localStorage.setItem(APPROVAL_MODE_KEY, result.mode);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const changeApprovalMode = useCallback(async (nextMode) => {
+    if (approvalModeSaving || !["ask", "auto"].includes(nextMode)) return;
+    const previous = approvalMode;
+    setApprovalModeState(nextMode);
+    localStorage.setItem(APPROVAL_MODE_KEY, nextMode);
+    setApprovalModeSaving(true);
+    try {
+      await saveApprovalMode(nextMode);
+    } catch (error) {
+      setApprovalModeState(previous);
+      localStorage.setItem(APPROVAL_MODE_KEY, previous);
+      setModelMsg(`审批模式切换失败：${error.message}`);
+    } finally {
+      setApprovalModeSaving(false);
+    }
+  }, [approvalMode, approvalModeSaving]);
+
+  useEffect(() => {
     const mode = normalizeUiMode(editMode);
     if (MODE_META[mode] && !forcedMode) localStorage.setItem(MODE_KEY, mode);
   }, [editMode, forcedMode]);
@@ -529,6 +593,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         cancelAnimationFrame(textRevealRafRef.current);
         textRevealRafRef.current = null;
       }
+      if (toolOutputRafRef.current) {
+        cancelAnimationFrame(toolOutputRafRef.current);
+        toolOutputRafRef.current = null;
+      }
+      toolOutputQueueRef.current.clear();
       textRevealRef.current = null;
     };
   }, []);
@@ -536,10 +605,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 加载历史会话消息（点击历史列表时触发）
   useEffect(() => {
     if (historyMessages) {
+      followLatestRef.current = true;
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
       setMessages(normalizedHistory);
       const latestRun = [...normalizedHistory].reverse().find((item) => item?.runId && item?.runStatus);
       const isLiveRun = Boolean(latestRun && LIVE_RUN_STATUSES.has(latestRun.runStatus));
+      const latestAssistant = [...normalizedHistory].reverse().find((item) => item?.role === "assistant");
+      for (const message of normalizedHistory) {
+        if (message?.role === "assistant" && message?.id) {
+          displayedTextRef.current.set(message.id, 提取消息展示文本(message));
+        }
+      }
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setBusy(isLiveRun);
       setRunState({
@@ -567,10 +643,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (latestRun?.task?.mode) setEditMode(normalizeUiMode(latestRun.task.mode));
       stoppingRef.current = false;
       setStopping(false);
-      assistantIdRef.current = null;
-      lastAssistantIdRef.current = null;
+      assistantIdRef.current = isLiveRun ? latestAssistant?.id || null : null;
+      lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
-      streamingMsgIdRef.current = null;
+      streamingMsgIdRef.current = assistantIdRef.current;
       if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
       textRevealRafRef.current = null;
       textRevealRef.current = null;
@@ -589,7 +665,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   useEffect(() => {
     const previous = previousThreadRef.current;
     if (previous === threadId) return;
+    followLatestRef.current = true;
+    runtimeConnectingEventRef.current = null;
     const hydratingHistory = Boolean(historyMessages && historyThreadId === threadId);
+    const hydratedMessages = hydratingHistory ? normalizeHistoryMessages(historyMessages) : [];
+    const hydratedRun = [...hydratedMessages].reverse().find((item) => item?.runId && item?.runStatus);
+    const hydratedIsLive = Boolean(hydratedRun && LIVE_RUN_STATUSES.has(hydratedRun.runStatus));
+    const hydratedAssistant = [...hydratedMessages].reverse().find((item) => item?.role === "assistant");
     threadCacheRef.current.set(previous, {
       messages,
       runState,
@@ -612,15 +694,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }
     setStopping(false);
     stoppingRef.current = false;
-    assistantIdRef.current = null;
-    lastAssistantIdRef.current = null;
+    assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
+    lastAssistantIdRef.current = hydratingHistory ? hydratedAssistant?.id || null : null;
     streamBufRef.current = null;
-    streamingMsgIdRef.current = null;
+    streamingMsgIdRef.current = assistantIdRef.current;
     if (textRevealRafRef.current) cancelAnimationFrame(textRevealRafRef.current);
     textRevealRafRef.current = null;
     textRevealRef.current = null;
-    if (hydratingHistory) activeRunIdRef.current = null;
-    runInProgressRef.current = hydratingHistory ? false : Boolean(cached?.busy);
+    if (hydratingHistory) activeRunIdRef.current = hydratedIsLive ? hydratedRun?.runId || null : null;
+    runInProgressRef.current = hydratingHistory ? hydratedIsLive : Boolean(cached?.busy);
     queueRef.current = [];
     setQueuedMessages([]);
     setInjectedContext([]);
@@ -674,6 +756,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
+    setMode(mode) {
+      if (forcedMode) return false;
+      const nextMode = normalizeUiMode(mode);
+      setEditMode(nextMode);
+      setRunState((state) => ({ ...state, mode: nextMode }));
+      return true;
+    },
     insertText(text) {
       const found = parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
@@ -719,6 +808,73 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (!mountedRef.current) return;
     setMessages((ms) => ms.map((m) => (m.id === id ? fn(m) : m)));
   }, []);
+
+  const flushToolOutput = useCallback(() => {
+    if (toolOutputRafRef.current) {
+      cancelAnimationFrame(toolOutputRafRef.current);
+      toolOutputRafRef.current = null;
+    }
+    const updates = [...toolOutputQueueRef.current.values()];
+    toolOutputQueueRef.current.clear();
+    if (!updates.length || !mountedRef.current) return;
+    setMessages((current) => {
+      const byMessage = new Map();
+      for (const update of updates) {
+        if (!byMessage.has(update.messageId)) byMessage.set(update.messageId, []);
+        byMessage.get(update.messageId).push(update);
+      }
+      let changed = false;
+      const next = [...current];
+      for (const [messageId, edits] of byMessage) {
+        const messageIndex = next.findIndex((item) => item.id === messageId);
+        if (messageIndex < 0) continue;
+        const blocks = [...(next[messageIndex].blocks || [])];
+        let messageChanged = false;
+        for (const edit of edits) {
+          let blockIndex = edit.toolCallId
+            ? blocks.findIndex((block) => block.type === "tool" && block.id === edit.toolCallId)
+            : -1;
+          if (!edit.toolCallId) {
+            for (let index = blocks.length - 1; index >= 0; index -= 1) {
+              const block = blocks[index];
+              if (block.type === "tool" && !block.done && (!edit.name || block.name === edit.name)) {
+                blockIndex = index;
+                break;
+              }
+            }
+          }
+          if (blockIndex < 0) continue;
+          const block = blocks[blockIndex];
+          const output = edit.replace ? edit.output : `${block.output || ""}${edit.output}`;
+          if (output === block.output) continue;
+          blocks[blockIndex] = { ...block, output };
+          messageChanged = true;
+        }
+        if (messageChanged) {
+          next[messageIndex] = { ...next[messageIndex], blocks };
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
+  const queueToolOutput = useCallback((messageId, data = {}) => {
+    if (!messageId) return;
+    const toolCallId = data.toolCallId || null;
+    const name = data.name || "";
+    const key = `${messageId}:${toolCallId || name || "last"}`;
+    const previous = toolOutputQueueRef.current.get(key);
+    const output = String(data.output || "");
+    toolOutputQueueRef.current.set(key, {
+      messageId,
+      toolCallId,
+      name,
+      output: data.replace ? output : `${previous?.output || ""}${output}`,
+      replace: Boolean(data.replace || previous?.replace),
+    });
+    if (!toolOutputRafRef.current) toolOutputRafRef.current = requestAnimationFrame(flushToolOutput);
+  }, [flushToolOutput]);
 
   const rememberDisplayedText = useCallback((id, text) => {
     if (!id) return;
@@ -789,6 +945,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const active = textRevealRef.current;
       if (!active || active.id !== id) return;
       const elapsedMs = Math.max(1, now - active.lastAt);
+      if (elapsedMs < 32 && active.pending.length < 24) {
+        textRevealRafRef.current = requestAnimationFrame(reveal);
+        return;
+      }
       active.lastAt = now;
       const reducedMotion = typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
       const count = 计算展示字符数({ remaining: active.pending.length, elapsedMs, reducedMotion });
@@ -1158,7 +1318,27 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       });
     };
     switch (type) {
+case "runtime_connecting":
+        {
+          const at = envelope.at || new Date().toISOString();
+          const sequence = Number(envelope.id || envelope.seq || 0);
+          runtimeConnectingEventRef.current = {
+            key: sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${at}`,
+            type,
+            data,
+            at,
+          };
+        }
+        setConnected(false);
+        setAgentPhase("准备会话运行时");
+        break;
+      case "runtime_init_failed":
+        setConnected(false);
+        setAgentPhase(data?.message || "会话运行时初始化失败");
+        setStatusMsg(data?.message || "会话运行时初始化失败，请重试或检查模型配置");
+        break;
       case "connected":
+        runtimeConnectingEventRef.current = null;
         setConnected(true);
         if (data.model && data.model !== model) {
           setModel(data.model);
@@ -1200,6 +1380,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       // 工具调用开始：推入新 tool block
       case "tool_start":
+        flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
         if (!aid) aid = ensureAssistant();
         if (aid) {
@@ -1225,17 +1406,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       // 工具输出流：更新最后一个 tool block
       case "tool_output":
         if (!aid) aid = ensureAssistant();
-        if (aid) patch(aid, (m) => {
-          const blocks = [...(m.blocks || [])];
-          const tool = data.toolCallId
-            ? blocks.find((block) => block.type === "tool" && block.id === data.toolCallId)
-            : [...blocks].reverse().find((block) => block.type === "tool" && !block.done && (!data.name || block.name === data.name));
-          if (tool) tool.output = data.replace ? (data.output || "") : (tool.output || "") + (data.output || "");
-          return { ...m, blocks };
-        });
+        if (aid) queueToolOutput(aid, data);
         break;
       // 工具结束：标记完成
       case "tool_end":
+        flushToolOutput();
         if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
@@ -1272,6 +1447,42 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                 answer: "",
               }],
             }));
+}
+        break;
+      // 工具审批请求（opencode 式 allow/ask/deny）：追加审批卡片，用户批准后 agent 继续
+      case "tool_approval_request":
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          if (streamBufRef.current) flushNow(aid);
+          setBusy(true);
+          setAgentPhase("等待你的审批");
+          setRunState((s) => ({ ...s, status: "waiting_user", runId: data.runId || s.runId || null }));
+          const approvalId = data.id || `${data.runId || "approval"}:${data.tool}:${data.input || ""}`;
+          patch(aid, (m) => m.blocks?.some((block) => block.type === "approval" && block.id === approvalId)
+            ? m
+            : ({
+              ...m,
+              blocks: [...(m.blocks || []), {
+                type: "approval",
+                id: approvalId,
+                tool: data.tool || "",
+                input: data.input || "",
+                decision: "",
+              }],
+            }));
+        }
+        break;
+      case "tool_approval_resolved":
+        if (aid) {
+          const approvalId = data.id || `${data.runId || "approval"}:${data.tool}:${data.input || ""}`;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            const block = blocks.find((b) => b.type === "approval" && b.id === approvalId);
+            if (!block) return m;
+            block.decision = data.decision === "allow" ? "allow" : "deny";
+            return { ...m, blocks };
+          });
+          setAgentPhase(data.decision === "allow" ? "审批已通过，继续执行" : "操作已被拒绝");
         }
         break;
       // 消息开始/结束
@@ -1377,16 +1588,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         if (aid && data.text) enqueueTextReveal(aid, data.text, { authoritative: true });
         break;
       case "context_compacted":
-        pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${data.automatic ? "auto" : "manual"}:${data.tokensBefore || 0}`);
+        setRunState((s) => ({ ...s, usage: null }));
+        pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${envelope.id || data.runId || envelope.at || "session"}`);
         break;
       case "context_compacting":
-        pushSystem("当前会话上下文较长，正在压缩重复过程信息…", "context_compacting");
+        pushSystem("当前会话上下文较长，正在压缩重复过程信息…", `context_compacting:${envelope.id || data.runId || envelope.at || "session"}`);
         break;
       case "context_compact_warning":
-        pushSystem(`自动压缩未完成：${data.message || "将继续使用当前上下文"}`, "context_compact_warning");
+        pushSystem(`自动压缩未完成：${data.message || "将继续使用当前上下文"}`, `context_compact_warning:${envelope.id || data.runId || envelope.at || "session"}`);
         break;
       case "agent_end": {
         const endedWithError = agentErrorRef.current;
+        flushToolOutput();
         if (streamBufRef.current) flushNow(aid);
         if (aid) finishTextReveal(aid);
         assistantIdRef.current = null;
@@ -1405,6 +1618,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         break;
       }
       case "agent_error":
+        flushToolOutput();
         agentErrorRef.current = true;
         cancelTextReveal({ preserveText: true });
         if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText: data.message || "出错了" }));
@@ -1425,6 +1639,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
         break;
       case "aborted":
+        flushToolOutput();
         finalizeStopped();
         break;
       case "file_changed":
@@ -1454,6 +1669,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         upsertRunSummary({ ...data, status: data.status || "completed" });
         break;
       case "run_finished":
+        flushToolOutput();
         // SSE 可能只保留了终结事件，或 agent_end 先清理了本地气泡。
         // 服务端从 Pi 的 assistant_final 事件带回权威全文，在这里补齐回复。
         if (data.finalText) {
@@ -1469,7 +1685,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             runInProgressRef.current = false;
             setStopping(false);
             setAgentPhase("");
-            if (aid) patch(aid, (m) => ({ ...m, status: finalStatus === "failed" ? "error" : "done" }));
+            if (finalStatus === "failed") agentErrorRef.current = true;
+            if (aid) finishTextReveal(aid);
           }
         }
         upsertRunSummary(data);
@@ -1594,6 +1811,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       return;
     }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
+    followLatestRef.current = true;
     const contextNotes = source.contextNotes || injectedContext;
     const contextImages = contextNotes.flatMap((note) => note.images || []);
     const contextAttachments = contextNotes.flatMap((note) => note.attachments || []);
@@ -1702,8 +1920,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     agentErrorRef.current = false;
     activeRunIdRef.current = null;
     agentEventAtRef.current = 0;
-    setExecutionEvents([]);
-    setAgentPhase("连接模型");
+    setExecutionEvents(runtimeConnectingEventRef.current ? [runtimeConnectingEventRef.current] : []);
+    setAgentPhase("准备会话运行时");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
       // prompt 是异步 admission；确保本轮 capability_plan/首个 token 不会在
@@ -1760,7 +1978,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         setRunState((s) => ({ ...s, runId: d.runId, references: d.task?.references || sendReferences, task: d.task || s.task }));
       }
       if (!res.ok) {
-        patch(aid, (m) => ({ ...m, status: "error", text: d.error || "请求失败" }));
+        patch(aid, (m) => ({ ...m, status: "error", errorText: d.error || "请求失败" }));
         assistantIdRef.current = null;
         lastAssistantIdRef.current = null;
         if (mountedRef.current) setBusy(false);
@@ -1769,7 +1987,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
     } catch (e) {
       if (!mountedRef.current) return;
-      patch(aid, (m) => ({ ...m, status: "error", text: "网络错误: " + e.message }));
+      patch(aid, (m) => ({ ...m, status: "error", errorText: "请求未完成：" + e.message }));
       assistantIdRef.current = null;
       lastAssistantIdRef.current = null;
       if (mountedRef.current) setBusy(false);
@@ -1870,9 +2088,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setModelMsg("正在压缩上下文…");
     try {
       const result = await compactAgentContext(clientId, threadId);
+      setRunState((state) => ({ ...state, usage: null }));
       const before = result.tokensBefore ? `，压缩前约 ${result.tokensBefore.toLocaleString()} tokens` : "";
-      pushSystem(`上下文压缩完成${before}。后续对话将继续保留任务摘要。`);
-      setModelMsg("压缩完成");
+      setModelMsg(`压缩完成${before}`);
     } catch (e) {
       setModelMsg(`压缩失败：${e.message}`);
     } finally {
@@ -1901,24 +2119,18 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
-  const bodyRef = useRef(null);
   const textareaRef = useRef(null);
-  const userScrolledUpRef = useRef(false);
   useEffect(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
       const el = bodyRef.current;
-      if (!el) return;
-      // 判断用户是否在底部（距底部 < 80px 视为在底部）
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      if (nearBottom) {
-        userScrolledUpRef.current = false;
-        bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-      }
-      // 用户主动向上滑时 userScrolledUpRef 被标记，跳过自动滚动
+      if (!el || !followLatestRef.current) return;
+      // 用用户滚动时记录的跟随意图，而不是在流式内容增高后重新判断距离。
+      // 否则回复变长就会让滚动距离超过阈值，后续 token 留在视口外。
+      el.scrollTo({ top: el.scrollHeight, behavior: busy ? "auto" : "smooth" });
     }, 60);
     return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
-  }, [messages]);
+  }, [messages, executionEvents, busy]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -1935,6 +2147,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const visibleStart = Math.max(0, messages.length - messageWindowSize);
   const visibleMessages = messages.slice(visibleStart);
   const hiddenMessageCount = visibleStart;
+  const showExecutionFlow = executionEvents.length > 0 || busy;
 
   return (
     <ErrorBoundary>
@@ -2010,19 +2223,32 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               <span>模型：{model || defaultModel || "按 Pi 配置"}</span>
               <span>Skills：{project?.settings?.skills?.length ? `${project.settings.skills.length} 项` : "按任务加载"}</span>
               <span>Office CLI：自动判断</span>
-              <span>写入：当前工作区</span>
+              <span>写入：受运行环境权限控制</span>
             </div>
           </details>
         )}
 
         <div className="chat-stream-shell">
+          <div className="chat-topbar">
+            {showExecutionFlow && <ExecutionFlow events={executionEvents} running={busy} />}
+            <div className="chat-top-controls" aria-label="会话控制">
+              <ContextUsageRing
+                usage={runState.usage}
+                contextWindow={selectedContextWindow}
+                contextTokens={selectedUsage.context}
+                compactThreshold={selectedCompactThreshold}
+                model={selectedModelInfo}
+                compacting={compacting}
+                busy={busy}
+                onCompact={compactContext}
+              />
+              <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
+            </div>
+          </div>
           <div className="chat-body" ref={bodyRef} onScroll={() => {
             const el = bodyRef.current;
-            if (el && el.scrollHeight - el.scrollTop - el.clientHeight > 80) {
-              userScrolledUpRef.current = true;
-            }
+            if (el) followLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
           }}>
-          {(executionEvents.length > 0 || busy) && <ExecutionFlow events={executionEvents} running={busy} />}
           {messages.length === 0 && (
             <div className="chat-empty">
               <div>发送消息给 agent</div>
@@ -2038,7 +2264,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               加载更早的 {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 {hiddenMessageCount} 条）
             </button>
           )}
-          {visibleMessages.map((m, i) => <Message key={m.id} m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
+          {visibleMessages.map((m, i) => (
+            <React.Fragment key={m.id}>
+              <Message m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
             patch(m.id, (msg) => ({ ...msg, blocks: (msg.blocks || []).map((block) => block.id === blockId ? { ...block, answer } : block) }));
             setBusy(true);
             setAgentPhase("继续执行");
@@ -2054,8 +2282,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               });
               return { ...msg, blocks };
             });
-          }} />)}
-          <div ref={bottomRef} />
+          }} />
+            </React.Fragment>
+          ))}
           </div>
           {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
           {loadSettings().showTimeline !== false && <ChatTimeline messages={visibleMessages} containerRef={bodyRef} />}
@@ -2190,7 +2419,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               )}
             </div>
           </div>
-          {/* 工具栏按“上下文 / 工作模式 / Agent 设置 / 会话”分组，窄栏时整组换行 */}
+          {/* 工具栏按“上下文 / Agent 设置 / 会话”分组；Chat / Work 已移到顶栏 */}
           <div className="chat-toolbar">
             <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
             <input ref={attInputRef} type="file" accept=".docx,.xlsx,.pptx,.md,.markdown,.txt,.pdf,.html,.htm,.csv,.json" multiple hidden onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }} />
@@ -2208,20 +2437,6 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               <button className={`ct-btn ct-context-btn ${compacting ? "active" : ""}`} title={busy ? "当前任务完成后才能压缩上下文" : "压缩当前 Pi 会话上下文，保留任务摘要"} onClick={compactContext} disabled={busy || compacting}>
                 <Icon name={compacting ? "loading" : "layers"} size={14} />
                 <span>压缩</span>
-              </button>
-            </div>
-            <span className="ct-sep" />
-            <div className="chat-toolbar-group toolbar-work-mode-group" title={forcedMode ? "当前嵌入模式已锁定" : (editMode === "agent" ? "Work：可读取、写入和编辑当前工作区；最终仍受操作系统权限限制" : "Chat：只读检索，不执行文件写入")}>
-              <button
-                type="button"
-                className={`ct-btn ct-work-mode-btn ${editMode === "agent" ? "active" : ""}`}
-                aria-pressed={editMode === "agent"}
-                aria-label={editMode === "agent" ? "切换到 Chat 只读模式" : "切换到 Work 文件编辑模式"}
-                disabled={Boolean(forcedMode)}
-                onClick={() => !forcedMode && setEditMode((mode) => mode === "agent" ? "chat" : "agent")}
-              >
-                <Icon name={editMode === "agent" ? "penTool" : "search"} size={13} />
-                <span>{editMode === "agent" ? "Work" : "Chat"}</span>
               </button>
             </div>
             <span className="ct-sep" />
@@ -2287,8 +2502,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
                         aria-valuetext={`${selectedEffort.label}（${selectedEffort.desc}）`}
                         onChange={(e) => { const next = THINKING_OPTIONS[Number(e.target.value)] || THINKING_OPTIONS[0]; setEffort(next.id); localStorage.setItem(THINKING_KEY, next.id); }}
                       />
-                      <div className="model-thinking-scale">{THINKING_OPTIONS.map((item) => <span key={item.id} className={item.id === effort ? "active" : ""}>{item.label}</span>)}</div>
+<div className="model-thinking-scale">{THINKING_OPTIONS.map((item) => <span key={item.id} className={item.id === effort ? "active" : ""}>{item.label}</span>)}</div>
                       <small className="model-thinking-desc">{selectedEffort.desc}</small>
+                      <small className="model-thinking-hint">高/最大档位会让模型首响应明显变慢，适合复杂任务；简单问答建议用低/标准</small>
                     </div>
                   </div>
                 )}
@@ -2455,6 +2671,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
                 if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
                 if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={onAskAnswered} />;
+                if (b.type === "approval") return <ApprovalBlock key={b.id || i} block={b} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
                     {streaming
@@ -2622,9 +2839,146 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
   );
 }
 
-// ========== SSE 执行流（默认折叠，独立于消息气泡） ==========
+// ========== 工具审批卡片（opencode 式：允许一次 / 总是允许 / 拒绝） ==========
+function ApprovalBlock({ block }) {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const toolNames = {
+    officecli: "Office CLI", bash: "命令", write: "写入文件", map_edit: "地图样式编辑", map_import: "地图数据导入",
+  };
+  const toolLabel = toolNames[String(block.tool).toLowerCase()] || block.tool || "工具";
+
+  const decide = async (decision) => {
+    if (sending || block.decision) return;
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/agent/approval", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: block.id, decision }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `审批提交失败（${res.status}）`);
+    } catch (e) {
+      setError(e.message || "审批提交失败，请重试");
+    }
+    setSending(false);
+  };
+
+  return (
+    <div className={`approval-block ${block.decision ? "resolved" : ""}`}>
+      <div className="approval-head">
+        <Icon name="shield" size={12} />
+        <span className="approval-title">需要审批：{toolLabel}</span>
+        {block.decision === "allow" && <span className="approval-status">✓ 已允许</span>}
+        {block.decision === "deny" && <span className="approval-status denied">✕ 已拒绝</span>}
+      </div>
+      <div className="approval-command">{block.input}</div>
+      {!block.decision && (
+        <>
+          <div className="approval-actions">
+            <button className="btn primary approval-allow" onClick={() => decide("allow")} disabled={sending}>允许一次</button>
+            <button className="btn approval-always" onClick={() => decide("always")} disabled={sending}>总是允许</button>
+            <button className="btn approval-deny" onClick={() => decide("deny")} disabled={sending}>拒绝</button>
+          </div>
+          {error && <div className="ask-error" role="alert">{error}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ========== Proma 风格上下文用量圈 ==========
+function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, model, compacting, busy, onCompact }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const percentage = Math.min(100, Math.round((contextTokens / Math.max(1, contextWindow)) * 100));
+  const thresholdPercentage = Math.min(100, Math.round((compactThreshold / Math.max(1, contextWindow)) * 100));
+  const tone = percentage >= 85 ? "danger" : percentage >= 60 ? "warning" : "ok";
+  const radius = 14;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (circumference * percentage) / 100;
+  const details = usageDetails(usage);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointerDown = (event) => {
+      if (!wrapRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div className={`context-ring-wrap ${open ? "open" : ""}`} ref={wrapRef}>
+      <button
+        type="button"
+        className={`context-ring-button ${tone}`}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        title={`上下文 ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} tokens`}
+      >
+        <span className="context-ring-svg" aria-hidden="true">
+          <svg viewBox="0 0 36 36">
+            <circle className="context-ring-track" cx="18" cy="18" r={radius} />
+            <circle className="context-ring-progress" cx="18" cy="18" r={radius} style={{ strokeDasharray: circumference, strokeDashoffset: offset }} />
+          </svg>
+          <strong>{percentage}%</strong>
+        </span>
+        <span className="context-ring-label"><b>上下文</b><small>{formatTokenCount(contextTokens)}</small></span>
+      </button>
+      {open && (
+        <div className="context-ring-pop" role="dialog" aria-label="上下文用量">
+          <div className="context-ring-pop-head">
+            <span><strong>上下文记录</strong><small>{modelDisplayName(model)}</small></span>
+            <span className={`context-ring-percent ${tone}`}>{percentage}%</span>
+          </div>
+          <div className="context-ring-meter"><i style={{ width: `${percentage}%` }} /></div>
+          <div className="context-ring-stats">
+            <span>当前 <b>{contextTokens.toLocaleString()}</b></span>
+            <span>上限 <b>{contextWindow.toLocaleString()}</b></span>
+            <span>压缩线 <b>{thresholdPercentage}%</b></span>
+          </div>
+          <div className="context-ring-breakdown">
+            <span>输入 {details.input.toLocaleString()}</span>
+            <span>缓存读 {details.cacheRead.toLocaleString()}</span>
+            <span>缓存写 {details.cacheWrite.toLocaleString()}</span>
+            <span>输出 {details.output.toLocaleString()}</span>
+          </div>
+          <button type="button" className="context-ring-compact" onClick={onCompact} disabled={busy || compacting}>
+            <Icon name={compacting ? "loading" : "layers"} size={12} className={compacting ? "icon-loading" : ""} />
+            {compacting ? "压缩中…" : busy ? "任务完成后可压缩" : "压缩上下文"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== Codex 风格审批模式按钮 ==========
+function ApprovalModeControl({ mode, saving, onChange }) {
+  const automatic = mode === "auto";
+  return (
+    <button
+      type="button"
+      className={`approval-mode-control ${automatic ? "auto" : "ask"}`}
+      onClick={() => onChange(automatic ? "ask" : "auto")}
+      disabled={saving}
+      aria-pressed={automatic}
+      title={automatic ? "自动批准 ask 工具操作；deny 规则仍然生效。点击切回每次询问" : "工具写入或危险操作需要逐次询问。点击启用自动批准"}
+    >
+      <Icon name={automatic ? "check" : "shield"} size={13} />
+      <span>{automatic ? "自动批准" : "每次询问"}</span>
+      <i className="approval-mode-dot" />
+    </button>
+  );
+}
+
+// ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
 function ExecutionFlow({ events = [], running = false }) {
   const [expanded, setExpanded] = useState(running);
+  const [hidden, setHidden] = useState(() => localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true");
   const wasRunningRef = useRef(running);
   const latest = events[events.length - 1];
   const visibleEvents = events.length > 0
@@ -2638,16 +2992,28 @@ function ExecutionFlow({ events = [], running = false }) {
     wasRunningRef.current = running;
   }, [running]);
   if (!visibleEvents.length) return null;
+  if (hidden) {
+    return (
+      <div className="execution-flow execution-flow-hidden">
+        <button type="button" onClick={() => { setHidden(false); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "false"); }}>
+          <Icon name="eye" size={12} /> 显示执行流 <span>{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
-      <button type="button" className="execution-flow-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
-        <Icon name="flow" size={12} />
-        <strong>执行过程</strong>
-        <span className="execution-flow-count">{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
-        <span className="execution-flow-current">{flowEventLabel(latest || visibleEvents[0])}</span>
-        {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
-      </button>
+      <div className="execution-flow-head">
+        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+          <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
+          <Icon name="flow" size={12} />
+          <strong>执行过程</strong>
+          <span className="execution-flow-count">{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
+          <span className="execution-flow-current">{flowEventLabel(latest || visibleEvents[0])}</span>
+          {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
+        </button>
+        <button type="button" className="execution-flow-hide" onClick={() => { setHidden(true); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "true"); }} title="隐藏执行流" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
+      </div>
       {expanded && (
         <div className="execution-flow-list">
           {visibleEvents.map((event) => {

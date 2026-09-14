@@ -47,6 +47,8 @@ export const probeAgentModel = (model, timeoutMs = 15000) =>
   api("/api/agent/model/probe", { method: "POST", body: JSON.stringify({ model, timeoutMs }) });
 export const compactAgentContext = (client, thread, instructions = "") =>
   api("/api/agent/compact", { method: "POST", body: JSON.stringify({ client, thread, instructions }) });
+export const getApprovalMode = () => api("/api/agent/approval-mode");
+export const setApprovalMode = (mode) => api("/api/agent/approval-mode", { method: "PATCH", body: JSON.stringify({ mode }) });
 export const createAgentThread = (client, thread, cwd, options = {}) =>
   api("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd, ...options }) });
 export const resumeAgentThread = (client, thread, sessionId, cwd) =>

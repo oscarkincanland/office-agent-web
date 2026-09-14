@@ -47,3 +47,7 @@
 - pi 提供完整 SDK（`createAgentSession`/`ModelRuntime`/`setThinkingLevel`），现有 web 版已是嵌入式用法。
 - 打包方案：Electron/Tauri 壳 + 现有 server/前端，或 `bun build --compile` 单文件二进制。
 - 优势：独立进程稳定、可离线本地；成本：需维护壳层、自动更新、officecli 分发。
+
+## 当前能力（目标 v0.10.2）
+- 对话顶部固定执行流，支持折叠及隐藏/恢复；思考块默认展开并固定 240px 独立滚动。
+- 顶部控制区提供模型上下文用量环形圈和 Codex 风格审批模式按钮；自动批准不覆盖显式 deny 规则。

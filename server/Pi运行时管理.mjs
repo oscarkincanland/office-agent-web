@@ -75,6 +75,9 @@ function modelSnapshot(model) {
     name: String(model.name || model.id || ""),
     reasoning: model.reasoning === true,
     vision: model.vision === true,
+    ...(Number(model.contextWindow || model.contextLength || model.limit?.context) > 0
+      ? { contextWindow: Math.floor(Number(model.contextWindow || model.contextLength || model.limit.context)) }
+      : {}),
   };
 }
 
