@@ -101,30 +101,48 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
   }), { cwd, args: Array.isArray(args) ? args.slice(0, 8) : [] });
 }
 
+// Office CLI 探测缓存：成功 60 秒内复用，失败 15 秒内复用。
+// 每次 prompt admission 都可能触发 checkOfficecli()，避免反复 spawn officecli.exe。
+// 缓存按可执行文件路径区分，显式注入其他路径（如测试里的缺失 CLI）不会命中缓存。
+const OFFICECLI_PROBE_CACHE_TTL_MS = 60000;
+const OFFICECLI_PROBE_FAIL_TTL_MS = 15000;
+let officecliProbeCache = null; // { key, result, expiresAt }
+
 export async function checkOfficecli(timeoutMs = 8000, executable = OFFICECLI) {
-  if (path.isAbsolute(executable) && !fs.existsSync(executable)) {
-    return { available: false, path: executable, code: null, message: `Office CLI 文件不存在：${executable}` };
+  const now = Date.now();
+  const key = String(executable || "");
+  if (officecliProbeCache && officecliProbeCache.key === key && now < officecliProbeCache.expiresAt) {
+    return officecliProbeCache.result;
   }
-  try {
-    let result = await runOfficecli(["--version"], { timeoutMs, executable });
-    // 兼容较早版本：如果没有 --version，但 --help 可用，仍应允许只读/编辑链路启动。
-    if (result.code !== 0) {
-      const fallback = await runOfficecli(["--help"], { timeoutMs, executable });
-      if (fallback.code === 0) result = { ...fallback, version: null };
+  const probe = async () => {
+    if (path.isAbsolute(executable) && !fs.existsSync(executable)) {
+      return { available: false, path: executable, code: null, message: `Office CLI 文件不存在：${executable}` };
     }
-    const version = Object.prototype.hasOwnProperty.call(result, "version")
-      ? result.version
-      : (result.code === 0 ? (result.stdout || result.text || "").trim().split(/\r?\n/)[0].slice(0, 120) : null);
-    return {
-      available: result.code === 0,
-      path: executable,
-      code: result.code,
-      version: version || null,
-      message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500),
-    };
-  } catch (error) {
-    return { available: false, path: executable, code: null, message: String(error?.message || error || "Office CLI 不可用").slice(0, 500) };
-  }
+    try {
+      let result = await runOfficecli(["--version"], { timeoutMs, executable });
+      // 兼容较早版本：如果没有 --version，但 --help 可用，仍应允许只读/编辑链路启动。
+      if (result.code !== 0) {
+        const fallback = await runOfficecli(["--help"], { timeoutMs, executable });
+        if (fallback.code === 0) result = { ...fallback, version: null };
+      }
+      const version = Object.prototype.hasOwnProperty.call(result, "version")
+        ? result.version
+        : (result.code === 0 ? (result.stdout || result.text || "").trim().split(/\r?\n/)[0].slice(0, 120) : null);
+      return {
+        available: result.code === 0,
+        path: executable,
+        code: result.code,
+        version: version || null,
+        message: result.code === 0 ? "Office CLI 可用" : (result.stderr || result.text || "Office CLI 返回异常").trim().slice(0, 500),
+      };
+    } catch (error) {
+      return { available: false, path: executable, code: null, message: String(error?.message || error || "Office CLI 不可用").slice(0, 500) };
+    }
+  };
+  const result = await probe();
+  const ttl = result.available ? OFFICECLI_PROBE_CACHE_TTL_MS : OFFICECLI_PROBE_FAIL_TTL_MS;
+  officecliProbeCache = { key, result, expiresAt: now + ttl };
+  return result;
 }
 
 /** L1 read: view document in a mode. */

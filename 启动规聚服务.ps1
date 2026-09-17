@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$OpenPage,
   [switch]$AllowOffline,
   [switch]$StrictNetwork
@@ -20,6 +20,14 @@ function Write-SupervisorLog([string]$Message) {
   $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message"
   Add-Content -LiteralPath $SupervisorLog -Value $line -Encoding UTF8
   Write-Host $line
+}
+
+$CurrentIdentity = try { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name } catch { "$env:USERDOMAIN\$env:USERNAME" }
+$IsSandboxIdentity = $CurrentIdentity -match "Sandbox"
+if ($IsSandboxIdentity) {
+  $warning = "警告：当前终端身份为受限沙箱账户 '$CurrentIdentity'（通常由 Codex 沙箱环境启动）。服务将以该身份运行，工作区之外的目录（如 E 盘）可能无法写入（EPERM/Access denied）。请在普通 PowerShell/CMD 终端启动本脚本。"
+  Write-Host $warning -ForegroundColor Red -BackgroundColor Yellow
+  Write-SupervisorLog "WARN: $warning"
 }
 
 function Test-Service([string]$Url) {
@@ -72,8 +80,8 @@ try {
       Write-SupervisorLog "Port 3002 is already occupied. Supervisor stopped to avoid duplicate services."
       exit 3
     }
-    $startAt = Get-Date
-    Write-SupervisorLog "Starting Open Plan service at $ServiceUrl (version $LocalVersion)."
+$startAt = Get-Date
+    Write-SupervisorLog "Starting Open Plan service at $ServiceUrl (version $LocalVersion, identity $CurrentIdentity)."
     & node.exe server/index.mjs
     $exitCode = $LASTEXITCODE
 

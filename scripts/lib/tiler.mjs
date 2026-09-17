@@ -55,7 +55,7 @@ export function buildLayerTiles(projectDir, def, { force = false } = {}) {
   const srcPath = path.join(projectDir, "layers", `${def.id}.geojson`);
   if (!fs.existsSync(srcPath)) return { count: 0, bytes: 0, skipped: true };
   const data = JSON.parse(fs.readFileSync(srcPath, "utf8"));
-  const index = geojsonvt(data, {
+  const index = new geojsonvt(data, {
     maxZoom: def.maxzoom,
     tolerance: def.tolerance,
     buffer: 64,

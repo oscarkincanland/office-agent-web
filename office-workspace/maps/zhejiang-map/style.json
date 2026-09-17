@@ -330,6 +330,13 @@
       "metadata": {
         "basemap": true
       }
+    },
+    "ningbo-zhoushan-port-areas": {
+      "type": "vector",
+      "tiles": [
+        "/api/map/data/zhejiang-map/tiles/ningbo-zhoushan-port-areas/{z}/{x}/{y}.pbf"
+      ],
+      "maxzoom": 13
     }
   },
   "layers": [
@@ -1185,7 +1192,7 @@
       "source": "taizhou_od",
       "source-layer": "taizhou_od",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -1274,7 +1281,7 @@
         ],
         "text-rotation-alignment": "map",
         "text-allow-overlap": false,
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "text-color": "#ffffff",
@@ -1510,6 +1517,22 @@
         "text-color": "#ffffff",
         "text-halo-color": "rgba(0,0,0,0.75)",
         "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "ningbo-zhoushan-port-areas",
+      "source": "ningbo-zhoushan-port-areas",
+      "source-layer": "ningbo-zhoushan-port-areas",
+      "layout": {
+        "visibility": "visible"
+      },
+      "type": "circle",
+      "paint": {
+        "circle-radius": 4.5,
+        "circle-color": "#9467bd",
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1,
+        "circle-opacity": 0.9
       }
     }
   ],

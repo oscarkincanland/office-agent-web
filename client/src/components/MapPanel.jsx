@@ -10,8 +10,9 @@ import M3Analysis from "./M3公交分析.jsx";
 import CambodiaODPanel from "./柬埔寨OD面板.jsx";
 import shp from "shpjs";
 import {
-  mapProjects, mapProject, mapSaveStyle, mapSaveConfig,
+  mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
+  mapDuplicateProject, mapRenameProject, mapArchiveProject, mapDeleteProject,
 } from "../api.js";
 
 // 底图按钮兜底（服务端未返回元信息时）：服务端按 Key 配置动态生成底图列表
@@ -75,7 +76,7 @@ async function parseShapefile(shpjs, shpFile, selected) {
 export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
-  onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange,
+  onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange, onProjectChange,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
@@ -136,6 +137,7 @@ export default function MapPanel({
   const [exportOpen, setExportOpen] = useState(false); // 报告图导出弹窗
   const [exp, setExp] = useState({ size: "a4l", title: "", legend: true, customW: 1600, customH: 1131 });
   const [importOpen, setImportOpen] = useState(false); // 数据导入弹窗
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false); // 项目生命周期菜单
   const [impTab, setImpTab] = useState("files");
   const [impDir, setImpDir] = useState("data");
   const [impMsg, setImpMsg] = useState("");
@@ -339,6 +341,7 @@ export default function MapPanel({
   useEffect(() => {
     mapProjects().then((r) => setProjects(r.projects || [])).catch(() => {});
     loadProject(project);
+    onProjectChange?.(project);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
@@ -358,7 +361,7 @@ export default function MapPanel({
     setM2Tab(null);
     setM3Tab(null);
     setCambodiaOpen(false);
-  }, [threadId]);
+  }, [threadId, project]);
 
   // 保存 style.json 并热更新地图
   const saveStyle = useCallback(async (nextStyle) => {
@@ -1168,10 +1171,84 @@ export default function MapPanel({
   }, [draw, clearDrawLayers]);
 
   // ---- 与 agent 同步：文件变更 / 一轮对话结束 → 刷新项目并热更新地图 ----
-  const handleFileChanged = useCallback(() => {
+  const handleFileChanged = useCallback((changed = []) => {
+    const paths = (Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/"));
+    const projectPrefix = `maps/${project}/`;
+    // 共享 ChatPanel 会接收整个线程的 file_changed；只有当前地图项目的
+    // 文件才能触发当前地图刷新，避免 A 项目的产物穿透到 B 项目。
+    if (!paths.some((item) => item === `maps/${project}` || item.startsWith(projectPrefix))) return;
     loadProject(project);
     mapRef.current?.reloadStyle();
-  }, [project, loadProject, zoomToLayer]);
+  }, [project, loadProject]);
+
+  const handleCreateProject = useCallback(async () => {
+    const name = window.prompt("新地图项目名称", "新的交通分析项目");
+    if (!name?.trim()) return;
+    const suggested = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "map-project";
+    const id = window.prompt("项目标识（仅英文、数字、下划线或短横线）", suggested);
+    if (!id?.trim()) return;
+    try {
+      const created = await mapCreateProject(id.trim(), name.trim(), "zhejiang-map");
+      const listed = await mapProjects();
+      setProjects(listed.projects || []);
+      setProject(created.project || id.trim());
+      flash(`已创建地图项目「${name.trim()}」，基础路网沿用浙江统一底图，业务图层独立保存`);
+    } catch (e) {
+      flash(`创建地图项目失败：${e.message}`);
+    }
+  }, [flash]);
+
+  // 当前项目是否已归档（决定菜单显示“归档/取消归档”）
+  const currentProjectArchived = useMemo(() => {
+    const found = (projects || []).find((item) => (item.project || item.name) === project);
+    return Boolean(found?.archived);
+  }, [projects, project]);
+
+  // 项目生命周期管理：复制 / 重命名 / 归档 / 删除（默认项目受保护）
+  const handleProjectAction = useCallback(async (action) => {
+    setProjectMenuOpen(false);
+    if (!project) return;
+    try {
+      if (action === "duplicate") {
+        const name = window.prompt("副本项目标识（仅英文、数字、下划线或短横线）", `${project}-copy`);
+        if (!name?.trim()) return;
+        const created = await mapDuplicateProject(project, name.trim());
+        const listed = await mapProjects();
+        setProjects(listed.projects || []);
+        setProject(created.project || name.trim());
+        flash(`已复制为「${created.project || name.trim()}」，可在其上继续分析而不影响原项目`);
+      } else if (action === "rename") {
+        const name = window.prompt("新的项目标识（仅英文、数字、下划线或短横线）", project);
+        if (!name?.trim() || name.trim() === project) return;
+        const renamed = await mapRenameProject(project, name.trim());
+        const listed = await mapProjects();
+        setProjects(listed.projects || []);
+        setProject(renamed.project || name.trim());
+        flash(`项目已重命名为「${renamed.project || name.trim()}」`);
+      } else if (action === "archive") {
+        if (!window.confirm(`归档地图项目「${project}」？归档后仍可通过再次操作恢复，不影响已有图层与瓦片。`)) return;
+        await mapArchiveProject(project, true);
+        const listed = await mapProjects();
+        setProjects(listed.projects || []);
+        flash(`项目「${project}」已归档`);
+      } else if (action === "unarchive") {
+        await mapArchiveProject(project, false);
+        const listed = await mapProjects();
+        setProjects(listed.projects || []);
+        flash(`项目「${project}」已恢复`);
+      } else if (action === "delete") {
+        if (!window.confirm(`删除地图项目「${project}」？项目会移入回收目录（.trash），不会立即物理删除。`)) return;
+        await mapDeleteProject(project);
+        const listed = await mapProjects();
+        const next = listed.projects || [];
+        setProjects(next);
+        if (next[0]?.project) setProject(next[0].project);
+        flash(`项目「${project}」已移入回收目录`);
+      }
+    } catch (e) {
+      flash(`项目操作失败：${e.message}`);
+    }
+  }, [project, flash]);
 
   const refreshMap = useCallback(async () => {
     setMsg("刷新地图与图层中…");
@@ -1277,7 +1354,8 @@ export default function MapPanel({
           onSelectSession={onSelectSession}
           onFocusRun={onFocusRun}
         />
-        {projects.length > 1 && (
+        {projects.length > 0 && (
+          <>
           <select
             className="mp-project-select"
             value={project}
@@ -1288,6 +1366,35 @@ export default function MapPanel({
               <option key={p.project || p.name} value={p.project || p.name}>{p.name}</option>
             ))}
           </select>
+          <button className="btn-sm mp-project-create" onClick={handleCreateProject} title="新建独立地图项目">
+            <Icon name="plus" size={13} /> 新建项目
+          </button>
+          <div className="mp-project-manage">
+            <button
+              className="btn-sm"
+              onClick={() => setProjectMenuOpen((v) => !v)}
+              title="项目管理：复制 / 重命名 / 归档 / 删除"
+              aria-expanded={projectMenuOpen}
+            >
+              <Icon name="gear" size={13} />
+            </button>
+            {projectMenuOpen && (
+              <>
+                <div className="mp-project-menu-backdrop" onClick={() => setProjectMenuOpen(false)} />
+                <div className="mp-project-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => handleProjectAction("duplicate")}>复制为副本</button>
+                  <button type="button" role="menuitem" onClick={() => handleProjectAction("rename")}>重命名</button>
+                  {currentProjectArchived ? (
+                    <button type="button" role="menuitem" onClick={() => handleProjectAction("unarchive")}>取消归档</button>
+                  ) : (
+                    <button type="button" role="menuitem" onClick={() => handleProjectAction("archive")}>归档项目</button>
+                  )}
+                  <button type="button" role="menuitem" className="danger" onClick={() => handleProjectAction("delete")}>删除项目</button>
+                </div>
+              </>
+            )}
+          </div>
+          </>
         )}
         <select
           className="mp-project-select mp-basemap-select"

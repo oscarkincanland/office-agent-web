@@ -4,7 +4,9 @@ import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
+import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
+import { completionLabel, reduceRunTrace, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
@@ -94,6 +96,18 @@ function modelDisplayName(model) {
   return model.name || String(model.id || "").split("/").slice(1).join("/") || model.id;
 }
 
+function eventMessageText(value, fallback = "") {
+  if (typeof value === "string") return value.trim() || fallback;
+  if (value && typeof value === "object") {
+    for (const key of ["message", "error", "detail", "text"]) {
+      const nested = eventMessageText(value[key], "");
+      if (nested) return nested;
+    }
+    try { return JSON.stringify(value); } catch { return fallback; }
+  }
+  return value == null ? fallback : String(value);
+}
+
 function ModelProviderMark({ model, size = 18 }) {
   const provider = modelProvider(model);
   const meta = modelProviderMeta(model);
@@ -131,7 +145,7 @@ const FLOW_EVENT_TYPES = new Set([
   "agent_turn_end", "agent_error", "file_changed", "agent_summary",
   "assistant_final", "agent_end", "run_finished", "aborted", "write_rejected",
   "write_started", "write_locked", "artifact_staged", "artifact_materialized", "write_cleaned",
-  "capability_plan", "mode_policy", "thinking_level", "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed",
+  "capability_plan", "mode_policy", "thinking_level", "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed", "task_completed",
 ]);
 
 // 恢复 Pi JSONL 时可能同时存在空 assistant 占位、SSE 重试留下的重复消息，
@@ -223,7 +237,7 @@ function flowEventLabel(event) {
     case "model_request_started": return "请求模型";
     case "agent_started": return "模型已开始处理";
     case "turn_started": return "开始生成回合";
-    case "turn_ended": return "回合结束";
+    case "turn_ended": return "生成段结束";
     case "write_started": return "准备写入";
     case "write_locked": return "写入已锁定";
     case "artifact_staged": return "产物已暂存";
@@ -244,14 +258,15 @@ function flowEventLabel(event) {
     case "context_compacting": return "压缩上下文";
     case "context_compacted": return "上下文压缩完成";
     case "context_compact_warning": return "上下文压缩有提示";
-    case "agent_turn_end": return "整理当前回合";
-    case "agent_error": return data.message || "模型调用失败";
+    case "agent_turn_end": return "模型收尾";
+    case "agent_error": return eventMessageText(data.message, data.category === "quota" ? "模型额度不足" : "模型调用失败");
     case "write_rejected": return data.message || "工具操作被拦截";
     case "file_changed": return `文件已更新${data.files?.length ? `（${data.files.length}）` : ""}`;
     case "agent_summary": return "生成任务总结";
     case "assistant_final": return "收到最终回复";
     case "agent_end": return "Agent 处理结束";
     case "run_finished": return data.status === "completed" ? "任务完成" : `任务${data.status || "结束"}`;
+    case "task_completed": return `任务${completionLabel(data.status)}${data.summary ? `：${String(data.summary).slice(0, 50)}` : ""}`;
     case "aborted": return "任务已中断";
     case "capability_plan": return "能力准备完成";
     case "mode_policy": return `模式：${normalizeUiMode(data.mode) === "agent" ? "Agent" : "Chat"}`;
@@ -264,8 +279,25 @@ function flowEventLabel(event) {
 
 function flowEventTone(event) {
   if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed"].includes(event?.type) || event?.data?.isError) return "error";
+  if (event?.type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "running";
   if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted"].includes(event?.type)) return "success";
   return "running";
+}
+
+function appendExecutionFlowEvent(previous, event) {
+  if (previous.some((item) => item.key === event.key)) return previous;
+  const sameRun = (item) => event.data?.runId ? item.data?.runId === event.data.runId : !item.data?.runId;
+  const mergeIndex = [...previous].reverse().findIndex((item) => sameRun(item) && item.type === event.type && ["file_changed", "agent_summary", "agent_queue_update"].includes(event.type));
+  if (mergeIndex >= 0) {
+    const index = previous.length - 1 - mergeIndex;
+    const current = previous[index];
+    if (event.type === "file_changed") {
+      const files = [...new Set([...(current.data?.files || []), ...(event.data?.files || [])])];
+      return previous.map((item, itemIndex) => itemIndex === index ? { ...event, key: current.key, data: { ...current.data, ...event.data, files } } : item);
+    }
+    return previous.map((item, itemIndex) => itemIndex === index ? { ...current, ...event, key: current.key } : item);
+  }
+  return [...previous, event].slice(-300);
 }
 
 function usageDetails(usage) {
@@ -273,7 +305,8 @@ function usageDetails(usage) {
   const output = Number(usage?.outputTokens ?? usage?.output ?? 0) || 0;
   const cacheRead = Number(usage?.cacheReadTokens ?? usage?.cacheRead ?? usage?.cache_read ?? 0) || 0;
   const cacheWrite = Number(usage?.cacheWriteTokens ?? usage?.cacheWrite ?? usage?.cache_write ?? 0) || 0;
-  return { input, output, cacheRead, cacheWrite, context: input + cacheRead + cacheWrite };
+  const context = Number(usage?.contextTokens ?? usage?.context ?? 0) || input + cacheRead + cacheWrite;
+  return { input, output, cacheRead, cacheWrite, context };
 }
 
 function formatTokenCount(value) {
@@ -366,7 +399,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -408,6 +441,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
   const [executionEvents, setExecutionEvents] = useState([]);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
@@ -445,6 +479,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   // 每个 SSE 事件都有单调递增的 channel id；重连从游标之后回放，避免旧事件污染当前回合。
   const eventCursorRef = useRef(0);
   const eventCursorsRef = useRef(new Map());
+  // SSE 通道代际：Runtime/会话重建后服务端序号从 1 重新开始，游标必须按代际隔离
+  const streamIdsRef = useRef(new Map());
   const activeRunIdRef = useRef(null);
   const runtimeConnectingEventRef = useRef(null);
   // 发送请求后立即标记运行态，不能等 React 的 busy 状态提交；
@@ -452,6 +488,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const runInProgressRef = useRef(false);
   const agentEventAtRef = useRef(0);
   const streamReadyRef = useRef(null);
+  const handshakeDoneRef = useRef(false);
   const eventHandlerRef = useRef(null);
   const reconciledRunIdsRef = useRef(new Set());
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
@@ -547,7 +584,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     } catch (error) {
       setApprovalModeState(previous);
       localStorage.setItem(APPROVAL_MODE_KEY, previous);
-      setModelMsg(`审批模式切换失败：${error.message}`);
+      const approvalEndpointMissing = /(?:HTTP\s+404|api endpoint not found|cannot\s+(?:patch|post|get)\s+.*approval)/i.test(String(error.message || ""));
+      setModelMsg(approvalEndpointMissing
+        ? "审批接口不存在：服务端未重启或前后端版本不一致，请重启规聚服务"
+        : `审批模式切换失败：${error.message}`);
     } finally {
       setApprovalModeSaving(false);
     }
@@ -604,6 +644,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // 加载历史会话消息（点击历史列表时触发）
   useEffect(() => {
+    // 另一线程的历史不能替换当前线程的消息：切换线程时会先收到新的
+    // historyMessages，而 threadId 在恢复完成后才更新，中间渲染必须忽略。
+    if (historyThreadId && historyThreadId !== threadId) return;
     if (historyMessages) {
       followLatestRef.current = true;
       const normalizedHistory = normalizeHistoryMessages(historyMessages);
@@ -627,7 +670,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         mode: normalizeUiMode(latestRun?.task?.mode),
       });
       setTodoItems([]);
-      setExecutionEvents((latestRun?.events || [])
+      const historyFlowEvents = (latestRun?.events || [])
         .filter((event) => FLOW_EVENT_TYPES.has(event?.type))
         .map((event, eventIndex) => ({
           ...event,
@@ -635,7 +678,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           data: event.data || {},
           at: event.at || new Date().toISOString(),
         }))
-        .slice(-80));
+        .reduce((items, event) => appendExecutionFlowEvent(items, event), []);
+      setExecutionEvents(historyFlowEvents);
       // 已完成历史只用于展示，不能成为 SSE 的当前运行锚点；否则下一轮
       // 的 run_finished/token 会被旧 runId 过滤掉。
       activeRunIdRef.current = isLiveRun ? latestRun.runId : null;
@@ -922,9 +966,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         // 动画状态可能已经在 agent_end 后清理，但消息气泡已经显示了前缀。
         // 只排队缺失后缀，不能把最终全文再次追加到气泡末尾。
         state.pending = text.slice(displayed.length);
-      } else {
-        // 最终消息是权威值：断线重连或缺失 token 时宁可从最终文本重放，
-        // 也不能保留截断回复。
+      } else if (displayed && text.includes(displayed)) {
+        // 权威全文包含已显示文本：只追加缺失后缀，绝不能先清空已显示内容。
+        // 多回合场景下权威全文不是累积文本的前缀，按包含关系判断即可。
+        state.pending += text.slice(text.indexOf(displayed) + displayed.length);
+      } else if (!state.fullText) {
+        // 气泡还没有任何已显示文本：允许从权威全文清空重播。
+        // 断线重连或缺失 token 时宁可从最终文本重放，也不能保留截断回复。
         state.pending = text;
         rememberDisplayedText(id, "");
         patch(id, (m) => {
@@ -935,6 +983,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           return { ...m, blocks };
         });
       }
+      // 已有已显示文本但权威全文不包含它（多回合累积）：保留已显示内容、不追加、不清空。
       state.fullText = text;
     } else {
       state.fullText += text;
@@ -1114,12 +1163,23 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       
       const workspaceQuery = workspace ? `&cwd=${encodeURIComponent(workspace)}` : "";
       const cursorQuery = eventCursorRef.current ? `&after=${eventCursorRef.current}` : "";
-      const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}`);
+      // 携带已知代际 ID：服务端据此判断游标是否属于旧通道并清零，
+      // 否则 Runtime 重建后新通道的前 N 个事件会被旧游标整段过滤。
+      const knownStreamId = streamIdsRef.current.get(streamKey) || "";
+      const streamQuery = knownStreamId ? `&stream=${encodeURIComponent(knownStreamId)}` : "";
+      const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
       es = nextSource;
       
       nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
+        // 5 秒内未收到 connected（半开连接/服务端初始化挂起）则主动重连。
+        window.setTimeout(() => {
+          if (!stopped && serial === connectionSerial && es === nextSource && !handshakeDoneRef.current) {
+            scheduleReconnect(nextSource);
+          }
+        }, 5000);
       };
+      handshakeDoneRef.current = false;
 
       nextSource.addEventListener("heartbeat", () => {
         // 心跳只证明 SSE 通道仍存活；“Agent 已连接”由 connected 握手确认，
@@ -1131,13 +1191,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         if (!mountedRef.current) return;
         lastSignalAt = Date.now();
         const eventId = Number(e.lastEventId || 0);
-        if (eventId > eventCursorRef.current) {
-          eventCursorRef.current = eventId;
-          eventCursorsRef.current.set(streamKey, eventId);
-        }
         try { 
           const payload = JSON.parse(e.data);
           if (payload?.type === "connected") {
+            handshakeDoneRef.current = true;
+            const connectedStreamId = String(payload?.data?.streamId || "");
+            const previousStreamId = streamIdsRef.current.get(streamKey) || "";
+            // 代际变化：Runtime/会话重建后服务端序号从 1 重新开始，
+            // 旧游标必须废弃，否则新通道事件会被整段过滤。
+            if (connectedStreamId && previousStreamId && connectedStreamId !== previousStreamId) {
+              eventCursorRef.current = 0;
+              eventCursorsRef.current.delete(streamKey);
+            }
+            if (connectedStreamId) streamIdsRef.current.set(streamKey, connectedStreamId);
             const connectedCursor = Number(payload?.data?.cursor || 0);
             if (connectedCursor > eventCursorRef.current) {
               eventCursorRef.current = connectedCursor;
@@ -1148,7 +1214,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
             retryDelay = 500;
             markReady(true);
           }
+          // 事件处理成功后才提交应用层游标：单条事件处理器异常时游标不前进，
+          // 重连后该事件会被重新回放，而不是被静默跳过。
           eventHandlerRef.current?.(payload);
+          if (eventId > eventCursorRef.current) {
+            eventCursorRef.current = eventId;
+            eventCursorsRef.current.set(streamKey, eventId);
+          }
         } catch (err) {
           console.error("SSE message parse error:", err);
         }
@@ -1161,16 +1233,22 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       };
       watchdogTimer = setInterval(() => {
         // 某些代理/浏览器会保持 TCP 为 open，却不再触发 EventSource.onerror；
-        // 服务端 heartbeat 正常时不会触发这里，静默超过 45 秒才强制重连。
-        if (Date.now() - lastSignalAt > 45000) scheduleReconnect(nextSource);
-      }, 10000);
+        // 服务端 heartbeat 正常时不会触发这里，静默超过 20 秒才强制重连。
+        if (Date.now() - lastSignalAt > 20000) scheduleReconnect(nextSource);
+      }, 5000);
     };
     
     connect();
+    // 发送后长时间无事件（半开连接/重连失败）时强制重连，用服务端回放补齐内容
+    const onForceReconnect = () => {
+      if (es && !stopped && mountedRef.current) scheduleReconnect(es);
+    };
+    window.addEventListener("oaw:force-reconnect", onForceReconnect);
     
     return () => {
       stopped = true;
       connectionSerial += 1;
+      window.removeEventListener("oaw:force-reconnect", onForceReconnect);
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdogTimer) clearInterval(watchdogTimer);
@@ -1178,6 +1256,26 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       streamReadyRef.current = null;
     };
   }, [clientId, threadId, workspace]);
+
+  // 恢复/切换会话后拉取服务端保存的上下文用量，避免刷新后一直显示 0
+  useEffect(() => {
+    let cancelled = false;
+    if (!clientId) return undefined;
+    (async () => {
+      try {
+        const res = await fetch(`/api/agent/runtime?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}`);
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !data?.usage) return;
+        const snapshot = data.usage;
+        if (snapshot.usage) {
+          setRunState((s) => (s.usage ? s : { ...s, usage: snapshot.usage }));
+        } else if (Number(snapshot.estimatedContextTokens) > 0) {
+          setRunState((s) => (s.usage ? s : { ...s, usage: { context: Number(snapshot.estimatedContextTokens) } }));
+        }
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [clientId, threadId]);
 
   // Run 的 steps 是 Todo 的唯一事实来源。对话事件只负责实时刷新，
   // 这里在拿到 runId 后立即拉取，并在执行期间短轮询，避免 Todo 只存在于任务中心。
@@ -1241,9 +1339,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       }
     };
     void refresh();
+    // stream_resync 等场景要求立即对账一次，不等下一个轮询周期
+    const onForceReconcile = () => { void refresh(); };
+    window.addEventListener("oaw:force-reconcile", onForceReconcile);
     const timer = shouldReconcile ? window.setInterval(refresh, 900) : null;
     return () => {
       cancelled = true;
+      window.removeEventListener("oaw:force-reconcile", onForceReconcile);
       if (timer) window.clearInterval(timer);
     };
   }, [clientId, threadId, workspace, runState.runId, runState.status, busy]);
@@ -1273,14 +1375,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (eventRunId && !activeRunIdRef.current && runInProgress && ["capability_plan", "run_admitted", "model_request_started"].includes(type)) {
       activeRunIdRef.current = eventRunId;
     }
-    if (eventRunId && !activeRunIdRef.current && !["connected", "capability_plan", "run_finished"].includes(type)) return;
+    // 本地还没有锚点但事件带 runId（恢复/切换会话/重连回放/fetch 响应前到达）：
+    // 首个带 runId 的事件即视为当前运行锚点并接受，避免运行中的事件被误丢。
+    if (eventRunId && !activeRunIdRef.current && !["connected", "capability_plan", "run_finished"].includes(type)) {
+      activeRunIdRef.current = eventRunId;
+    }
     if (type !== "connected") agentEventAtRef.current = Date.now();
     if (FLOW_EVENT_TYPES.has(type) && (runInProgress || eventRunId === activeRunIdRef.current)) {
       const sequence = Number(envelope.id || envelope.seq || 0);
       const eventKey = sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${envelope.at || Date.now()}`;
       setExecutionEvents((previous) => {
-        if (previous.some((item) => item.key === eventKey)) return previous;
-        return [...previous, { key: eventKey, type, data, at: envelope.at || new Date().toISOString() }].slice(-80);
+        return appendExecutionFlowEvent(previous, { key: eventKey, type, data, at: envelope.at || new Date().toISOString() });
       });
     }
     let aid = assistantIdRef.current;
@@ -1333,9 +1438,23 @@ case "runtime_connecting":
         setAgentPhase("准备会话运行时");
         break;
       case "runtime_init_failed":
+        // 运行时初始化失败是终态：必须同时解除 busy 与运行锚点，
+        // 否则界面会停留在“准备会话运行时”，输入框无法恢复。
         setConnected(false);
         setAgentPhase(data?.message || "会话运行时初始化失败");
-        setStatusMsg(data?.message || "会话运行时初始化失败，请重试或检查模型配置");
+        setModelMsg(data?.message || "会话运行时初始化失败，请重试或检查模型配置");
+        window.setTimeout(() => setModelMsg(""), 4200);
+        setBusy(false);
+        runInProgressRef.current = false;
+        setRunState((s) => (s.status === "failed" ? s : { ...s, status: "failed" }));
+        break;
+      case "stream_resync":
+        // 游标与当前历史窗口已不连续（高频增量被淘汰）。触发 Run 对账，
+        // 用服务端 Run 终态与最终文本重建状态，而不是依赖已丢失的事件。
+        setAgentPhase("事件流已重同步");
+        if (runInProgressRef.current || busy) {
+          window.dispatchEvent(new CustomEvent("oaw:force-reconcile"));
+        }
         break;
       case "connected":
         runtimeConnectingEventRef.current = null;
@@ -1378,29 +1497,35 @@ case "runtime_connecting":
         if (!aid) aid = ensureAssistant();
         if (aid) scheduleFlush("thinking", data);
         break;
-      // 工具调用开始：推入新 tool block
+      // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
-          patch(aid, (m) => ({
-            ...m,
-            blocks: [...(m.blocks || []), {
-              type: "tool",
-              id: data.toolCallId || newId(),
-              toolCallId: data.toolCallId || null,
-              name: data.name,
-              input: data.input || "",
-              output: "",
-              done: false,
-              isError: false,
-              expanded: false,
-              startTime: Date.now(),
-              duration: null,
-            }],
-          }));
+          patch(aid, (m) => {
+            const blocks = m.blocks || [];
+            if (data.toolCallId && blocks.some((block) => block.type === "tool" && (block.id === data.toolCallId || block.toolCallId === data.toolCallId))) {
+              return m;
+            }
+            return {
+              ...m,
+              blocks: [...blocks, {
+                type: "tool",
+                id: data.toolCallId || newId(),
+                toolCallId: data.toolCallId || null,
+                name: data.name,
+                input: data.input || "",
+                output: "",
+                done: false,
+                isError: false,
+                expanded: false,
+                startTime: Date.now(),
+                duration: null,
+              }],
+            };
+          });
         }
         break;
       // 工具输出流：更新最后一个 tool block
@@ -1408,20 +1533,38 @@ case "runtime_connecting":
         if (!aid) aid = ensureAssistant();
         if (aid) queueToolOutput(aid, data);
         break;
-      // 工具结束：标记完成
+      // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
         flushToolOutput();
         if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
           const blocks = [...(m.blocks || [])];
           const tool = data.toolCallId
-            ? blocks.find((block) => block.type === "tool" && block.id === data.toolCallId)
+            ? blocks.find((block) => block.type === "tool" && (block.id === data.toolCallId || block.toolCallId === data.toolCallId))
             : [...blocks].reverse().find((block) => block.type === "tool" && (!data.name || block.name === data.name));
           if (tool) {
             tool.done = true;
             tool.isError = !!data.isError;
             if (data.result) tool.result = data.result;
             if (tool.startTime) tool.duration = ((Date.now() - tool.startTime) / 1000).toFixed(1);
+          } else if (data.toolCallId || data.name) {
+            // tool_start 已被历史淘汰或重连丢失：创建带恢复标记的工具卡，
+            // 保证界面工具数量与实际执行一致，而不是静默丢弃。
+            blocks.push({
+              type: "tool",
+              id: data.toolCallId || newId(),
+              toolCallId: data.toolCallId || null,
+              name: data.name || "tool",
+              input: "",
+              output: "",
+              result: data.result || "",
+              done: true,
+              isError: !!data.isError,
+              startMissing: true,
+              expanded: false,
+              startTime: null,
+              duration: null,
+            });
           }
           return { ...m, blocks };
         });
@@ -1588,7 +1731,15 @@ case "runtime_connecting":
         if (aid && data.text) enqueueTextReveal(aid, data.text, { authoritative: true });
         break;
       case "context_compacted":
-        setRunState((s) => ({ ...s, usage: null }));
+        setRunState((s) => {
+          const estimated = Number(data.estimatedTokensAfter || 0);
+          return {
+            ...s,
+            usage: estimated > 0
+              ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, context: estimated }
+              : null,
+          };
+        });
         pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${envelope.id || data.runId || envelope.at || "session"}`);
         break;
       case "context_compacting":
@@ -1621,7 +1772,13 @@ case "runtime_connecting":
         flushToolOutput();
         agentErrorRef.current = true;
         cancelTextReveal({ preserveText: true });
-        if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText: data.message || "出错了" }));
+        const errorMessage = eventMessageText(data.message, data.category === "quota" ? "当前模型额度不足" : "模型调用失败");
+        const errorText = data.category === "quota"
+          ? `模型额度不足：${errorMessage}`
+          : data.retryable === false
+            ? `模型调用失败：${errorMessage}`
+            : `模型调用失败：${errorMessage}。可检查模型配置或网络后重试`;
+        if (aid) patch(aid, (m) => ({ ...m, status: "error", errorText }));
         assistantIdRef.current = null;
         streamBufRef.current = null;
         streamingMsgIdRef.current = null;
@@ -1632,7 +1789,7 @@ case "runtime_connecting":
         runInProgressRef.current = Boolean(errorRunId);
         stoppingRef.current = false;
         setStopping(false);
-        setAgentPhase("模型调用失败");
+        setAgentPhase(data.category === "quota" ? "模型额度不足" : "模型调用失败");
         setRunState((s) => ({ ...s, status: "failed", runId: data.runId || s.runId || null }));
         break;
       case "steer":
@@ -1672,14 +1829,28 @@ case "runtime_connecting":
         flushToolOutput();
         // SSE 可能只保留了终结事件，或 agent_end 先清理了本地气泡。
         // 服务端从 Pi 的 assistant_final 事件带回权威全文，在这里补齐回复。
-        if (data.finalText) {
+        // 断线重连回放时旧 run 的 run_finished 会穿透 runId 过滤：只允许把
+        // 权威全文注入当前活跃 run 的气泡，跨 run 的旧文本一律丢弃。
+        // 无本地锚点且本地不在运行（恢复/重连）时，也允许用权威全文兜底补齐。
+        const knownRunId = activeRunIdRef.current || runState.runId || null;
+        const finalTextAllowed = data.runId && knownRunId
+          ? data.runId === knownRunId
+          : (!data.runId && !runInProgressRef.current && !busy);
+        if (data.finalText && finalTextAllowed) {
           if (!aid) aid = assistantIdRef.current || lastAssistantIdRef.current || ensureAssistant(true);
           if (aid) enqueueTextReveal(aid, data.finalText, { authoritative: true });
         }
         if (data.runId && activeRunIdRef.current === data.runId) activeRunIdRef.current = null;
         {
           const finalStatus = data.status || "completed";
-          setRunState((s) => ({ ...s, status: finalStatus, runId: data.runId || s.runId || null, artifacts: data.artifacts || [], references: data.references || [], verificationStatus: data.verificationStatus || "not_checked" }));
+          setRunState((s) => ({
+            ...s,
+            status: finalStatus,
+            runId: data.runId || s.runId || null,
+            artifacts: Array.isArray(data.artifacts) && data.artifacts.length ? data.artifacts : s.artifacts,
+            references: data.references || s.references || [],
+            verificationStatus: data.verificationStatus || s.verificationStatus || "not_checked",
+          }));
           if (!["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(finalStatus)) {
             setBusy(false);
             runInProgressRef.current = false;
@@ -1737,26 +1908,33 @@ case "runtime_connecting":
     const status = data.status || "completed";
     const statusText = status === "failed" ? "失败" : status === "cancelled" ? "已取消" : status === "aborted" ? "已中断" : status === "running" ? "执行中" : "完成";
     const summaryText = String(data.summary || `本轮任务${statusText}`).trim();
-    const artifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
-    const products = Array.isArray(data.products) && data.products.length
+    const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+    const incomingProducts = Array.isArray(data.products) ? data.products : [];
+    const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
+    const products = incomingProducts.length
       ? data.products
-      : artifacts.map((item) => item?.path).filter(Boolean);
+      : (artifacts || []).map((item) => item?.path).filter(Boolean);
     setMessages((messages) => {
       const index = messages.findIndex((item) => item.summary && item.runId === runId);
       const previous = index >= 0 ? messages[index] : null;
+      const nextArtifacts = artifacts || previous?.artifacts || [];
+      const nextProducts = products.length ? products : (previous?.products || []);
       const next = {
         ...(previous || {}),
         id: previous?.id || newId(),
         role: "system",
         text: summaryText,
-        products,
-        artifacts,
+        products: nextProducts,
+        artifacts: nextArtifacts,
         runId,
         runStatus: status,
         references: data.references || previous?.references || [],
         task: data.task || previous?.task || null,
+        workspace: data.workspace || previous?.workspace || workspace || "",
         runMode: data.task?.mode || previous?.runMode || runState.mode || "agent",
         eventCount: Number(data.eventCount || previous?.eventCount || 0),
+        // 完成语义：显式 complete_task 或服务端推断结果，随 run_finished 一起到达
+        completion: data.completion || previous?.completion || null,
         status: "done",
         summary: true,
         createdAt: previous?.createdAt || Date.now(),
@@ -1766,6 +1944,25 @@ case "runtime_connecting":
       return messages.map((item, itemIndex) => itemIndex === index ? next : item);
     });
   }, [runState.mode]);
+
+  // 脑图点击工具节点：在消息流中展开对应工具卡（工具卡默认折叠）
+  const focusTool = useCallback((toolId) => {
+    const value = String(toolId || "");
+    if (!value) return;
+    setMessages((list) => list.map((message) => {
+      if (!Array.isArray(message.blocks)) return message;
+      let changed = false;
+      const blocks = message.blocks.map((block) => {
+        if (block.type === "tool" && (block.id === value || block.toolCallId === value)) {
+          if (block.expanded) return block;
+          changed = true;
+          return { ...block, expanded: true };
+        }
+        return block;
+      });
+      return changed ? { ...message, blocks } : message;
+    }));
+  }, []);
 
   const finalizeStopped = useCallback(() => {
     const id = assistantIdRef.current;
@@ -1831,35 +2028,39 @@ case "runtime_connecting":
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
         return;
       }
-      const messageId = newId();
-      const item = {
-        messageId,
-        rawText,
-        images: sourceImages,
-        attachments: sourceAttachments,
-        references: sourceReferences,
-        contextNotes,
-        currentDoc,
-        editMode,
-        effort,
-      };
-      const nextQueue = [...queueRef.current, item];
-      queueRef.current = nextQueue;
-      setQueuedMessages(nextQueue);
-      setMessages((ms) => [...ms, {
-        id: messageId, role: "user", text,
-        images: sourceImages.map((i) => i.dataUrl).filter(Boolean),
-        attachments: sourceAttachments.map((a) => a.name),
-        references: sendReferences,
-        status: "queued", queued: true, currentDoc,
-        createdAt: Date.now(),
-      }]);
-      setInput("");
-      setImages([]);
-      setAttachments([]);
-      setInjectedContext([]);
-      pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
-      return;
+      if (busyInputMode === "queue") {
+        const messageId = newId();
+        const item = {
+          messageId,
+          rawText,
+          images: sourceImages,
+          attachments: sourceAttachments,
+          references: sourceReferences,
+          contextNotes,
+          currentDoc,
+          editMode,
+          effort,
+        };
+        const nextQueue = [...queueRef.current, item];
+        queueRef.current = nextQueue;
+        setQueuedMessages(nextQueue);
+        setMessages((ms) => [...ms, {
+          id: messageId, role: "user", text,
+          images: sourceImages.map((i) => i.dataUrl).filter(Boolean),
+          attachments: sourceAttachments.map((a) => a.name),
+          references: sendReferences,
+          status: "queued", queued: true, currentDoc,
+          createdAt: Date.now(),
+        }]);
+        setInput("");
+        setImages([]);
+        setAttachments([]);
+        setInjectedContext([]);
+        pushSystem(`已排队第 ${nextQueue.length} 条，当前任务完成后自动执行。`, `queue:${messageId}`);
+        return;
+      }
+      // busyInputMode === "steer"：立即插入新指令（服务端 streamingBehavior=steer 打断当前回合）
+      pushSystem("正在插入新指令，当前回合将被打断…", `steer_send:${Date.now()}:${rawText.slice(0, 40)}`);
     }
 
     // 注入当前文件上下文
@@ -1867,9 +2068,11 @@ case "runtime_connecting":
     const selectedEditMode = normalizeUiMode(forcedMode || source.editMode || editMode);
     const selectedEffort = source.effort ?? effort;
     const contextPrefix = selectedCurrentDoc ? `[当前打开文件: ${selectedCurrentDoc}]\n` : "";
-    const mapContextPrefix = mapContext?.center
-      ? `[当前地图视图: 中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}]\n`
-      : "";
+    const mapContextPrefix = mapProject
+      ? `[当前地图项目: ${mapProject}${mapContext?.center ? `；视图中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}` : ""}]\n`
+      : mapContext?.center
+        ? `[当前地图视图: 中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}]\n`
+        : "";
     const contextPrefixText = [
       contextText ? `## 当前检索上下文\n${contextText}` : "",
       contextNotes.length ? `## 已注入上下文\n${contextNotes.map((note) => note.text).join("\n\n")}` : "",
@@ -1924,13 +2127,14 @@ case "runtime_connecting":
     setAgentPhase("准备会话运行时");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
-      // prompt 是异步 admission；确保本轮 capability_plan/首个 token 不会在
-      // EventSource 尚未完成握手时丢失。通道异常时最多等待 1.2 秒，仍允许请求进入后端。
+      // prompt 是异步 admission；确保本轮 run_admitting/capability_plan/首个 token 不会在
+      // EventSource 尚未完成握手时丢失。服务端 channel.history 会按游标回放，
+      // 等待只是给握手一个短窗口；SSE 断线时 3 秒后照常发送，事件由重连回放补齐。
       const streamReady = streamReadyRef.current?.promise;
       if (streamReady) {
         await Promise.race([
           streamReady,
-          new Promise((resolve) => window.setTimeout(resolve, 1200)),
+          new Promise((resolve) => window.setTimeout(resolve, 3000)),
         ]);
       }
       const res = await fetch("/api/agent/prompt", {
@@ -1950,6 +2154,7 @@ case "runtime_connecting":
             mode: selectedEditMode,
              workspace,
              projectId: project?.id || null,
+             mapProject: mapProject || null,
              currentFile: selectedCurrentDoc || null,
             references: sendReferences,
             workflowId: text.match(/@工作流\[([^\]]+)\]/)?.[1] || null,
@@ -1970,7 +2175,16 @@ case "runtime_connecting":
       if (d.sessionId) onSessionChange?.(d.sessionId);
       if (d.accepted) {
         if (d.queued) setAgentPhase(`已排队（第 ${d.queuePosition || 1} 项）`);
-        else if (!agentEventAtRef.current) setAgentPhase("已接收，等待模型首个事件");
+        else if (!agentEventAtRef.current) {
+          setAgentPhase("已接收，等待模型首个事件");
+          // 10 秒内没有收到任何 SSE 事件（半开连接/重连失败）：强制重连拉取回放
+          const sentAt = agentEventAtRef.current;
+          window.setTimeout(() => {
+            if (mountedRef.current && agentEventAtRef.current === sentAt && runInProgressRef.current) {
+              window.dispatchEvent(new CustomEvent("oaw:force-reconnect"));
+            }
+          }, 10000);
+        }
       }
       if (d.runId) {
         activeRunIdRef.current = d.runId;
@@ -2120,6 +2334,20 @@ case "runtime_connecting":
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const textareaRef = useRef(null);
+  const updateScrollFollowState = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    followLatestRef.current = atBottom;
+    setShowScrollToBottom(!atBottom && el.scrollHeight > el.clientHeight + 80);
+  };
+  const scrollToLatest = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    followLatestRef.current = true;
+    setShowScrollToBottom(false);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
   useEffect(() => {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
@@ -2127,10 +2355,10 @@ case "runtime_connecting":
       if (!el || !followLatestRef.current) return;
       // 用用户滚动时记录的跟随意图，而不是在流式内容增高后重新判断距离。
       // 否则回复变长就会让滚动距离超过阈值，后续 token 留在视口外。
-      el.scrollTo({ top: el.scrollHeight, behavior: busy ? "auto" : "smooth" });
+      el.scrollTo({ top: el.scrollHeight, behavior: "auto" });
     }, 60);
-    return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
-  }, [messages, executionEvents, busy]);
+   return () => { if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current); };
+  }, [messages]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -2209,7 +2437,7 @@ case "runtime_connecting":
           <span>{frozen ? "会话已冻结" : runState.status === "running" ? (agentPhase || "任务执行中") : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
           <span className="task-status-meta task-mode-meta">{MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}</span>
           {runState.thinkingLevel && <span className="task-status-meta">推理 {runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}</span>}
-          {Number(runState.usage?.input) > 0 && <span className="task-status-meta" title={`本轮模型输入约 ${Number(runState.usage.input).toLocaleString()} tokens`}>上下文 {Math.round(Number(runState.usage.input) / 1000)}k</span>}
+           {selectedUsage.context > 0 && <span className="task-status-meta" title={`当前上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens`}>上下文 {Math.round(Number(selectedUsage.context) / 1000)}k</span>}
           {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
           {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
@@ -2230,7 +2458,7 @@ case "runtime_connecting":
 
         <div className="chat-stream-shell">
           <div className="chat-topbar">
-            {showExecutionFlow && <ExecutionFlow events={executionEvents} running={busy} />}
+            {showExecutionFlow && <ExecutionFlow events={executionEvents} running={busy} onFocusTool={focusTool} />}
             <div className="chat-top-controls" aria-label="会话控制">
               <ContextUsageRing
                 usage={runState.usage}
@@ -2245,10 +2473,7 @@ case "runtime_connecting":
               <ApprovalModeControl mode={approvalMode} saving={approvalModeSaving} onChange={changeApprovalMode} />
             </div>
           </div>
-          <div className="chat-body" ref={bodyRef} onScroll={() => {
-            const el = bodyRef.current;
-            if (el) followLatestRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          }}>
+          <div className="chat-body" ref={bodyRef} onScroll={updateScrollFollowState}>
           {messages.length === 0 && (
             <div className="chat-empty">
               <div>发送消息给 agent</div>
@@ -2264,7 +2489,7 @@ case "runtime_connecting":
               加载更早的 {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 {hiddenMessageCount} 条）
             </button>
           )}
-          {visibleMessages.map((m, i) => (
+           {visibleMessages.map((m, i) => (
             <React.Fragment key={m.id}>
               <Message m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
             patch(m.id, (msg) => ({ ...msg, blocks: (msg.blocks || []).map((block) => block.id === blockId ? { ...block, answer } : block) }));
@@ -2284,8 +2509,14 @@ case "runtime_connecting":
             });
           }} />
             </React.Fragment>
-          ))}
+           ))}
           </div>
+          {showScrollToBottom && (
+            <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
+              <Icon name="chevronDown" size={13} />
+              <span>回到底部</span>
+            </button>
+          )}
           {/* 会话消息目录栏：收纳在聊天滚动区右侧，靠近滚动条；悬停显示摘要 */}
           {loadSettings().showTimeline !== false && <ChatTimeline messages={visibleMessages} containerRef={bodyRef} />}
         </div>
@@ -2340,9 +2571,10 @@ case "runtime_connecting":
           {busy && (
             <div className="busy-input-mode" role="group" aria-label="当前任务中的新输入处理方式">
               <span>当前任务中新输入：</span>
+              <button type="button" className={busyInputMode === "steer" ? "active" : ""} onClick={() => setBusyInputMode("steer")} title="打断当前回合，立即执行新指令">立即执行</button>
               <button type="button" className={busyInputMode === "queue" ? "active" : ""} onClick={() => setBusyInputMode("queue")}>排队执行</button>
               <button type="button" className={busyInputMode === "context" ? "active" : ""} onClick={() => setBusyInputMode("context")}>注入上下文</button>
-              <small>{busyInputMode === "queue" ? "本轮完成后自动开始" : "保存到下一轮，不打断当前任务"}</small>
+              <small>{busyInputMode === "steer" ? "打断当前回合，插入新指令" : busyInputMode === "queue" ? "本轮完成后自动开始" : "保存到下一轮，不打断当前任务"}</small>
             </div>
           )}
           <div className="chat-input-row">
@@ -2405,9 +2637,9 @@ case "runtime_connecting":
             <div className="input-send">
               {busy ? (
                 <>
-                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
-                    <Icon name={busyInputMode === "queue" ? "list" : "layers"} size={13} />
-                    <span>{busyInputMode === "queue" ? "排队" : "注入"}</span>
+                  {hasDraft && <button className="btn primary pending-send-btn" onClick={() => send()} title={busyInputMode === "steer" ? "打断当前回合立即执行（Enter）" : busyInputMode === "queue" ? "排队执行（Enter）" : "注入上下文（Enter）"}>
+                    <Icon name={busyInputMode === "steer" ? "send" : busyInputMode === "queue" ? "list" : "layers"} size={13} />
+                    <span>{busyInputMode === "steer" ? "立即" : busyInputMode === "queue" ? "排队" : "注入"}</span>
                   </button>}
                   <button className="btn danger stop-btn" onClick={stop} disabled={stopping} title={stopping ? "正在中断当前回复" : "中断当前回复"} aria-label={stopping ? "正在中断当前回复" : "中断当前回复"}>
                     <Icon name={stopping ? "loading" : "stop"} size={14} className={stopping ? "icon-loading" : ""} />
@@ -2551,6 +2783,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
   // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
   const [open, setOpen] = useState(m.expanded !== false);
+  // 历史 Run 的工具聚合：从 run.events 归约，不必依赖实时事件流
+  const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
+  const traceSummary = trace ? runTraceSummaryText(trace) : "";
+  const completion = m.completion || trace?.completion || null;
   return (
     <div className="msg system summary-msg">
       <div className="bubble run-summary-bubble">
@@ -2558,7 +2794,18 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
           <span className={`run-summary-dot ${m.runStatus || "done"}`} />
           <strong>任务轮次 {m.runIndex ? `${m.runIndex}/${m.runCount || m.runIndex}` : ""}</strong>
           <span className="run-summary-title" title={title}>{title}</span>
-          <span className="run-summary-meta">{modeLabel} · {statusLabel}{m.eventCount ? ` · 过程 ${m.eventCount} 事件` : ""}{time ? ` · ${time}` : ""}</span>
+          <span className="run-summary-meta">
+            {modeLabel} · {statusLabel}
+            {completion && (
+              <span
+                className={`flow-completion ${completion.status}`}
+                title={completion.source === "inferred" ? "由回合结束推断（模型未显式声明完成状态）" : `模型显式声明${completion.summary ? `：${completion.summary}` : ""}`}
+              >
+                {completionLabel(completion.status)}{completion.source === "inferred" ? "（推断）" : ""}
+              </span>
+            )}
+            {traceSummary ? ` · ${traceSummary}` : (m.eventCount ? ` · 过程 ${m.eventCount} 事件` : "")}{time ? ` · ${time}` : ""}
+          </span>
         </div>
         <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>查看本轮对话与产物</summary>
@@ -2566,6 +2813,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
           {m.products?.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
+              {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
               <div className="summary-products">
                 {m.products.map((p) => (
                   <span key={p} className="summary-product clickable" onClick={() => onOpenFile?.(p)} title={`点击打开 ${p}`}>
@@ -2579,6 +2827,22 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
             <div className="run-artifacts">
               {m.artifacts.map((a) => <div key={a.path} className="run-artifact-row"><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
               {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
+            </div>
+          )}
+          {trace?.tools?.length > 0 && (
+            <div className="run-trace-tools">
+              <span className="file-change-label"><Icon name="flow" size={11} /> 本轮工具（{trace.tools.length}）</span>
+              <div className="run-trace-tool-list">
+                {trace.tools.map((tool) => (
+                  <span
+                    key={tool.id}
+                    className={`run-trace-tool ${tool.status !== "done" ? "running" : tool.isError ? "error" : "ok"}`}
+                    title={tool.result || tool.output || tool.input || ""}
+                  >
+                    {tool.name}{tool.startMissing ? "（已恢复）" : ""}
+                  </span>
+                ))}
+              </div>
             </div>
           )}
         </details>
@@ -2692,7 +2956,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             {/* 流式收尾：呼吸脉冲圆点 */}
             {streaming && hasContent && <StreamingDot />}
             {/* 已停止 / 错误标记 */}
-            {m.status === "error" && <div className="err-badge">{m.errorText || "出错了"}</div>}
+            {m.status === "error" && <div className="err-badge" title={m.errorText}>{m.errorText || "处理失败，请重试"}</div>}
           </>
         )}
         {/* 操作条：常显微透明，hover 加深（Proma MessageActions 风格） */}
@@ -2749,9 +3013,9 @@ function LoadingDots({ label, seconds }) {
   );
 }
 
-// ========== 思考过程块（Proma Reasoning 风格：默认折叠成一行，点击展开） ==========
+// ========== 思考过程块（默认展开，固定高度，超出内容内部滚动） ==========
 function ThinkingBlock({ text, startTime, streaming }) {
-  const [expanded, setExpanded] = useState(() => loadSettings().thinkingDefaultOpen);
+  const [expanded, setExpanded] = useState(true);
   const [duration, setDuration] = useState(null);
 
   // 流式结束时：计算耗时
@@ -2976,18 +3240,25 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 }
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false }) {
-  const [expanded, setExpanded] = useState(running);
+function ExecutionFlow({ events = [], running = false, onFocusTool }) {
+  // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
+  const [expanded, setExpanded] = useState(false);
   const [hidden, setHidden] = useState(() => localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true");
   const wasRunningRef = useRef(running);
-  const latest = events[events.length - 1];
-  const visibleEvents = events.length > 0
-    ? events
+  // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏
+  const STAGE_ONLY_EVENTS = new Set(["runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started", "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan", "agent_end", "assistant_final"]);
+  const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
+  const latest = contentEvents[contentEvents.length - 1] || events[events.length - 1];
+  const visibleEvents = contentEvents.length > 0
+    ? contentEvents
     : (running ? [{ key: "local:stream_waiting", type: "stream_waiting", data: {}, at: new Date().toISOString() }] : []);
+  // 归约为执行轨迹：工具按 toolCallId 聚合，折叠态展示聚合统计而不是最后一条事件
+  const runTrace = useMemo(() => reduceRunTrace(contentEvents), [contentEvents]);
+  const traceStats = summarizeRunTrace(runTrace);
+  const traceSummary = runTraceSummaryText(runTrace);
+  const completion = traceStats.completion;
   useEffect(() => {
-    // 运行期间直接展开，方便确认事件流没有卡住；收到终结事件后自动
-    // 回到一行摘要，避免几十条启动/工具事件把正文和输入框顶出视口。
-    if (!wasRunningRef.current && running) setExpanded(true);
+    // 收到终结事件后自动回到一行摘要
     if (wasRunningRef.current && !running) setExpanded(false);
     wasRunningRef.current = running;
   }, [running]);
@@ -3008,14 +3279,25 @@ function ExecutionFlow({ events = [], running = false }) {
           <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
-          <span className="execution-flow-count">{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
-          <span className="execution-flow-current">{flowEventLabel(latest || visibleEvents[0])}</span>
+          <span className="execution-flow-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
+          <span className="execution-flow-current">{traceSummary || flowEventLabel(latest || visibleEvents[0])}</span>
+          {completion && (
+            <span
+              className={`flow-completion ${completion.status}`}
+              title={completion.source === "inferred" ? "由回合结束推断（模型未显式声明完成状态）" : `模型显式声明${completion.summary ? `：${completion.summary}` : ""}`}
+            >
+              {completionLabel(completion.status)}
+            </span>
+          )}
           {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
         </button>
         <button type="button" className="execution-flow-hide" onClick={() => { setHidden(true); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "true"); }} title="隐藏执行流" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
       </div>
       {expanded && (
-        <div className="execution-flow-list">
+        <>
+          {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}
+          <AgentBrainGraph trace={runTrace} running={running} onFocusTool={onFocusTool} />
+          <div className="execution-flow-list">
           {visibleEvents.map((event) => {
             const data = event.data || {};
             const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
@@ -3030,7 +3312,8 @@ function ExecutionFlow({ events = [], running = false }) {
               </div>
             );
           })}
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
@@ -3148,6 +3431,7 @@ function ToolCard({ tool, onToggle }) {
           {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
         <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
+        {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
         {duration && <span className="tool-duration">{duration}s</span>}
         <span className={`tool-chevron ${expanded ? "open" : ""}`}>{expanded ? "▾" : "▸"}</span>

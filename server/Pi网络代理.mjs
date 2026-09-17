@@ -20,6 +20,8 @@ const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
 // 模型响应是长 SSE 流，bodyTimeout 会把“暂时没有 token”误判成断流。
 // 长流的空闲保护由 Agent 层按 Pi 事件单独处理，避免 Undici 在 5 分钟处硬中断。
 const DEFAULT_BODY_TIMEOUT_MS = 0;
+const MANUAL_PROXY_PROBE_URL = "https://api.openai.com/v1/models";
+const MANUAL_PROXY_PROBE_TIMEOUT_MS = 3_000;
 const SECRET_PATTERN = /(api[_-]?key|authorization|bearer|access[_-]?token|refresh[_-]?token|password)([\s=:]+)[^\s,;]+/gi;
 const NETWORK_ERROR_CODES = new Set([
   "EACCES",
@@ -174,18 +176,40 @@ export function createPiNetworkAdapter(options = {}) {
   let dispatcher;
   let directDispatcher;
   let proxyDispatcher;
+  let proxyProbePromise = null;
+  let proxyFallback = null;
 
   if (settings.mode === "direct") dispatcher = createDirectDispatcher(settings);
   if (settings.mode === "system") dispatcher = createSystemDispatcher(settings);
   if (settings.mode === "manual") ({ direct: directDispatcher, proxy: proxyDispatcher } = createManualDispatchers(settings));
 
+  const precheckManualProxy = () => {
+    if (settings.mode !== "manual" || !proxyDispatcher || proxyFallback) return Promise.resolve();
+    if (!proxyProbePromise) {
+      proxyProbePromise = (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), MANUAL_PROXY_PROBE_TIMEOUT_MS);
+        try {
+          await undiciFetch(MANUAL_PROXY_PROBE_URL, { method: "GET", signal: controller.signal, dispatcher: proxyDispatcher });
+        } catch {
+          proxyFallback = { active: true, at: new Date().toISOString(), message: "代理不可达，已回退直连" };
+        } finally {
+          clearTimeout(timer);
+        }
+      })();
+    }
+    return proxyProbePromise;
+  };
+
   const selectDispatcher = (input) => {
     if (settings.mode !== "manual") return dispatcher;
+    if (proxyFallback?.active) return directDispatcher;
     return proxyDispatcher && !noProxyMatches(input, settings.noProxy) ? proxyDispatcher : directDispatcher;
   };
 
   const fetch = async (input, init = {}) => {
     if (closed) throw new Error("Pi 网络适配器已关闭");
+    if (settings.mode === "manual" && proxyDispatcher && !proxyFallback?.active) await precheckManualProxy();
     try {
       const requestInit = { ...init, dispatcher: init?.dispatcher || selectDispatcher(input) };
       return await undiciFetch(input, requestInit);
@@ -208,6 +232,7 @@ export function createPiNetworkAdapter(options = {}) {
         noProxy: settings.noProxy,
         proxy: redactProxyUrl(settings.mode === "manual" ? settings.proxyUrl : settings.httpsProxy || settings.httpProxy),
         hasProxy: Boolean(settings.mode === "manual" ? settings.proxyUrl : settings.httpsProxy || settings.httpProxy),
+        proxyFallback: proxyFallback && proxyFallback.active ? { at: proxyFallback.at, message: proxyFallback.message } : null,
         closed,
       };
     },

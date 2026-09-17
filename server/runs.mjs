@@ -120,13 +120,44 @@ function copyBeforeBlobs(runId, snapshot) {
   }
 }
 
+// Run JSON 解析缓存：按 mtime+size 指纹失效。
+// 会话列表、任务中心、线程切换都会高频遍历 400+ 个 Run 文件，
+// 无缓存时每次全量 JSON.parse（含 before/after 快照）需要数秒。
+const RUN_CACHE_LIMIT = 500;
+const runCache = new Map();
+
 function loadRun(id) {
-  try { return JSON.parse(fs.readFileSync(runFile(id), "utf8")); } catch { return null; }
+  const file = runFile(id);
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    runCache.delete(id);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = runCache.get(id);
+  if (cached?.fingerprint === fingerprint) return cached.data;
+  let data = null;
+  try {
+    data = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  runCache.set(id, { fingerprint, data });
+  while (runCache.size > RUN_CACHE_LIMIT) {
+    const oldest = runCache.keys().next().value;
+    if (oldest === undefined) break;
+    runCache.delete(oldest);
+  }
+  return data;
 }
 
 function saveRun(run) {
   run.updatedAt = new Date().toISOString();
   safeJsonWrite(runFile(run.id), run);
+  // 写后失效缓存：下次读取以磁盘为准，避免缓存与持久化状态分叉
+  runCache.delete(run.id);
   return run;
 }
 
@@ -257,6 +288,69 @@ function updateStepFromEvent(run, type, data = {}) {
   }
 }
 
+function normalizeTrackedPath(run, value) {
+  const raw = String(value || "").trim().replace(/\\/g, "/");
+  if (!raw || raw === ".") return ".";
+  if (path.isAbsolute(raw)) {
+    const relative = path.relative(run.cwd, raw).replace(/\\/g, "/");
+    if (relative && !relative.startsWith("../") && relative !== "..") return relative;
+    return ".";
+  }
+  return raw.replace(/^\.\//, "").replace(/\/+$/, "") || ".";
+}
+
+// 临时/调试类噪音文件：不进入工作产物列表（agent 执行过程中的脚本、日志、缓存等）
+const NOISE_ARTIFACT_PATTERNS = [
+  /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.oaw|\.cache|\.pytest_cache|dist-info)(\/|$)/i,
+  /(^|\/)\./,                                   // 隐藏文件与目录（含 .agent-context.md）
+  /(^|\/)_agent_write_test\./i,                 // 写入探针测试文件
+  /_log\d*\.(txt|json|md|log)$/i,               // 调试日志
+  /(^|\/)(tmp|temp|test)_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i,
+  /(^|\/)debug[^/]*\.(py|js|mjs|txt|log|json)$/i,
+  /\.(tmp|temp|log|bak|old|orig|pyc|pyo|swp|swo)$/i,
+];
+// 根目录/任意目录的前导下划线脚本类临时文件：_head.py、_jscheck.txt、_mapdata_run.txt
+const SCRATCH_SCRIPT_BASENAME = /^_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i;
+
+/** 临时/调试文件判定：用于产物列表过滤，避免糟糕的中间文件混入“工作产物”。 */
+export function isNoiseArtifactPath(relativePath) {
+  const value = String(relativePath || "").replace(/\\/g, "/").trim();
+  if (!value) return false;
+  for (const pattern of NOISE_ARTIFACT_PATTERNS) {
+    if (pattern.test(value)) return true;
+  }
+  const basename = value.split("/").pop() || "";
+  return SCRATCH_SCRIPT_BASENAME.test(basename);
+}
+
+function trackedPathMatches(tracked, candidate) {
+  if (tracked === ".") return true;
+  return candidate === tracked || candidate.startsWith(`${tracked}/`);
+}
+
+/**
+ * 只保留本 Run 明确触碰过的文件。
+ * 工作区快照仍用于发现 Office CLI/Bash 的直接写入，但并行 Run 的文件不能
+ * 因为恰好在同一时间发布而被错误归入当前产物。
+ */
+export function filterRunChanges(run, changes = []) {
+  if (!run || !Array.isArray(changes)) return [];
+  const tracked = [...new Set((run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter(Boolean))];
+  return changes.filter((item) => {
+    // 兼容两种输入：字符串路径（waitForFlush/diffWorkspace）与对象（changedFiles）
+    const pathValue = typeof item === "string" ? item : item?.path;
+    if (isNoiseArtifactPath(pathValue)) return false;
+    if (typeof item === "string") {
+      if (!tracked.length) return true;
+      const candidate = normalizeTrackedPath(run, item);
+      return tracked.some((prefix) => trackedPathMatches(prefix, candidate));
+    }
+    if (!tracked.length) return true;
+    const candidates = [item?.path, item?.from].map((value) => normalizeTrackedPath(run, value)).filter(Boolean);
+    return candidates.some((candidate) => tracked.some((prefix) => trackedPathMatches(prefix, candidate)));
+  });
+}
+
 export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full" } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
@@ -294,6 +388,9 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     todos: [],
     steps: Array.isArray(workflow?.steps) ? workflow.steps.map((name, index) => ({ id: `${workflow.id}:step-${index + 1}`, index, name, status: index === 0 ? "ready" : "pending", attempts: 0, startedAt: null, finishedAt: null, error: null })) : [],
     references: references || [],
+    // 由 write_started/artifact_staged 事件记录本 Run 的写入边界。
+    // 没有触碰文件时保持空数组，兼容只读 Agent 和旧 Run。
+    touchedPaths: [],
     events: [{ seq: 1, type: "run_started", data: {}, at: new Date().toISOString() }],
     before,
     artifacts: [],
@@ -334,6 +431,11 @@ export function recordRunEvent(id, type, data = {}) {
   const run = loadRun(id);
   if (!run) return null;
   run.events = Array.isArray(run.events) ? run.events : [];
+  if (["write_started", "artifact_staged", "artifact_materialized"].includes(type) && data && typeof data === "object" && data.path) {
+    run.touchedPaths = Array.isArray(run.touchedPaths) ? run.touchedPaths : [];
+    const trackedPath = normalizeTrackedPath(run, data.path);
+    if (!run.touchedPaths.includes(trackedPath)) run.touchedPaths.push(trackedPath);
+  }
   updateStepFromEvent(run, type, data);
   if (type === "runtime_health" && data && typeof data === "object") {
     run.runtimeHealth = data;
@@ -413,7 +515,7 @@ function copyAfterBlobs(run, artifacts, after) {
   }
 }
 
-export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null, validations = [] } = {}) {
+export function finishRun(id, { status = "completed", error = null, summary = "", sessionId = null, validations = [], publishPaths = null, completion = null } = {}) {
   const run = loadRun(id);
   if (!run) return null;
   // 并发收尾（例如 SSE 重放、后台异常兜底、取消请求同时到达）只能落一次终态。
@@ -429,13 +531,20 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   let finalStatus = status;
   let finalError = error;
   const validationList = Array.isArray(validations) ? validations : [];
-  if (finalStatus === "completed" && validationList.some((item) => item?.status === "failed")) {
+  const effectivePublishPaths = publishPaths ?? (validationList.some((item) => item?.status === "failed")
+    ? validationList.filter((item) => item?.status !== "failed").map((item) => item?.path).filter(Boolean)
+    : null);
+  // 混合场景跳过失败文件继续发布；但如果所有待发布文件都校验失败，
+  // 没有任何可发布内容，Run 必须落为失败而不是伪装完成。
+  const hasFailedValidation = validationList.some((item) => item?.status === "failed");
+  const hasPublishable = !hasFailedValidation || (Array.isArray(effectivePublishPaths) && effectivePublishPaths.length > 0);
+  if (finalStatus === "completed" && hasFailedValidation && !hasPublishable) {
     finalStatus = "failed";
     finalError ||= "产物校验失败，未发布临时产物";
   }
   if (finalStatus === "completed") {
     try {
-      const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent });
+      const staged = publishStagedRun(run.id, run.cwd, { threadId: run.threadId, onEvent: persistWriteEvent, paths: effectivePublishPaths });
       run.staging = { ...(run.staging || {}), status: "published", files: staged };
     } catch (publishError) {
       finalStatus = "failed";
@@ -452,7 +561,7 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     const after = shouldTrackWorkspace
       ? snapshotWorkspace(run.cwd)
       : { root: path.resolve(run.cwd), capturedAt: new Date().toISOString(), files: {}, size: 0 };
-    const artifacts = shouldTrackWorkspace ? changedFiles(run.before, after) : [];
+    const artifacts = shouldTrackWorkspace ? filterRunChanges(run, changedFiles(run.before, after)) : [];
     if (shouldTrackWorkspace) copyAfterBlobs(run, artifacts, after);
     run.after = after;
     run.artifacts = artifacts;
@@ -484,6 +593,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
           : "not_checked";
     const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
     run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
+    // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
+    if (completion && typeof completion === "object") run.completion = completion;
     run.finishedAt = new Date().toISOString();
     run.events = Array.isArray(run.events) ? run.events : [];
     run.steps = Array.isArray(run.steps) ? run.steps : [];
@@ -495,9 +606,9 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     }
     const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
     run.eventSeq = seq;
-    run.events.push({ seq, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus }, at: run.finishedAt });
+    run.events.push({ seq, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null }, at: run.finishedAt });
     const saved = saveRun(run);
-    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus } });
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null } });
     return saved;
   } finally {
     releaseRunLocks(run.id);
@@ -551,6 +662,12 @@ export function requestRunCancellation(id, reason = "用户请求中断") {
 export function getRun(id) {
   const run = loadRun(id);
   if (!run) return null;
+  return publicRunView(run);
+}
+
+// 把已加载的 Run 投影为对外公开结构（去掉体积很大的 before/after 快照）。
+// listRuns 直接复用该方法，避免对同一文件二次 loadRun。
+function publicRunView(run) {
   const { before, after, ...publicRun } = run;
   const steps = Array.isArray(publicRun.steps) ? publicRun.steps : [];
   const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
@@ -583,7 +700,7 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = 
     .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error), ...(r.todos || []).map((item) => `${item.title} ${item.note || ""}`)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
     .slice(0, Math.max(1, Math.min(200, limit)))
-    .map((run) => getRun(run.id))
+    .map((run) => publicRunView(run))
     .filter(Boolean);
 }
 

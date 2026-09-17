@@ -42,6 +42,10 @@ import {
 import { isGlobalSearchCommand, normalizeBashOptions } from "./命令安全策略.mjs";
 import { normalizeOfficeFailure } from "./文件权限错误.mjs";
 import { requireToolApproval } from "./审批策略.mjs";
+import { CHANNEL_HISTORY_LIMIT, PROTOCOL_VERSION, createStreamId, pushChannelEvent } from "./事件协议.mjs";
+import { completionStatusLabel, inferCompletion, normalizeCompletion } from "./运行轨迹.mjs";
+import { evaluateMemoryCandidate } from "./记忆准入.mjs";
+import { getProjectForWorkspace } from "./项目管理.mjs";
 
 // Pi 的全局 sessions 目录在当前桌面进程下可读但不可写；工作台会话改存项目内，
 // 这样切换模型、发送消息和恢复会话都不会再因 Windows ACL 触发 EPERM。
@@ -117,6 +121,45 @@ function eventValueText(value) {
   try { return limitToolText(JSON.stringify(value, null, 2)); } catch { return limitToolText(String(value)); }
 }
 
+function normalizeUsage(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const value = Number(raw[key]);
+      if (Number.isFinite(value) && value >= 0) return value;
+    }
+    return 0;
+  };
+  const input = pick("inputTokens", "input_tokens", "input");
+  const output = pick("outputTokens", "output_tokens", "output");
+  const cacheRead = pick("cacheReadTokens", "cache_read_input_tokens", "cacheRead", "cache_read");
+  const cacheWrite = pick("cacheWriteTokens", "cache_creation_input_tokens", "cacheWrite", "cache_write");
+  const context = pick("contextTokens", "context_tokens", "context") || input + cacheRead + cacheWrite;
+  const total = pick("totalTokens", "total_tokens", "total") || input + output + cacheRead + cacheWrite;
+  if (!(input || output || cacheRead || cacheWrite || context || total)) return null;
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    context,
+    totalTokens: total,
+  };
+}
+
+function usageFromEvent(event) {
+  const candidates = [event?.usage, event?.tokens, event?.message?.usage, event?.message?.tokens, event?.response?.usage, event?.result?.usage];
+  for (const candidate of candidates) {
+    const usage = normalizeUsage(candidate);
+    if (usage) return usage;
+  }
+  return null;
+}
+
 // 工具结果同时会进入 Pi 上下文和前端事件流。保留首尾，避免一次读取大文档
 // 把后续任务的上下文预算吃满；需要全文时让模型继续按 offset/range 分段读取。
 const TOOL_OUTPUT_MAX_CHARS = 16000;
@@ -180,13 +223,15 @@ const SETTLED_AGENT_RETRY_DELAYS = [1200];
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const AUTO_COMPACT_INPUT_TOKENS = 26000;
+const AUTO_COMPACT_COOLDOWN_MS = 10000;
+const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 // 只监控“首个模型/工具事件”的等待时间，不限制已经开始执行的长任务。
 // 供应商连接卡住时必须自动释放 Agent，否则前端会永久停留在“连接模型”。
-const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "20000", 10) || 20000);
+const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "45000", 10) || 45000);
 // 首个事件之后仍可能出现供应商流中途静默；工具正在执行时不计入该保护，
 // 避免长时间 Office/脚本任务被误中止。可通过环境变量按供应商特性调整。
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
-const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient_quota|quota exceeded|available balance|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
+const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
 const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
 
 // 服务重启后 entry.promptChars 会归零，但 Pi 已恢复的 JSONL 会话仍可能很长。
@@ -231,20 +276,38 @@ function safeAgentErrorMessage(message) {
 
 /** Pi 可能把最终模型错误放进 assistant message 后正常结束；转成可被上层 Run 捕获的错误。 */
 export function createSettledAgentError(message) {
-  const error = new Error(safeAgentErrorMessage(message));
-  error.code = "PI_SETTLED_ERROR";
+  const normalizedMessage = safeAgentErrorMessage(rawAgentErrorMessage(message));
+  const error = new Error(normalizedMessage);
   const classification = classifyAgentError(error);
+  error.code = classification.code || "PI_SETTLED_ERROR";
   error.status = classification.status;
   error.errorCategory = classification.category;
   error.oawClassification = classification;
-  error.noRetry = true;
+  error.noRetry = !classification.retryable;
   return error;
 }
 
 export function captureSettledAgentError(entry) {
-  const settledError = entry?.lastAgentError || null;
+  const settledError = entry?.lastAgentError ? safeAgentErrorMessage(rawAgentErrorMessage(entry.lastAgentError)) : null;
   if (entry) entry.lastSettledError = settledError;
   return settledError;
+}
+
+const invalidCredentials = new Map();
+
+function recordInvalidCredential(provider, message) {
+  if (!provider) return;
+  invalidCredentials.set(provider, { at: new Date().toISOString(), message: safeAgentErrorMessage(message) });
+}
+
+export function clearInvalidCredential(provider) {
+  if (provider) invalidCredentials.delete(provider);
+}
+
+export function getCredentialErrors() {
+  const result = {};
+  for (const [provider, record] of invalidCredentials) result[provider] = { at: record.at, message: record.message };
+  return result;
 }
 
 /** 将 SDK/网关错误归一化，供有限重试和诊断日志复用。 */
@@ -253,7 +316,9 @@ export function classifyAgentError(error) {
   const status = agentErrorStatus(error, message);
   const safeEmpty400 = isEmptyBadRequestError(error);
   const causeCode = error?.cause?.code ? String(error.cause.code) : null;
-  const authFailure = [401, 403].includes(status) || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message);
+  const authFailure = [401, 403].includes(status)
+    || error?.errorCategory === "AUTH_ERROR"
+    || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message);
   const timeout = ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT", "MODEL_PROBE_TIMEOUT"].includes(String(error?.code || "")) || /(?:timed?.?out|timeout)/i.test(message);
   const rateLimited = [408, 425, 429, 529].includes(status) || /(?:429|rate.?limit|overloaded)/i.test(message);
   const network = /(?:network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|websocket.?closed)/i.test(message);
@@ -263,7 +328,11 @@ export function classifyAgentError(error) {
       || (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
       || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
   ));
-  const category = authFailure ? "auth" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
+  const quota = /(?:insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing)/i.test(message);
+  const category = authFailure ? "auth" : quota ? "quota" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
+  if (category === "auth" && (error?.provider || error?.model?.provider)) {
+    recordInvalidCredential(error.provider || error.model.provider, message);
+  }
   return {
     message: safeAgentErrorMessage(message),
     code: error?.code ? String(error.code) : null,
@@ -394,11 +463,12 @@ function localModelProviders() {
   const store = readModelsStore();
   const config = readModelsConfig();
   const auth = readCredentials();
-  return new Set([
+  const providers = new Set([
     ...Object.keys(store || {}),
     ...Object.keys(config?.providers || {}),
     ...Object.keys(auth || {}),
   ]);
+  return new Set([...providers].filter((provider) => config?.providers?.[provider]?.enabled !== false && store?.[provider]?.enabled !== false));
 }
 
 /**
@@ -411,8 +481,8 @@ function localStoredModels(providers = localModelProviders()) {
   const models = [];
   for (const [provider, entry] of Object.entries(store || {})) {
     if (!providers.has(provider) || !Array.isArray(entry?.models)) continue;
-    for (const model of entry.models) {
-      if (!model || typeof model !== "object" || !String(model.id || "").trim()) continue;
+      for (const model of entry.models) {
+       if (!model || typeof model !== "object" || model.enabled === false || !String(model.id || "").trim()) continue;
       models.push({ ...model, provider: model.provider || provider });
     }
   }
@@ -595,7 +665,22 @@ class AgentManager extends EventEmitter {
 
   async getOrCreate(clientId, options = {}) {
     const existing = this.sessions.get(clientId);
-    if (existing) return existing;
+    if (existing) {
+      const requested = normalizeWorkspace(options.cwd);
+      // 工作区归属校验：同一 client::thread 不允许静默跨工作区复用运行时，
+      // 否则会串会话、工具根目录、记忆和资源加载器。
+      if (requested && existing.workspace && requested !== existing.workspace) {
+        if (existing.busy || existing.compacting || existing.queuedCount > 0) {
+          const error = new Error("当前会话正在其他工作区的任务中执行，请等待完成或先取消任务");
+          error.code = "WORKSPACE_BUSY";
+          throw error;
+        }
+        try { piRuntimeManager.dispose(existing.runtimeId, existing.session); } catch {}
+        this.sessions.delete(clientId);
+      } else {
+        return existing;
+      }
+    }
     if (!this.creates) this.creates = new Map();
     if (this.creates.has(clientId)) return this.creates.get(clientId);
     const p = this._create(clientId, options);
@@ -641,7 +726,7 @@ class AgentManager extends EventEmitter {
             content: [
               "# Open Plan（规聚）Workspace",
               "",
-              "- **工作区与当前文件**: 每次对话前服务端都会刷新项目根 `.agent-context.md`，其中包含「**当前工作区**」绝对路径与「**当前工作文件**」。操作文件前必须先 read `.agent-context.md` 获取这两个信息（工作区可能被用户切换，不要假设默认路径）。",
+              "- **工作区与当前文件**: 每轮对话的「动态上下文」消息已给出当前工作区绝对路径、当前工作文件与上下文文件路径（`.agent-context.<thread>.md` 是权威版本；旧版 `.agent-context.md` 可能被同工作区其他会话覆盖）。不要假设默认工作区路径，需要细节时 read 动态上下文中给出的那个文件。",
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
@@ -652,13 +737,14 @@ class AgentManager extends EventEmitter {
               "- **主动询问（重要）**: 当用户要求撰写/生成文字内容，但关键信息不明确（文档类型、格式、篇幅、受众、数据来源、风格、范围等）时，**必须调用 ask_user 工具主动提问**，等待用户回答后再继续，不要猜测。每次只问一个最关键的、阻塞后续工作的问题。",
               "- **复杂任务待办**: 预计超过两步的任务，先调用 `todo` 工具创建 2-6 项结构化待办；每完成一项或状态发生变化后，立即用 `todo` 提交完整清单。不要把每个工具调用都拆成待办项。Markdown 清单只能作为可选的人类可读摘要，任务区以 `todo` 工具状态为准。",
               "- **回合结束沉淀记忆**: 每轮任务真正完成后，检查本轮是否出现对后续任务仍有价值的新项目事实、稳定工作规则、用户偏好或可复用经验。若有，主动调用一次 memory_update 生成一条待审核建议；若没有，不要强行生成。只记录短句，不记录临时状态、完整对话、敏感凭据或大段原文。",
+              "- **显式收尾（complete_task）**: 回答最后一步调用 `complete_task`：status 用 success/partial/blocked/failed 如实声明本轮结果；partial 必须列出未完成项；blocked 必须列出阻塞原因；generated 产物用 read 回读验证后再声明 success。不要跳过此工具，跳过时系统只能按回合结束推断，用户无法区分“回答完了”和“任务真完成了”。",
               "- **模板引用（@模板）**: 用户以 `@模板[文件名]` 引用模板库中的模板（如 `@模板[01_年度工作报告模板.md]`）时，先用 find 工具在 `templates/` 与 `_报告模板/` 目录下搜索该文件名（注意文件名可能带序号前缀，用文件名包含匹配），找到后用 read 读取全文，作为撰写文档的结构与风格参考；产出保存到当前工作区（见 .agent-context.md）。用户以 `@模板目录[相对路径]` 引用整个模板目录时（如 `@模板目录[templates/opendesign/templates/html-ppt-tech-sharing]`），用 find 列出该目录下所有文件并逐个 read 理解其风格与结构，产出时保持该风格。",
               "- **规划素材库（traffic-material）**: 项目 `templates/traffic-material/` 内置 14 份交通规划详版模板（00_总览通用规范、01_年度工作报告、02_五年发展规划、03_规划文本条文式、04_工程可行性研究报告、05_线位论证预可、06_选址用地预审、07_交通影响评价、08_汇报材料、09_物流园区规划、10_规划研究报告、11_PPT汇报、12_素材库深挖）。用户要求撰写交通规划/工可/汇报/年度报告等文档时，**先用 read 工具读取对应模板作为结构参考**（如 04_工程可行性研究报告模板.md、08_汇报材料模板.md），产出保存到当前工作区。完整列表可用 GET /api/templates?category=sucaiku 查看。",
               "- **模板库（OpenDesign HTML PPT）**: 项目 `templates/opendesign/` 内置 157 个 HTML 模板（64 款 html-ppt-* 演示风格 + landing/dashboard 等），每个模板目录含 example.html 首页可直接预览（模版库页面已接入）。用户要求生成 PPT/演示/海报/网页作品时，优先用 read 工具读取 `templates/opendesign/<模板名>/example.html` 作为风格与结构参考（如 html-ppt-zhangzara-studio、html-ppt-tech-sharing、html-ppt-pitch-deck、html-ppt-taste-editorial），产出应保存到当前工作区。另项目 `.claude/skills/` 内置了 67 个办公/设计/飞书/工程流程技能（docx/pptx/xlsx/baoyu-*/lark-*/ultimate-ppt-master 等），需要对应能力时遵循其 SKILL.md 指引。",
               "- When you modify a document, confirm what changed. Files are auto-refreshed in the browser.",
               "",
               // 工作区记忆（AGENTS.md + memory/）——每次对话前刷新在 .agent-context.md 的「工作区记忆」段
-              "- **工作区记忆**: 每次任务开始前阅读 `.agent-context.md` 中的「工作区记忆」段（含 AGENTS.md 准则与 memory/*.md）；沉淀新经验请用 memory_update 工具（自动写入当前工作区 memory/MEMORY.md），勿直接写文件。",
+              "- **工作区记忆**: 「动态上下文」已包含工作区记忆摘要（含 AGENTS.md 准则与 memory/*.md）；需要全文时阅读动态上下文给出的上下文文件的「工作区记忆」段。沉淀新经验请用 memory_update 工具（自动写入当前工作区 memory/MEMORY.md），勿直接写文件。",
             ].join("\n"),
           },
         ],
@@ -966,7 +1052,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const name = params.project || map.DEFAULT_PROJECT;
+        const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const p = map.getProject(name);
         if (!p) return { content: [{ type: "text", text: `项目不存在: ${name}` }], details: {} };
         const cfgLines = `项目: ${p.config.name}\n中心: ${p.config.center} 缩放: ${p.config.zoom} 底图: ${p.config.basemap}`;
@@ -1013,7 +1099,7 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
-        const name = params.project || map.DEFAULT_PROJECT;
+        const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const dir = map.projectDir(name);
         if (!dir) return { content: [{ type: "text", text: "项目不存在" }], details: {} };
         const fs = (await import("node:fs")).default;
@@ -1098,15 +1184,17 @@ execute: async (_toolCallId, params) => {
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
         holdWorkspaceWriteLock({ ...ctx, kind: "map_import" });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
-        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: rel, kind: "map_import" });
+        const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
+        // 导入会同时更新当前地图项目的 GeoJSON、配置、样式和瓦片；以项目目录
+        // 作为本 Run 的归属边界，不能把输入源文件误算成产物。
+        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
+        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
         let geojson;
         try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
           return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
         }
         const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
         const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
-        const name = params.project || map.DEFAULT_PROJECT;
         const r = await map.importLayer(name, layerId, geojson);
         const count = geojson.features?.length || 0;
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/layers/${layerId}.geojson`] });
@@ -1129,7 +1217,7 @@ execute: async (_toolCallId, params) => {
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
       }),
       execute: async (_toolCallId, params) => {
-        const action = createDemoAnalysis({ analysis: params.analysis, region: String(params.region || "义乌市"), project: params.project || "zhejiang-map", count: params.count });
+        const action = createDemoAnalysis({ analysis: params.analysis, region: String(params.region || "义乌市"), project: params.project || entry.task?.mapProject || "zhejiang-map", count: params.count });
         action.updatedAt = Date.now();
         entry.lastMapAnalysis = action;
         emitChannelSafe(entry, "map_action", action);
@@ -1156,7 +1244,7 @@ execute: async (_toolCallId, params) => {
         holdWorkspaceWriteLock({ ...ctx, kind: "map_save_analysis" });
         writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
         writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
-        const project = params.project || action.project || map.DEFAULT_PROJECT;
+        const project = params.project || action.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
         await map.importLayer(project, layerId, action.geojson);
         if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
@@ -1198,6 +1286,39 @@ execute: async (_toolCallId, params) => {
         content: Type.String({ description: "要记住的内容（≤100 字）" }),
       }),
       execute: async (_toolCallId, params) => {
+        // 项目记忆策略：manual 项目完全禁止自动沉淀
+        let memoryPolicy = "approval_required";
+        try {
+          memoryPolicy = getProjectForWorkspace(entry.workspace)?.settings?.memoryPolicy || "approval_required";
+        } catch {}
+        if (memoryPolicy === "manual") {
+          return {
+            content: [{ type: "text", text: "当前项目设置为「仅手动维护记忆」，Agent 不能提交记忆建议；请在本轮总结中说明信息即可。" }],
+            details: { skipped: "manual_policy" },
+          };
+        }
+        // 服务端准入：临时状态/敏感信息/内部实现/重复内容不进入候选队列
+        let existing = [];
+        try {
+          existing = listStoredMemoryProposals({ workspace: entry.workspace }).filter((item) => ["pending", "approved"].includes(item.status));
+        } catch {}
+        const verdict = evaluateMemoryCandidate({
+          content: params.content,
+          category: params.section,
+          workspace: entry.workspace,
+          existing,
+        });
+        if (!verdict.ok) {
+          emitChannelSafe(entry, "memory_proposal_rejected", {
+            code: verdict.code,
+            reason: verdict.reason,
+            content: String(params.content || "").slice(0, 120),
+          });
+          return {
+            content: [{ type: "text", text: `该内容未进入记忆候选：${verdict.reason}。不要重复提交同类内容。` }],
+            details: { rejected: verdict.code },
+          };
+        }
         const proposal = createMemoryProposal({
           clientId,
           threadId: entry.threadId,
@@ -1212,6 +1333,39 @@ execute: async (_toolCallId, params) => {
         return {
           content: [{ type: "text", text: `已生成记忆建议（${proposal.id}），等待用户审核后写入。` }],
           details: { proposal },
+        };
+      },
+    });
+
+    // ---- 显式完成语义（complete_task）：区分“回答结束”与“任务真正完成” ----
+    const completeTaskTool = defineTool({
+      name: "complete_task",
+      label: "完成任务",
+      description:
+        "任务收尾时调用，显式声明本轮的完成状态。status 取值：success（目标已达成并验证）/ partial（部分完成，说明未完成项）/ blocked（受阻，说明阻塞原因）/ failed（失败）。summary 用一句话说明做了什么。用户可见此状态，未调用时系统只能依据回合结束推断，请勿跳过。",
+      parameters: Type.Object({
+        status: Type.Union([
+          Type.Literal("success"),
+          Type.Literal("partial"),
+          Type.Literal("blocked"),
+          Type.Literal("failed"),
+        ]),
+        summary: Type.String({ description: "一句话说明本轮完成内容（≤200 字）" }),
+        incomplete: Type.Optional(Type.Array(Type.String({ description: "未完成事项" }))),
+        blockers: Type.Optional(Type.Array(Type.String({ description: "阻塞原因" }))),
+        verification: Type.Optional(Type.String({ description: "如何验证结果（读取回文件/校验命令等）" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const completion = normalizeCompletion(params);
+        if (!completion) {
+          return { content: [{ type: "text", text: "完成状态无效：status 必须是 success/partial/blocked/failed 且 summary 非空。" }], isError: true };
+        }
+        entry.pendingCompletion = completion;
+        emitChannelSafe(entry, "task_completed", { ...completion, runId: entry.activeRunId || null });
+        const label = completionStatusLabel(completion.status);
+        return {
+          content: [{ type: "text", text: `已记录任务完成状态：${label}。${completion.summary}` }],
+          details: { completion },
         };
       },
     });
@@ -1278,8 +1432,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task"],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -1288,24 +1442,31 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update"]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task"]);
     } catch {}
 
     // event channel with history for SSE replay
-    const channel = { history: [], seq: 0, emitter: new EventEmitter() };
+    // streamId 是通道代际：Runtime/会话重建后序号从 1 重新开始，前端据此重置游标。
+    const channel = { streamId: createStreamId(), history: [], seq: 0, historyLimit: CHANNEL_HISTORY_LIMIT, emitter: new EventEmitter() };
     const emit = (type, data) => {
       const id = ++channel.seq;
       const at = new Date().toISOString();
       const eventData = data && typeof data === "object" && !Array.isArray(data)
         ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
         : { value: data, runId: entry?.activeRunId ?? null };
-      const ev = { id, type, at, data: eventData };
-      channel.history.push(ev);
-      if (channel.history.length > 2000) channel.history.shift();
+      const ev = { id, type, at, streamId: channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
+      pushChannelEvent(channel, ev);
       channel.emitter.emit("event", ev);
       if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
         try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
       }
+    };
+    const emitUsage = (usage, cost = 0) => {
+      const normalized = usage && usage.inputTokens !== undefined ? usage : normalizeUsage(usage);
+      if (!normalized) return false;
+      if (entry) entry.lastUsage = normalized;
+      emit("stats", { tokens: normalized, cost: cost ?? 0 });
+      return true;
     };
     session.subscribe((ev) => {
       if (entry) entry.lastPiEventAt = Date.now();
@@ -1416,24 +1577,13 @@ execute: async (_toolCallId, params) => {
               entry.lastAgentError = ev.message.errorMessage || "模型调用失败";
             }
           }
+          emitUsage(usageFromEvent(ev), ev.cost ?? ev.message?.usage?.cost ?? 0);
           emit("message_end", { messageId: ev.message?.id || null, role: ev.message?.role || null });
           break;
         case "usage":
         case "stats":
           // usage/stats 事件：转发为统一的 stats 事件给前端
-          if (ev.usage || ev.tokens) {
-            const u = ev.usage || ev.tokens;
-            if (entry) entry.lastUsage = u;
-            emit("stats", {
-              tokens: {
-                input: u.inputTokens ?? u.input ?? 0,
-                output: u.outputTokens ?? u.output ?? 0,
-                cacheRead: u.cacheReadTokens ?? u.cacheRead ?? u.cache_read ?? 0,
-                cacheWrite: u.cacheWriteTokens ?? u.cacheWrite ?? u.cache_write ?? 0,
-              },
-              cost: ev.cost ?? u.cost ?? 0,
-            });
-          }
+          emitUsage(usageFromEvent(ev), ev.cost ?? ev.usage?.cost ?? ev.tokens?.cost ?? 0);
           break;
         case "agent_end":
           {
@@ -1443,20 +1593,8 @@ execute: async (_toolCallId, params) => {
             if (message?.errorMessage || message?.stopReason === "error") {
               entry.lastAgentError = message.errorMessage || "模型调用失败";
             }
-          }
-          // 若 ev 包含 usage 信息，emit stats 事件
-          if (ev.usage) {
-            const u = ev.usage;
-            entry.lastUsage = u;
-            emit("stats", {
-              tokens: {
-                input: u.inputTokens ?? u.input ?? 0,
-                output: u.outputTokens ?? u.output ?? 0,
-                cacheRead: u.cacheReadTokens ?? u.cacheRead ?? u.cache_read ?? 0,
-                cacheWrite: u.cacheWriteTokens ?? u.cacheWrite ?? u.cache_write ?? 0,
-              },
-              cost: ev.cost ?? u.cost ?? 0,
-            });
+            // agent_end 的 usage 通常挂在最终 assistant message 上。
+            emitUsage(usageFromEvent({ ...ev, message }), ev.cost ?? message?.usage?.cost ?? 0);
           }
           emit("agent_turn_end", {});
           break;
@@ -1477,6 +1615,7 @@ execute: async (_toolCallId, params) => {
           if (entry) {
             entry.promptChars = 0;
             entry.lastUsage = null;
+            entry.lastCompactionAt = Date.now();
           }
           emit("context_compacted", {
             source: "pi-sdk",
@@ -1516,18 +1655,38 @@ execute: async (_toolCallId, params) => {
         case "agent_settled":
           {
             const settledError = captureSettledAgentError(entry);
-            if (settledError) emit("agent_error", { message: settledError });
+            if (settledError) {
+              const classification = classifyAgentError(settledError);
+              emit("agent_error", {
+                message: classification.message,
+                code: classification.code || "PI_SETTLED_ERROR",
+                category: classification.category,
+                providerStatus: classification.status,
+                retryable: classification.retryable,
+              });
+            }
           }
-          if (entry.lastAssistantText) emit("assistant_final", { text: entry.lastAssistantText });
+          if (entry.lastAssistantText) {
+            // 保留最终权威文本副本，供 run 记录补写 assistant_final（前端断线兜底渲染）
+            entry.lastFinalText = entry.lastAssistantText;
+            emit("assistant_final", { text: entry.lastAssistantText });
+          }
           emit("agent_end", {});
           entry.lastAgentError = null;
           entry.lastAssistantText = "";
           break;
         case "error":
           {
-            const message = ev.error?.message || String(ev.error || "");
-            entry.lastAgentError = message || "模型调用失败";
-            emit("agent_error", { message: entry.lastAgentError });
+            const message = safeAgentErrorMessage(rawAgentErrorMessage(ev.error?.message || ev.error || "模型调用失败"));
+            entry.lastAgentError = message;
+            const classification = classifyAgentError(ev.error || message);
+            emit("agent_error", {
+              message,
+              code: classification.code || null,
+              category: classification.category,
+              providerStatus: classification.status,
+              retryable: classification.retryable,
+            });
           }
           break;
         default:
@@ -1535,7 +1694,7 @@ execute: async (_toolCallId, params) => {
       }
     });
 
-    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, lastAgentError: null, lastSettledError: null, lastAssistantText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, autoCompacting: false };
+    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, modePolicyKey: "", lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1555,6 +1714,11 @@ execute: async (_toolCallId, params) => {
   async ensureRuntime(clientId, options = {}) {
     const existing = this.sessions.get(clientId);
     if (!existing) return this.getOrCreate(clientId, options);
+    // 请求的工作区与现有运行时不一致时交给 getOrCreate 替换（含忙时拒绝）。
+    const requested = normalizeWorkspace(options.cwd);
+    if (requested && existing.workspace && requested !== existing.workspace) {
+      return this.getOrCreate(clientId, options);
+    }
     const health = this.runtimeHealth(clientId);
     const staleError = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(health?.error?.code || ""));
     if (health?.status !== "failed" && health?.health?.status !== "failed" && !staleError) return existing;
@@ -1581,12 +1745,25 @@ execute: async (_toolCallId, params) => {
     return entry || this.getOrCreate(clientId, options);
   }
 
-  promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
+promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
     // 已完成 admission 的 entry 直接入队，不要等一个多余的 await。
     // 这样 /api/agent/prompt 返回时就能准确知道本轮是执行中还是排队中，
     // 也避免前端看到“已接收”但服务端尚未建立队列的竞态窗口。
     const current = this.sessions.get(clientId);
-    if (current) return this._enqueuePrompt(current, { text, images, effort, references, runContext });
+    if (current) {
+      // 长时间空闲后 Pi runtime 可能已失效（provider 连接失效/会话过期）：
+      // 先体检，failed/stale 时用原 JSONL 自动重启，避免本轮直接失败。
+      const health = this.runtimeHealth(clientId);
+      const staleError = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(health?.error?.code || ""));
+      if (health?.status === "failed" || health?.health?.status === "failed" || staleError) {
+        return this.ensureRuntime(clientId, {
+          threadId: current.threadId || null,
+          cwd: current.workspace || getWorkspace(),
+          profile: current.task?.agentProfile || null,
+        }).then((entry) => this._enqueuePrompt(entry, { text, images, effort, references, runContext }));
+      }
+      return this._enqueuePrompt(current, { text, images, effort, references, runContext });
+    }
     return this.getOrCreate(clientId).then((entry) => this._enqueuePrompt(entry, { text, images, effort, references, runContext }));
   }
 
@@ -1613,32 +1790,47 @@ execute: async (_toolCallId, params) => {
     return operation;
   }
 
+  /** 解析当前模型的实际上下文窗口：Pi 会话模型 → 本地目录同名模型 → 保守默认值。 */
+  resolveEntryContextWindow(entry) {
+    const fromSession = Number(entry?.session?.model?.contextWindow || entry?.session?.model?.contextLength || 0);
+    if (fromSession > 0) return fromSession;
+    const modelId = String(entry?.session?.model?.id || "").trim();
+    if (modelId) {
+      const match = localStoredModels().find((item) => String(item?.id) === modelId || String(item?.id).split("/").pop() === modelId);
+      const fromCatalog = Number(match?.contextWindow || match?.contextLength || 0);
+      if (fromCatalog > 0) return fromCatalog;
+    }
+    return DEFAULT_CONTEXT_WINDOW;
+  }
+
   async _maybeCompact(entry, runContext = null) {
     if (entry.compacting || !entry.promptChars) return;
+    if (entry.lastCompactionAt && Date.now() - entry.lastCompactionAt < AUTO_COMPACT_COOLDOWN_MS) return;
     const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
     const cacheReadTokens = Number(entry.lastUsage?.cacheReadTokens ?? entry.lastUsage?.cacheRead ?? entry.lastUsage?.cache_read ?? 0);
     const cacheWriteTokens = Number(entry.lastUsage?.cacheWriteTokens ?? entry.lastUsage?.cacheWrite ?? entry.lastUsage?.cache_write ?? 0);
     // Pi 的 usage.input 只包含未命中缓存的 token；长会话的大部分上下文会
     // 出现在 cacheRead 中。只看 input 会让 4 万 token 的会话误判为很短。
     const contextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
-    const modelContextWindow = Number(entry.session?.model?.contextWindow || entry.session?.model?.contextLength || 0);
-    const compactTokenThreshold = modelContextWindow > 0
-      ? Math.floor(modelContextWindow * 0.78)
-      : AUTO_COMPACT_INPUT_TOKENS;
+    const modelContextWindow = this.resolveEntryContextWindow(entry);
+    const compactTokenThreshold = Math.floor(modelContextWindow * 0.78);
     if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && contextTokens < compactTokenThreshold) return;
     entry.compacting = true;
     entry.autoCompacting = true;
     entry.compactionKind = "automatic";
     const runId = runContext?.runId || entry.activeRunId || null;
     entry.compactionRunId = runId;
+    let compacted = false;
     try {
       const compactPromise = piRuntimeManager.compact(entry.runtimeId, entry.session, "保留当前项目事实、用户偏好、已完成产物路径、未完成任务和下一步；删除重复的工具输出与旧过程细节。");
       entry.compactionPromise = compactPromise;
       await compactPromise;
+      compacted = true;
     } catch (error) {
       // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
       emitChannelSafe(entry, "context_compact_warning", { runId, message: String(error?.message || error).slice(0, 300) });
     } finally {
+      if (compacted) entry.lastCompactionAt = Date.now();
       entry.compactionPromise = null;
       entry.compactionRunId = null;
       entry.compactionKind = null;
@@ -1677,25 +1869,31 @@ execute: async (_toolCallId, params) => {
           .catch(() => {})
           .finally(() => { entry.resourceReloadPromise = null; });
       }
-      if (entry.resourceReloadPromise) await entry.resourceReloadPromise;
+      // reload 采用后台刷新，不阻塞本轮模型首事件。Agent 工具清单在会话创建时
+      // 已完成，动态上下文仍在本轮同步注入；这样长时间空闲后的第一条消息不会
+      // 因重新扫描资源目录额外等待。
       // 按本轮模式收缩 Pi 的可用工具集合。该策略必须在 prompt 前应用，
       // Chat/Office 发生异常时直接中止，避免以更宽权限继续执行。
       const modePolicy = toolPolicyForMode(entry.mode);
       try {
-        piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
-        entry.modePolicy = modePolicy;
-        piRuntimeManager.update(entry.runtimeId, {
-          profile: entry.task?.agentProfile || "通用 Agent",
-          toolPolicyVersion: "task-tool-policy-v1",
-          toolPolicy: { mode: modePolicy.mode, tools: [...modePolicy.tools] },
-        });
-        emitChannelSafe(entry, "mode_policy", {
-          runId: entry.activeRunId,
-          mode: modePolicy.mode,
-          label: modePolicy.label,
-          description: modePolicy.description,
-          tools: modePolicy.tools,
-        });
+        const modePolicyKey = `${modePolicy.mode}:${entry.task?.agentProfile || "通用 Agent"}`;
+        if (entry.modePolicyKey !== modePolicyKey) {
+          piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
+          entry.modePolicy = modePolicy;
+          entry.modePolicyKey = modePolicyKey;
+          piRuntimeManager.update(entry.runtimeId, {
+            profile: entry.task?.agentProfile || "通用 Agent",
+            toolPolicyVersion: "task-tool-policy-v1",
+            toolPolicy: { mode: modePolicy.mode, tools: [...modePolicy.tools] },
+          });
+          emitChannelSafe(entry, "mode_policy", {
+            runId: entry.activeRunId,
+            mode: modePolicy.mode,
+            label: modePolicy.label,
+            description: modePolicy.description,
+            tools: modePolicy.tools,
+          });
+        }
       } catch (error) {
         entry.modePolicy = null;
         emitChannelSafe(entry, "agent_error", {
@@ -1710,13 +1908,16 @@ execute: async (_toolCallId, params) => {
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
       const requestedThinkingLevel = effort || "low";
       const effectiveThinkingLevel = resolveThinkingLevel(entry.session?.model, requestedThinkingLevel);
+      const thinkingChanged = entry.requestedThinkingLevel !== requestedThinkingLevel || entry.effectiveThinkingLevel !== effectiveThinkingLevel;
+      if (thinkingChanged) {
+        try {
+          piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
+          piRuntimeManager.update(entry.runtimeId, { requestedThinkingLevel, thinkingLevel: effectiveThinkingLevel });
+          emitChannelSafe(entry, "thinking_level", { requested: requestedThinkingLevel, effective: effectiveThinkingLevel, model: entry.session?.model?.id || null });
+        } catch {}
+      }
       entry.requestedThinkingLevel = requestedThinkingLevel;
       entry.effectiveThinkingLevel = effectiveThinkingLevel;
-      try {
-        piRuntimeManager.setThinkingLevel(entry.runtimeId, entry.session, effectiveThinkingLevel);
-        piRuntimeManager.update(entry.runtimeId, { requestedThinkingLevel, thinkingLevel: effectiveThinkingLevel });
-        emitChannelSafe(entry, "thinking_level", { requested: requestedThinkingLevel, effective: effectiveThinkingLevel, model: entry.session?.model?.id || null });
-      } catch {}
       // 强制注入当前工作文件声明（兜底，防止 agent 不知道在改哪个文档）
       if (entry.currentFile) {
         const marker = `[当前工作文件: ${entry.currentFile}]\n`;
@@ -1954,6 +2155,7 @@ execute: async (_toolCallId, params) => {
     entry.compactionPromise = compactPromise;
     try {
       const result = await compactPromise;
+      entry.lastCompactionAt = Date.now();
       return {
         ok: true,
         tokensBefore: result?.tokensBefore || 0,
@@ -2002,10 +2204,12 @@ execute: async (_toolCallId, params) => {
       const ws = entry?.workspace || getWorkspace();
       const memCtx = readMemoryContext(ws);
       const mode = normalizeTaskMode(entry?.mode || "agent");
+      const ctxFile = entry?.threadId ? `.agent-context.${entry.threadId}.md` : ".agent-context.md";
       const lines = [
         "[动态上下文]",
         `- 当前工作区（绝对路径）: ${ws}`,
         `- 当前工作文件: ${file || "（无）"}`,
+        `- 工作区上下文文件: ${ctxFile}（权威版本；旧版 .agent-context.md 可能被其他会话覆盖，仅作兼容）`,
       ];
       if (mode === "chat") {
         lines.push("- 当前为 Chat：只读检索、解释与引用；不得修改文件、执行脚本、调用 Office CLI 或写入长期记忆。");
@@ -2013,7 +2217,7 @@ execute: async (_toolCallId, params) => {
         lines.push(
         "- Office 文档一律用 officecli 工具操作；新建或修改文件必须写入当前工作区。",
         "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。sharing violation 或另一个进程占用才表示文件锁；Access denied、is denied、EPERM 或 EACCES 表示当前服务进程缺少系统写权限。",
-          "- 完成时简要列出读取来源、修改文件、产物、假设和下一步。",
+          "- 完成时简要列出读取来源、修改文件、产物、假设和下一步；收尾必须调用 complete_task 声明 success/partial/blocked/failed。",
           "- 复杂任务先调用 todo 创建 2-6 项结构化待办；每完成一项就用完整快照更新 todo。只有稳定的新项目事实或偏好才提交 memory_update 建议。",
         );
       }
@@ -2052,6 +2256,10 @@ execute: async (_toolCallId, params) => {
         "",
         "- When the user asks to modify a document, make the changes, then confirm what changed. Files are auto-refreshed in the browser.",
       ].join("\n");
+      // 线程级上下文文件是权威版本（同工作区多会话并发时不互相覆盖）；
+      // 同时写一份旧文件名兼容外部读取习惯。
+      const threadFile = entry?.threadId ? path.join(ws, `.agent-context.${entry.threadId}.md`) : null;
+      if (threadFile) atomicWriteFile(threadFile, ctx, "utf8");
       atomicWriteFile(path.join(ws, ".agent-context.md"), ctx, "utf8");
     } catch {}
   }
@@ -2076,6 +2284,19 @@ execute: async (_toolCallId, params) => {
 
   runtimeHealth(clientId) {
     return this.runtimeSnapshot(clientId) || { status: "missing", health: { status: "unknown", message: "Runtime 尚未创建" } };
+  }
+
+  /** 当前会话的上下文用量快照：优先真实 usage，服务重启后按恢复字符数估算。 */
+  usageSnapshot(clientId) {
+    const entry = this.sessions.get(clientId);
+    if (!entry) return null;
+    const usage = entry.lastUsage ? { ...entry.lastUsage } : null;
+    const contextChars = Number(entry.promptChars || 0);
+    return {
+      usage,
+      contextChars,
+      estimatedContextTokens: usage ? 0 : Math.ceil(contextChars / 3.5),
+    };
   }
 
   async restartRuntime(clientId, { threadId = null, sessionPath = null, cwd = getWorkspace(), modelSpec = "" } = {}) {
@@ -2155,7 +2376,8 @@ execute: async (_toolCallId, params) => {
       error.code = "MODEL_NOT_FOUND";
       throw error;
     }
-    const result = await piRuntimeManager.probeModel(model, options);
+const result = await piRuntimeManager.probeModel(model, options);
+    clearInvalidCredential(provider);
     const text = Array.isArray(result.response?.content)
       ? result.response.content.filter((item) => item?.type === "text").map((item) => item.text || "").join("").trim().slice(0, 80)
       : "";
@@ -2205,24 +2427,29 @@ execute: async (_toolCallId, params) => {
     return candidate.id;
   }
 
-  async listModelCatalog() {
+async listModelCatalog() {
     const mr = await this.modelRuntime();
     const providers = localModelProviders();
     const stored = localStoredModels(providers);
-    const runtimeModels = [...mr.getModels()].filter((m) => providers.has(m.provider));
+    const runtimeModels = [...mr.getModels()].filter((m) => providers.has(m.provider) && m.enabled !== false);
     const configured = [...runtimeModels];
-    const available = [...await mr.getAvailable()].filter((m) => providers.has(m.provider));
+    const available = [...await mr.getAvailable()].filter((m) => providers.has(m.provider) && m.enabled !== false);
     const availableKeys = new Set(available.map((m) => `${m.provider}/${m.id}`));
-    const normalize = (m) => ({
-      id: m.provider + "/" + m.id,
-      provider: m.provider,
-      name: m.name || m.id,
-      vision: !!m.vision,
-      available: availableKeys.has(`${m.provider}/${m.id}`),
-      ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
-        ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
-        : {}),
-    });
+    const authErrors = getCredentialErrors();
+    const normalize = (m) => {
+      const authError = authErrors[m.provider] || null;
+      return {
+        id: m.provider + "/" + m.id,
+        provider: m.provider,
+        name: m.name || m.id,
+        vision: !!m.vision,
+        available: availableKeys.has(`${m.provider}/${m.id}`) && !authError,
+        ...(authError ? { authError: authError.message } : {}),
+        ...(Number(m.contextWindow || m.contextLength || m.limit?.context) > 0
+          ? { contextWindow: Math.floor(Number(m.contextWindow || m.contextLength || m.limit.context)) }
+          : {}),
+      };
+    };
     const merged = new Map();
     for (const model of configured) merged.set(`${model.provider}/${model.id}`, normalize(model));
     // Pi TUI 读取 models-store 中的动态目录；放在 Runtime 后合并，
@@ -2246,9 +2473,10 @@ execute: async (_toolCallId, params) => {
       // 下拉框展示 Pi 已配置目录中的全部模型；available 只表示当前运行时已确认可用。
       models,
       configured: configuredFiltered,
-      available: available.map(normalize).filter((m) => !isDenied(m)),
+      available: available.map(normalize).filter((m) => !isDenied(m) && !authErrors[m.provider]),
       counts: { available: available.length, configured: configuredFiltered.length, stored: stored.length, listed: models.length },
       source: "pi-model-runtime+models-store",
+      authErrors,
     };
   }
 
@@ -2292,6 +2520,7 @@ export async function setApiKey(provider, key) {
   const auth = listAuth();
   auth[provider] = { type: "api_key", key: String(key).trim() };
   writeCredentials(auth);
+  clearInvalidCredential(provider);
   try {
     const mr = await agentManager.modelRuntime();
     await mr.setRuntimeApiKey(provider, String(key).trim(), { allowNetwork: false });
@@ -2304,6 +2533,7 @@ export async function removeApiKey(provider) {
   const auth = listAuth();
   if (auth[provider]) delete auth[provider];
   writeCredentials(auth);
+  clearInvalidCredential(provider);
   piRuntimeManager.resetModelRuntime();
   return { ok: true, providers: Object.keys(auth) };
 }
@@ -2315,9 +2545,9 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
     const eventData = data && typeof data === "object" && !Array.isArray(data)
       ? { ...data, runId: data.runId ?? entry?.activeRunId ?? null }
       : { value: data, runId: entry?.activeRunId ?? null };
-    const ev = { id, type, at, data: eventData };
-    entry.channel.history.push(ev);
-    if (entry.channel.history.length > 2000) entry.channel.history.shift();
+    const ev = { id, type, at, streamId: entry.channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
+    if (!entry.channel.historyLimit) entry.channel.historyLimit = CHANNEL_HISTORY_LIMIT;
+    pushChannelEvent(entry.channel, ev);
     entry.channel.emitter.emit("event", ev);
     if (persist && entry.activeRunId) {
       try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}

@@ -144,6 +144,7 @@ export default function App() {
   });
   const [mapContexts, setMapContexts] = useState({});
   const currentMapContext = mapContexts[threadId] || null;
+  const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("oaw_model") || "");
@@ -152,6 +153,7 @@ export default function App() {
   const [currentWorkspace, setCurrentWorkspace] = useState("");
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
+  const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
@@ -167,6 +169,7 @@ export default function App() {
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
   const workspaceSwitchSeqRef = useRef(0);
+  const filesRequestSeqRef = useRef(0);
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
@@ -224,15 +227,22 @@ export default function App() {
     setHistoryThreadId(null);
     setTabs([]);
     setActiveTab(null);
+    currentDirRef.current = "";
     setCurrentDir("");
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
     lastSessionIdRef.current = created?.sessionId || null;
   }, [clientId, currentWorkspace, projects]);
 
-  const refreshFiles = useCallback(async (dir) => {
-    try { setFiles((await listFiles(dir || currentDir)).files); } catch {}
-  }, [currentDir]);
+const refreshFiles = useCallback(async (dir) => {
+    const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
+    const requestSeq = ++filesRequestSeqRef.current;
+    try {
+      const result = await listFiles(requestedDir);
+      // 目录已切换或本次请求不是最新时，过期响应不得覆盖列表
+      if (requestSeq === filesRequestSeqRef.current && requestedDir === currentDirRef.current) setFiles(result.files || []);
+    } catch {}
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
@@ -382,6 +392,7 @@ export default function App() {
     if (!requestedPath || sameWorkspacePath(requestedPath, currentWorkspace)) return;
     const switchSeq = ++workspaceSwitchSeqRef.current;
     // 先清空旧工作区的视图，避免等待服务端时继续操作旧文件。
+    currentDirRef.current = "";
     setCurrentDir("");
     setFiles([]);
     setTabs([]);
@@ -431,10 +442,12 @@ export default function App() {
     } catch (e) { alert("移除失败: " + e.message); }
   }, [currentWorkspace, workspaces, handleWorkspaceChange]);
 
-  // 进入/返回子目录
+// 进入/返回子目录
   const handleDirChange = useCallback((dir) => {
-    setCurrentDir(dir || "");
-    refreshFiles(dir || "");
+    const nextDir = String(dir || "");
+    currentDirRef.current = nextDir;
+    setCurrentDir(nextDir);
+    void refreshFiles(nextDir);
   }, [refreshFiles]);
 
   const open = useCallback(async (name, thread = threadId) => {
@@ -486,6 +499,7 @@ export default function App() {
         if (loadSeq !== sessionLoadSeqRef.current) return;
         resumedWorkspace = switched.workspace;
         setCurrentWorkspace(switched.workspace);
+        currentDirRef.current = "";
         setCurrentDir("");
         setFiles(switched.files || []);
         setTabs([]);
@@ -607,6 +621,8 @@ export default function App() {
           runIndex: index + 1,
           runCount: list.length,
           runMode: run.task?.mode || "agent",
+          // 完成语义：显式 complete_task 或服务端推断结果
+          completion: run.completion || null,
           eventCount: Array.isArray(run.events) ? run.events.length : 0,
           events: Array.isArray(run.events) ? run.events.map((event, eventIndex) => ({
             ...event,
@@ -772,6 +788,7 @@ export default function App() {
       }
       if (saved.activeTab) setActiveTab(saved.activeTab);
       if (saved.currentDir) {
+        currentDirRef.current = saved.currentDir;
         setCurrentDir(saved.currentDir);
         refreshFiles(saved.currentDir);
       }
@@ -824,8 +841,9 @@ export default function App() {
         mapBridgeRef.current?.onFileChanged?.(changed);
       }}
       onMapAction={(action) => mapBridgeRef.current?.onMapAction?.(action)}
-       currentDoc={activeModule === "map" ? "地图模块" : current?.name}
+       currentDoc={activeModule === "map" ? `地图项目:${currentMapProject}` : current?.name}
        mapContext={activeModule === "map" ? currentMapContext : null}
+       mapProject={activeModule === "map" ? currentMapProject : null}
       models={models}
       defaultModel={defaultModel}
       selectedModel={selectedModel}
@@ -917,6 +935,7 @@ export default function App() {
             onSessionChange={handleSessionChange}
             onRefreshSessions={refreshSessions}
             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
+            onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), mapProject: name } }))}
             hideChat
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
@@ -1008,7 +1027,34 @@ export default function App() {
               <span>{currentSession?.title || currentSession?.label || currentProject?.name || "新建 Agent 会话"}</span>
               {current?.name && <span className="topbar-file"> · {current.name}</span>}
             </span>
-            <span className={`conversation-mode-pill mode-${conversationMode}`}><Icon name={conversationMode === "agent" ? "robot" : "comment"} size={12} /> {conversationMode === "agent" ? "Agent" : "Chat"}</span>
+            <div className="conversation-mode-switch" role="group" aria-label="对话工作模式">
+              <button
+                type="button"
+                className={`conversation-mode-option ${conversationMode === "chat" ? "active" : ""}`}
+                aria-pressed={conversationMode === "chat"}
+                title="Chat：只读问答和资料检索"
+                onClick={() => {
+                  const switched = chatInputRef.current?.setMode?.("chat");
+                  if (switched !== false) setConversationMode("chat");
+                }}
+              >
+                <Icon name="comment" size={15} />
+                <span>Chat</span>
+              </button>
+              <button
+                type="button"
+                className={`conversation-mode-option work ${conversationMode === "agent" ? "active" : ""}`}
+                aria-pressed={conversationMode === "agent"}
+                title="Work：允许 Agent 调用编辑工具；实际读写与联网仍受运行环境权限限制"
+                onClick={() => {
+                  const switched = chatInputRef.current?.setMode?.("agent");
+                  if (switched !== false) setConversationMode("agent");
+                }}
+              >
+                <Icon name="tool" size={15} />
+                <span>Work</span>
+              </button>
+            </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button className="btn-sm topbar-preview-toggle" onClick={() => setPreviewOpen((v) => !v)} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>

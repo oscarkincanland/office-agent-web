@@ -302,14 +302,15 @@ function layerStyle(def) {
   }
 }
 
-function getDefaultStyle(project) {
+function getDefaultStyle(project, baseProject = null) {
   const basemaps = getBasemaps();
   const sources = { ...basemaps };
+  const sourceProject = baseProject || project;
   for (const def of LAYER_DEFS) {
     sources[def.id] = {
       type: "vector",
       // 绝对路径：MapLibre 不解析 sources.tiles 的相对 URL
-      tiles: [`/api/map/data/${project}/tiles/${def.id}/{z}/{x}/{y}.pbf`],
+      tiles: [`/api/map/data/${sourceProject}/tiles/${def.id}/{z}/{x}/{y}.pbf`],
       maxzoom: def.maxzoom,
     };
   }
@@ -344,10 +345,12 @@ function getDefaultStyle(project) {
   };
 }
 
-function defaultConfig(project) {
+function defaultConfig(project, { name = null, baseProject = null } = {}) {
   return {
-    name: project === "zhejiang-map" ? "浙江省交通路网与区划图" : project,
+    name: name || (project === "zhejiang-map" ? "浙江省交通路网与区划图" : project),
     project,
+    // 基础路网可复用已有项目；业务图层、配置和 Run 产物仍归当前项目。
+    baseProject: baseProject && baseProject !== project ? baseProject : null,
     center: [120.0, 29.2],
     zoom: 7,
     basemap: "gaode-road",
@@ -365,8 +368,8 @@ function defaultConfig(project) {
 
 /** 项目目录（防目录穿越） */
 export function projectDir(name = DEFAULT_PROJECT) {
-  const n = String(name || "").replace(/[\\/]/g, "");
-  if (!n || n === "." || n === "..") return null;
+  const n = String(name || "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(n)) return null;
   return path.join(MAPS_ROOT, n);
 }
 
@@ -474,23 +477,205 @@ export function hydrateBasemapSources(style) {
   return out;
 }
 
-export function ensureProject(name = DEFAULT_PROJECT) {
+export function ensureProject(name = DEFAULT_PROJECT, options = {}) {
   const dir = projectDir(name);
   if (!dir) return null;
   fs.mkdirSync(path.join(dir, "layers"), { recursive: true });
   const cfgPath = path.join(dir, "map.config.json");
   const stylePath = path.join(dir, "style.json");
-  if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(defaultConfig(name), null, 2));
-  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name)), null, 2));
+  const config = readJson(cfgPath, null) || defaultConfig(name, options);
+  if (!fs.existsSync(cfgPath)) fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  if (!fs.existsSync(stylePath)) fs.writeFileSync(stylePath, JSON.stringify(redactBasemapCredentials(getDefaultStyle(name, config.baseProject)), null, 2));
   return dir;
+}
+
+/** 创建独立地图项目：复用基础路网样式源，业务图层和配置单独保存。 */
+export function createProject({ project, name = null, baseProject = DEFAULT_PROJECT } = {}) {
+  const id = String(project || "").trim();
+  const dir = projectDir(id);
+  if (!dir) {
+    const error = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线，且以字母或数字开头");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(path.join(dir, "map.config.json"))) {
+    const error = new Error(`地图项目已存在：${id}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  const base = String(baseProject || DEFAULT_PROJECT).trim();
+  if (!projectDir(base) || (base !== id && !fs.existsSync(path.join(projectDir(base), "map.config.json")))) {
+    const error = new Error(`基础地图项目不存在：${base}`);
+    error.code = "MAP_BASE_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  const createdDir = ensureProject(id, { name: String(name || id).trim() || id, baseProject: base === id ? null : base });
+  return getProject(id) || { config: defaultConfig(id, { name, baseProject: base }), style: getDefaultStyle(id, base), files: [] };
+}
+
+/** 递归复制目录（不依赖 fs.cpSync：Windows + Node 22 下 cpSync 存在崩溃问题）。 */
+function copyDirRecursive(source, target) {
+  fs.mkdirSync(target, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (entry.name.startsWith("._") || entry.name.startsWith(".") && entry.name !== ".keep") continue;
+    const sourcePath = path.join(source, entry.name);
+    const targetPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      copyDirRecursive(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(sourcePath, targetPath);
+    }
+  }
+}
+
+/** 复制地图项目：保留基础路网引用与全部图层，生成独立副本。 */
+export function duplicateProject({ project, name = null } = {}) {
+  const source = String(project || "").trim();
+  const sourceDir = projectDir(source);
+  if (!sourceDir || !fs.existsSync(path.join(sourceDir, "map.config.json"))) {
+    const error = new Error(`源地图项目不存在：${source}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  const target = String(name || `${source}-copy`).trim();
+  const targetDir = projectDir(target);
+  if (!targetDir) {
+    const error = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(path.join(targetDir, "map.config.json"))) {
+    const error = new Error(`地图项目已存在：${target}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  copyDirRecursive(sourceDir, targetDir);
+  const cfgPath = path.join(targetDir, "map.config.json");
+  const config = readJson(cfgPath, {}) || {};
+  config.project = target;
+  config.name = `${config.name || source} 副本`;
+  config.duplicatedFrom = source;
+  config.duplicatedAt = new Date().toISOString();
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return getProject(target);
+}
+
+/** 重命名地图项目目录（默认项目不可重命名）。 */
+export function renameProject({ project, name } = {}) {
+  const source = String(project || "").trim();
+  const target = String(name || "").trim();
+  if (source === DEFAULT_PROJECT) {
+    const error = new Error("默认地图项目不能重命名");
+    error.code = "MAP_PROJECT_PROTECTED";
+    throw error;
+  }
+  const sourceDir = projectDir(source);
+  const targetDir = projectDir(target);
+  if (!sourceDir || !fs.existsSync(path.join(sourceDir, "map.config.json"))) {
+    const error = new Error(`地图项目不存在：${source}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  if (!targetDir) {
+    const error = new Error("项目标识需为 1-64 位英文、数字、下划线或短横线");
+    error.code = "MAP_PROJECT_INVALID";
+    throw error;
+  }
+  if (fs.existsSync(targetDir)) {
+    const error = new Error(`目标名称已存在：${target}`);
+    error.code = "MAP_PROJECT_EXISTS";
+    throw error;
+  }
+  // Windows 上目录 rename 可能被安全软件/索引器短暂占用（EPERM/EBUSY），
+  // 先退避重试，仍失败则复制后删除，保证重命名不因瞬时锁失败。
+  let renamed = false;
+  for (let attempt = 0; attempt < 3 && !renamed; attempt += 1) {
+    try {
+      fs.renameSync(sourceDir, targetDir);
+      renamed = true;
+    } catch (error) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+      if (attempt < 2) {
+        const until = Date.now() + 150 * (attempt + 1);
+        while (Date.now() < until) { /* 同步短退避 */ }
+      }
+    }
+  }
+  if (!renamed) {
+    try {
+      copyDirRecursive(sourceDir, targetDir);
+      fs.rmSync(sourceDir, { recursive: true, force: true });
+    } catch (error) {
+      try { fs.rmSync(targetDir, { recursive: true, force: true }); } catch {}
+      throw error;
+    }
+  }
+  const cfgPath = path.join(targetDir, "map.config.json");
+  const config = readJson(cfgPath, {}) || {};
+  config.project = target;
+  config.name = String(config.name || target);
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return getProject(target);
+}
+
+/** 归档/恢复地图项目：只改配置状态，不改目录（避免破坏会话与恢复链接）。 */
+export function archiveProject(name, archived = true) {
+  const dir = projectDir(name);
+  if (!dir) return null;
+  const cfgPath = path.join(dir, "map.config.json");
+  if (!fs.existsSync(cfgPath)) return null;
+  const config = readJson(cfgPath, {}) || {};
+  config.archived = Boolean(archived);
+  config.archivedAt = archived ? new Date().toISOString() : null;
+  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2));
+  return config;
+}
+
+/** 删除地图项目（默认项目受保护），移入回收目录而不是直接物理删除。 */
+export function deleteProject(name) {
+  const id = String(name || "").trim();
+  if (id === DEFAULT_PROJECT) {
+    const error = new Error("默认地图项目不能删除");
+    error.code = "MAP_PROJECT_PROTECTED";
+    throw error;
+  }
+  const dir = projectDir(id);
+  if (!dir || !fs.existsSync(path.join(dir, "map.config.json"))) {
+    const error = new Error(`地图项目不存在：${id}`);
+    error.code = "MAP_PROJECT_NOT_FOUND";
+    throw error;
+  }
+  const trashRoot = path.join(MAPS_ROOT, ".trash");
+  fs.mkdirSync(trashRoot, { recursive: true });
+  const target = path.join(trashRoot, `${id}-${Date.now().toString(36)}`);
+  let moved = false;
+  for (let attempt = 0; attempt < 3 && !moved; attempt += 1) {
+    try {
+      fs.renameSync(dir, target);
+      moved = true;
+    } catch (error) {
+      if (!["EPERM", "EBUSY", "EACCES"].includes(error?.code)) throw error;
+      if (attempt < 2) {
+        const until = Date.now() + 150 * (attempt + 1);
+        while (Date.now() < until) { /* 同步短退避 */ }
+      } else {
+        copyDirRecursive(dir, target);
+        fs.rmSync(dir, { recursive: true, force: true });
+        moved = true;
+      }
+    }
+  }
+  return { deleted: id, trash: path.basename(target) };
 }
 
 /** 项目详情：config + style + 图层文件清单 */
 export function getProject(name = DEFAULT_PROJECT) {
-  const dir = ensureProject(name);
+  const dir = projectDir(name);
   if (!dir) return null;
+  if (!fs.existsSync(path.join(dir, "map.config.json"))) return null;
+  ensureProject(name);
   const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
-  const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name));
+  const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name, config.baseProject));
   const layersDir = path.join(dir, "layers");
   const files = fs.existsSync(layersDir)
     ? fs.readdirSync(layersDir, { withFileTypes: true })
@@ -549,7 +734,17 @@ export function rebuildBasemapStyle(name = DEFAULT_PROJECT) {
   }
   Object.assign(sources, basemaps);
   // 保留非底图图层，重建 basemap-* 图层
-  const keep = style.layers.filter((l) => !String(l.id).startsWith("basemap-"));
+  const keep = Array.isArray(style.layers) ? style.layers.filter((l) => !String(l.id).startsWith("basemap-")) : [];
+  // 新项目只复用基础路网瓦片；导入的业务图层则在当前项目生成独立 source。
+  const sourceProject = cfg?.baseProject || name;
+  const configLayers = Array.isArray(cfg?.layers) ? cfg.layers : [];
+  for (const layer of configLayers) {
+    const id = String(layer?.id || "").trim();
+    if (!id || sources[id]) continue;
+    const def = LAYER_DEFS.find((item) => item.id === id) || { id, type: layer.type || "road", minzoom: layer.minzoom || 5, maxzoom: layer.maxzoom || 13 };
+    sources[id] = { type: "vector", tiles: [`/api/map/data/${LAYER_DEFS.some((item) => item.id === id) ? sourceProject : name}/tiles/${id}/{z}/{x}/{y}.pbf`], maxzoom: def.maxzoom };
+    if (!keep.some((item) => item.id === id)) keep.push(layerStyle(def));
+  }
   const baseLayers = Object.keys(basemaps).map((id) =>
     id === "blank"
       ? {

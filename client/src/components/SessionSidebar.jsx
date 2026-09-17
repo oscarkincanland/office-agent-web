@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -280,6 +280,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
+  const [fileSearchResults, setFileSearchResults] = useState(null);
+  const [fileSearchLoading, setFileSearchLoading] = useState(false);
+  const fileSearchSeqRef = useRef(0);
+  const fileSearchTimerRef = useRef(null);
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
@@ -300,6 +304,35 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const projectSessions = (project) => sessions.filter((session) => session.projectId === project.id || samePath(session.cwd, project.rootPath));
   const historyProject = projects.find((project) => project.id === historyProjectId) || currentProject;
   const historySessions = historyProject ? projectSessions(historyProject) : [];
+
+  useEffect(() => {
+    const query = fileQ.trim();
+    if (!query) {
+      setFileSearchResults(null);
+      setFileSearchLoading(false);
+      return undefined;
+    }
+    const requestSeq = ++fileSearchSeqRef.current;
+    if (fileSearchTimerRef.current) window.clearTimeout(fileSearchTimerRef.current);
+    fileSearchTimerRef.current = window.setTimeout(async () => {
+      setFileSearchLoading(true);
+      try {
+        const result = await searchFiles(query, 200);
+        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults(result.files || []);
+      } catch {
+        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults([]);
+      } finally {
+        if (requestSeq === fileSearchSeqRef.current) setFileSearchLoading(false);
+      }
+    }, 180);
+    return () => window.clearTimeout(fileSearchTimerRef.current);
+  }, [currentWorkspace, fileQ]);
+
+  const navigateDir = useCallback((dir) => {
+    setFileQ("");
+    setFileSearchResults(null);
+    onDirChange?.(dir || "");
+  }, [onDirChange]);
 
   const refreshArtifacts = useCallback(async () => {
     setArtifactLoading(true);
@@ -349,7 +382,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     setApplying(true);
     try {
       const v = await validateWorkspace(dir);
-      if (!v.ok) { alert("无法打开: " + (v.error || "无效目录")); return; }
+      if (!v.ok) {
+        const reason = v.writeAccess?.message || v.error || "无效目录";
+        alert(`无法将此目录用作可写工作区：${reason}`);
+        return;
+      }
       await onWorkspaceChange(dir);
       setCustomMode(false);
       setSwitcherOpen(false);
@@ -706,7 +743,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <Icon name="folder" size={12} />
         <span className="section-name">文件</span>
         <span className="section-count">{files.length}</span>
-        <button className="btn-xs section-refresh" onClick={onRefreshFiles} title="刷新文件">
+        <button className="btn-xs section-refresh" onClick={() => onRefreshFiles()} title="刷新文件">
           <Icon name="refresh" size={11} />
         </button>
         <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
@@ -717,49 +754,48 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         </button>
         <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
       </div>
-      <div className="sidebar-section files-section">
-        {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
-        {currentDir && (
-          <div className="crumb-bar">
-            <button className="btn-xs" onClick={() => onDirChange && onDirChange(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">← 上一级</button>
-            <button className="btn-xs" onClick={() => onDirChange && onDirChange("")} title="返回工作区根目录">根目录</button>
+       <div className="sidebar-section files-section">
+         {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
+         {currentDir && (
+           <div className="crumb-bar">
+            <button className="btn-xs" onClick={() => navigateDir(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">← 上一级</button>
+            <button className="btn-xs" onClick={() => navigateDir("")} title="返回工作区根目录">根目录</button>
             <span className="crumb-path">/{currentDir.split("/").pop()}</span>
           </div>
         )}
         <div className="file-search">
           <Icon name="search" size={11} />
           <input
-            placeholder="搜索文件…"
+            placeholder="搜索整个工作区的文件和目录…"
             value={fileQ}
             onChange={(e) => setFileQ(e.target.value)}
           />
           {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除">×</button>}
         </div>
         <div className="file-list">
-          {files
-            .filter((f) => !fileQ.trim() || f.name.toLowerCase().includes(fileQ.trim().toLowerCase()))
-            .map((f) => {
-            const filePath = currentDir ? `${currentDir}/${f.name}` : f.name;
+          {fileSearchLoading && <div className="file-search-status">正在搜索整个工作区…</div>}
+          {!fileSearchLoading && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
+          {(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
+            const filePath = f.relPath || (currentDir ? `${currentDir}/${f.name}` : f.name);
             const isNew = newFiles.has(filePath);
             return (
               <div
-                key={f.name}
+                key={filePath}
                 className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""}`}
                 onClick={() => {
                   if (f.isDir) {
-                    const next = currentDir ? `${currentDir}/${f.name}` : f.name;
-                    onDirChange && onDirChange(next);
+                    navigateDir(filePath);
                   } else {
                     onOpenFile(filePath);
                   }
                 }}
                 onContextMenu={(e) => handleContextMenu(e, f)}
                 title={f.name}
-              >
+                >
                 <FileTypeIcon file={f} />
                 <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
                 <span className="file-meta">
-                  {f.isDir ? "▶" : formatSize(f.size)}
+                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? "▶" : formatSize(f.size))}
                   {!f.isDir && <span className="file-mtime">{formatTime(new Date(f.mtime).toISOString())}</span>}
                 </span>
                 <span

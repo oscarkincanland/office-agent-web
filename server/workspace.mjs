@@ -44,6 +44,7 @@ fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
 const ROOTS_STATE_FILE = path.join(PROJECT_DIR, ".file-roots.json");
 const SUPPORTED_EXTENSIONS = /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".next", "dist", "build", "coverage"]);
 
 // 当前工作区（可切换），默认项目内的 office-workspace；切换后持久化，重启恢复
 let _currentWorkspace = WORKSPACE_DIR;
@@ -199,6 +200,47 @@ export function listWorkspace(dir) {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
+}
+
+/** 在当前工作区递归搜索文件和目录名称，返回相对路径，避免前端逐层请求目录。 */
+export function searchWorkspace(query, { dir = _currentWorkspace, limit = 200, maxDepth = 12 } = {}) {
+  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const root = normalizeWorkspace(dir);
+  if (!root || !terms.length) return [];
+  const results = [];
+  const pending = [{ absolute: root, relative: "", depth: 0 }];
+  const matches = (relative) => terms.every((term) => relative.toLowerCase().includes(term));
+  while (pending.length && results.length < limit) {
+    const current = pending.pop();
+    let entries;
+    try { entries = fs.readdirSync(current.absolute, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name.startsWith("~$")) continue;
+      if (entry.isDirectory() && SEARCH_SKIP_DIRS.has(entry.name)) continue;
+      const relative = current.relative ? `${current.relative}/${entry.name}` : entry.name;
+      const absolute = path.join(current.absolute, entry.name);
+      if (entry.isDirectory()) {
+        if (matches(relative)) {
+          try {
+            const stat = fs.statSync(absolute);
+            results.push({ name: entry.name, relPath: relative, isDir: true, ext: "folder", size: 0, mtime: stat.mtimeMs });
+          } catch {}
+        }
+        if (current.depth < maxDepth) pending.push({ absolute, relative, depth: current.depth + 1 });
+        continue;
+      }
+      if (!SUPPORTED_EXTENSIONS.test(entry.name) || !matches(relative)) continue;
+      try {
+        const stat = fs.statSync(absolute);
+        results.push({ name: entry.name, relPath: relative, isDir: false, ext: path.extname(entry.name).slice(1).toLowerCase(), size: stat.size, mtime: stat.mtimeMs });
+      } catch {}
+      if (results.length >= limit) break;
+    }
+  }
+  return results.sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.relPath.localeCompare(b.relPath, undefined, { sensitivity: "base" });
+  }).slice(0, limit);
 }
 
 // 解析相对路径（支持子目录），返回绝对路径

@@ -19,7 +19,7 @@ const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
   "bash", "write", "edit",
   "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis",
-  "memory_update", "todo",
+  "memory_update", "todo", "complete_task",
 ]);
 
 export function normalizeTaskMode(mode) {
@@ -119,6 +119,7 @@ export function createTaskEnvelope(input = {}) {
     recoveryOf: input.recoveryOf || null,
     recoveryAction: input.recoveryAction || null,
     projectId: input.projectId || null,
+    mapProject: input.mapProject || null,
     agentProfile: input.agentProfile || "通用 Agent",
     projectSettings: input.projectSettings || null,
     profilePolicy: input.profilePolicy || input.projectSettings?.profilePolicy || null,
@@ -145,6 +146,7 @@ export function taskSummary(task) {
     `模式：${task.modeLabel || modeLabel(task.mode)}`,
     task.workflowId ? `工作流：${task.workflowId}` : "",
     task.currentFile ? `当前文件：${task.currentFile}` : "",
+    task.mapProject ? `当前地图项目：${task.mapProject}` : "",
     task.references?.length ? `引用：${task.references.length} 项` : "",
     task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具并汇报来源、修改、产物、假设和下一步。",
   ].filter(Boolean).join("\n");

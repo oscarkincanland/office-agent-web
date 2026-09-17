@@ -9,6 +9,7 @@ export async function api(path, opts = {}) {
 }
 
 export const listFiles = (dir) => api(`/api/files${dir ? `?dir=${encodeURIComponent(dir)}` : ""}`);
+export const searchFiles = (query, limit = 200) => api(`/api/files/search?q=${encodeURIComponent(query)}&limit=${limit}`);
 export const uploadFile = (name, base64) => api("/api/files/upload", { method: "POST", body: JSON.stringify({ name, base64 }) });
 export const deleteFile = (name) => api("/api/files/delete", { method: "POST", body: JSON.stringify({ name }) });
 export const openDoc = (name) => api(`/api/doc/${encodeURIComponent(name)}`);
@@ -39,6 +40,10 @@ export const agentNetworkSettingsSave = (settings = {}) =>
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
+export const agentModelConfigs = () => api("/api/agent/model-configs");
+export const saveAgentModelConfig = (payload = {}) => api("/api/agent/model-configs", { method: "POST", body: JSON.stringify(payload) });
+export const deleteAgentModelConfig = (provider) => api(`/api/agent/model-configs/${encodeURIComponent(provider)}`, { method: "DELETE" });
+export const fetchAgentModels = (payload = {}) => api("/api/agent/model-configs/fetch-models", { method: "POST", body: JSON.stringify(payload) });
 export const setAgentModel = (client, model, thread) =>
   api("/api/agent/model", { method: "POST", body: JSON.stringify({ client, thread, model }) });
 export const setAgentModelForThread = (client, thread, model) =>
@@ -192,6 +197,16 @@ export const kbImaDoc = (mediaId) => api(`/api/kb/ima/doc?media_id=${encodeURICo
 
 // ---------- 地图（GIS 项目） ----------
 export const mapProjects = () => api("/api/map/projects");
+export const mapCreateProject = (project, name, baseProject = "zhejiang-map") =>
+  api("/api/map/projects", { method: "POST", body: JSON.stringify({ project, name, baseProject }) });
+export const mapDuplicateProject = (project, name) =>
+  api("/api/map/projects/duplicate", { method: "POST", body: JSON.stringify({ project, name }) });
+export const mapRenameProject = (project, name) =>
+  api("/api/map/projects/rename", { method: "POST", body: JSON.stringify({ project, name }) });
+export const mapArchiveProject = (project, archived = true) =>
+  api("/api/map/projects/archive", { method: "POST", body: JSON.stringify({ project, archived }) });
+export const mapDeleteProject = (project) =>
+  api("/api/map/projects/delete", { method: "POST", body: JSON.stringify({ project }) });
 export const mapProject = (name) => api(`/api/map/project${name ? `?name=${encodeURIComponent(name)}` : ""}`);
 export const mapSaveStyle = (name, style) =>
   api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });

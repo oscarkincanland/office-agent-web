@@ -159,7 +159,7 @@ export function ensureRunStaging(runId, workspace) {
   return { runId: info.id, workspace: root, directory: info.stagingDir, manifest: info.manifestFile };
 }
 
-export function acquireWriteLock({ workspace, targetPath, runId, threadId = null, kind = "file" } = {}) {
+export function acquireWriteLock({ workspace, targetPath, runId, threadId = null, kind = "file", skipExternalOverlap = false } = {}) {
   const target = validateTarget(workspace, targetPath).target;
   const key = lockKey(target);
   const owner = String(runId || "").trim();
@@ -184,7 +184,7 @@ export function acquireWriteLock({ workspace, targetPath, runId, threadId = null
     });
   }
 
-  const overlap = findExternalOverlap(target);
+  const overlap = (kind === "workspace_write_probe" || skipExternalOverlap) ? null : findExternalOverlap(target);
   if (overlap && overlap.runId !== owner) {
     throw new WriteConflictError(`写入范围与其他任务冲突：${overlap.target}`, {
       target,
@@ -275,6 +275,39 @@ export function withWriteLock(options, callback) {
   const token = acquireWriteLock(options);
   try {
     return callback();
+  } finally {
+    releaseWriteLock(token);
+  }
+}
+
+export async function withWriteLockAsync(options, callback) {
+  const token = acquireWriteLock(options);
+  try {
+    return await callback();
+  } finally {
+    releaseWriteLock(token);
+  }
+}
+
+export function writeWorkspaceFile({ workspace, targetPath, content, runId = null, threadId = null, kind = "ui_file", skipExternalOverlap = false } = {}) {
+  const { root, target, relative } = validateTarget(workspace, targetPath, { allowWorkspaceRoot: false });
+  if (isProtectedMemoryTarget(root, target)) {
+    const error = new Error("长期记忆必须通过 memory_update 建议并经用户审核，不能使用普通文件写入工具");
+    error.code = "MEMORY_WRITE_REQUIRES_PROPOSAL";
+    throw error;
+  }
+const owner = runId || `ui_${crypto.randomUUID()}`;
+  const token = acquireWriteLock({ workspace: root, targetPath: target, runId: owner, threadId, kind, skipExternalOverlap });
+  try {
+    const existed = fs.existsSync(target);
+    atomicWriteFile(target, content);
+    return {
+      ok: true,
+      workspace: root,
+      path: relative,
+      status: existed ? "modified" : "added",
+      size: Buffer.isBuffer(content) ? content.length : Buffer.byteLength(String(content)),
+    };
   } finally {
     releaseWriteLock(token);
   }
@@ -415,11 +448,23 @@ function materializeStagedFile(target, content, existed) {
   throw lastError;
 }
 
-export function publishStagedRun(runId, workspace, { onEvent, threadId = null } = {}) {
+export function publishStagedRun(runId, workspace, { onEvent, threadId = null, paths = null } = {}) {
   const { root } = validateTarget(workspace, workspace);
   const { info, manifest } = loadManifest(runId);
   const files = Array.isArray(manifest.files) ? manifest.files : [];
-  const checked = files.map((entry) => {
+  const allowedPaths = Array.isArray(paths)
+    ? new Set(paths.map((item) => String(item || "").replace(/\\/g, "/")).filter(Boolean))
+    : null;
+  const skipped = allowedPaths
+    ? files.filter((entry) => !allowedPaths.has(String(entry.path || "").replace(/\\/g, "/")))
+    : [];
+  for (const entry of skipped) {
+    const stagedPath = path.resolve(info.runDir, entry.stagedPath || "");
+    if (isInside(info.stagingDir, stagedPath)) {
+      try { fs.rmSync(stagedPath, { force: true }); } catch {}
+    }
+  }
+  const checked = files.filter((entry) => !allowedPaths || allowedPaths.has(String(entry.path || "").replace(/\\/g, "/"))).map((entry) => {
     const target = validateTarget(root, path.resolve(root, entry.path), { allowWorkspaceRoot: false }).target;
     const stagedPath = path.resolve(info.runDir, entry.stagedPath || "");
     if (!isInside(info.stagingDir, stagedPath) || !fs.existsSync(stagedPath) || !fs.statSync(stagedPath).isFile()) throw new Error(`临时产物不存在：${entry.path}`);

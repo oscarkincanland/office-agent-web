@@ -75,6 +75,26 @@ async function smokeTest() {
   if (!ready) { fail("服务器未在 100s 内启动: " + (serverOut.slice(-800) || "(无输出)")); cleanup(1); return; }
   ok("服务器启动");
 
+  try {
+    const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "规聚工作区写入接口-"));
+    try {
+      const res = await fetch(`http://localhost:${PORT}/api/workspace/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: tempWorkspace }),
+      });
+      const body = await res.json();
+      if (!res.ok || body.ok !== true || body.writeAccess?.status !== "passed" || !body.writeAccess.details?.operations?.includes("modify") || !body.officecli?.status) {
+        throw new Error(`工作区探针返回异常 (${res.status}): ${JSON.stringify(body)}`);
+      }
+      ok("POST /api/workspace/validate -> 真实写入链路与 OfficeCLI 状态分开报告");
+    } finally {
+      fs.rmSync(tempWorkspace, { recursive: true, force: true });
+    }
+  } catch (e) {
+    fail(`工作区写入能力接口检查: ${e.message}`);
+  }
+
   // 第二阶段稳定性定向检查：能力计划、文档读取缓存、基础产物结构校验
   try {
     const plan = planTaskCapabilities({ text: "修改报告.docx并导出", task: { mode: "office", currentFile: "报告.docx" } });

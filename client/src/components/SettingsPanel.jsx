@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, saveAgentModelConfig, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -68,6 +68,26 @@ const PROFILE_POLICY_HINTS = {
   GIS: "地图与空间分析优先 · 图层写入前确认",
   "数据分析": "数据校验与图表产出优先 · 深度推理",
 };
+const MODEL_API_OPTIONS = [
+  ["openai-completions", "OpenAI Chat Completions"],
+  ["anthropic-messages", "Anthropic Messages"],
+  ["openai-codex-responses", "OpenAI Responses"],
+];
+
+function providerDraftFromConfig(config = null) {
+  return {
+    provider: config?.provider || "my-gateway",
+    name: config?.name || "我的网关",
+    api: config?.api || "openai-completions",
+    baseUrl: config?.baseUrl || "https://api.openai.com/v1",
+    apiKey: "",
+    clearApiKey: false,
+    enabled: config?.enabled !== false,
+    models: Array.isArray(config?.models) && config.models.length
+      ? config.models.map((model) => ({ ...model, contextWindow: model.contextWindow || "", enabled: model.enabled !== false }))
+      : [{ id: "custom-model", name: "自定义模型", contextWindow: "", reasoning: true, vision: false, enabled: true }],
+  };
+}
 
 function ProjectSettingsSection({ project, projects = [], currentWorkspace = "", models = [], onProjectUpdated, onProjectSelect }) {
   const [projectDraft, setProjectDraft] = useState({ name: "", type: "综合项目", status: "进行中", description: "" });
@@ -242,6 +262,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [showTimeline, setShowTimeline] = useSetting("showTimeline");
   const [integration, setIntegration] = useState(null);
   const [providers, setProviders] = useState(null);      // {provider: {masked, set}}
+  const [authErrors, setAuthErrors] = useState({});
   const [authProvider, setAuthProvider] = useState("anthropic");
   const [authKey, setAuthKey] = useState("");
   const [authMsg, setAuthMsg] = useState("");
@@ -249,6 +270,12 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
   const [customProviderDraft, setCustomProviderDraft] = useState({ provider: "custom-api", baseUrl: "https://api.openai.com/v1", api: "openai-completions", modelId: "custom-model", modelName: "自定义模型", contextWindow: "", reasoning: true, vision: false });
   const [customProviderMsg, setCustomProviderMsg] = useState("");
   const [customProviderSaving, setCustomProviderSaving] = useState(false);
+  const [modelConfigs, setModelConfigs] = useState([]);
+  const [providerEditorOpen, setProviderEditorOpen] = useState(false);
+  const [providerDraft, setProviderDraft] = useState(() => providerDraftFromConfig());
+const [providerConfigMsg, setProviderConfigMsg] = useState("");
+  const [providerConfigSaving, setProviderConfigSaving] = useState(false);
+  const [modelsFetching, setModelsFetching] = useState(false);
   const [probeLoading, setProbeLoading] = useState(false);
   const [probeMsg, setProbeMsg] = useState("");
   const [modelList, setModelList] = useState(models);
@@ -315,6 +342,15 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     }
   }, []);
 
+  const loadModelConfigs = useCallback(async () => {
+    try {
+      const result = await agentModelConfigs();
+      setModelConfigs(Array.isArray(result?.configs) ? result.configs : []);
+    } catch (error) {
+      setProviderConfigMsg(`读取供应商配置失败 · ${error.message}`);
+    }
+  }, []);
+
   // 消息字体大小 → CSS 变量（.msg 生效）
   useEffect(() => {
     const size = FONT_OPTIONS.find((f) => f.id === msgFontSize)?.size || 13;
@@ -329,9 +365,10 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         if (r.version) setVersion("v" + r.version);
       } catch {}
     })();
-    // 已配置的 API Key（掩码）
-    agentAuth().then((r) => setProviders(r.providers || {})).catch(() => {});
+// 已配置的 API Key（掩码）
+    agentAuth().then((r) => { setProviders(r.providers || {}); setAuthErrors(r.authErrors || {}); }).catch(() => {});
     loadPiConfiguration().catch(() => {});
+    loadModelConfigs().catch(() => {});
     loadDiagnostics().catch(() => {});
     // 底图服务 Key 状态
     mapSettings()
@@ -340,7 +377,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         setBasemapStatus({ tianditu: !!b.tiandituKey, maptiler: !!b.maptilerKey, geoapify: !!b.geoapifyKey });
       })
       .catch(() => {});
-  }, [loadPiConfiguration]);
+  }, [loadPiConfiguration, loadModelConfigs]);
 
   const saveBasemaps = async () => {
     setBasemapSaving(true);
@@ -372,9 +409,10 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
         targetModel = await saveCustomProvider();
         provider = customProviderDraft.provider.trim();
       }
-      await agentAuthSave(provider, key);
+await agentAuthSave(provider, key);
       const r = await agentAuth();
       setProviders(r.providers || {});
+      setAuthErrors(r.authErrors || {});
       setAuthKey("");
       if (targetModel && targetModel !== activeModel) onModelChange?.(targetModel);
       setAuthMsg(`已保存 ${provider} ✓`);
@@ -388,9 +426,10 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
 
   const removeAuth = async (provider) => {
     if (!confirm(`删除 ${provider} 的 API Key？`)) return;
-    await agentAuthRemove(provider).catch(() => {});
+await agentAuthRemove(provider).catch(() => {});
     const r = await agentAuth();
     setProviders(r.providers || {});
+    setAuthErrors(r.authErrors || {});
     await loadDiagnostics();
   };
 
@@ -410,8 +449,9 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       const result = await agentImportConfig({ includeModels: true, includeSettings: true, includeCredentials: true, includeSessions: piImportSessions });
       const sessionResult = result.sessions || {};
       setPiImportMsg(`导入完成 · ${result.imported?.length || 0} 项配置${piImportSessions ? ` · ${sessionResult.imported || 0} 个会话` : ""}`);
-      const authResult = await agentAuth();
+const authResult = await agentAuth();
       setProviders(authResult.providers || {});
+      setAuthErrors(authResult.authErrors || {});
       await loadPiConfiguration();
       await refreshModelCatalog();
     } catch (error) {
@@ -448,6 +488,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
 
   const providerOptions = [...new Set([
     ...availableModels.map((item) => item.provider).filter(Boolean),
+    ...modelConfigs.map((item) => item.provider).filter(Boolean),
     ...Object.keys(providers || {}),
     "anthropic", "openai", "gemini", "deepseek", "moonshot", "qwen", "custom",
   ])];
@@ -473,6 +514,94 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
       throw error;
     } finally {
       setCustomProviderSaving(false);
+    }
+  };
+
+  const openProviderEditor = (config = null) => {
+    setProviderDraft(providerDraftFromConfig(config));
+    setProviderConfigMsg("");
+    setProviderEditorOpen(true);
+  };
+
+  const updateProviderModel = (index, patch) => {
+    setProviderDraft((value) => ({
+      ...value,
+      models: value.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model),
+    }));
+  };
+
+  const saveProviderConfig = async () => {
+    if (providerConfigSaving) return;
+    setProviderConfigSaving(true);
+    setProviderConfigMsg("正在保存供应商配置…");
+    try {
+      const payload = {
+        ...providerDraft,
+        provider: providerDraft.provider.trim(),
+        name: providerDraft.name.trim(),
+        baseUrl: providerDraft.baseUrl.trim(),
+        apiKey: providerDraft.apiKey.trim(),
+        models: providerDraft.models.map((model) => ({
+          ...model,
+          id: String(model.id || "").trim(),
+          name: String(model.name || "").trim(),
+          contextWindow: model.contextWindow === "" ? "" : Number(model.contextWindow),
+        })),
+      };
+      const result = await saveAgentModelConfig(payload);
+      setModelConfigs((items) => {
+        const next = items.filter((item) => item.provider !== result.config?.provider);
+        return result.config ? [...next, result.config].sort((a, b) => a.provider.localeCompare(b.provider)) : next;
+      });
+      setProviderDraft(providerDraftFromConfig(result.config));
+      setProviderConfigMsg(`已保存 ${result.config?.name || payload.name}`);
+      await refreshModelCatalog();
+    } catch (error) {
+      setProviderConfigMsg(`保存失败 · ${error.message}`);
+    } finally {
+      setProviderConfigSaving(false);
+    }
+  };
+
+  const fetchModelsFromUrl = async () => {
+    if (modelsFetching) return;
+    const baseUrl = providerDraft.baseUrl.trim();
+    if (!baseUrl) { setProviderConfigMsg("请先填写接口地址再拉取模型"); return; }
+    setModelsFetching(true);
+    setProviderConfigMsg("正在从接口拉取模型列表…");
+    try {
+      const payload = { baseUrl, apiKey: providerDraft.apiKey.trim() };
+      const existing = modelConfigs.find((item) => item.provider === providerDraft.provider);
+      if (!payload.apiKey && existing?.keyConfigured) payload.provider = providerDraft.provider;
+      const result = await fetchAgentModels(payload);
+      const fetched = Array.isArray(result.models) ? result.models : [];
+      if (!fetched.length) { setProviderConfigMsg("接口没有返回任何模型"); return; }
+      const existingIds = new Set(providerDraft.models.map((model) => String(model.id || "").trim()).filter(Boolean));
+      const addedCount = fetched.filter((id) => !existingIds.has(id)).length;
+      setProviderDraft((value) => {
+        const currentIds = new Set(value.models.map((model) => String(model.id || "").trim()).filter(Boolean));
+        const added = fetched.filter((id) => !currentIds.has(id)).map((id) => ({ id, name: id, contextWindow: "", reasoning: true, vision: false, enabled: true }));
+        return { ...value, models: [...value.models, ...added] };
+      });
+      setProviderConfigMsg(addedCount ? `已拉取 ${fetched.length} 个模型，新增 ${addedCount} 个，保存后生效` : `已拉取 ${fetched.length} 个模型，全部已存在`);
+    } catch (error) {
+      setProviderConfigMsg(`拉取失败 · ${error.message}`);
+    } finally {
+      setModelsFetching(false);
+    }
+  };
+
+  const removeProviderConfig = async (provider) => {
+    const target = modelConfigs.find((item) => item.provider === provider);
+    if (!target || !confirm(`删除供应商“${target.name || provider}”及其凭据？`)) return;
+    try {
+      await deleteAgentModelConfig(provider);
+      setModelConfigs((items) => items.filter((item) => item.provider !== provider));
+      if (providerDraft.provider === provider) setProviderEditorOpen(false);
+      setProviderConfigMsg(`已删除 ${target.name || provider}`);
+      await refreshModelCatalog();
+    } catch (error) {
+      setProviderConfigMsg(`删除失败 · ${error.message}`);
     }
   };
 
@@ -520,14 +649,15 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
     }
   };
 
-  const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model?.selected || "").trim();
+const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model?.selected || "").trim();
   const diagnosticModelReady = Boolean(diagnosticModel && (diagnostics?.model?.selectedInCatalog || selectedModelInfo) && diagnostics?.model?.selectedAvailable !== false);
   const diagnosticRuntimeStatus = String(diagnostics?.runtime?.health?.status || "");
   const diagnosticRuntimeReady = ["idle", "running", "busy"].includes(diagnosticRuntimeStatus);
+  const credentialErrorCount = Object.keys(diagnostics?.authErrors || authErrors || {}).length;
   const diagnosticCards = [
     { label: "Pi SDK", value: integration?.piPackageVersion || diagnostics?.service?.version ? "已加载" : "未加载", ok: Boolean(integration?.piPackageVersion || diagnostics?.service?.version) },
     { label: "模型目录", value: diagnosticModelReady ? "已就绪" : diagnosticModel ? "未匹配" : "未选择", ok: diagnosticModelReady },
-    { label: "供应商凭据", value: diagnostics?.model?.authConfigured || configuredProviderCount ? "已配置" : "未配置", ok: Boolean(diagnostics?.model?.authConfigured || configuredProviderCount) },
+    { label: "供应商凭据", value: credentialErrorCount ? `${credentialErrorCount} 个凭据失效` : diagnostics?.model?.authConfigured || configuredProviderCount ? "已配置" : "未配置", ok: !credentialErrorCount && Boolean(diagnostics?.model?.authConfigured || configuredProviderCount) },
     { label: "真实调用", value: probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试", ok: probeMsg.startsWith("连接成功") },
   ];
 
@@ -658,16 +788,54 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
           <div><strong>让 Agent 先连通，再开始工作</strong><p>模型目录由 Pi 运行时提供。切换模型只影响当前会话，不会改动历史会话。</p></div>
           <button className="btn-sm" onClick={refreshModelCatalog} disabled={modelRefreshLoading}><Icon name="refresh" size={12} /> {modelRefreshLoading ? "刷新中…" : "刷新目录"}</button>
         </div>
+        <div className="model-provider-manager">
+          <div className="model-credentials-head">
+            <div><strong>模型供应商</strong><p>统一管理接口协议、Base URL、API Key 和模型目录。API Key 只保存到服务端凭据文件。</p></div>
+            <button className="btn-sm primary" onClick={() => openProviderEditor()}><Icon name="plus" size={12} /> 新增供应商</button>
+          </div>
+          {modelConfigs.length > 0 ? <div className="model-provider-list">
+            {modelConfigs.map((config) => <div className="model-provider-item" key={config.provider}>
+              <div className="model-provider-item-main"><strong>{config.name}</strong><code>{config.provider}</code><span>{MODEL_API_OPTIONS.find(([id]) => id === config.api)?.[1] || config.api}</span><span>{config.models.length} 个模型</span></div>
+              <div className="model-provider-item-status">{config.authError && <span className="sp-badge warn" title={`凭据失效：${config.authError}`}>凭据失效</span>}<span className={`sp-badge ${config.enabled ? "ok" : "warn"}`}>{config.enabled ? "启用" : "停用"}</span><span className={`sp-badge ${config.keyConfigured ? "ok" : "warn"}`}>{config.keyConfigured ? "Key 已配置" : "缺少 Key"}</span><button className="btn-xs" onClick={() => openProviderEditor(config)}>编辑</button><button className="btn-xs danger" onClick={() => removeProviderConfig(config.provider)}>删除</button>{config.authError && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</div>
+            </div>)}
+          </div> : <div className="model-provider-empty">还没有独立供应商配置，可以新增一个兼容 OpenAI、Anthropic 或 Responses 协议的网关。</div>}
+          {providerEditorOpen && <div className="model-provider-editor">
+            <div className="model-provider-editor-head"><strong>{modelConfigs.some((item) => item.provider === providerDraft.provider) ? "编辑供应商" : "新增供应商"}</strong><button className="btn-xs" onClick={() => setProviderEditorOpen(false)}>关闭</button></div>
+            <div className="model-provider-form-grid">
+              <label><span>供应商 ID</span><input className="sp-input" value={providerDraft.provider} onChange={(event) => setProviderDraft((value) => ({ ...value, provider: event.target.value }))} placeholder="例如 my-gateway" /></label>
+              <label><span>显示名称</span><input className="sp-input" value={providerDraft.name} onChange={(event) => setProviderDraft((value) => ({ ...value, name: event.target.value }))} placeholder="我的模型网关" /></label>
+              <label><span>接口协议</span><select className="sp-select" value={providerDraft.api} onChange={(event) => setProviderDraft((value) => ({ ...value, api: event.target.value }))}>{MODEL_API_OPTIONS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
+              <label className="model-provider-url-field"><span>Base URL</span><input className="sp-input" value={providerDraft.baseUrl} onChange={(event) => setProviderDraft((value) => ({ ...value, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" /></label>
+              <label><span>API Key {modelConfigs.some((item) => item.provider === providerDraft.provider && item.keyConfigured) ? "（留空保持不变）" : ""}</span><input className="sp-input" type="password" value={providerDraft.apiKey} onChange={(event) => setProviderDraft((value) => ({ ...value, apiKey: event.target.value, clearApiKey: false }))} placeholder="不会回显" /></label>
+              <label className="model-provider-check"><input type="checkbox" checked={providerDraft.clearApiKey} onChange={(event) => setProviderDraft((value) => ({ ...value, clearApiKey: event.target.checked, apiKey: "" }))} /> 清除已保存 Key</label>
+              <label className="model-provider-check"><input type="checkbox" checked={providerDraft.enabled} onChange={(event) => setProviderDraft((value) => ({ ...value, enabled: event.target.checked }))} /> 启用供应商</label>
+            </div>
+            <div className="model-provider-models-head"><strong>模型</strong><button className="btn-xs" onClick={fetchModelsFromUrl} disabled={modelsFetching} title="调用 {接口地址}/models 拉取模型列表并合并到下方"><Icon name="download" size={11} /> {modelsFetching ? "拉取中…" : "从接口拉取"}</button><button className="btn-xs" onClick={() => setProviderDraft((value) => ({ ...value, models: [...value.models, { id: "", name: "", contextWindow: "", reasoning: true, vision: false, enabled: true }] }))}><Icon name="plus" size={11} /> 添加模型</button></div>
+            <div className="model-provider-models">
+              {providerDraft.models.map((model, index) => <div className="model-provider-model-row" key={`${index}-${model.id}`}>
+                <input className="sp-input" value={model.id} onChange={(event) => updateProviderModel(index, { id: event.target.value })} placeholder="模型 ID" />
+                <input className="sp-input" value={model.name} onChange={(event) => updateProviderModel(index, { name: event.target.value })} placeholder="显示名称" />
+                <input className="sp-input" type="number" min="1" value={model.contextWindow} onChange={(event) => updateProviderModel(index, { contextWindow: event.target.value })} placeholder="上下文 tokens" />
+                <label className="model-provider-check"><input type="checkbox" checked={model.reasoning !== false} onChange={(event) => updateProviderModel(index, { reasoning: event.target.checked })} /> 思考</label>
+                <label className="model-provider-check"><input type="checkbox" checked={model.vision === true} onChange={(event) => updateProviderModel(index, { vision: event.target.checked })} /> 图片</label>
+                <label className="model-provider-check"><input type="checkbox" checked={model.enabled !== false} onChange={(event) => updateProviderModel(index, { enabled: event.target.checked })} /> 启用</label>
+                <button className="btn-xs danger" onClick={() => setProviderDraft((value) => ({ ...value, models: value.models.length > 1 ? value.models.filter((_, modelIndex) => modelIndex !== index) : value.models }))} disabled={providerDraft.models.length <= 1}>移除</button>
+              </div>)}
+            </div>
+            <div className="model-provider-editor-actions"><button className="btn-sm primary" onClick={saveProviderConfig} disabled={providerConfigSaving}>{providerConfigSaving ? "保存中…" : "保存供应商配置"}</button>{providerConfigMsg && <span className="sp-auth-msg">{providerConfigMsg}</span>}</div>
+          </div>}
+          {providerConfigMsg && !providerEditorOpen && <div className="model-feedback">{providerConfigMsg}</div>}
+        </div>
         <div className="model-control-grid">
           <div className="model-control-card">
             <span className="model-card-label">当前 Agent 模型</span>
             <select className="sp-select model-select" value={activeModel || ""} onChange={(e) => onModelChange?.(e.target.value)}>
               {!availableModels.length && <option value="">模型列表加载中…</option>}
               {availableModels.length > 0 && <option value="">跟随系统默认 · {defaultModel || "未设置"}</option>}
-              {availableModels.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${PROVIDER_LABELS[item.provider] || item.provider} / ` : ""}{item.name || item.id}{item.available === false ? "（不可用）" : item.vision ? " · 支持图片" : ""}</option>)}
+{availableModels.map((item) => <option key={`${item.provider || "model"}/${item.id}`} value={item.id} disabled={item.available === false}>{item.provider ? `${PROVIDER_LABELS[item.provider] || item.provider} / ` : ""}{item.name || item.id}{item.authError ? "（凭据失效）" : item.available === false ? "（不可用）" : item.vision ? " · 支持图片" : ""}</option>)}
             </select>
             <div className="model-card-meta">
-              <span className={`sp-badge ${selectedModelInfo?.available === false ? "warn" : selectedModelInfo ? "ok" : "warn"}`}>{selectedModelInfo?.available === false ? "不可用" : selectedModelInfo ? "目录可用" : "待配置"}</span>
+              <span className={`sp-badge ${selectedModelInfo?.authError ? "warn" : selectedModelInfo?.available === false ? "warn" : selectedModelInfo ? "ok" : "warn"}`} title={selectedModelInfo?.authError ? `凭据失效：${selectedModelInfo.authError}` : ""}>{selectedModelInfo?.authError ? "凭据失效" : selectedModelInfo?.available === false ? "不可用" : selectedModelInfo ? "目录可用" : "待配置"}</span>
               {selectedModelInfo?.contextWindow && <span>上下文 {Number(selectedModelInfo.contextWindow).toLocaleString()} tokens</span>}
               {selectedModelInfo?.vision && <span>支持图片</span>}
             </div>
@@ -693,7 +861,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
           <div className="model-health-grid">
             <span><i className={`status-dot ${integration?.piPackageVersion ? "" : "idle"}`} />Pi SDK<strong>{integration?.piPackageVersion ? "已加载" : "未加载"}</strong></span>
             <span><i className={`status-dot ${piConfig?.modelsConfigured ? "" : "idle"}`} />模型配置<strong>{piConfig?.modelsConfigured ? "已就绪" : "待导入"}</strong></span>
-            <span><i className={`status-dot ${configuredProviderCount ? "" : "idle"}`} />供应商凭据<strong>{configuredProviderCount ? `${configuredProviderCount} 个` : "未配置"}</strong></span>
+            <span><i className={`status-dot ${credentialErrorCount ? "idle" : configuredProviderCount ? "" : "idle"}`} />供应商凭据<strong>{credentialErrorCount ? `${credentialErrorCount} 个失效` : configuredProviderCount ? `${configuredProviderCount} 个` : "未配置"}</strong></span>
             <span><i className={`status-dot ${probeMsg.startsWith("连接成功") ? "" : "idle"}`} />真实调用<strong>{probeMsg.startsWith("连接成功") ? "已通过" : "尚未测试"}</strong></span>
           </div>
           <div className="model-config-path" title={piConfig?.dataDir || ""}>{piConfig?.dataDir || "正在读取规聚配置目录…"}</div>
@@ -725,7 +893,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
             {diagnostics.model?.catalogError && <div className="model-diagnostics-error">模型目录读取失败：{diagnostics.model.catalogError}</div>}
             {Array.isArray(diagnostics.recentFailures) && diagnostics.recentFailures.length > 0 && <details className="model-diagnostics-failures">
               <summary>最近失败 {diagnostics.recentFailures.length} 条</summary>
-              {diagnostics.recentFailures.slice(0, 3).map((failure, index) => <div key={`${failure.requestId || failure.timestamp || "failure"}-${index}`}><code>{failure.errorCode || failure.code || "MODEL_ERROR"}</code><span>{failure.message || "未提供错误信息"}</span></div>)}
+              {diagnostics.recentFailures.slice(0, 3).map((failure, index) => <div key={`${failure.requestId || failure.timestamp || "failure"}-${index}`}><code>{failure.errorCode || failure.code || "MODEL_ERROR"}</code><span>{failure.message || "未提供错误信息"}{failure.hint ? ` · ${failure.hint}` : ""}</span></div>)}
             </details>}
           </> : <div className="model-diagnostics-empty">{diagnosticsLoading ? "正在读取服务、模型目录和 Runtime 状态…" : "尚未读取诊断状态"}</div>}
           {diagnosticsMsg && <div className="model-feedback">{diagnosticsMsg}</div>}
@@ -754,7 +922,7 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
             <button className="btn-sm" onClick={() => probe()} disabled={probeLoading || (!activeModel && !defaultModel)} title="使用已保存的凭据发送最小请求">{probeLoading ? "测试中…" : "测试已保存凭据"}</button>
             {authMsg && <span className="sp-auth-msg">{authMsg}</span>}
           </div>
-          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button></span>)}</div>}
+          {providers && Object.keys(providers).length > 0 && <div className="sp-auth-list model-auth-list">{Object.entries(providers).map(([p, v]) => <span key={p} className="sp-auth-item"><Icon name="check" size={11} /><code>{PROVIDER_LABELS[p] || p}</code> {v.masked}{authErrors[p] && <span className="sp-badge warn" title={authErrors[p].message}>凭据失效</span>}<button className="btn-xs" onClick={() => removeAuth(p)} title={`删除 ${p} 凭据`}>删除</button>{authErrors[p] && <span className="sp-badge warn">重新保存 Key 可恢复</span>}</span>)}</div>}
         </div>
         <div className="model-credentials-card model-network-card">
           <div className="model-credentials-head">
@@ -767,7 +935,8 @@ export default function SettingsPanel({ onReset, project = null, projects = [], 
             <label className="model-network-bypass"><span>不使用代理</span><input className="sp-input" value={networkDraft.noProxy} onChange={(event) => setNetworkDraft((value) => ({ ...value, noProxy: event.target.value }))} placeholder="localhost,127.0.0.1,::1" /></label>
             <button className="btn-sm primary" onClick={saveNetworkSettings} disabled={networkSaving}>{networkSaving ? "保存中…" : "保存网络设置"}</button>
           </div>
-          {networkStatus?.proxy && <div className="model-config-path">当前代理：{networkStatus.proxy}</div>}
+{networkStatus?.proxy && <div className="model-config-path">当前代理：{networkStatus.proxy}</div>}
+          {diagnostics?.network?.proxyFallback && <div className="model-feedback">{diagnostics.network.proxyFallback.message}</div>}
           {networkMsg && <div className="model-feedback">{networkMsg}</div>}
         </div>
         <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>

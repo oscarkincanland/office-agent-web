@@ -97,6 +97,15 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13
+    },
+    {
+      "id": "ningbo-zhoushan-port-areas",
+      "name": "ningbo-zhoushan-port-areas",
+      "type": "point",
+      "group": "设施点",
+      "visible": true,
+      "minzoom": 5,
+      "maxzoom": 13
     }
   ],
   "groups": [

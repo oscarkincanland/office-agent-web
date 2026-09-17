@@ -4,10 +4,10 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
+import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
-import { agentManager, classifyAgentError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { agentManager, classifyAgentError, getCredentialErrors, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
@@ -28,7 +28,10 @@ import { listAgents, createAgent, updateAgent, deleteAgent } from "./智能体�
 import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWriteLockAsync } from "./写入协调.mjs";
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
+import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
+import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
+import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -133,6 +136,24 @@ function readRecentAgentDiagnostics({ client = "", thread = "", runId = "", limi
     } catch {}
   }
   return matches;
+}
+
+function agentFailureHint(item = {}) {
+  const code = String(item.errorCode || item.code || "");
+  const category = String(item.errorCategory || "");
+  const status = String(item.providerStatus || "");
+  const causeCode = String(item.causeCode || "");
+  const message = String(item.message || "");
+  if (/^(401|403)$/.test(status) || code === "AUTH_ERROR" || category === "auth" || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message)) {
+    return "凭据已失效：请重新保存 API Key";
+  }
+  if (["HOST_NETWORK_RESTRICTED", "NETWORK_UNREACHABLE", "MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT", "MODEL_PROBE_TIMEOUT"].includes(code)
+    || ["HOST_NETWORK_RESTRICTED", "NETWORK_UNREACHABLE", "MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT"].includes(category)
+    || causeCode === "ETIMEDOUT"
+    || /(?:timed?.?out|timeout|connection.?refused|getaddrinfo|ENOTFOUND|ETIMEDOUT)/i.test(message)) {
+    return "模型请求超时：请检查网络或代理设置（设置→模型与连接→模型网络）";
+  }
+  return "";
 }
 
 // ---------- request boundary / local API authentication ----------
@@ -502,15 +523,69 @@ app.get(/^\/api\/map\/data\/([^/]+)\/style\.json$/, (req, res) => {
 
 // 静态文件（style.json / 矢量瓦片 / 图层数据）
 app.use("/api/map/data", express.static(map.STATIC_ROOT));
+// 缺失的地图资源必须明确返回 404，不能继续落入 SPA 首页回退。
+app.use("/api/map/data", (_req, res) => res.status(404).json({ error: "map data not found" }));
 
 app.get("/api/map/projects", (_req, res) => {
   res.json({ projects: map.listProjects() });
+});
+
+// 创建独立地图项目：基础路网可引用已有项目，业务图层和配置单独保存。
+app.post("/api/map/projects", (req, res) => {
+  try {
+    const created = map.createProject({
+      project: req.body?.project,
+      name: req.body?.name,
+      baseProject: req.body?.baseProject || map.DEFAULT_PROJECT,
+    });
+    res.status(201).json({ ok: true, project: created.config?.project, config: created.config, style: created.style, files: created.files || [] });
+  } catch (e) {
+    const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_BASE_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : 500;
+    res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_CREATE_FAILED" });
+  }
 });
 
 app.get("/api/map/project", (req, res) => {
   const p = map.getProject(req.query.name || map.DEFAULT_PROJECT);
   if (!p) return res.status(404).json({ error: "project not found" });
   res.json(p);
+});
+
+// 地图项目生命周期管理：复制 / 重命名 / 归档 / 删除（默认项目受保护）
+app.post("/api/map/projects/duplicate", (req, res) => {
+  try {
+    const created = map.duplicateProject({ project: req.body?.project, name: req.body?.name });
+    res.status(201).json({ ok: true, project: created?.config?.project, config: created?.config });
+  } catch (e) {
+    const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : 500;
+    res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_DUPLICATE_FAILED" });
+  }
+});
+
+app.post("/api/map/projects/rename", (req, res) => {
+  try {
+    const renamed = map.renameProject({ project: req.body?.project, name: req.body?.name });
+    res.json({ ok: true, project: renamed?.config?.project, config: renamed?.config });
+  } catch (e) {
+    const status = ["MAP_PROJECT_INVALID", "MAP_PROJECT_EXISTS", "MAP_PROJECT_NOT_FOUND"].includes(e?.code) ? 409 : e?.code === "MAP_PROJECT_PROTECTED" ? 403 : 500;
+    res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_RENAME_FAILED" });
+  }
+});
+
+app.post("/api/map/projects/archive", (req, res) => {
+  const config = map.archiveProject(req.body?.project, req.body?.archived !== false);
+  if (!config) return res.status(404).json({ ok: false, error: "project not found" });
+  res.json({ ok: true, config });
+});
+
+app.post("/api/map/projects/delete", (req, res) => {
+  try {
+    const result = map.deleteProject(req.body?.project);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    const status = e?.code === "MAP_PROJECT_PROTECTED" ? 403 : e?.code === "MAP_PROJECT_NOT_FOUND" ? 404 : 500;
+    res.status(status).json({ ok: false, error: e.message, code: e.code || "MAP_PROJECT_DELETE_FAILED" });
+  }
 });
 
 app.post("/api/map/style", (req, res) => {
@@ -653,6 +728,17 @@ app.get("/api/files", (req, res) => {
     } catch { return item; }
   });
   res.json({ files, dir, workspace: getWorkspace() });
+});
+
+app.get("/api/files/search", (req, res) => {
+  const query = String(req.query.q || "").trim();
+  const limit = Math.max(1, Math.min(500, Number.parseInt(String(req.query.limit || "200"), 10) || 200));
+  if (!query) return res.json({ files: [], query: "", workspace: getWorkspace() });
+  try {
+    res.json({ files: searchWorkspace(query, { limit }), query, workspace: getWorkspace() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 function mimeForExt(ext) {
@@ -1093,6 +1179,65 @@ function agentKey(client, thread) {
   return t ? `${c}::${t}` : c;
 }
 
+const MODEL_CONFIG_APIS = new Set(["openai-completions", "anthropic-messages", "openai-codex-responses"]);
+
+function validateModelConfigInput(input = {}) {
+  const provider = String(input.provider || "").trim();
+  const baseUrl = String(input.baseUrl || "").trim().replace(/\/+$/, "");
+  const api = String(input.api || "openai-completions").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$/.test(provider)) throw new Error("供应商 ID 需为 2-64 位英文、数字、点、下划线或短横线");
+  if (!/^https?:\/\//i.test(baseUrl)) throw new Error("接口地址必须以 http:// 或 https:// 开头");
+  if (!MODEL_CONFIG_APIS.has(api)) throw new Error("不支持的供应商协议");
+  const models = Array.isArray(input.models) ? input.models : [];
+  if (!models.length) throw new Error("至少配置一个模型");
+  const normalizedModels = models.slice(0, 100).map((item) => {
+    const id = String(item?.id || "").trim();
+    if (!/^[^/\\\s]{1,160}$/.test(id)) throw new Error("模型 ID 不能为空，且不能包含斜线或空格");
+    const contextWindow = Number(item?.contextWindow);
+    return {
+      id,
+      name: String(item?.name || id).trim().slice(0, 160) || id,
+      ...(contextWindow > 0 ? { contextWindow: Math.floor(contextWindow) } : {}),
+      reasoning: item?.reasoning !== false,
+      input: item?.vision === true ? ["text", "image"] : ["text"],
+      enabled: item?.enabled !== false,
+    };
+  });
+  return {
+    provider,
+    name: String(input.name || provider).trim().slice(0, 160) || provider,
+    api,
+    baseUrl,
+    enabled: input.enabled !== false,
+    models: normalizedModels,
+    apiKey: String(input.apiKey || "").trim(),
+    clearApiKey: input.clearApiKey === true,
+  };
+}
+
+function publicModelConfigs() {
+  const config = readModelsConfig() || {};
+  const auth = listAuth() || {};
+  const credentialErrors = getCredentialErrors();
+  return Object.entries(config.providers || {}).map(([provider, value]) => ({
+    provider,
+    name: value?.name || provider,
+    api: value?.api || "openai-completions",
+    baseUrl: value?.baseUrl || "",
+    enabled: value?.enabled !== false,
+    keyConfigured: Boolean(auth[provider]?.key || auth[provider]?.token || auth[provider]?.secret),
+    authError: credentialErrors[provider]?.message || null,
+    models: (Array.isArray(value?.models) ? value.models : []).map((model) => ({
+      id: model.id,
+      name: model.name || model.id,
+      contextWindow: Number(model.contextWindow || model.contextLength || 0) || null,
+      reasoning: model.reasoning !== false,
+      vision: Array.isArray(model.input) && model.input.includes("image"),
+      enabled: model.enabled !== false,
+    })),
+  }));
+}
+
 app.get("/api/models", async (_req, res) => {
   try {
     const catalog = await agentManager.listModelCatalog();
@@ -1107,6 +1252,114 @@ app.get("/api/models", async (_req, res) => {
     res.json({ ...catalog, models, default: loadSettingsDefault() });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/agent/model-configs", (_req, res) => {
+  res.json({ configs: publicModelConfigs() });
+});
+
+app.post("/api/agent/model-configs", async (req, res) => {
+  try {
+    const input = validateModelConfigInput(req.body || {});
+    // 模型未填上下文窗口时，从 Pi 目录按同名模型自动补全，让压缩阈值按真实窗口计算
+    if (input.models.some((model) => !model.contextWindow)) {
+      try {
+        const catalog = await agentManager.listModelCatalog();
+        const known = new Map((catalog.models || []).map((m) => [String(m.id).split("/").pop(), Number(m.contextWindow || m.contextLength || 0)]));
+        for (const model of input.models) {
+          if (!model.contextWindow && known.has(String(model.id).split("/").pop())) {
+            const window = known.get(String(model.id).split("/").pop());
+            if (window > 0) model.contextWindow = window;
+          }
+        }
+      } catch {}
+    }
+    const config = readModelsConfig() || {};
+    const providers = config.providers && typeof config.providers === "object" ? config.providers : {};
+    const previous = providers[input.provider] && typeof providers[input.provider] === "object" ? providers[input.provider] : {};
+    writeModelsConfig({
+      ...config,
+      providers: {
+        ...providers,
+        [input.provider]: {
+          ...previous,
+          name: input.name,
+          api: input.api,
+          baseUrl: input.baseUrl,
+          enabled: input.enabled,
+          models: input.models.map(({ id, name, contextWindow, reasoning, input: modelInput, enabled }) => ({ id, name, api: input.api, baseUrl: input.baseUrl, ...(contextWindow ? { contextWindow } : {}), reasoning, input: modelInput, enabled })),
+        },
+      },
+    });
+    if (input.apiKey) await setApiKey(input.provider, input.apiKey);
+    else if (input.clearApiKey) await removeApiKey(input.provider);
+    piRuntimeManager.resetModelRuntime();
+    res.json({ ok: true, config: publicModelConfigs().find((item) => item.provider === input.provider) || null });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message, code: "MODEL_CONFIG_INVALID" });
+  }
+});
+
+app.delete("/api/agent/model-configs/:provider", async (req, res) => {
+  const provider = String(req.params.provider || "").trim();
+  const config = readModelsConfig() || {};
+  const providers = config.providers && typeof config.providers === "object" ? { ...config.providers } : {};
+  if (!providers[provider]) return res.status(404).json({ ok: false, error: "供应商不存在" });
+  delete providers[provider];
+  writeModelsConfig({ ...config, providers });
+  await removeApiKey(provider);
+  piRuntimeManager.resetModelRuntime();
+  res.json({ ok: true, provider });
+});
+
+// 从供应商接口地址拉取模型列表（OpenAI 兼容 GET /models），供前端一键导入
+app.post("/api/agent/model-configs/fetch-models", async (req, res) => {
+  const { provider, baseUrl, apiKey } = req.body || {};
+  let url = String(baseUrl || "").trim().replace(/\/+$/, "");
+  let key = String(apiKey || "").trim();
+  if (!url && provider) {
+    const config = readModelsConfig() || {};
+    const entry = config.providers?.[provider];
+    url = String(entry?.baseUrl || "").trim().replace(/\/+$/, "");
+    const auth = listAuth() || {};
+    key = String(auth[provider]?.key || auth[provider]?.apiKey || auth[provider]?.token || "").trim();
+  }
+  if (!/^https?:\/\//i.test(url)) return res.status(400).json({ ok: false, error: "接口地址必须以 http:// 或 https:// 开头", code: "MODELS_FETCH_INVALID_URL" });
+  if (!key) return res.status(400).json({ ok: false, error: "缺少 API Key：请先保存凭据，或临时填写 Key", code: "MODELS_FETCH_NO_KEY" });
+  const adapter = createPiNetworkAdapter();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+      response = await adapter.fetch(`${url}/models`, {
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      const message = String(error?.oawNetwork?.message || error?.message || error).slice(0, 300);
+      const code = error?.oawNetwork?.code || "MODELS_FETCH_NETWORK";
+      return res.status(502).json({ ok: false, error: message, code });
+    }
+    clearTimeout(timer);
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message = String(body?.error?.message || body?.message || body?.detail || `HTTP ${response.status}`).slice(0, 300);
+      return res.status(502).json({
+        ok: false,
+        error: `接口返回 ${response.status}：${message}`,
+        code: response.status === 401 || response.status === 403 ? "MODELS_FETCH_AUTH" : "MODELS_FETCH_FAILED",
+      });
+    }
+    const ids = Array.isArray(body?.data) ? body.data.map((item) => String(item?.id || "").trim()).filter(Boolean) : [];
+    if (!ids.length) return res.status(422).json({ ok: false, error: "接口未返回模型列表（响应缺少 data[]）", code: "MODELS_FETCH_EMPTY" });
+    res.json({ ok: true, models: [...new Set(ids)], count: [...new Set(ids)].length, fetchedAt: new Date().toISOString() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error).slice(0, 300), code: "MODELS_FETCH_UNEXPECTED" });
+  } finally {
+    adapter.close();
   }
 });
 
@@ -1205,7 +1458,8 @@ app.get("/api/agent/runtimes", (_req, res) => {
 app.get("/api/agent/runtime", (req, res) => {
   const client = String(req.query.client || "").trim();
   if (!client) return res.status(400).json({ error: "client required" });
-  res.json({ runtime: agentManager.runtimeHealth(agentKey(client, req.query.thread)) });
+  const key = agentKey(client, req.query.thread);
+  res.json({ runtime: agentManager.runtimeHealth(key), usage: agentManager.usageSnapshot(key) });
 });
 
 app.get("/api/agent/diagnostics", async (req, res) => {
@@ -1243,8 +1497,10 @@ app.get("/api/agent/diagnostics", async (req, res) => {
     model: { ... (catalog || { selected: loadSettingsDefault(), selectedInCatalog: null, selectedAvailable: null }), authProvider: selectedProvider, authConfigured: Boolean(selectedProvider && auth[selectedProvider]), catalogError },
     runtime,
     scheduler: runtimeList.scheduler,
-    recentFailures: readRecentAgentDiagnostics({ client, thread, runId: req.query.runId, limit: req.query.limit }),
+    recentFailures: readRecentAgentDiagnostics({ client, thread, runId: req.query.runId, limit: req.query.limit }).map((item) => ({ ...item, hint: agentFailureHint(item) })),
     authProviders,
+    authErrors: getCredentialErrors(),
+    network: piRuntimeManager.networkDiagnostics(),
   });
 });
 
@@ -1289,6 +1545,7 @@ app.get("/api/agent/auth", (_req, res) => {
     providers: Object.fromEntries(
       Object.entries(auth).map(([p, v]) => [p, { type: v.type, masked: maskKey(v.key), set: true }])
     ),
+    authErrors: getCredentialErrors(),
   });
 });
 
@@ -1313,9 +1570,16 @@ app.post("/api/agent/auth/remove", async (req, res) => {
 const SESSIONS_DIR = path.join(PROJECT_DIR, ".规聚会话");
 const SESSION_READ_DIRS = [SESSIONS_DIR];
 fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-const SESSION_TEXT_CACHE_LIMIT = 160;
+const SESSION_TEXT_CACHE_LIMIT = 400;
 const sessionTextCache = new Map();
 const sessionIdIndex = new Map();
+// 会话头部（首行 64KB）与元数据（标题/归属/标记）的指纹缓存：
+// 会话列表热调用只需要 stat 比对指纹，不再全量读取 200+ 个 JSONL。
+const SESSION_HEADER_BYTES = 65536;
+const SESSION_META_SCAN_LIMIT = 2 * 1024 * 1024;
+const SESSION_CACHE_LIMIT = 800;
+const sessionHeaderCache = new Map();
+const sessionMetaCache = new Map();
 
 // ---------- 规聚独立 Pi 配置 ----------
 app.get("/api/agent/config-status", (_req, res) => {
@@ -1657,8 +1921,7 @@ function listSessionFiles() {
   for (const f of preferred) {
     let identity = `file:${f.fullPath}`;
     try {
-      const firstLine = readSessionTextCached(f).split(/\r?\n/)[0];
-      const h = JSON.parse(firstLine);
+      const h = readSessionHeaderCached(f);
       const sessionId = h?.id || h?.sessionId;
       if (sessionId) {
         identity = `id:${sessionId}`;
@@ -1694,6 +1957,131 @@ function readSessionTextCached(foundOrPath) {
     sessionTextCache.delete(oldest);
   }
   return text;
+}
+
+// 只读文件开头的前 N 字节（会话头部很小，无需为拿 header 全量读文件）
+function readFileHead(fullPath, stat, maxBytes) {
+  const size = Math.min(maxBytes, stat.size);
+  if (size <= 0) return "";
+  const buffer = Buffer.alloc(size);
+  let fd = null;
+  try {
+    fd = fs.openSync(fullPath, "r");
+    const read = fs.readSync(fd, buffer, 0, size, 0);
+    return buffer.subarray(0, read).toString("utf8");
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+function readSessionHeaderCached(foundOrPath) {
+  const fullPath = typeof foundOrPath === "string" ? foundOrPath : foundOrPath?.fullPath;
+  if (!fullPath) return null;
+  let stat;
+  try {
+    stat = fs.statSync(fullPath);
+  } catch {
+    sessionHeaderCache.delete(fullPath);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = sessionHeaderCache.get(fullPath);
+  if (cached?.fingerprint === fingerprint) return cached.header;
+  let header = null;
+  try {
+    const head = readFileHead(fullPath, stat, SESSION_HEADER_BYTES);
+    const firstLine = head.indexOf("\n") >= 0 ? head.slice(0, head.indexOf("\n")) : head;
+    header = JSON.parse(firstLine) || null;
+  } catch {}
+  sessionHeaderCache.set(fullPath, { fingerprint, header });
+  while (sessionHeaderCache.size > SESSION_CACHE_LIMIT) {
+    const oldest = sessionHeaderCache.keys().next().value;
+    if (oldest === undefined) break;
+    sessionHeaderCache.delete(oldest);
+  }
+  return header;
+}
+
+/**
+ * 会话元数据（归属、标题、标记）：按 mtime+size 指纹缓存。
+ * 只有文件变化时才重新扫描；标题扫描最多读取前 2MB，避免大文件全量解析。
+ */
+function sessionMetaFor(f) {
+  let stat;
+  try {
+    stat = fs.statSync(f.fullPath);
+  } catch {
+    sessionMetaCache.delete(f.fullPath);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = sessionMetaCache.get(f.fullPath);
+  if (cached?.fingerprint === fingerprint) return cached.meta;
+  const header = readSessionHeaderCached(f) || {};
+  const capped = stat.size > SESSION_META_SCAN_LIMIT;
+  let text = "";
+  try {
+    text = capped ? readFileHead(f.fullPath, stat, SESSION_META_SCAN_LIMIT) : readSessionTextCached(f);
+  } catch {}
+  const meta = buildSessionMeta(f, header, text, capped);
+  sessionMetaCache.set(f.fullPath, { fingerprint, meta });
+  while (sessionMetaCache.size > SESSION_CACHE_LIMIT) {
+    const oldest = sessionMetaCache.keys().next().value;
+    if (oldest === undefined) break;
+    sessionMetaCache.delete(oldest);
+  }
+  return meta;
+}
+
+function buildSessionMeta(f, h, text, capped = false) {
+  const cwd = h.cwd || "";
+  const isProjectSession = path.resolve(f.storeDir) === path.resolve(SESSIONS_DIR);
+  const isOaw = isProjectSession || cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
+  let title = "";
+  let hasUserMessage = false;
+  if (isOaw && text) {
+    let from = text.indexOf("\n");
+    from = from >= 0 ? from + 1 : text.length;
+    while (from < text.length) {
+      let to = text.indexOf("\n", from);
+      if (to === -1) to = text.length;
+      const line = text.slice(from, to);
+      from = to + 1;
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === "message" && entry.message?.role === "user") {
+          const raw = messageText(entry);
+          if (isSystemHintMessage(raw)) continue;
+          hasUserMessage = true;
+          const cleaned = cleanSessionTitle(raw);
+          if (cleaned) { title = cleaned; break; }
+        }
+      } catch {}
+    }
+    // 截断扫描窗口内未找到时不轻易判定“没有用户消息”，避免长会话被隐藏
+    if (capped && !hasUserMessage) hasUserMessage = true;
+  }
+  return {
+    id: h.id || h.sessionId || sessionBaseName(f.fileName),
+    threadId: h.threadId || null,
+    cwd,
+    isOaw,
+    isProjectSession,
+    label: h.label ? String(h.label).trim() : "",
+    pinned: Boolean(h.pinned),
+    frozen: Boolean(h.frozen),
+    freezeReason: h.freezeReason || "",
+    contextSnapshot: h.contextSnapshot || null,
+    parentSessionId: h.parentSessionId || null,
+    branchSourceMessageId: h.branchSourceMessageId || null,
+    branchPurpose: h.branchPurpose || "",
+    created: h.created || "",
+    title,
+    hasUserMessage,
+  };
 }
 
 // 根据 id 查找对应的会话文件（先按文件名匹配，再按首行 session id 匹配）
@@ -2179,68 +2567,59 @@ app.get("/api/sessions", (req, res) => {
   try {
     const files = listSessionFiles();
     const recentRuns = listRuns({ limit: 200 });
+    // 每个会话只取最新一条 Run；避免 N×M 查找
+    const latestRunBySession = new Map();
+    for (const run of recentRuns) {
+      if (run.sessionId && !latestRunBySession.has(run.sessionId)) latestRunBySession.set(run.sessionId, run);
+    }
+    // 同一 cwd 的项目查询按请求记忆化
+    const projectByCwd = new Map();
+    const projectForCwd = (cwd) => {
+      const key = cwd || "_";
+      if (projectByCwd.has(key)) return projectByCwd.get(key);
+      const value = projectManager.getProjectForWorkspace(cwd || getWorkspace());
+      projectByCwd.set(key, value);
+      return value;
+    };
     const sessions = [];
     for (const f of files) {
       try {
-        const text = readSessionTextCached(f);
-        const firstLine = text.split(/\r?\n/)[0];
-        if (!firstLine) continue;
-        const h = JSON.parse(firstLine);
-        // 只显示工作台相关会话。全局 Pi TUI 的 cwd 是 SESSIONS_DIR，不能混入工作台历史。
-        const cwd = h.cwd || "";
-        const isProjectSession = path.resolve(f.storeDir) === path.resolve(SESSIONS_DIR);
-        const isOaw = isProjectSession || cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
-        if (!isOaw) continue;
-        // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留
-        if (fileFilter && !text.includes(fileFilter)) continue;
-        // 提取第一条「真实」用户消息作为标题（跳过前端注入的模式提示/上下文标记）
-        let title = "";
-        let hasUserMessage = false;
-        for (const line of text.split(/\r?\n/).slice(1)) {
-          if (!line.trim()) continue;
-          try {
-            const entry = JSON.parse(line);
-            if (entry.type === "message" && entry.message?.role === "user") {
-              const raw = messageText(entry);
-              if (isSystemHintMessage(raw)) continue; // 系统注入提示，跳过
-              hasUserMessage = true;
-              const cleaned = cleanSessionTitle(raw);
-              if (cleaned) { title = cleaned; break; }
-            }
-          } catch {}
-        }
-        // 用户手动命名优先于自动标题；否则重命名后刷新列表又会被首条指令覆盖。
-        if (h.label) title = String(h.label).trim();
+        // 元数据按 mtime+size 指纹缓存：未变化文件不重新读取解析
+        const meta = sessionMetaFor(f);
+        if (!meta || !meta.isOaw) continue;
+        // 按文件过滤：会话内容（用户消息/工具参数）提到该文件才保留（按需全量读取）
+        if (fileFilter && !readSessionTextCached(f).includes(fileFilter)) continue;
+        let title = meta.label || meta.title;
         // 项目内会话即使尚未发送首条消息也保留，前端才能显示“准备中/运行中”的会话，
         // 也不会因为切换页面而把用户刚创建的对话丢掉。
-        if (!hasUserMessage && !h.label && !isProjectSession) continue;
+        if (!meta.hasUserMessage && !meta.label && !meta.isProjectSession) continue;
         if (isBootstrapSessionTitle(title)) continue;
-        const id = h.id || h.sessionId || sessionBaseName(f.fileName);
-        const latestRun = recentRuns.find((run) => run.sessionId === id);
-        const project = projectManager.getProject(h.projectId) || projectManager.getProjectForWorkspace(cwd || getWorkspace());
+        const id = meta.id;
+        const latestRun = latestRunBySession.get(id);
+        const project = projectManager.getProject(meta.projectId) || projectForCwd(meta.cwd);
         if (projectFilter && project?.id !== projectFilter) continue;
         if (modeFilter && (latestRun?.task?.mode || "") !== modeFilter) continue;
         if (runStatusFilter && (latestRun?.status || "idle") !== runStatusFilter) continue;
-        if (pinnedFilter !== null && Boolean(h.pinned) !== pinnedFilter) continue;
-        if (frozenFilter !== null && Boolean(h.frozen) !== frozenFilter) continue;
+        if (pinnedFilter !== null && meta.pinned !== pinnedFilter) continue;
+        if (frozenFilter !== null && meta.frozen !== frozenFilter) continue;
         sessions.push({
           id,
-          threadId: h.threadId || latestRun?.threadId || id,
+          threadId: meta.threadId || latestRun?.threadId || id,
           projectId: project?.id || null,
           projectName: project?.name || "",
           projectType: project?.type || "",
           projectStatus: project?.status || "",
-          cwd: h.cwd || "",
-          created: h.created || "",
+          cwd: meta.cwd,
+          created: meta.created,
           modified: f.mtime,
-          label: h.label || "",
-          pinned: Boolean(h.pinned),
-          frozen: Boolean(h.frozen),
-          freezeReason: h.freezeReason || "",
-          contextSnapshot: h.contextSnapshot || null,
-          parentSessionId: h.parentSessionId || null,
-          branchSourceMessageId: h.branchSourceMessageId || null,
-          branchPurpose: h.branchPurpose || "",
+          label: meta.label,
+          pinned: meta.pinned,
+          frozen: meta.frozen,
+          freezeReason: meta.freezeReason,
+          contextSnapshot: meta.contextSnapshot,
+          parentSessionId: meta.parentSessionId,
+          branchSourceMessageId: meta.branchSourceMessageId,
+          branchPurpose: meta.branchPurpose,
           fileName: f.fileName,
           title,
           runStatus: latestRun?.status || "idle",
@@ -2498,6 +2877,33 @@ function getRunFinalText(run) {
     ?.data?.text || "";
 }
 
+// 其他 run 的暂存清单路径（产物统计时排除，避免并行任务相互污染）
+function otherRunsStagedPaths(currentRunId) {
+  const paths = new Set();
+  const runsDir = path.join(PROJECT_DIR, ".oaw", "runs");
+  let names = [];
+  try { names = fs.readdirSync(runsDir); } catch { return paths; }
+  for (const name of names) {
+    if (name === currentRunId) continue;
+    try {
+      const manifest = JSON.parse(fs.readFileSync(path.join(runsDir, name, "写入清单.json"), "utf8"));
+      if (Array.isArray(manifest.files)) {
+        for (const entry of manifest.files) {
+          if (typeof entry?.path === "string") paths.add(entry.path.replace(/\\/g, "/"));
+        }
+      }
+    } catch {}
+  }
+  return paths;
+}
+
+// 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
+// 前端据此区分“回答结束”与“任务真正完成”。
+function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [] } = {}) {
+  const explicit = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
+  return explicit || inferCompletion({ runStatus, artifacts, validations });
+}
+
 async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId }) {
   const tracksWorkspace = run?.snapshotMode !== "none";
   try {
@@ -2512,8 +2918,12 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       error: e,
     });
     if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
-    // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = tracksWorkspace ? await waitForFlush(before, runWorkspace) : [];
+    // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
+    if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
+// 出错也检测产物（agent 可能已部分写入文件）
+    const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
+    const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
+      .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length && entry) {
@@ -2528,29 +2938,38 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
     const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
     if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
     const cancelled = getRun(run.id)?.status === "cancel_requested";
+    const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations] });
     const failed = finishRun(run.id, {
       status: cancelled ? "cancelled" : "failed",
       sessionId: entry?.session?.sessionId || null,
       error: cancelled ? "用户请求取消" : e.message,
       summary: cancelled ? "任务已取消" : "Agent 执行失败",
       validations: [...validations, ...stagedValidations],
+      completion: failureCompletion,
     });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
     return;
   }
 
-  // officecli keeps files in a resident process — disk writes flush asynchronously.
+// officecli keeps files in a resident process — disk writes flush asynchronously.
   // Poll until the workspace snapshot stabilizes, then diff.
-  const changed = tracksWorkspace ? await waitForFlush(before, runWorkspace) : [];
+  // 把最终权威文本写入 run 记录（assistant_final），前端 run_finished 用它兜底渲染
+  if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
+  const stagedElsewhere = otherRunsStagedPaths(run?.id || "");
+  const changed = filterRunChanges(run, (tracksWorkspace ? await waitForFlush(before, runWorkspace) : [])
+    .filter((p) => !stagedElsewhere.has(String(p).replace(/\\/g, "/"))));
   const validations = validateArtifacts(changed, runWorkspace);
   const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
   const allValidations = [...validations, ...stagedValidations];
+  const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");
   const verificationNote = allValidations.some((item) => item.status === "failed") ? "，但产物校验发现问题" : allValidations.some((item) => item.status === "warning") ? "，产物校验有提示" : "";
   const cancelled = run && getRun(run.id)?.status === "cancel_requested";
   const finalStatus = cancelled ? "cancelled" : "completed";
-  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (changed.length || stagedValidations.length ? `本轮对话完成，共处理 ${changed.length + stagedValidations.length} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations }) : null;
+  const publishPaths = publishableStagedValidations.map((item) => item.path).filter(Boolean);
+  const publishedCount = changed.length + publishableStagedValidations.length;
+  const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
   if (entry) {
-    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
+    const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
     if (productPaths.length) {
       emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
@@ -2561,7 +2980,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)) });
   }
 }
 
@@ -2632,13 +3051,15 @@ app.post("/api/agent/prompt", async (req, res) => {
     resolved = resolveReferences(references, normalizedText, runWorkspace);
     const requestedMode = normalizeTaskMode(taskInput?.mode);
     const workflowId = requestedMode === "chat" ? null : (taskInput?.workflowId || workflowIdFromText(normalizedText));
-    const skills = scanSkills();
     const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
     // Chat 允许搜索/阅读 Skills，但不把项目默认 Skills 作为执行依赖，避免只读问答
     // 因历史配置缺失而被 Agent 预检拦截。
     const requestedSkills = requestedMode === "chat"
       ? []
       : [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
+    // 普通 Agent 问答不需要在 admission 阶段扫描所有 SKILL.md；只有显式工作流/技能
+    // 依赖才加载技能目录，避免首次对话把本地扫描延迟叠加到模型首事件之前。
+    const skills = (workflowId || requestedSkills.length) ? scanSkills() : [];
     const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
     preflight = requestedMode === "chat"
       ? { ok: true, workflow: null, required: [], checks: [], missing: [], message: "Chat 不执行 Skills 依赖预检" }
@@ -2793,7 +3214,7 @@ app.post("/api/agent/prompt", async (req, res) => {
     });
     if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
     // 出错也检测产物（agent 可能已部分写入文件）
-    const changed = await waitForFlush(before, runWorkspace);
+    const changed = run ? filterRunChanges(run, await waitForFlush(before, runWorkspace)) : await waitForFlush(before, runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
     const stagedValidations = run ? validateStagedArtifacts(run.id) : [];
     if (changed.length) {
@@ -2811,8 +3232,9 @@ app.post("/api/agent/prompt", async (req, res) => {
       const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
       if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
       const cancelled = getRun(run.id)?.status === "cancel_requested";
-      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations] });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
+      const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations] });
+      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -2857,19 +3279,24 @@ async function executeContinuation({ key, entry, run, task, references, workflow
   const before = snapshotWorkspace(entry.workspace || run.cwd || getWorkspace());
   try {
     await agentManager.promptWithContext(key, continuationPrompt(task, task.recoveryAction), [], undefined, references, { runId: run.id, task, workflow });
-    const changed = await waitForFlush(before, entry.workspace || run.cwd || getWorkspace());
+    if (entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
+    const changed = filterRunChanges(run, await waitForFlush(before, entry.workspace || run.cwd || getWorkspace()));
     const validations = validateArtifacts(changed, entry.workspace || run.cwd || getWorkspace());
     const stagedValidations = validateStagedArtifacts(run.id);
     const allValidations = [...validations, ...stagedValidations];
+    const publishableStagedValidations = stagedValidations.filter((item) => item.status !== "failed");
     const cancelled = getRun(run.id)?.status === "cancel_requested";
     const status = cancelled ? "cancelled" : "completed";
+    const publishPaths = stagedValidations.filter((item) => item.status !== "failed").map((item) => item.path).filter(Boolean);
     const finished = finishRun(run.id, {
       status,
       sessionId: entry.session?.sessionId || run.sessionId,
       summary: status === "cancelled" ? "恢复任务已取消" : (changed.length ? `恢复任务完成，共处理 ${changed.length} 个文件` : "恢复任务完成，未检测到文件变更"),
       validations: allValidations,
+      publishPaths,
+      completion: resolveRunCompletion(entry, status, { artifacts: changed.length + publishableStagedValidations.length, validations: allValidations }),
     });
-    const productPaths = [...changed, ...stagedValidations.map((item) => item.path).filter(Boolean)];
+    const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
     if (productPaths.length) {
       emitChannel(entry, "file_changed", { files: productPaths, runId: run.id });
       emitChannel(entry, "agent_summary", {
@@ -2880,7 +3307,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
         references,
       });
     }
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -2891,8 +3318,10 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       sessionId: entry.session?.sessionId || run.sessionId,
       error: message,
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
+      completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", {}),
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
+    return finished;
     return finished;
   }
 }
@@ -2996,6 +3425,16 @@ app.post("/api/agent/resume", async (req, res) => {
   if (!found) return res.status(404).json({ error: "session not found" });
   try {
     const workspace = normalizeWorkspace(cwd || getWorkspace()) || getWorkspace();
+    // 会话的工作区归属在创建时固定：禁止用 B 工作区恢复 A 工作区的历史，
+    // 否则会串工具根目录、记忆与产物归属。
+    const header = readSessionHeader(found);
+    const sessionWorkspace = normalizeWorkspace(header?.cwd || "");
+    if (sessionWorkspace && workspace && sessionWorkspace !== workspace) {
+      return res.status(409).json({
+        error: `该会话属于工作区「${sessionWorkspace}」，不能在「${workspace}」恢复；请先切换回原工作区。`,
+        code: "SESSION_WORKSPACE_MISMATCH",
+      });
+    }
     const result = await agentManager.resumeThread(agentKey(client, thread), thread, found.fullPath, workspace);
     annotateSessionThread(result.sessionId, thread);
     res.json(result);
@@ -3058,14 +3497,29 @@ try {
   // 因此前端同时通过 query 传递游标；两者取最大值，避免重连重复消费历史事件。
   const queryCursor = parseInt(req.query.after || "0", 10) || 0;
   const headerCursor = parseInt(req.headers["last-event-id"] || "0", 10) || 0;
-  const lastId = Math.max(queryCursor, headerCursor);
+  const requestedCursor = Math.max(queryCursor, headerCursor);
+  // 通道代际：Runtime/会话重建会生成新的 streamId，其序号从 1 重新开始。
+  // 旧代际游标若继续使用，新通道前 N 个事件会在 send() 里被整段过滤，
+  // 造成“只看到最后一个工具/正文丢失”。代际不一致时游标清零。
+  const channelStreamId = entry.channel.streamId || "";
+  const clientStreamId = String(req.query.stream || "");
+  const lastId = resolveReplayCursor({
+    clientStreamId,
+    channelStreamId,
+    lastId: requestedCursor,
+    channelSeq: Number(entry.channel.seq || 0),
+  });
+  const earliestId = entry.channel.history.length ? Number(entry.channel.history[0].id || 0) : 0;
+  const latestId = Number(entry.channel.seq || 0);
+  // 游标之后的事件如果已经被增量淘汰策略丢弃，回放将不完整，需要明确告知前端重同步。
+  const historyTruncated = isHistoryTruncated({ lastId, earliestId });
   // 监听和历史回放之间存在一个竞态窗口：实时事件可能先发出，随后又被
   // history 回放一次。以同一条 SSE 连接的最大已发送 id 做幂等门闩，
   // 保证断线重连只补缺失事件，不重复追加 Token/工具输出。
   let lastSentId = lastId;
   const send = (ev) => {
     if (!ev || closed || Number(ev.id || 0) <= lastSentId) return;
-    if (!write(`id: ${ev.id}\ndata: ${JSON.stringify({ id: ev.id, type: ev.type, at: ev.at || null, data: ev.data })}\n\n`)) return;
+    if (!write(`id: ${ev.id}\ndata: ${JSON.stringify({ id: ev.id, protocolVersion: PROTOCOL_VERSION, streamId: ev.streamId || channelStreamId, type: ev.type, at: ev.at || null, data: ev.data })}\n\n`)) return;
     lastSentId = Number(ev.id || lastSentId);
   };
   // 先挂实时监听，再回放历史。回放前没有 await，但注册顺序仍然很关键：
@@ -3082,17 +3536,31 @@ try {
     data: {
       client,
       thread,
+      protocolVersion: PROTOCOL_VERSION,
+      streamId: channelStreamId,
       sessionId: entry.session?.sessionId || null,
       model: connectedModel,
       modelFallbackFrom: entry.modelFallbackFrom || null,
       // connected 只能确认客户端请求的游标；历史事件尚未逐条写入响应。
       // 若这里提前宣称最新 seq，回放中途断线会让重连跳过未真正送达的事件。
       cursor: lastSentId,
+      earliest: earliestId,
+      latest: latestId,
+      truncated: historyTruncated,
       serverAt: new Date().toISOString(),
     },
   })}\n\n`);
+  if (historyTruncated) {
+    // 明确告知：游标与当前历史窗口已不连续。前端据此触发 Run 对账，
+    // 用服务端 Run 终态和最终文本重建，而不是依赖已被淘汰的事件。
+    write(`data: ${JSON.stringify({
+      type: "stream_resync",
+      at: new Date().toISOString(),
+      data: { client, thread, streamId: channelStreamId, cursor: lastId, earliest: earliestId, latest: latestId },
+    })}\n\n`);
+  }
   for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
-  write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq })}\n\n`);
+  write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq, streamId: channelStreamId })}\n\n`);
 } catch (error) {
     if (error?.code === "RUNTIME_INIT_TIMEOUT") {
       if (!closed) {
@@ -3312,17 +3780,6 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
 
 // ---------- 地图项目（MapLibre 可视化） ----------
 import * as mapSvc from "./map.mjs";
-
-// 静态资源：/api/map/data/{project}/style.json|tiles/...|layers/...
-// （style.json 动态注入绝对瓦片 URL 的路由已注册在文件前部的 /api/map/data 静态挂载之前）
-app.use("/api/map/data", express.static(mapSvc.STATIC_ROOT, { fallthrough: true, maxAge: 0 }));
-// 地图瓦片/图层文件缺失时必须返回 404，不能落入 SPA 首页回退，否则 MapLibre 会把 HTML 当作 PBF 解析。
-app.use("/api/map/data", (_req, res) => res.status(404).json({ error: "map data not found" }));
-
-// 项目列表
-app.get("/api/map/projects", (_req, res) => {
-  res.json({ projects: mapSvc.listProjects() });
-});
 
 // 底图服务设置（Key 不回传明文，只回传是否已配置）
 app.get("/api/map/settings", (_req, res) => {
@@ -3575,11 +4032,37 @@ function walkSnapshot(dir, root) {
 }
 function snapshotWorkspace(workspace = getWorkspace()) {
   const ws = normalizeWorkspace(workspace) || getWorkspace();
-  const top = listWorkspace(ws).map((f) => `${f.name}|${f.mtime}|${f.size}`);
-  // 地图项目位于工作区子目录，递归快照以便检测 layers/tiles/style 变化
-  const mapRoot = path.join(ws, "maps");
-  const maps = fs.existsSync(mapRoot) ? walkSnapshot(mapRoot, ws) : [];
-  return [...top, ...maps];
+  return walkWorkspaceSnapshot(ws, ws);
+}
+
+const SNAPSHOT_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "__pycache__", ".venv", ".oaw", ".cache", "coverage", ".next", ".idea", ".vscode"]);
+const SNAPSHOT_SKIP_EXT = /\.(tmp|temp|swp|swo|bak|log|lock|part|crdownload|msi|exe|dll|pyc)$/i;
+const SNAPSHOT_MAX_FILES = 30000;
+const SNAPSHOT_MAX_DEPTH = 10;
+
+// 递归快照工作区内的文件（目录 mtime 会在任何写入时变化，不能当作产物）。
+function walkWorkspaceSnapshot(dir, root, depth = 0, count = { n: 0 }) {
+  const out = [];
+  if (depth > SNAPSHOT_MAX_DEPTH || count.n >= SNAPSHOT_MAX_FILES) return out;
+  let items = [];
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of items) {
+    if (count.n >= SNAPSHOT_MAX_FILES) break;
+    if (e.name.startsWith(".") || e.name.startsWith("~$")) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (SNAPSHOT_SKIP_DIRS.has(e.name)) continue;
+      out.push(...walkWorkspaceSnapshot(p, root, depth + 1, count));
+    } else {
+      if (SNAPSHOT_SKIP_EXT.test(e.name)) continue;
+      try {
+        const st = fs.statSync(p);
+        out.push(`${path.relative(root, p).replace(/\\/g, "/")}|${st.mtimeMs}|${st.size}`);
+        count.n += 1;
+      } catch {}
+    }
+  }
+  return out;
 }
 function diffWorkspace(before, after) {
   const b = new Set(before);
@@ -3598,12 +4081,16 @@ async function waitForFlush(before, workspace = getWorkspace()) {
 function emitChannel(entry, type, data) {
   const id = ++entry.channel.seq;
   const at = new Date().toISOString();
+  const workspace = ["agent_summary", "run_finished"].includes(type)
+    ? { workspace: data?.workspace ?? entry.workspace ?? null }
+    : {};
   const eventData = data && typeof data === "object" && !Array.isArray(data)
-    ? { ...data, runId: data.runId ?? entry.activeRunId ?? null }
-    : { value: data, runId: entry.activeRunId ?? null };
-  const ev = { id, type, at, data: eventData };
-  entry.channel.history.push(ev);
-  if (entry.channel.history.length > 2000) entry.channel.history.shift();
+    ? { ...data, ...workspace, runId: data.runId ?? entry.activeRunId ?? null }
+    : { value: data, ...workspace, runId: entry.activeRunId ?? null };
+  const ev = { id, type, at, streamId: entry.channel.streamId || null, protocolVersion: PROTOCOL_VERSION, data: eventData };
+  // 与 agent.mjs 的受保护写入一致：高频事件不挤掉工具边界与终态
+  if (!entry.channel.historyLimit) entry.channel.historyLimit = CHANNEL_HISTORY_LIMIT;
+  pushChannelEvent(entry.channel, ev);
   entry.channel.emitter.emit("event", ev);
   // capability_plan/run_finished 已由 recordRunEvent/finishRun 写入 Store，
   // 其余由 HTTP 层补发的摘要/错误/文件事件在这里进入根级事件流。
