@@ -1,4 +1,4 @@
-# Office Agent Web - 需求文档
+# Open Plan - 需求文档
 
 ## 项目概述
 基于 Pi Agent SDK 和 officecli 的 Web 端 Office 文档查看/编辑 + AI Agent 协作工具，面向交通规划工程师的日常办公场景。

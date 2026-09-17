@@ -137,7 +137,7 @@ export function getTemplatesByCategory(categoryId) {
   return all.filter((t) => t.category === categoryId);
 }
 
-export function getTemplateContent(relPath) {
+export function resolveTemplatePath(relPath) {
   // 模板可能相对工作目录（ROOT，_报告模板 等）或项目根（PROJECT_DIR，templates/），双根尝试
   let absPath;
   if (path.isAbsolute(relPath)) {
@@ -148,6 +148,13 @@ export function getTemplateContent(relPath) {
     absPath = fs.existsSync(c1) ? c1 : fs.existsSync(c2) ? c2 : c1;
   }
   if (!fs.existsSync(absPath)) return null;
+  try { if (!fs.statSync(absPath).isFile()) return null; } catch { return null; }
+  return absPath;
+}
+
+export function getTemplateContent(relPath) {
+  const absPath = resolveTemplatePath(relPath);
+  if (!absPath) return null;
   const ext = path.extname(absPath).toLowerCase();
   const st = fs.statSync(absPath);
   if (ext === ".md" || ext === ".markdown" || ext === ".txt" || ext === ".html" || ext === ".htm") {

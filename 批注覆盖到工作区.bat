@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 set "SRC=C:\Users\admin\AppData\Local\Temp\review_working.docx"
-set "SRC2=F:\Claude code本地文件\office-agent-web\zz_review_working.docx"
+set "SRC2=%~dp0zz_review_working.docx"
 set "DST=E:\老电脑文件\工作\义乌十五五物流\金华（义乌）国际枢纽港海陆联动开放提升战略研究-研究报告20241113.docx"
 if exist "%SRC%" (set USE=%SRC%) else (set USE=%SRC2%)
 echo 源文件: %USE%

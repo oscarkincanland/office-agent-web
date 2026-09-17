@@ -38,6 +38,21 @@ export const agentNetworkSettings = () => api("/api/agent/network-settings");
 export const agentNetworkSettingsSave = (settings = {}) =>
   api("/api/agent/network-settings", { method: "PATCH", body: JSON.stringify(settings) });
 
+// ---------- 联网搜索配置 ----------
+export const searchSettings = () => api("/api/search/settings");
+export const searchSettingsSave = (settings = {}) =>
+  api("/api/search/settings", { method: "POST", body: JSON.stringify(settings) });
+export const searchSettingsTest = (backend = "") =>
+  api("/api/search/test", { method: "POST", body: JSON.stringify({ backend }) });
+
+// ---------- 内置浏览器 ----------
+export const browserState = (client, thread) =>
+  api(`/api/browser/state?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread || "")}`);
+export const browserInput = (payload = {}) =>
+  api("/api/browser/input", { method: "POST", body: JSON.stringify(payload) });
+export const browserClose = (client, thread, { force = false } = {}) =>
+  api("/api/browser/close", { method: "POST", body: JSON.stringify({ client, thread, force }) });
+
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
 export const agentModelConfigs = () => api("/api/agent/model-configs");

@@ -22,7 +22,7 @@ const TEMPORARY_PATTERNS = [
 // 与本项目无实体关联的内部实现细节
 const HARNESS_INTERNAL_PATTERNS = [
   /\.oaw[\\/]/i, /memory-proposals\.json/i, /(?:SSE|EventSource)\s*(?:重连|游标|断线)/,
-  /office-agent-web\s*(?:项目|仓库|代码)/,
+  /open[- ]plan\s*(?:项目|仓库|代码)/i,
 ];
 
 const QUESTIONABLE_PREFIXES = [/^测试/, /^验证一下/, /^试了/];

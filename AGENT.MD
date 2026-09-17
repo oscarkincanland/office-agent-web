@@ -1,4 +1,4 @@
-# AGENT.MD — Office Agent Web 工作准则
+# AGENT.MD — Open Plan 工作准则
 
 ## 项目定位
 面向**交通规划工程师**的 Office 工作台：web 前端（React/Vite）+ 后端（Express/pi agent）+ officecli 文档处理。

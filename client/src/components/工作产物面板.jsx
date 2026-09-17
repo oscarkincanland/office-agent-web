@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
+import BrowserPanel from "./内置浏览器面板.jsx";
 
 const statusText = { running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", completed: "已完成", failed: "失败", cancelled: "已取消", aborted: "已中断" };
 
@@ -141,7 +142,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
         const canPublish = run.status === "completed" && !publication && result?.readyToPublish;
         return (
           <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
-            <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path)} title={artifact.path}>
+            <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, run.cwd)} title={artifact.path}>
               <Icon name="file" size={14} />
               <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
             </button>
@@ -160,5 +161,6 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
 export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, refreshToken = 0, onOpenFile, children }) {
   if (tab === "events") return <EventStream clientId={clientId} threadId={threadId} />;
   if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "browser") return <BrowserPanel clientId={clientId} threadId={threadId} />;
   return children;
 }

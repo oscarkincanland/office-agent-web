@@ -349,10 +349,14 @@ export async function readReference(input, query = "", range = null, workspace =
   }
   if (resolved.kind === "template") {
     const tpl = await import("./tpl.mjs");
+    const templatePath = tpl.resolveTemplatePath(resolved.target);
     const doc = tpl.getTemplateContent(resolved.target);
-    if (!doc) return { ...resolved, status: "missing", message: `未找到模板 ${resolved.target}` };
-    const text = applyRange(doc.content || "", range);
-    return { ...resolved, status: "resolved", metadata: { relativePath: resolved.target, mime: mimeFor(resolved.target) }, text: text.slice(0, MAX_READ_CHARS), truncated: text.length > MAX_READ_CHARS };
+    if (!doc || !templatePath) return { ...resolved, status: "missing", message: `未找到模板 ${resolved.target}` };
+    // 文本模板由 tpl 直接读取；Office/PDF 模板需要走统一抽取器，
+    // 否则 context_read 只能返回文件元数据，Agent 无法真正参考模板结构。
+    const rawText = doc.content ?? await extractFile(templatePath, range);
+    const text = applyRange(rawText, range);
+    return { ...resolved, status: "resolved", metadata: { relativePath: resolved.target, mime: mimeFor(templatePath), parser: path.extname(templatePath).slice(1).toLowerCase() }, text: text.slice(0, MAX_READ_CHARS), truncated: text.length > MAX_READ_CHARS };
   }
   if (resolved.kind === "template_dir") return { ...resolved, status: "deferred", message: "模板目录引用请先选择具体模板文件" };
   if (resolved.status !== "resolved" || resolved.metadata?.isDirectory) return { ...resolved, text: resolved.message || "目录引用需要逐个读取文件" };

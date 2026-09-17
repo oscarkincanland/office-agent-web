@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, saveAgentModelConfig, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -290,6 +290,12 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const [networkStatus, setNetworkStatus] = useState(null);
   const [networkSaving, setNetworkSaving] = useState(false);
   const [networkMsg, setNetworkMsg] = useState("");
+  // 联网搜索配置（后端 + 各后端凭据；服务端不回传明文 Key）
+  const [searchMeta, setSearchMeta] = useState({ backends: [], settings: null });
+  const [searchDraft, setSearchDraft] = useState({ backend: "tavily", tavilyKey: "", searxngUrl: "", jinaKey: "", bochaKey: "" });
+  const [searchSaving, setSearchSaving] = useState(false);
+  const [searchTesting, setSearchTesting] = useState(false);
+  const [searchMsg, setSearchMsg] = useState("");
   const [diagnostics, setDiagnostics] = useState(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [diagnosticsMsg, setDiagnosticsMsg] = useState("");
@@ -324,10 +330,11 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   }, [clientId, threadId, diagnosticsLoading]);
 
   const loadPiConfiguration = useCallback(async () => {
-    const [statusResult, previewResult, networkResult] = await Promise.allSettled([
+    const [statusResult, previewResult, networkResult, searchResult] = await Promise.allSettled([
       agentConfigStatus(),
       agentImportPreview(),
       agentNetworkSettings(),
+      searchSettings(),
     ]);
     if (statusResult.status === "fulfilled") setPiConfig(statusResult.value);
     if (previewResult.status === "fulfilled") setPiImport(previewResult.value);
@@ -340,7 +347,52 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
         noProxy: value.noProxy || "localhost,127.0.0.1,::1",
       });
     }
+    if (searchResult.status === "fulfilled") {
+      const value = searchResult.value || {};
+      const settings = value.settings || {};
+      setSearchMeta({ backends: Array.isArray(value.backends) ? value.backends : [], settings });
+      setSearchDraft((draft) => ({
+        ...draft,
+        backend: settings.backend || "tavily",
+        searxngUrl: settings.searxngUrl || "",
+      }));
+    }
   }, []);
+
+  const saveSearchConfig = useCallback(async () => {
+    setSearchSaving(true);
+    setSearchMsg("");
+    try {
+      const result = await searchSettingsSave({
+        backend: searchDraft.backend,
+        tavilyKey: searchDraft.tavilyKey,
+        searxngUrl: searchDraft.searxngUrl,
+        jinaKey: searchDraft.jinaKey,
+        bochaKey: searchDraft.bochaKey,
+      });
+      const settings = result?.settings || {};
+      setSearchMeta((meta) => ({ ...meta, settings }));
+      setSearchDraft((draft) => ({ ...draft, tavilyKey: "", jinaKey: "", bochaKey: "" }));
+      setSearchMsg("联网搜索配置已保存，Agent 新回合即可使用 web_search / web_fetch");
+    } catch (error) {
+      setSearchMsg(`保存失败 · ${error.message}`);
+    } finally {
+      setSearchSaving(false);
+    }
+  }, [searchDraft]);
+
+  const runSearchTest = useCallback(async () => {
+    setSearchTesting(true);
+    setSearchMsg("");
+    try {
+      const result = await searchSettingsTest(searchDraft.backend);
+      setSearchMsg(`${result?.ok ? "✓" : "✗"} ${result?.message || "测试完成"}`);
+    } catch (error) {
+      setSearchMsg(`测试失败 · ${error.message}`);
+    } finally {
+      setSearchTesting(false);
+    }
+  }, [searchDraft.backend]);
 
   const loadModelConfigs = useCallback(async () => {
     try {
@@ -720,7 +772,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
 
       {settingsSection === "appearance" && <>
       <div className="sp-section" id="settings-appearance">
-        <div className="sp-section-title"><Icon name="sun" size={12} /> 外观</div>
+        <div className="sp-section-title"><Icon name="sun" size={12} /> 外观与品牌</div>
         <div className="sp-row">
           <span className="sp-label">主题</span>
           <div className="sp-options">
@@ -729,7 +781,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           </div>
         </div>
         <div className="sp-row">
-          <span className="sp-label">皮肤</span>
+          <span className="sp-label">工作台风格</span>
           <div className="sp-options sp-skins">
             {SKINS.map((s) => (
               <button
@@ -938,6 +990,50 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
 {networkStatus?.proxy && <div className="model-config-path">当前代理：{networkStatus.proxy}</div>}
           {diagnostics?.network?.proxyFallback && <div className="model-feedback">{diagnostics.network.proxyFallback.message}</div>}
           {networkMsg && <div className="model-feedback">{networkMsg}</div>}
+        </div>
+        <div className="model-credentials-card model-network-card">
+          <div className="model-credentials-head">
+            <div><strong>联网搜索</strong><p>为 Agent 提供 web_search / web_fetch 工具；只影响联网检索，不改变本地文件能力。</p></div>
+            <span className={`sp-badge ${searchMeta.settings?.hasTavilyKey || searchMeta.settings?.hasBochaKey || searchMeta.settings?.searxngUrl ? "ok" : "warn"}`}>
+              {searchMeta.settings?.hasTavilyKey || searchMeta.settings?.hasBochaKey || searchMeta.settings?.searxngUrl ? "已配置" : "未配置"}
+            </span>
+          </div>
+          <div className="model-network-grid">
+            <label><span>搜索后端</span>
+              <select className="sp-select" value={searchDraft.backend} onChange={(event) => setSearchDraft((value) => ({ ...value, backend: event.target.value }))}>
+                {(searchMeta.backends.length ? searchMeta.backends : [{ id: "tavily", name: "Tavily" }]).map((backend) => (
+                  <option key={backend.id} value={backend.id}>{backend.name}</option>
+                ))}
+              </select>
+            </label>
+            <button className="btn-sm" onClick={runSearchTest} disabled={searchTesting}>{searchTesting ? "测试中…" : "测试连接"}</button>
+            <button className="btn-sm primary" onClick={saveSearchConfig} disabled={searchSaving}>{searchSaving ? "保存中…" : "保存搜索配置"}</button>
+          </div>
+          {searchDraft.backend === "tavily" && (
+            <div className="model-network-grid">
+              <label><span>Tavily API Key</span><input className="sp-input" type="password" value={searchDraft.tavilyKey} onChange={(event) => setSearchDraft((value) => ({ ...value, tavilyKey: event.target.value }))} placeholder={searchMeta.settings?.hasTavilyKey ? `已保存（${searchMeta.settings?.tavilyKeyMasked}）；留空保持不变` : "tvly-..."} /></label>
+            </div>
+          )}
+          {searchDraft.backend === "searxng" && (
+            <div className="model-network-grid">
+              <label><span>实例地址</span><input className="sp-input" value={searchDraft.searxngUrl} onChange={(event) => setSearchDraft((value) => ({ ...value, searxngUrl: event.target.value }))} placeholder="https://你的-searxng-实例" /></label>
+            </div>
+          )}
+          {searchDraft.backend === "jina" && (
+            <div className="model-network-grid">
+              <label><span>Jina API Key（可选）</span><input className="sp-input" type="password" value={searchDraft.jinaKey} onChange={(event) => setSearchDraft((value) => ({ ...value, jinaKey: event.target.value }))} placeholder={searchMeta.settings?.hasJinaKey ? `已保存（${searchMeta.settings?.jinaKeyMasked}）` : "留空则免 Key 使用（有频率限制）"} /></label>
+            </div>
+          )}
+          {searchDraft.backend === "bocha" && (
+            <div className="model-network-grid">
+              <label><span>博查 API Key</span><input className="sp-input" type="password" value={searchDraft.bochaKey} onChange={(event) => setSearchDraft((value) => ({ ...value, bochaKey: event.target.value }))} placeholder={searchMeta.settings?.hasBochaKey ? `已保存（${searchMeta.settings?.bochaKeyMasked}）；留空保持不变` : "sk-..."} /></label>
+            </div>
+          )}
+          <div className="sp-note" style={{ marginTop: 6 }}>
+            {searchMeta.backends.find((backend) => backend.id === searchDraft.backend)?.hint || "Tavily 免费 1000 次/月；国内网络可切换博查，或自建 SearXNG。"}
+            {searchMeta.backends.find((backend) => backend.id === searchDraft.backend)?.keyUrl ? ` 申请地址：${searchMeta.backends.find((backend) => backend.id === searchDraft.backend).keyUrl}` : ""}
+          </div>
+          {searchMsg && <div className="model-feedback">{searchMsg}</div>}
         </div>
         <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
       </div>}

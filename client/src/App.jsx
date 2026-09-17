@@ -10,6 +10,7 @@ const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
 const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 import Icon from "./components/Icon.jsx";
+import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
@@ -128,9 +129,10 @@ export default function App() {
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
   const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
-  const [previewMaximized, setPreviewMaximized] = useState(false); // 工作产物放大，但保留中心对话区
+  const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
+  const browserActiveRef = useRef(false);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
@@ -145,6 +147,43 @@ export default function App() {
   const [mapContexts, setMapContexts] = useState({});
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
+
+  // 浏览器活动侦测：Agent 调用 browser_* 时自动切到“浏览器”页签（仅在激活瞬间触发一次）
+  useEffect(() => {
+    if (!clientId) return undefined;
+    let stopped = false;
+    let source = null;
+    let retry = null;
+    const connect = () => {
+      if (stopped) return;
+      const params = new URLSearchParams({ client: clientId, thread: threadId || "", frames: "0" });
+      source = new EventSource(`/api/browser/stream?${params.toString()}`);
+      source.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data || "{}");
+          if (payload.type !== "state") return;
+          const active = Boolean(payload.data?.active);
+          if (active && !browserActiveRef.current) {
+            setPreviewOpen(true);
+            setPreviewTab("browser");
+          }
+          browserActiveRef.current = active;
+        } catch {}
+      };
+      source.onerror = () => {
+        try { source.close(); } catch {}
+        if (!stopped) retry = setTimeout(connect, 5000);
+      };
+    };
+    connect();
+    return () => {
+      stopped = true;
+      if (retry) clearTimeout(retry);
+      try { source?.close(); } catch {}
+      browserActiveRef.current = false;
+    };
+  }, [clientId, threadId]);
+
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("oaw_model") || "");
@@ -173,6 +212,7 @@ export default function App() {
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
+  const pendingChatInsertRef = useRef([]);
   const { theme, toggleTheme } = useTheme();
 
   // 所有功能模块共用一个互斥入口，避免知识库、地图、智能体广场等弹层叠在一起。
@@ -182,6 +222,31 @@ export default function App() {
   const openExternalModule = useCallback((module) => {
     setActiveModule(module);
   }, []);
+
+  // 外部模块打开时主 ChatPanel 会卸载；先暂存 @ 引用，待回到对话后再写入，
+  // 避免“点击调用但输入框没有任何内容”的竞态。
+  const insertChatText = useCallback((value) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    if (chatInputRef.current?.insertText) {
+      chatInputRef.current.insertText(text);
+      return;
+    }
+    pendingChatInsertRef.current.push(text);
+  }, []);
+
+  useEffect(() => {
+    if (activeModule || !pendingChatInsertRef.current.length) return undefined;
+    const timer = window.setTimeout(() => {
+      const pending = pendingChatInsertRef.current.splice(0);
+      if (!chatInputRef.current?.insertText) {
+        pendingChatInsertRef.current.unshift(...pending);
+        return;
+      }
+      pending.forEach((text) => chatInputRef.current.insertText(text));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeModule]);
 
   const refreshModelCatalog = useCallback(async () => {
     const data = await refreshModels();
@@ -197,8 +262,8 @@ export default function App() {
   // @ 按钮：把文件/文件夹路径插入到对话输入框
   const handleAtMention = useCallback((rel, isDir) => {
     const marker = isDir ? rel + "/" : rel;
-    chatInputRef.current?.insertText(`@${marker}`);
-  }, []);
+    insertChatText(`@${marker}`);
+  }, [insertChatText]);
 
   // 知识库 / Skills 的只读 Chat 转 Agent：关闭入口后把问题、引用和上下文
   // 交给主 ChatPanel，用户确认后再发送，避免检索入口隐式产生写入。
@@ -450,11 +515,13 @@ const refreshFiles = useCallback(async (dir) => {
     void refreshFiles(nextDir);
   }, [refreshFiles]);
 
-  const open = useCallback(async (name, thread = threadId) => {
+  const open = useCallback(async (name, thread = threadId, cwd = currentWorkspace) => {
     setDocLoading(true);
     try {
       const revision = Date.now();
-      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}&v=${revision}`, { cache: "no-store" });
+      // 携带 cwd：产物可能属于其他工作区，不能依赖服务端全局当前工作区
+      const cwdQuery = cwd ? `&cwd=${encodeURIComponent(cwd)}` : "";
+      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
       const doc = await response.json();
       if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
       const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
@@ -470,7 +537,7 @@ const refreshFiles = useCallback(async (dir) => {
       setActiveTab(name);
       setDocLoading(false);
     } catch (e) { alert("打开失败: " + e.message); setDocLoading(false); }
-  }, [clientId, threadId]);
+  }, [clientId, threadId, currentWorkspace]);
 
   // 关闭 tab
   const closeTab = useCallback((name) => {
@@ -877,7 +944,7 @@ const refreshFiles = useCallback(async (dir) => {
 
   return (
     <AppErrorBoundary>
-      <div className={`app ${previewMaximized ? "preview-maximized" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+      <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
         {activeModule === "knowledge" && (
           <DeferredModule label="知识库">
           <KnowledgeBase
@@ -895,7 +962,7 @@ const refreshFiles = useCallback(async (dir) => {
                 }, 120);
               }
             }}
-            onAtMention={(text) => chatInputRef.current?.insertText(text)}
+            onAtMention={insertChatText}
           />
           </DeferredModule>
         )}
@@ -907,12 +974,12 @@ const refreshFiles = useCallback(async (dir) => {
               closeExternalModules();
               if (marks?.length) {
                 setTimeout(() => {
-                  for (const m of marks) chatInputRef.current?.insertText(m + " ");
+                  for (const m of marks) insertChatText(m);
                 }, 120);
               }
             }}
             onOpenFile={open}
-            onAtMention={() => {}}
+            onAtMention={insertChatText}
           />
           </DeferredModule>
         )}
@@ -1057,7 +1124,7 @@ const refreshFiles = useCallback(async (dir) => {
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
-            <button className="btn-sm topbar-preview-toggle" onClick={() => setPreviewOpen((v) => !v)} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
+            <button className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
@@ -1081,14 +1148,20 @@ const refreshFiles = useCallback(async (dir) => {
             <div className="preview-panel-head">
               <span><Icon name="file" size={15} /> 当前工作产物</span>
               <span className="preview-panel-actions">
-                <button className="btn-icon" onClick={() => setPreviewMaximized((value) => !value)} title={previewMaximized ? "恢复工作产物大小" : "放大工作产物（保留 Agent 对话）"} aria-label={previewMaximized ? "恢复工作产物大小" : "放大工作产物（保留 Agent 对话）"}>
-                  <Icon name={previewMaximized ? "minimize" : "maximize"} size={14} />
+                <button
+                  className="btn-icon preview-layout-button"
+                  onClick={() => setPreviewLayout((value) => (value + 1) % 3)}
+                  title={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
+                  aria-label={`工作产物布局：${previewLayout === 0 ? "默认" : previewLayout === 1 ? "50%" : "100%"}，点击切换`}
+                >
+                  <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
+                  <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
                 </button>
-                <button className="btn-icon" onClick={() => setPreviewOpen(false)} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
+                <button className="btn-icon" onClick={() => { setPreviewLayout(0); setPreviewOpen(false); }} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
               </span>
             </div>
             <div className="preview-panel-tabs">
-              {[['document', '文档预览'], ['events', '事件流'], ['artifacts', '产物']].map(([id, label]) => (
+              {[['document', '文档预览'], ['artifacts', '产物'], ['browser', '浏览器']].map(([id, label]) => (
                 <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
               ))}
             </div>
@@ -1109,7 +1182,7 @@ const refreshFiles = useCallback(async (dir) => {
                 onCloseTab={closeTab}
                 onOpenFile={open}
                 loading={docLoading}
-                onSendToAgent={(t) => chatInputRef.current?.insertText(t)}
+                onSendToAgent={insertChatText}
                 onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
               />
             </WorkProductPanel>
@@ -1128,7 +1201,7 @@ const refreshFiles = useCallback(async (dir) => {
           selectedModel={selectedModel}
           onModelChange={setSelectedModel}
           onPromoteToAgent={handlePromoteToAgent}
-          onAtMention={(value) => chatInputRef.current?.insertText(String(value || "").startsWith("@") ? value : `@${value}`)}
+          onAtMention={(value) => insertChatText(String(value || "").startsWith("@") ? value : `@${value}`)}
         />
         </DeferredModule>
         <DeferredModule label="智能体广场">
@@ -1136,7 +1209,8 @@ const refreshFiles = useCallback(async (dir) => {
           open={activeModule === "agents"}
           fullPage
           onClose={closeExternalModules}
-          onAtMention={(text) => chatInputRef.current?.insertText(text)}
+          onAtMention={insertChatText}
+          onPromoteToAgent={handlePromoteToAgent}
         />
         </DeferredModule>
         </>
@@ -1159,7 +1233,7 @@ const refreshFiles = useCallback(async (dir) => {
            <div className="module-view">
              <div className="module-head">
                <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
-               <div><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></div>
+               <div className="module-brand-heading"><Logo size={22} /><span><h2>设置</h2><p>外观、模型、项目运行和工作区记忆</p></span></div>
                <div className="module-head-tabs">
                  <button className={settingsModuleTab === "settings" ? "active" : ""} onClick={() => setSettingsModuleTab("settings")}>设置</button>
                  <button className={settingsModuleTab === "memory" ? "active" : ""} onClick={() => setSettingsModuleTab("memory")}>记忆与沉淀</button>
@@ -1176,7 +1250,7 @@ const refreshFiles = useCallback(async (dir) => {
            <div className="module-view">
              <div className="module-head">
                <button className="module-back" onClick={closeExternalModules} title="返回对话"><Icon name="back" size={15} /></button>
-               <div><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></div>
+               <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
              </div>
              <div className="module-body module-artifacts-body">
                <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} refreshToken={artifactVersion} onOpenFile={(name) => { closeExternalModules(); open(name); }} />

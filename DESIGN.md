@@ -1,4 +1,4 @@
-# Office Agent Web - 前端设计文档
+# Open Plan - 前端设计文档
 
 当前基线：**v0.8.34**（feature/phase1-safety-baseline）
 

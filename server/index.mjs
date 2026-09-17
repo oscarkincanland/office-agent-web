@@ -29,6 +29,8 @@ import { listStagedFilesForValidation, stageWrite, writeWorkspaceFile, withWrite
 import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs";
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
+import * as searchModule from "./联网搜索.mjs";
+import * as browserModule from "./内置浏览器.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
@@ -863,7 +865,8 @@ app.post("/api/files/delete", async (req, res) => {
 // 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
 app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
@@ -902,9 +905,12 @@ app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
 app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   const fileName = decodeURIComponent(req.params[0]);
   if (/(?:^|\/)(?:raw|text|html|comments|watch)(?:\/stop)?$/.test(fileName)) return next();
-  const p = resolvePath(fileName);
+  // 支持按调用方指定的工作区解析（产物可能属于其他工作区，不能只看全局当前工作区）
+  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
+  const cwdQuery = requestedCwd ? `?cwd=${encodeURIComponent(requestedCwd)}` : "";
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
   const thread = req.query.thread;
@@ -926,10 +932,10 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
       res.json({ kind: "htmlfile", name: fileName, content });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw` });
+      res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else {
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html` });
+      res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -939,7 +945,8 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
 // rendered html for docx/pptx (iframe target)
 app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).send("not found");
   try {
     const html = await renderHtml(p);
@@ -1590,6 +1597,106 @@ app.get("/api/agent/config-status", (_req, res) => {
   }
 });
 
+// ---------- 联网搜索配置 ----------
+app.get("/api/search/settings", (_req, res) => {
+  try {
+    res.json({ ok: true, backends: searchModule.SEARCH_BACKENDS, settings: searchModule.publicSearchSettings() });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/search/settings", (req, res) => {
+  try {
+    const settings = searchModule.saveSearchSettings(req.body || {});
+    res.json({ ok: true, settings });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post("/api/search/test", async (req, res) => {
+  try {
+    const result = await searchModule.testSearchBackend(req.body?.backend || "");
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ ok: false, message: error.message });
+  }
+});
+
+// ---------- 内置浏览器（画面流 / 用户接管） ----------
+app.get("/api/browser/state", (req, res) => {
+  const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
+  const key = browserModule.browserSessionKey(client, thread);
+  const session = browserModule.getBrowserSession(key);
+  res.json({ ok: true, state: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
+});
+
+app.get("/api/browser/stream", (req, res) => {
+  const client = String(req.query.client || "");
+  const thread = String(req.query.thread || "");
+  const withFrames = req.query.frames !== "0";
+  if (!client) return res.status(400).end();
+  const key = browserModule.browserSessionKey(client, thread);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.flushHeaders?.();
+  let closed = false;
+  let unsubscribe = () => {};
+  let heartbeat = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe();
+  };
+  const write = (payload) => {
+    if (closed) return;
+    try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { cleanup(); }
+  };
+  heartbeat = setInterval(() => {
+    if (closed) return;
+    try { res.write(`event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`); } catch { cleanup(); }
+  }, 15000);
+  const session = browserModule.getBrowserSession(key);
+  write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
+  if (session?.state?.active) session.refreshTabs().catch(() => {});
+  if (withFrames && session?.frame?.data) write({ type: "frame", data: { data: session.frame.data, at: session.frame.at } });
+  unsubscribe = browserModule.subscribeBrowser(key, (type, data) => {
+    if (type === "frame" && !withFrames) return;
+    write({ type, data });
+  });
+  req.on("close", cleanup);
+});
+
+app.post("/api/browser/input", async (req, res) => {
+  const { client, thread, ...payload } = req.body || {};
+  const key = browserModule.browserSessionKey(client, thread);
+  try {
+    const result = await browserModule.browserUserInput(key, payload);
+    res.json({ ok: true, result });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
+});
+
+app.post("/api/browser/close", async (req, res) => {
+  const { client, thread, force, reason } = req.body || {};
+  const key = browserModule.browserSessionKey(client, thread);
+  try {
+    const result = await browserModule.browserClose(key, { force: force === true, reason: reason || "" });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+
 app.get("/api/agent/import-preview", (_req, res) => {
   try {
     res.json(previewLocalPiConfig());
@@ -2038,10 +2145,11 @@ function sessionMetaFor(f) {
 function buildSessionMeta(f, h, text, capped = false) {
   const cwd = h.cwd || "";
   const isProjectSession = path.resolve(f.storeDir) === path.resolve(SESSIONS_DIR);
-  const isOaw = isProjectSession || cwd.includes("office-agent-web") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
+  const cwdLower = cwd.toLowerCase();
+  const isOpenPlan = isProjectSession || cwdLower.includes("open plan") || cwdLower.includes("open-plan") || cwd.includes(PROJECT_DIR) || cwd === path.dirname(PROJECT_DIR);
   let title = "";
   let hasUserMessage = false;
-  if (isOaw && text) {
+  if (isOpenPlan && text) {
     let from = text.indexOf("\n");
     from = from >= 0 ? from + 1 : text.length;
     while (from < text.length) {
@@ -2068,7 +2176,7 @@ function buildSessionMeta(f, h, text, capped = false) {
     id: h.id || h.sessionId || sessionBaseName(f.fileName),
     threadId: h.threadId || null,
     cwd,
-    isOaw,
+    isOaw: isOpenPlan,
     isProjectSession,
     label: h.label ? String(h.label).trim() : "",
     pinned: Boolean(h.pinned),

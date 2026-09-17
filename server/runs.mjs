@@ -687,6 +687,14 @@ function publicRunView(run) {
   };
 }
 
+function sameRunWorkspace(a, b) {
+  const left = path.resolve(String(a || ""));
+  const right = path.resolve(String(b || ""));
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
 export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50 } = {}) {
   ensureDir(RUNS_DIR);
   const textQuery = String(query || "").trim().toLowerCase();
@@ -694,8 +702,10 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = 
     .filter((n) => n.endsWith(".json"))
     .map((n) => loadRun(path.basename(n, ".json")))
     .filter(Boolean)
-    .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || path.resolve(r.cwd || "") === path.resolve(cwd)))
-    .filter((r) => (!projectId || r.projectId === projectId) && (!status || status === "all" || r.status === status))
+    .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || sameRunWorkspace(r.cwd, cwd)))
+    // 当前项目同时按 ID 和工作区查询；老 Run 可能还没有 projectId，
+    // 但只要其工作区相同仍应出现在任务中心，避免升级后历史任务消失。
+    .filter((r) => (!projectId || r.projectId === projectId || (cwd && !r.projectId && sameRunWorkspace(r.cwd, cwd))) && (!status || status === "all" || r.status === status))
     .filter((r) => (!mode || mode === "all" || r.task?.mode === mode))
     .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error), ...(r.todos || []).map((item) => `${item.title} ${item.note || ""}`)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))

@@ -5,6 +5,7 @@ const THEMES = ["dark", "light"];
 const SKIN_KEY = "oaw_skin";
 const SKINS = [
   { id: "proma", label: "Proma 清晰" },
+  { id: "glass", label: "磨玻璃 · Open Plan" },
   { id: "default", label: "默认（青绿）" },
   { id: "ocean", label: "海洋蓝" },
   { id: "forest", label: "森林绿" },

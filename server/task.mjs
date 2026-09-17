@@ -11,6 +11,7 @@ export const TASK_MODES = Object.freeze(["chat", "office", "agent"]);
 
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
+  "web_search", "web_fetch",
 ]);
 const OFFICE_TOOLS = Object.freeze([
   ...READ_ONLY_TOOLS, "officecli",
@@ -20,6 +21,7 @@ const AGENT_TOOLS = Object.freeze([
   "bash", "write", "edit",
   "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis",
   "memory_update", "todo", "complete_task",
+  "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close",
 ]);
 
 export function normalizeTaskMode(mode) {

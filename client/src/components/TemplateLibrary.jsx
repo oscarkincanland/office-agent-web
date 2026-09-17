@@ -16,7 +16,7 @@ import { tplList, tplContent } from "../api.js";
 const TYPE_ORDER = { markdown: 0, html: 1, word: 2, pdf: 3, ppt: 4, xls: 5, other: 9 };
 
 export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
-  const [atMarks, setAtMarks] = useState([]); // 多次 @ 累积的标记（返回时统一传给对话）
+  const [atMarks, setAtMarks] = useState([]); // 已选模板标记；有主输入框时立即插入，兼容无回调时返回传递
   const [genOpen, setGenOpen] = useState(false); // 一键生成弹窗
   const [genTopic, setGenTopic] = useState("");
   const [categories, setCategories] = useState([]);
@@ -155,6 +155,13 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
 
   const closePreview = useCallback(() => setPreview(null), []);
 
+  const addAtMark = useCallback((marker) => {
+    const value = String(marker || "").trim();
+    if (!value) return;
+    setAtMarks((marks) => marks.includes(value) ? marks : [...marks, value]);
+    onAtMention?.(`${value} `);
+  }, [onAtMention]);
+
   // 文件类型图标
   const extIcon = (ext) => {
     const map = { md: "md", docx: "doc", doc: "doc", pdf: "pdf", pptx: "ppt", ppt: "ppt", html: "html", xlsx: "xls", xls: "xls" };
@@ -260,18 +267,26 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
   // 一键生成：携带主题指令返回对话（复用 @模板 标记机制）
   const confirmGenerate = () => {
     if (!genTopic.trim() || !preview) return;
-    onExit?.([`@模板[${preview.name}] 请参考该模板的风格与结构，生成主题为「${genTopic.trim()}」的 HTML PPT，保存到工作区后告诉我文件名`]);
+    const ref = preview.relPath || preview.name;
+    const prompt = `@模板[${ref}] 请参考该模板的风格与结构，生成主题为「${genTopic.trim()}」的 HTML PPT，保存到工作区后告诉我文件名`;
+    if (onAtMention) {
+      onAtMention(prompt);
+      onExit?.();
+    } else {
+      onExit?.([prompt]);
+    }
+    setGenOpen(false);
   };
 
   return (
     <div className="tpl">
       {/* 顶栏 */}
       <div className="tpl-topbar">
-        <button className="btn-sm" onClick={() => onExit?.(atMarks)}><Icon name="back" size={14} /> 返回</button>
+        <button className="btn-sm" onClick={() => onExit?.(onAtMention ? [] : atMarks)}><Icon name="back" size={14} /> 返回</button>
         <span className="tpl-title">📋 模版库</span>
         <span className="tpl-count">{filtered.length} 个模版</span>
         {atMarks.length > 0 && (
-          <span className="tpl-at-badge" title="已选模板，返回后插入对话">
+          <span className="tpl-at-badge" title="已选模板，已插入或将在返回后插入对话">
             @已选 {atMarks.length} 项
             <button className="btn-xs" onClick={(e) => { e.stopPropagation(); setAtMarks([]); }}>清除</button>
           </span>
@@ -412,8 +427,8 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
               </div>
               <button
                 className="btn-sm tpl-preview-at"
-                title="把该模板 @到对话（可继续 @多个，返回时统一插入）"
-                onClick={() => setAtMarks((m) => [...m, `@模板[${preview.name}]`])}
+                title="把该模板 @到对话；引用使用完整路径，Agent 可准确定位模板文件"
+                onClick={() => addAtMark(`@模板[${preview.relPath || preview.name}]`)}
               >@ 模板</button>
               <button
                 className="btn-sm primary"
@@ -428,7 +443,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                   title="@整个模板目录"
                   onClick={() => {
                     const relDir = String(preview.relPath).split("/").slice(0, -1).join("/");
-                    setAtMarks((m) => [...m, `@模板目录[${relDir}]`]);
+                    addAtMark(`@模板目录[${relDir}]`);
                   }}
                 >@📁 目录</button>
               )}

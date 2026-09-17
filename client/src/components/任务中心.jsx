@@ -65,17 +65,23 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const [queryFilter, setQueryFilter] = useState("");
   const [opening, setOpening] = useState(false);
   const refreshInFlightRef = useRef(null);
+  const refreshQueuedRef = useRef(false);
 
   useEffect(() => {
     if (fullPage) setOpen(true);
   }, [fullPage]);
 
   const refresh = useCallback(async () => {
-    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    if (refreshInFlightRef.current) {
+      // SSE 事件可能在上一次列表请求返回前连续到达；记住这次刷新，
+      // 否则旧响应会覆盖最新状态，任务中心要等到下一轮轮询才同步。
+      refreshQueuedRef.current = true;
+      return refreshInFlightRef.current;
+    }
     try {
       const options = {
         cwd: projectScope === "current" ? currentWorkspace : "",
-        projectId: projectScope !== "current" && projectScope !== "all" ? projectScope : "",
+        projectId: projectScope === "current" ? currentProjectId : projectScope !== "all" ? projectScope : "",
         status: statusFilter,
         mode: modeFilter,
         query: queryFilter.trim(),
@@ -90,6 +96,10 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         })
         .finally(() => {
           refreshInFlightRef.current = null;
+          if (refreshQueuedRef.current) {
+            refreshQueuedRef.current = false;
+            window.setTimeout(() => { void refresh(); }, 0);
+          }
         });
       refreshInFlightRef.current = request;
       return request;
@@ -98,7 +108,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
       setError(e.message || "任务状态暂不可用");
       return null;
     }
-  }, [currentWorkspace, eventVersion, modeFilter, projectScope, queryFilter, statusFilter]);
+  }, [currentProjectId, currentWorkspace, eventVersion, modeFilter, projectScope, queryFilter, statusFilter]);
 
   useEffect(() => {
     refresh();

@@ -45,7 +45,7 @@ const DEFAULT_AGENTS = [
   },
 ];
 
-export default function AgentMarket({ open, onClose, onAtMention, fullPage = false }) {
+export default function AgentMarket({ open, onClose, onAtMention, onPromoteToAgent, fullPage = false }) {
   const [agents, setAgents] = useState(DEFAULT_AGENTS);
   const [editor, setEditor] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -62,8 +62,13 @@ export default function AgentMarket({ open, onClose, onAtMention, fullPage = fal
   if (!open) return null;
 
   const startAgent = (agent) => {
-    const ats = agent.skills.map((s) => `@${s}`).join(" ");
-    onAtMention(`${ats} ${agent.prompt}`);
+    const skills = Array.isArray(agent.skills) ? agent.skills.filter(Boolean) : [];
+    if (onPromoteToAgent) {
+      onPromoteToAgent({ text: agent.prompt || "", skills });
+      return;
+    }
+    const ats = skills.map((s) => `@技能[${s}]`).join(" ");
+    onAtMention?.(`${ats} ${agent.prompt || ""}`.trim());
     onClose();
   };
 
@@ -128,7 +133,7 @@ export default function AgentMarket({ open, onClose, onAtMention, fullPage = fal
                 <div className="agent-name">{a.name}</div>
                 <div className="agent-desc">{a.description || a.desc}</div>
                 <div className="agent-skills">
-                  {a.skills.map((s) => (
+                  {(Array.isArray(a.skills) ? a.skills : []).map((s) => (
                     <span className="workflow-skill-chip" key={s} title={s}>@{s}</span>
                   ))}
                 </div>

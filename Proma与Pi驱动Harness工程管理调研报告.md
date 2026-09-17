@@ -1,6 +1,6 @@
 # Proma 与 Pi 驱动 Harness 工程管理调研报告
 
-**调研对象**：`office-agent-web`（Open Plan / 规聚 Web 工作台）及公开项目 [Proma](https://github.com/proma-ai/Proma)
+**调研对象**：`open plan`（Open Plan / 规聚 Web 工作台）及公开项目 [Proma](https://github.com/proma-ai/Proma)
 
 **调研时间**：2026-08-28
 
@@ -16,9 +16,9 @@ Proma 最值得借鉴的是它对 Chat、Agent、会话、工作区、事件和�
 
 ### 1.1 项目识别
 
-当前工作目录下没有名为 `proma` 的本地目录。本次将 `F:\Claude code本地文件\office-agent-web` 作为被审计项目，因为它的 [README.md](<F:/Claude code本地文件/office-agent-web/README.md>) 明确写明：前端设计参考 Proma 与 SiYuan，并且当前使用 Pi Agent SDK。
+当前工作目录下没有名为 `proma` 的本地目录。本次将 `F:\Claude code本地文件\open plan` 作为被审计项目，因为它的 [README.md](<F:/Claude code本地文件/open plan/README.md>) 明确写明：前端设计参考 Proma 与 SiYuan，并且当前使用 Pi Agent SDK。
 
-因此，本报告中的“你的项目”均指 `office-agent-web`；Proma 指公开的 [proma-ai/Proma](https://github.com/proma-ai/Proma)。如果你指的是其他本地目录，后续可以再按实际目录重新核对。
+因此，本报告中的“你的项目”均指 `open plan`；Proma 指公开的 [proma-ai/Proma](https://github.com/proma-ai/Proma)。如果你指的是其他本地目录，后续可以再按实际目录重新核对。
 
 ### 1.2 已覆盖的范围
 
@@ -106,7 +106,7 @@ Conversation（对话）
 
 ### 当前实现
 
-后端 `AgentManager` 以 `clientId::threadId` 作为运行实例键，每个实例维护 busy、activeRunId、当前文件和任务状态；前端 [ChatPanel.jsx](<F:/Claude code本地文件/office-agent-web/client/src/components/ChatPanel.jsx>) 通过 SSE 接收 token、thinking、tool_start、tool_output、tool_end、assistant_final、agent_end、agent_error、file_changed、agent_summary 和 run_finished 等事件。
+后端 `AgentManager` 以 `clientId::threadId` 作为运行实例键，每个实例维护 busy、activeRunId、当前文件和任务状态；前端 [ChatPanel.jsx](<F:/Claude code本地文件/open plan/client/src/components/ChatPanel.jsx>) 通过 SSE 接收 token、thinking、tool_start、tool_output、tool_end、assistant_final、agent_end、agent_error、file_changed、agent_summary 和 run_finished 等事件。
 
 发送请求时，前端会携带文本、图片、附件、引用、模型、thinking level、任务模式和工作流；忙碌时可以注入上下文或排队，后端在特定条件下使用 steer、重试或等待当前运行结束。这个设计已经有 Agent 交互的基本骨架。
 
@@ -856,15 +856,15 @@ Pi = Agent Runtime
 
 ## 附录 A：本地代码证据入口
 
-- [项目说明与架构概览](<F:/Claude code本地文件/office-agent-web/README.md>)
-- [Pi Agent 管理、工具、事件和模型运行时](<F:/Claude code本地文件/office-agent-web/server/agent.mjs>)
-- [HTTP API、SSE、会话、文件和 Run 路由](<F:/Claude code本地文件/office-agent-web/server/index.mjs>)
-- [Run 快照、差异、产物和回滚](<F:/Claude code本地文件/office-agent-web/server/runs.mjs>)
-- [工作区、路径和 Pi Agent 目录配置](<F:/Claude code本地文件/office-agent-web/server/workspace.mjs>)
-- [前端对话、SSE、工具块、任务状态和模型选择](<F:/Claude code本地文件/office-agent-web/client/src/components/ChatPanel.jsx>)
-- [前端总编排、会话恢复、工作区和模式状态](<F:/Claude code本地文件/office-agent-web/client/src/App.jsx>)
-- [会话、文件树和产物入口](<F:/Claude code本地文件/office-agent-web/client/src/components/SessionSidebar.jsx>)
-- [任务中心](<F:/Claude code本地文件/office-agent-web/client/src/components/任务中心.jsx>)
+- [项目说明与架构概览](<F:/Claude code本地文件/open plan/README.md>)
+- [Pi Agent 管理、工具、事件和模型运行时](<F:/Claude code本地文件/open plan/server/agent.mjs>)
+- [HTTP API、SSE、会话、文件和 Run 路由](<F:/Claude code本地文件/open plan/server/index.mjs>)
+- [Run 快照、差异、产物和回滚](<F:/Claude code本地文件/open plan/server/runs.mjs>)
+- [工作区、路径和 Pi Agent 目录配置](<F:/Claude code本地文件/open plan/server/workspace.mjs>)
+- [前端对话、SSE、工具块、任务状态和模型选择](<F:/Claude code本地文件/open plan/client/src/components/ChatPanel.jsx>)
+- [前端总编排、会话恢复、工作区和模式状态](<F:/Claude code本地文件/open plan/client/src/App.jsx>)
+- [会话、文件树和产物入口](<F:/Claude code本地文件/open plan/client/src/components/SessionSidebar.jsx>)
+- [任务中心](<F:/Claude code本地文件/open plan/client/src/components/任务中心.jsx>)
 
 ## 附录 B：外部参考资料
 
