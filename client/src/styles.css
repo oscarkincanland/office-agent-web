@@ -5427,7 +5427,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .preview-event-stream, .preview-artifact-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; background: var(--panel-bg); }
 
 /* ========== 内置浏览器面板 ========== */
-.browser-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel-bg); }
+.browser-panel { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--panel-bg); overflow: hidden; container-type: inline-size; }
 /* Chrome 风格标签栏 */
 .browser-tabs {
   display: flex;
@@ -5481,37 +5481,82 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .browser-tab-new:hover { background: var(--selected); color: var(--text); }
 .browser-panel-idle { align-items: center; justify-content: center; padding: 20px; }
-.browser-idle-card { max-width: 320px; text-align: center; color: var(--muted); display: flex; flex-direction: column; gap: 9px; align-items: center; }
-.browser-idle-card strong { color: var(--text); font-size: 13px; }
-.browser-idle-card p { margin: 0; font-size: 11px; line-height: 1.7; }
+.browser-idle-card { width: min(520px, 100%); padding: 28px; border: 1px solid color-mix(in srgb, var(--border) 86%, var(--accent)); border-radius: 18px; background: color-mix(in srgb, var(--panel2-bg) 88%, transparent); box-shadow: 0 18px 48px color-mix(in srgb, var(--body-bg) 24%, transparent), inset 0 1px 0 color-mix(in srgb, #fff 12%, transparent); color: var(--muted); display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+.browser-idle-icon { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; border-radius: 13px; color: var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); }
+.browser-idle-heading { display: flex; flex-direction: column; gap: 3px; text-align: left; }
+.browser-idle-card strong { color: var(--text); font-size: 16px; }
+.browser-idle-heading span { color: var(--dim); font-size: 10px; }
+.browser-idle-card p { margin: 0; font-size: 11px; line-height: 1.7; text-align: left; }
 .browser-idle-hint em { color: var(--accent); font-style: normal; }
+.browser-idle-open { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 6px 5px 10px; border: 1px solid var(--border); border-radius: 11px; background: var(--panel-bg); }
+.browser-idle-open > .icon { flex: 0 0 auto; color: var(--dim); }
+.browser-idle-open input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 11px; }
+.browser-primary-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 7px 11px; border: 0; border-radius: 8px; background: var(--accent); color: #17200f; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+.browser-primary-btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.browser-primary-btn:disabled { opacity: .48; cursor: wait; transform: none; }
+.browser-quick-links { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 10px; }
+.browser-quick-links button { border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.browser-quick-links button:hover { border-color: var(--accent); color: var(--accent); background: var(--selected); }
+.browser-quick-links button:disabled { opacity: .48; cursor: wait; }
 .browser-msg { padding: 5px 10px; color: #d9a13c; font-size: 10px; }
-.browser-toolbar { display: flex; align-items: center; gap: 5px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--panel2-bg); }
+.browser-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 7px 9px; border-bottom: 1px solid var(--border); background: var(--panel2-bg); }
 .browser-toolbar .btn-icon { width: 24px; height: 24px; }
-.browser-url-form { flex: 1; min-width: 0; }
+.browser-nav-actions { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.browser-url-form { display: flex; align-items: center; gap: 6px; flex: 1 1 180px; min-width: 120px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-bg); }
+.browser-url-form > .icon { flex: 0 0 auto; color: var(--dim); }
 .browser-url-input {
   width: 100%;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--panel-bg);
+  min-width: 0;
+  padding: 6px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
   color: var(--text);
   font: inherit;
   font-size: 10px;
 }
-.browser-url-input:focus { border-color: var(--accent); outline: none; }
-.browser-status { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 9px; white-space: nowrap; }
+.browser-status, .browser-connection, .browser-takeover { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 9px; white-space: nowrap; }
 .browser-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
 .browser-status.active { color: var(--success); }
 .browser-status.active i { background: var(--success); }
 .browser-status.loading { color: var(--accent); }
 .browser-status.loading i { background: var(--accent); animation: brain-pulse 1.1s ease-in-out infinite; }
+.browser-connection i, .browser-takeover i { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+.browser-connection.online { color: var(--success); }
+.browser-connection.online i { background: var(--success); }
+.browser-connection.offline { color: var(--warning); }
+.browser-connection.offline i { background: var(--warning); animation: pulse-status 1.4s ease-in-out infinite; }
+.browser-takeover.is-user { color: var(--accent); }
+.browser-takeover.is-user i { background: var(--accent); }
+.browser-takeover.is-agent i { background: var(--dim); }
+.browser-control-toggle,
+.browser-fullscreen-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 25px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.browser-control-toggle:hover,
+.browser-fullscreen-toggle:hover,
+.browser-control-toggle.active { color: var(--accent); border-color: var(--accent); background: var(--selected); }
+.browser-fullscreen-toggle { width: 25px; padding: 0; }
 .browser-title { padding: 4px 10px; color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px solid var(--border); }
-.browser-view { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; background: var(--panel2-bg); }
-.browser-view img { width: 100%; height: auto; display: block; cursor: crosshair; user-select: none; box-shadow: 0 1px 10px rgba(0, 0, 0, .28); }
-.browser-hint { padding: 3px 10px; color: var(--dim); font-size: 9px; }
-.browser-placeholder { align-self: center; color: var(--dim); font-size: 11px; padding: 30px; }
-.browser-input-row { display: flex; gap: 5px; padding: 6px 8px; border-top: 1px solid var(--border); background: var(--panel2-bg); }
+.browser-view { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 12px; background: radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 45%), var(--body-bg); }
+.browser-view img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; cursor: crosshair; user-select: none; box-shadow: 0 10px 26px rgba(0, 0, 0, .28); }
+.browser-hint { display: flex; align-items: center; gap: 5px; padding: 5px 10px; color: var(--dim); font-size: 9px; border-top: 1px solid var(--border); background: var(--panel2-bg); }
+.browser-placeholder { display: flex; flex-direction: column; align-items: center; gap: 10px; align-self: center; color: var(--dim); font-size: 11px; padding: 30px; }
+.browser-input-row { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-top: 1px solid var(--border); background: var(--panel2-bg); }
+.browser-input-label { flex: 0 0 auto; color: var(--dim); font-size: 10px; }
 .browser-text-input {
   flex: 1;
   min-width: 0;
@@ -5524,6 +5569,20 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   font-size: 10px;
 }
 .browser-text-input:focus { border-color: var(--accent); outline: none; }
+/* 右侧产物栏默认只有约 360px：地址栏独占一行，避免被状态按钮挤成 0px。 */
+@container (max-width: 560px) {
+  .browser-toolbar { gap: 5px; padding: 6px; }
+  .browser-url-form { order: 10; flex: 1 1 100%; width: 100%; min-width: 0; }
+  .browser-status, .browser-connection, .browser-takeover { display: none; }
+  .browser-control-toggle { width: 25px; padding: 0; font-size: 0; }
+}
+@media (max-width: 720px) {
+  .browser-status, .browser-connection, .browser-takeover { display: none; }
+  .browser-control-toggle { width: 25px; padding: 0; font-size: 0; }
+  .browser-view { padding: 5px; }
+  .browser-input-label { display: none; }
+  .browser-idle-card { padding: 20px; }
+}
 .preview-data-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 9px; color: var(--muted); font-size: 10px; }
 .preview-live { color: var(--success); }
 .preview-muted { color: var(--dim); }
@@ -6335,6 +6394,40 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex: 1 1 auto;
 }
 .preview-maximized .preview-panel-head { min-height: 58px; }
+
+/* 浏览器专注模式：隐藏工作台侧栏和对话栏，让网页像独立浏览器一样铺满窗口。 */
+/* ========== 内置浏览器独立侧栏 ========== */
+.app-browser-slot {
+  width: var(--browser-w, 460px);
+  min-width: 340px;
+  max-width: 960px;
+  height: 100vh;
+  min-height: 0;
+  flex: 0 0 var(--browser-w, 460px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border-left: 1px solid var(--border);
+}
+.browser-slot-head { min-height: 54px; }
+.browser-slot-head .preview-panel-actions { display: inline-flex; gap: 4px; }
+.topbar-browser-toggle.active { color: var(--accent); border-color: var(--accent); }
+
+.app.browser-fullscreen > .sidebar,
+.app.browser-fullscreen > .center-area,
+.app.browser-fullscreen > .resizer { display: none; }
+.app.browser-fullscreen > .app-browser-slot {
+  position: fixed;
+  z-index: 260;
+  inset: 0;
+  width: 100vw;
+  min-width: 0;
+  max-width: none;
+  height: 100vh;
+  flex: none;
+  border-left: 0;
+}
+.app.browser-fullscreen .preview-panel-head { min-height: 54px; }
 
 /* 预览布局按钮三段循环：默认宽度 → 与对话各占一半 → 产物占满工作区。 */
 .preview-half .center-area {

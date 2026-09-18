@@ -1,21 +1,48 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import rehypeHighlight from "rehype-highlight";
 import rehypeSlug from "rehype-slug";
 import remarkToc from "remark-toc";
-import "highlight.js/styles/github-dark.css";
-import "katex/dist/katex.min.css";
 
 /**
  * 统一 Markdown 渲染组件（聊天消息 + MD 文档共用）
  * 插件：GFM 表格/任务列表、数学公式(KaTeX)、代码高亮(highlight.js)、标题锚点、自动目录
  * onTagClick：可选，提供时把行内 #tag 渲染为可点击元素（知识库文档预览用）
  * onWikilinkHover：可选，提供时把 [[目标]] 渲染为可悬浮预览的链接（知识库文档预览用）
+ *
+ * 性能：KaTeX 与 highlight.js 体积大（约 1MB+），改为异步加载并按需启用：
+ * 首屏先用轻量 Markdown 渲染，插件就绪后再补齐公式与代码高亮，避免拖慢启动。
  */
+let heavyPluginsPromise = null;
+function loadHeavyPlugins() {
+  if (!heavyPluginsPromise) {
+    heavyPluginsPromise = Promise.all([
+      import("rehype-katex"),
+      import("rehype-highlight"),
+      import("highlight.js/styles/github-dark.css"),
+      import("katex/dist/katex.min.css"),
+    ])
+      .then(([katexModule, highlightModule]) => ({
+        katex: katexModule.default,
+        highlight: highlightModule.default,
+      }))
+      .catch(() => null);
+  }
+  return heavyPluginsPromise;
+}
+
 export default function MarkdownBody({ children, className = "", withToc = false, onTagClick, onWikilinkHover }) {
+  const [heavyPlugins, setHeavyPlugins] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadHeavyPlugins().then((plugins) => {
+      if (!cancelled && plugins) setHeavyPlugins(plugins);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   // 预处理：[[目标]] → 内部 wikilink 标记链接（保留显示文本，供 a 组件拦截渲染）
   const processed = useMemo(() => {
     if (!onWikilinkHover) return children;
@@ -25,11 +52,19 @@ export default function MarkdownBody({ children, className = "", withToc = false
     });
   }, [children, onWikilinkHover]);
 
+  const rehypePlugins = useMemo(() => {
+    const plugins = [];
+    if (heavyPlugins?.katex) plugins.push(heavyPlugins.katex);
+    if (heavyPlugins?.highlight) plugins.push(heavyPlugins.highlight);
+    plugins.push(rehypeSlug);
+    return plugins;
+  }, [heavyPlugins]);
+
   return (
     <div className={`markdown-body ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, ...(withToc ? [[remarkToc, { maxDepth: 3 }]] : [])]}
-        rehypePlugins={[rehypeKatex, rehypeHighlight, rehypeSlug]}
+        rehypePlugins={rehypePlugins}
         components={{
           // 行内 #tag → 可点击（仅知识库模式启用，排除 hex 颜色/纯数字）
           text: ({ children: kids }) => {

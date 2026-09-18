@@ -1,12 +1,13 @@
 {
   "name": "open-plan",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
   "scripts": {
-    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
-    "dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
+    "start": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚后台.ps1\"",
+    "dev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚后台.ps1\"",
+    "start:foreground": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"./启动规聚服务.ps1\"",
     "build": "cd client && npm run build",
     "verify": "node scripts/验证脚本.mjs",
     "test:phase1": "node scripts/阶段一稳定性测试.mjs",

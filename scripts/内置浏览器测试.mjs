@@ -84,8 +84,17 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   }
   assert.match(index, /\/api\/browser\/stream/);
   assert.match(index, /\/api\/browser\/input/);
+  assert.match(index, /\/api\/browser\/open/, "前端需要可主动打开浏览器会话");
   assert.match(panel, /EventSource\(`\/api\/browser\/stream/);
-  assert.match(app, /setPreviewTab\("browser"\)/);
+  assert.match(panel, /browserOpen/, "浏览器面板需要支持手动打开网址");
+  assert.match(panel, /browser-idle-open/, "浏览器面板需要提供未启动状态的地址栏");
+  assert.match(panel, /browser-control-toggle/, "浏览器面板需要提供明确的用户接管入口");
+  assert.match(panel, /onToggleFullscreen/, "浏览器面板需要支持铺满工作区");
+  assert.match(app, /browser-fullscreen/, "工作台需要支持浏览器专注模式");
+  assert.match(fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8"), /quality: 86/);
+  assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
+  assert.match(app, /app-browser-slot/, "浏览器应为独立可伸缩侧栏");
+  assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
   assert.match(panel, /action: "tab_new"/);

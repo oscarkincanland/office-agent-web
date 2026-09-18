@@ -18,7 +18,8 @@ import { PROJECT_DIR } from "./workspace.mjs";
 const PROFILE_DIR = process.env.OAW_BROWSER_PROFILE || path.join(PROJECT_DIR, ".oaw", "browser-profile");
 const SHOT_DIR = path.join(PROJECT_DIR, ".oaw", "browser-shots");
 const PORT_FILE = path.join(PROFILE_DIR, ".oaw-devtools-port");
-const VIEWPORT = { width: 1280, height: 800 };
+// 以更接近桌面浏览器的视口启动，面板缩放时仍保持清晰的网页文字。
+const VIEWPORT = { width: 1440, height: 900 };
 const NAV_TIMEOUT_MS = 25000;
 
 const sessions = new Map(); // key -> BrowserSession
@@ -134,8 +135,10 @@ class CdpConnection {
   constructor(wsUrl) {
     this.nextId = 1;
     this.pending = new Map();
+    this.envelopes = new Map();
     this.listeners = new Map();
     this.closed = false;
+    this.sessionId = null;
     this.ws = new WebSocket(wsUrl);
     this.ready = new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("CDP 连接超时")), 15000);
@@ -145,6 +148,38 @@ class CdpConnection {
     this.ws.addEventListener("message", (event) => {
       let message = null;
       try { message = JSON.parse(typeof event.data === "string" ? event.data : String(event.data)); } catch { return; }
+
+      // 使用浏览器级 CDP + Target.attachToTarget(flatten:false) 时，标签页事件
+      // 会被包在 Target.receivedMessageFromTarget 中，需要还原成普通 CDP 消息。
+      if (message.method === "Target.receivedMessageFromTarget") {
+        if (message.params?.sessionId !== this.sessionId) return;
+        try {
+          const inner = JSON.parse(message.params.message || "{}");
+          if (inner.id && this.pending.has(inner.id)) {
+            const pending = this.pending.get(inner.id);
+            this.pending.delete(inner.id);
+            if (message.error || inner.error) pending.reject(new Error((message.error || inner.error).message || "CDP 命令失败"));
+            else pending.resolve(inner.result || {});
+            return;
+          }
+          if (inner.method) this.dispatchEvent(inner);
+        } catch {}
+        return;
+      }
+
+      // Target.sendMessageToTarget 的外层确认只表示消息已入队，真正的返回值
+      // 在上面的 receivedMessageFromTarget 事件中到达；外层错误需要传给内层请求。
+      if (message.id && this.envelopes.has(message.id)) {
+        const innerId = this.envelopes.get(message.id);
+        this.envelopes.delete(message.id);
+        if (message.error && this.pending.has(innerId)) {
+          const pending = this.pending.get(innerId);
+          this.pending.delete(innerId);
+          pending.reject(new Error(message.error.message || "CDP 命令失败"));
+        }
+        return;
+      }
+
       if (message.id && this.pending.has(message.id)) {
         const pending = this.pending.get(message.id);
         this.pending.delete(message.id);
@@ -152,11 +187,7 @@ class CdpConnection {
         else pending.resolve(message.result || {});
         return;
       }
-      if (message.method) {
-        const handlers = this.listeners.get(message.method);
-        if (!handlers) return;
-        for (const handler of handlers) { try { handler(message.params || {}); } catch {} }
-      }
+      this.dispatchEvent(message);
     });
     this.ws.addEventListener("close", () => {
       this.closed = true;
@@ -164,27 +195,42 @@ class CdpConnection {
         pending.reject(new Error("浏览器连接已关闭"));
         this.pending.delete(id);
       }
+      this.envelopes.clear();
     });
+  }
+
+  dispatchEvent(message) {
+    if (!message?.method) return;
+    const handlers = this.listeners.get(message.method);
+    if (!handlers) return;
+    for (const handler of handlers) { try { handler(message.params || {}); } catch {} }
   }
 
   send(method, params = {}, timeoutMs = 30000) {
     if (this.closed) return Promise.reject(new Error("浏览器连接已关闭"));
     const id = this.nextId++;
+    const envelopeId = this.sessionId ? this.nextId++ : null;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
+          if (envelopeId) this.envelopes.delete(envelopeId);
           reject(new Error(`CDP 命令超时：${method}`));
         }
       }, timeoutMs);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
-        reject: (error) => { clearTimeout(timer); reject(error); },
+        reject: (error) => { clearTimeout(timer); if (envelopeId) this.envelopes.delete(envelopeId); reject(error); },
       });
       try {
-        this.ws.send(JSON.stringify({ id, method, params }));
+        const message = this.sessionId
+          ? { id: envelopeId, method: "Target.sendMessageToTarget", params: { sessionId: this.sessionId, message: JSON.stringify({ id, method, params }) } }
+          : { id, method, params };
+        if (this.sessionId) this.envelopes.set(envelopeId, id);
+        this.ws.send(JSON.stringify(message));
       } catch (error) {
         this.pending.delete(id);
+        if (envelopeId) this.envelopes.delete(envelopeId);
         clearTimeout(timer);
         reject(error);
       }
@@ -390,6 +436,17 @@ class BrowserSession {
       "--no-default-browser-check",
       "--disable-background-networking",
       "--disable-sync",
+      // 当前 Windows/Codex 环境中的 GPU 子进程会直接崩溃（GPU process isn't usable），
+      // 导致浏览器虽然短暂打开，但 CDP 页面连接立即关闭。浏览器面板本身使用截图流，
+      // 关闭 GPU 不影响用户接管，反而能保证 Edge/Chrome 在无 GPU 沙箱中稳定运行。
+      "--disable-gpu",
+      // 部分 Chromium 版本即使带 --disable-gpu 仍会启动独立 GPU 进程，
+      // 而当前环境会让该子进程崩溃；内置 GPU 进程可避免 CDP 随浏览器退出。
+      "--in-process-gpu",
+      // 服务可能运行在受限账户下，Chromium 沙箱会再次触发 renderer 崩溃；
+      // 浏览器已经使用独立临时 profile，并且只接受本地 CDP 连接。
+      "--no-sandbox",
+      "--disable-extensions",
       `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       "about:blank",
     ];
@@ -444,8 +501,21 @@ class BrowserSession {
   }
 
   async connectToTarget(target) {
-    this.cdp = new CdpConnection(target.webSocketDebuggerUrl);
+    // 新版 Chromium 的页面级 websocket 在部分 Windows 环境中能握手但不返回
+    // Page.enable 响应。使用浏览器级 websocket + flatten attach 是 DevTools
+    // 自身的连接方式，兼容 Edge/Chrome 新版，也为多标签切换保留清晰的会话边界。
+    let version = null;
+    try {
+      const response = await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(2500) });
+      version = await response.json();
+    } catch {}
+    const browserWs = version?.webSocketDebuggerUrl;
+    if (!browserWs) throw new Error("浏览器 CDP 端点缺少浏览器级 websocket");
+    this.cdp = new CdpConnection(browserWs);
     await this.cdp.ready;
+    const attached = await this.cdp.send("Target.attachToTarget", { targetId: target.id, flatten: false });
+    if (!attached?.sessionId) throw new Error("浏览器 CDP 未能 attach 当前标签页");
+    this.cdp.sessionId = attached.sessionId;
     await this.cdp.send("Page.enable");
     await this.cdp.send("Runtime.enable");
     this.cdp.on("Page.screencastFrame", (params) => {
@@ -472,7 +542,8 @@ class BrowserSession {
       this.emitState();
       this.scheduleTabsRefresh();
     });
-    await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: 55, maxWidth: VIEWPORT.width, maxHeight: VIEWPORT.height, everyNthFrame: 2 }).catch(() => {});
+    // 不跳帧并提高 JPEG 质量，避免用户接管时文字和验证码发糊；前端只保留最新一帧。
+    await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: 86, maxWidth: VIEWPORT.width, maxHeight: VIEWPORT.height, everyNthFrame: 1 }).catch(() => {});
     if (target.id) this.activeTargetId = target.id;
     this.state.active = true;
     this.state.startedAt = this.state.startedAt || new Date().toISOString();

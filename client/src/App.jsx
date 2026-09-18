@@ -1,6 +1,5 @@
 import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from "react";
 import SessionSidebar from "./components/SessionSidebar.jsx";
-import DocViewer from "./components/DocViewer.jsx";
 import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx";
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
@@ -9,10 +8,13 @@ const KnowledgeBase = lazy(() => import("./components/KnowledgeBase.jsx"));
 const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
 const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
+// 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
+const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
 import Icon from "./components/Icon.jsx";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
+import BrowserPanel from "./components/内置浏览器面板.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
@@ -132,7 +134,13 @@ export default function App() {
   const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
+  const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
+  const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const browserActiveRef = useRef(false);
+
+  useEffect(() => {
+    if (!browserPanelOpen) setBrowserFullscreen(false);
+  }, [browserPanelOpen]);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
@@ -148,7 +156,7 @@ export default function App() {
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
 
-  // 浏览器活动侦测：Agent 调用 browser_* 时自动切到“浏览器”页签（仅在激活瞬间触发一次）
+  // 浏览器活动侦测：Agent 调用 browser_* 时自动打开浏览器侧栏（仅在激活瞬间触发一次）
   useEffect(() => {
     if (!clientId) return undefined;
     let stopped = false;
@@ -164,8 +172,7 @@ export default function App() {
           if (payload.type !== "state") return;
           const active = Boolean(payload.data?.active);
           if (active && !browserActiveRef.current) {
-            setPreviewOpen(true);
-            setPreviewTab("browser");
+            setBrowserPanelOpen(true);
           }
           browserActiveRef.current = active;
         } catch {}
@@ -517,11 +524,14 @@ const refreshFiles = useCallback(async (dir) => {
 
   const open = useCallback(async (name, thread = threadId, cwd = currentWorkspace) => {
     setDocLoading(true);
+    // 容错：调用方可能只传了工作区（例如产物跨工作区打开），thread 缺失时回退到当前会话
+    const effectiveThread = thread || threadId;
+    const effectiveCwd = cwd || currentWorkspace;
     try {
       const revision = Date.now();
       // 携带 cwd：产物可能属于其他工作区，不能依赖服务端全局当前工作区
-      const cwdQuery = cwd ? `&cwd=${encodeURIComponent(cwd)}` : "";
-      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(thread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
+      const cwdQuery = effectiveCwd ? `&cwd=${encodeURIComponent(effectiveCwd)}` : "";
+      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(effectiveThread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
       const doc = await response.json();
       if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
       const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
@@ -944,7 +954,7 @@ const refreshFiles = useCallback(async (dir) => {
 
   return (
     <AppErrorBoundary>
-      <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
+      <div className={`app ${previewLayout === 1 ? "preview-half" : previewLayout === 2 ? "preview-maximized" : ""} ${browserFullscreen ? "browser-fullscreen" : ""} ${sidebarOpen ? "sidebar-expanded" : "sidebar-collapsed"}`}>
         {activeModule === "knowledge" && (
           <DeferredModule label="知识库">
           <KnowledgeBase
@@ -1125,6 +1135,7 @@ const refreshFiles = useCallback(async (dir) => {
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
+            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
@@ -1161,7 +1172,7 @@ const refreshFiles = useCallback(async (dir) => {
               </span>
             </div>
             <div className="preview-panel-tabs">
-              {[['document', '文档预览'], ['artifacts', '产物'], ['browser', '浏览器']].map(([id, label]) => (
+              {[['document', '文档预览'], ['artifacts', '产物']].map(([id, label]) => (
                 <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
               ))}
             </div>
@@ -1175,17 +1186,39 @@ const refreshFiles = useCallback(async (dir) => {
               refreshToken={artifactVersion}
               onOpenFile={open}
             >
-              <DocViewer
-                tabs={tabs}
-                activeTab={activeTab}
-                onSwitchTab={(n) => setActiveTab(n)}
-                onCloseTab={closeTab}
-                onOpenFile={open}
-                loading={docLoading}
-                onSendToAgent={insertChatText}
-                onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
-              />
+              <Suspense fallback={<div className="module-loading">正在加载文档预览…</div>}>
+                <DocViewer
+                  tabs={tabs}
+                  activeTab={activeTab}
+                  onSwitchTab={(n) => setActiveTab(n)}
+                  onCloseTab={closeTab}
+                  onOpenFile={open}
+                  loading={docLoading}
+                  onSendToAgent={insertChatText}
+                  onInsertContext={(t) => chatInputRef.current?.insertContext(t)}
+                />
+              </Suspense>
             </WorkProductPanel>
+          </aside>
+        )}
+        {browserPanelOpen && <Resizer side="right" min={340} max={960} cssVar="--browser-w" />}
+        {browserPanelOpen && (
+          <aside className="app-browser-slot">
+            <div className="preview-panel-head browser-slot-head">
+              <span><Icon name="globe" size={15} /> 内置浏览器</span>
+              <span className="preview-panel-actions">
+                <button
+                  className="btn-icon"
+                  onClick={() => setBrowserFullscreen((value) => !value)}
+                  title={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                  aria-label={browserFullscreen ? "退出浏览器全屏" : "浏览器铺满工作区"}
+                >
+                  <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
+                </button>
+                <button className="btn-icon" onClick={() => setBrowserPanelOpen(false)} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+              </span>
+            </div>
+            <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />
           </aside>
         )}
         <DeferredModule label="技能管理">

@@ -48,6 +48,8 @@ export const searchSettingsTest = (backend = "") =>
 // ---------- 内置浏览器 ----------
 export const browserState = (client, thread) =>
   api(`/api/browser/state?client=${encodeURIComponent(client)}&thread=${encodeURIComponent(thread || "")}`);
+export const browserOpen = (client, thread, url) =>
+  api("/api/browser/open", { method: "POST", body: JSON.stringify({ client, thread, url }) });
 export const browserInput = (payload = {}) =>
   api("/api/browser/input", { method: "POST", body: JSON.stringify(payload) });
 export const browserClose = (client, thread, { force = false } = {}) =>

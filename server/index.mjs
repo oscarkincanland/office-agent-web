@@ -20,7 +20,7 @@ import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor,
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
 import { listPublishedArtifacts, publishArtifact, inspectRunAcceptance, confirmArtifactAcceptance, rollbackPublishedArtifact } from "./成果管理.mjs";
-import { atomicWriteFile, ensureDirectory } from "./持久化工具.mjs";
+import { atomicWriteFile, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import { getWorkflow, listWorkflows, workflowIdFromText } from "./workflows.mjs";
 import { listConnectors, getConnector, beginConnectorAuth, setConnectorStatus } from "./connectors.mjs";
 import * as projectManager from "./项目管理.mjs";
@@ -1582,11 +1582,47 @@ const sessionTextCache = new Map();
 const sessionIdIndex = new Map();
 // 会话头部（首行 64KB）与元数据（标题/归属/标记）的指纹缓存：
 // 会话列表热调用只需要 stat 比对指纹，不再全量读取 200+ 个 JSONL。
+// 元数据同时持久化到磁盘（.oaw/sessions-meta.json），服务重启后无需冷扫描。
 const SESSION_HEADER_BYTES = 65536;
-const SESSION_META_SCAN_LIMIT = 2 * 1024 * 1024;
+const SESSION_HEAD_SCAN_BYTES = 512 * 1024;
 const SESSION_CACHE_LIMIT = 800;
+const SESSION_META_STORE = path.join(PROJECT_DIR, ".oaw", "sessions-meta.json");
 const sessionHeaderCache = new Map();
 const sessionMetaCache = new Map();
+const persistedSessionMeta = new Map();
+let sessionMetaStoreLoaded = false;
+let sessionMetaDirty = false;
+let sessionMetaFlushTimer = null;
+
+function loadPersistedSessionMeta() {
+  if (sessionMetaStoreLoaded) return;
+  sessionMetaStoreLoaded = true;
+  try {
+    const raw = JSON.parse(fs.readFileSync(SESSION_META_STORE, "utf8"));
+    for (const [key, value] of Object.entries(raw?.entries || {})) {
+      if (value?.fingerprint && value?.meta) persistedSessionMeta.set(key, value);
+    }
+  } catch {}
+}
+
+function scheduleSessionMetaFlush() {
+  sessionMetaDirty = true;
+  if (sessionMetaFlushTimer) return;
+  sessionMetaFlushTimer = setTimeout(() => {
+    sessionMetaFlushTimer = null;
+    if (!sessionMetaDirty) return;
+    sessionMetaDirty = false;
+    try {
+      const alive = new Set(listSessionFiles().map((file) => file.fullPath));
+      const entries = {};
+      for (const [key, value] of sessionMetaCache.entries()) {
+        if (alive.has(key)) entries[key] = { fingerprint: value.fingerprint, meta: value.meta };
+      }
+      fs.mkdirSync(path.dirname(SESSION_META_STORE), { recursive: true });
+      atomicWriteJson(SESSION_META_STORE, { version: 1, savedAt: new Date().toISOString(), entries });
+    } catch {}
+  }, 1500);
+}
 
 // ---------- 规聚独立 Pi 配置 ----------
 app.get("/api/agent/config-status", (_req, res) => {
@@ -1631,6 +1667,17 @@ app.get("/api/browser/state", (req, res) => {
   const key = browserModule.browserSessionKey(client, thread);
   const session = browserModule.getBrowserSession(key);
   res.json({ ok: true, state: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
+});
+
+app.post("/api/browser/open", async (req, res) => {
+  const { client, thread, url } = req.body || {};
+  const key = browserModule.browserSessionKey(client, thread);
+  try {
+    const state = await browserModule.browserOpen(key, url);
+    res.json({ ok: true, state });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
+  }
 });
 
 app.get("/api/browser/stream", (req, res) => {
@@ -1693,6 +1740,19 @@ app.post("/api/browser/close", async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (error) {
     res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
+// 用户可独立使用内置浏览器（无需 Agent）：打开/导航到指定网址
+app.post("/api/browser/open", async (req, res) => {
+  const { client, thread, url } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  const key = browserModule.browserSessionKey(client, thread);
+  try {
+    const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
+    res.json({ ok: true, state });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
   }
 });
 
@@ -2116,6 +2176,7 @@ function readSessionHeaderCached(foundOrPath) {
  * 只有文件变化时才重新扫描；标题扫描最多读取前 2MB，避免大文件全量解析。
  */
 function sessionMetaFor(f) {
+  loadPersistedSessionMeta();
   let stat;
   try {
     stat = fs.statSync(f.fullPath);
@@ -2126,23 +2187,36 @@ function sessionMetaFor(f) {
   const fingerprint = `${stat.mtimeMs}:${stat.size}`;
   const cached = sessionMetaCache.get(f.fullPath);
   if (cached?.fingerprint === fingerprint) return cached.meta;
+  // 服务重启后优先使用磁盘缓存：指纹一致则完全跳过文件解析
+  const persisted = persistedSessionMeta.get(f.fullPath);
+  if (persisted?.fingerprint === fingerprint) {
+    sessionMetaCache.set(f.fullPath, persisted);
+    return persisted.meta;
+  }
   const header = readSessionHeaderCached(f) || {};
-  const capped = stat.size > SESSION_META_SCAN_LIMIT;
-  let text = "";
+  const needsDeepScan = stat.size > SESSION_HEAD_SCAN_BYTES;
+  let meta = null;
   try {
-    text = capped ? readFileHead(f.fullPath, stat, SESSION_META_SCAN_LIMIT) : readSessionTextCached(f);
-  } catch {}
-  const meta = buildSessionMeta(f, header, text, capped);
+    const headText = readFileHead(f.fullPath, stat, Math.min(stat.size, SESSION_HEAD_SCAN_BYTES));
+    meta = buildSessionMeta(f, header, headText, { truncated: needsDeepScan });
+    // 标题区通常在文件前部；只有截断扫描未发现用户消息的大文件才回退全文读取
+    if (needsDeepScan && !meta.foundUserMessage) {
+      meta = buildSessionMeta(f, header, readSessionTextCached(f), { truncated: false });
+    }
+  } catch {
+    meta = meta || buildSessionMeta(f, header, "", { truncated: false });
+  }
   sessionMetaCache.set(f.fullPath, { fingerprint, meta });
   while (sessionMetaCache.size > SESSION_CACHE_LIMIT) {
     const oldest = sessionMetaCache.keys().next().value;
     if (oldest === undefined) break;
     sessionMetaCache.delete(oldest);
   }
+  scheduleSessionMetaFlush();
   return meta;
 }
 
-function buildSessionMeta(f, h, text, capped = false) {
+function buildSessionMeta(f, h, text, { truncated = false } = {}) {
   const cwd = h.cwd || "";
   const isProjectSession = path.resolve(f.storeDir) === path.resolve(SESSIONS_DIR);
   const cwdLower = cwd.toLowerCase();
@@ -2169,9 +2243,10 @@ function buildSessionMeta(f, h, text, capped = false) {
         }
       } catch {}
     }
-    // 截断扫描窗口内未找到时不轻易判定“没有用户消息”，避免长会话被隐藏
-    if (capped && !hasUserMessage) hasUserMessage = true;
   }
+  const foundUserMessage = hasUserMessage;
+  // 截断扫描窗口内未找到时不轻易判定“没有用户消息”，避免长会话被隐藏
+  if (truncated && !hasUserMessage) hasUserMessage = true;
   return {
     id: h.id || h.sessionId || sessionBaseName(f.fileName),
     threadId: h.threadId || null,
@@ -2189,6 +2264,7 @@ function buildSessionMeta(f, h, text, capped = false) {
     created: h.created || "",
     title,
     hasUserMessage,
+    foundUserMessage,
   };
 }
 
@@ -2276,6 +2352,9 @@ function annotateSessionThread(sessionId, threadId) {
 app.get("/api/runs", (req, res) => {
   const rawCwd = String(req.query.cwd || "");
   const cwd = rawCwd ? (normalizeWorkspace(rawCwd) || "__invalid_workspace__") : "";
+  const includeEvents = ["all", "none", "latest"].includes(String(req.query.includeEvents || ""))
+    ? String(req.query.includeEvents)
+    : "latest";
   res.json({ runs: listRuns({
     threadId: String(req.query.thread || ""),
     sessionId: String(req.query.session || ""),
@@ -2285,6 +2364,7 @@ app.get("/api/runs", (req, res) => {
     mode: String(req.query.mode || ""),
     query: String(req.query.query || ""),
     limit: parseInt(req.query.limit, 10) || 50,
+    includeEvents,
   }) });
 });
 
@@ -3667,7 +3747,12 @@ try {
       data: { client, thread, streamId: channelStreamId, cursor: lastId, earliest: earliestId, latest: latestId },
     })}\n\n`);
   }
-  for (const ev of entry.channel.history) if (ev.id > lastId) send(ev);
+  // 首次连接（无游标）只回放最近 300 条：聊天正文由会话 JSONL 恢复，
+  // 全量回放（可达数千条 token/thinking 事件）会明显拖慢刷新。
+  const replayHistory = lastId === 0 && entry.channel.history.length > 300
+    ? entry.channel.history.slice(-300)
+    : entry.channel.history;
+  for (const ev of replayHistory) if (ev.id > lastId) send(ev);
   write(`event: open\ndata: ${JSON.stringify({ historyId: entry.channel.seq, streamId: channelStreamId })}\n\n`);
 } catch (error) {
     if (error?.code === "RUNTIME_INIT_TIMEOUT") {

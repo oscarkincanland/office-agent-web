@@ -667,8 +667,28 @@ export function getRun(id) {
 
 // 把已加载的 Run 投影为对外公开结构（去掉体积很大的 before/after 快照）。
 // listRuns 直接复用该方法，避免对同一文件二次 loadRun。
-function publicRunView(run) {
+// includeEvents=false 时用 eventCount 代替 events；
+// eventByteBudget>0 时只保留尾部事件直到接近该字节预算（列表接口瘦身，单条 Run 查询不受限）。
+function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) {
   const { before, after, ...publicRun } = run;
+  if (Array.isArray(publicRun.events) && !includeEvents) {
+    publicRun.eventCount = publicRun.events.length;
+    delete publicRun.events;
+  } else if (Array.isArray(publicRun.events) && eventByteBudget > 0 && publicRun.events.length > 1) {
+    const events = publicRun.events;
+    let bytes = 0;
+    let start = events.length;
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const size = JSON.stringify(events[i]).length;
+      if (start < events.length && bytes + size > eventByteBudget) break;
+      bytes += size;
+      start = i;
+    }
+    if (start > 0) {
+      publicRun.eventCount = events.length;
+      publicRun.events = events.slice(start);
+    }
+  }
   const steps = Array.isArray(publicRun.steps) ? publicRun.steps : [];
   const completed = steps.filter((step) => ["completed", "skipped"].includes(step.status)).length;
   const todos = Array.isArray(publicRun.todos) ? publicRun.todos : [];
@@ -695,10 +715,10 @@ function sameRunWorkspace(a, b) {
     : left === right;
 }
 
-export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50 } = {}) {
+export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50, includeEvents = "latest" } = {}) {
   ensureDir(RUNS_DIR);
   const textQuery = String(query || "").trim().toLowerCase();
-  return fs.readdirSync(RUNS_DIR)
+  const sliced = fs.readdirSync(RUNS_DIR)
     .filter((n) => n.endsWith(".json"))
     .map((n) => loadRun(path.basename(n, ".json")))
     .filter(Boolean)
@@ -709,8 +729,17 @@ export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = 
     .filter((r) => (!mode || mode === "all" || r.task?.mode === mode))
     .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error), ...(r.todos || []).map((item) => `${item.title} ${item.note || ""}`)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
-    .slice(0, Math.max(1, Math.min(200, limit)))
-    .map((run) => publicRunView(run))
+    .slice(0, Math.max(1, Math.min(200, limit)));
+  const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_user", "cancel_requested", "finishing"]);
+  return sliced
+    .map((run, index) => {
+      // 默认只为「运行中的 Run」和「最新 1 条」保留事件（最新一轮的轨迹展示够用），
+      // 其余用 eventCount 代替：单个 Run 事件可达数百 KB，列表接口必须瘦身。
+      // recovering 的旧 Run 不算运行中（它没有新事件，恢复视图按需单条加载）。
+      const include = includeEvents === "all"
+        || (includeEvents !== "none" && (ACTIVE_STATUSES.has(run.status) || index < 1));
+      return publicRunView(run, { includeEvents: include, eventByteBudget: include ? 160 * 1024 : 0 });
+    })
     .filter(Boolean);
 }
 
