@@ -277,7 +277,9 @@ async function readWorkbook(file) {
   } catch (officeErr) {
     // officecli 不可用，使用 xlsx 包原生读取
     try {
-      const XLSX = await import("xlsx");
+      // xlsx 是 CommonJS 包：动态 import 后需要用 .default 取导出对象
+      const xlsxModule = await import("xlsx");
+      const XLSX = xlsxModule.default || xlsxModule;
       const wb = XLSX.readFile(file);
       const sheets = wb.SheetNames;
       const grids = {};

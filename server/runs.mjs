@@ -303,6 +303,7 @@ function normalizeTrackedPath(run, value) {
 const NOISE_ARTIFACT_PATTERNS = [
   /(^|\/)(node_modules|__pycache__|\.venv|venv|\.git|\.oaw|\.cache|\.pytest_cache|dist-info)(\/|$)/i,
   /(^|\/)\./,                                   // 隐藏文件与目录（含 .agent-context.md）
+  /(^|\/)~\$/,                                  // Office 锁文件（~$xxx.docx/xlsx/pptx）
   /(^|\/)_agent_write_test\./i,                 // 写入探针测试文件
   /_log\d*\.(txt|json|md|log)$/i,               // 调试日志
   /(^|\/)(tmp|temp|test)_[^/]*\.(py|js|mjs|cjs|ts|sh|bat|ps1|txt|log|json)$/i,
