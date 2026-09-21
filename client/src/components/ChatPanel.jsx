@@ -51,6 +51,7 @@ const THINKING_KEY = "oaw_thinking_level";
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
 const EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
 const DEFAULT_CONTEXT_WINDOW = 128000;
+const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
@@ -59,6 +60,7 @@ const COMPOSER_COMMANDS = [
   { insert: "/new", label: "新建会话", hint: "在当前项目下创建独立会话" },
   { insert: "/chat", label: "切换到 Chat", hint: "只读检索知识库、Skills 和工作区资料" },
   { insert: "/agent", label: "切换到 Agent", hint: "执行任务、调用工具并生成产物" },
+  { insert: "/review", label: "切换到 Review", hint: "按规范审查材料，先生成报告和副本" },
   { insert: "/help", label: "查看输入帮助", hint: "显示 /、@、& 的使用方式" },
 ];
 const THINKING_OPTIONS = [
@@ -131,6 +133,14 @@ const MODE_META = {
     hint: "执行与产出",
     prefix: "[模式: Work] 可以调用完整 skills 和工具执行分析、修改并生成新文件（文档/HTML/PPT 等），Office CLI 会按任务需要自动选择；实际写入和联网能力以运行环境预检结果为准。\n",
   },
+  review: {
+    label: "Review",
+    shortLabel: "Review",
+    icon: "shield",
+    title: "Review：依据实际读取的规范生成审查报告与批注副本，确认后才写回原文",
+    hint: "审查与副本",
+    prefix: "[模式: Review] 先识别材料并读取规范库中的实际依据，生成审查报告和批注副本；用户明确确认前不得修改原文件。\n",
+  },
 };
 
 // 中心对话区只保留能解释“任务进行到哪一步”的 SSE 事件；高频 token/thinking
@@ -146,6 +156,7 @@ const FLOW_EVENT_TYPES = new Set([
   "assistant_final", "agent_end", "run_finished", "aborted", "write_rejected",
   "write_started", "write_locked", "artifact_staged", "artifact_materialized", "write_cleaned",
   "capability_plan", "mode_policy", "thinking_level", "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed", "task_completed",
+  "review_material_classified", "review_source_search_started", "review_source_search_result", "review_source_read_started", "review_source_read", "review_source_applied", "review_source_unused", "review_waiting_confirmation", "review_confirmed", "review_confirmation_rejected", "review_write_blocked",
 ]);
 
 // 恢复 Pi JSONL 时可能同时存在空 assistant 占位、SSE 重试留下的重复消息，
@@ -269,7 +280,18 @@ function flowEventLabel(event) {
     case "task_completed": return `任务${completionLabel(data.status)}${data.summary ? `：${String(data.summary).slice(0, 50)}` : ""}`;
     case "aborted": return "任务已中断";
     case "capability_plan": return "能力准备完成";
-    case "mode_policy": return `模式：${normalizeUiMode(data.mode) === "agent" ? "Agent" : "Chat"}`;
+    case "mode_policy": return `模式：${MODE_META[normalizeUiMode(data.mode)]?.label || "Chat"}`;
+    case "review_material_classified": return `材料识别：${data.materialType || "待判断"}`;
+    case "review_source_search_started": return "搜索审查规范";
+    case "review_source_search_result": return `找到规范候选${Array.isArray(data.candidates) ? `（${data.candidates.length}）` : ""}`;
+    case "review_source_read_started": return `读取规范${data.sourceId ? ` ${data.sourceId}` : ""}`;
+    case "review_source_read": return data.status === "failed" ? "规范读取失败" : `已读取规范 ${data.sourceId || ""}`;
+    case "review_source_applied": return `采用规范 ${data.sourceId || ""}`;
+    case "review_source_unused": return `规范未采用 ${data.sourceId || ""}`;
+    case "review_waiting_confirmation": return "等待确认后写回原文";
+    case "review_confirmed": return "已确认写回原文";
+    case "review_confirmation_rejected": return "已拒绝写回原文";
+    case "review_write_blocked": return "原文写回已保护";
     case "thinking_level": return `思考深度：${data.effective || data.requested || "默认"}`;
     case "agent_queued": return `任务已排队${data.position ? `（第 ${data.position} 项）` : ""}`;
     case "agent_queue_update": return data.steering ? "正在调整任务" : "等待后续任务";
@@ -278,9 +300,9 @@ function flowEventLabel(event) {
 }
 
 function flowEventTone(event) {
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed"].includes(event?.type) || event?.data?.isError) return "error";
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected"].includes(event?.type) || event?.data?.isError) return "error";
   if (event?.type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "running";
-  if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted"].includes(event?.type)) return "success";
+  if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed"].includes(event?.type)) return "success";
   return "running";
 }
 
@@ -314,9 +336,9 @@ function formatTokenCount(value) {
   return count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : String(count);
 }
 
-// Office 是历史任务/会话的兼容值，前端主入口不再暴露第三个模式。
+// Office 是历史任务/会话的兼容值；用户入口使用 Chat / Work / Review。
 function normalizeUiMode(mode) {
-  return mode === "office" || mode === "agent" ? "agent" : "chat";
+  return mode === "review" ? "review" : mode === "office" || mode === "agent" ? "agent" : "chat";
 }
 
 function referenceMarker(reference) {
@@ -399,7 +421,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, historyMessages, historyThreadId = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -441,6 +463,29 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
   const [executionEvents, setExecutionEvents] = useState([]);
+  const executionEventsRef = useRef([]);
+  const executionEventQueueRef = useRef([]);
+  const executionEventTimerRef = useRef(null);
+  const replaceExecutionEvents = useCallback((nextOrUpdater) => {
+    if (executionEventTimerRef.current) {
+      clearTimeout(executionEventTimerRef.current);
+      executionEventTimerRef.current = null;
+    }
+    executionEventQueueRef.current = [];
+    const next = typeof nextOrUpdater === "function" ? nextOrUpdater(executionEventsRef.current) : nextOrUpdater;
+    executionEventsRef.current = next || [];
+    setExecutionEvents(executionEventsRef.current);
+  }, []);
+  const enqueueExecutionEvent = useCallback((event) => {
+    executionEventQueueRef.current.push(event);
+    if (executionEventTimerRef.current) return;
+    executionEventTimerRef.current = window.setTimeout(() => {
+      executionEventTimerRef.current = null;
+      let next = executionEventsRef.current;
+      for (const item of executionEventQueueRef.current.splice(0)) next = appendExecutionFlowEvent(next, item);
+      replaceExecutionEvents(next);
+    }, 80);
+  }, [replaceExecutionEvents]);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
@@ -489,6 +534,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const agentEventAtRef = useRef(0);
   const streamReadyRef = useRef(null);
   const handshakeDoneRef = useRef(false);
+  // SSE 连接会在切换会话时重建。旧 EventSource 即使已经 close，浏览器仍可能
+  // 把队列中的最后一条消息回调出来；用代际号挡住旧连接，避免旧会话污染新会话。
+  const streamGenerationRef = useRef(0);
   const eventHandlerRef = useRef(null);
   const reconciledRunIdsRef = useRef(new Set());
   // ChatPanel 本身持续挂载时，按 thread 保存界面状态，切换子对话不会把原对话的流式内容丢掉。
@@ -503,7 +551,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const selectedContextWindow = Number(selectedModelInfo?.contextWindow) || DEFAULT_CONTEXT_WINDOW;
   const selectedUsage = usageDetails(runState.usage);
   const selectedContextRatio = Math.min(1, selectedUsage.context / selectedContextWindow);
-  const selectedCompactThreshold = Math.floor(selectedContextWindow * 0.78);
+  // 已知模型由 Pi 按 contextWindow 自动压缩；服务端快照存在时优先显示
+  // 运行时实际策略，避免前端继续把旧的 78% 固定线展示成真实阈值。
+  const selectedCompactThreshold = Number(runState.usage?.compactThreshold) > 0
+    ? Number(runState.usage.compactThreshold)
+    : Math.max(0, selectedContextWindow - PI_COMPACTION_RESERVE_TOKENS);
+  const selectedCompactionMode = runState.usage?.compactionMode || "pi-native";
   const modelGroups = useMemo(() => {
     const query = modelQ.trim().toLowerCase();
     const groups = new Map();
@@ -679,7 +732,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           at: event.at || new Date().toISOString(),
         }))
         .reduce((items, event) => appendExecutionFlowEvent(items, event), []);
-      setExecutionEvents(historyFlowEvents);
+      replaceExecutionEvents(historyFlowEvents);
       // 已完成历史只用于展示，不能成为 SSE 的当前运行锚点；否则下一轮
       // 的 run_finished/token 会被旧 runId 过滤掉。
       activeRunIdRef.current = isLiveRun ? latestRun.runId : null;
@@ -729,7 +782,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setMessageWindowSize(MAX_VISIBLE_MESSAGES);
       setRunState(cached?.runState ? { ...cached.runState, mode: normalizeUiMode(cached.runState.mode) } : { status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
       setTodoItems(cached?.todoItems || []);
-      setExecutionEvents([]);
+      replaceExecutionEvents([]);
       activeRunIdRef.current = cached?.runState && LIVE_RUN_STATUSES.has(cached.runState.status)
         ? cached.runState.runId || null
         : null;
@@ -791,12 +844,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setInjectedContext([]);
     setRunState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: normalizeUiMode(editMode) });
     setTodoItems([]);
-    setExecutionEvents([]);
+    replaceExecutionEvents([]);
     activeRunIdRef.current = null;
     runInProgressRef.current = false;
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
-  }, [onNewSession]);
+  }, [onNewSession, replaceExecutionEvents]);
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
@@ -1118,6 +1171,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   // SSE 连接
   useEffect(() => {
+    const generation = streamGenerationRef.current + 1;
+    streamGenerationRef.current = generation;
     let es = null;
     let reconnectTimer = null;
     let stopped = false;
@@ -1125,20 +1180,26 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let connectionSerial = 0;
     let watchdogTimer = null;
 
+    const streamKey = `${clientId}::${threadId || ""}`;
+    const isCurrentGeneration = () => (
+      !stopped && mountedRef.current && generation === streamGenerationRef.current
+    );
     const resetReady = () => {
       let resolve;
       const promise = new Promise((done) => { resolve = done; });
-      streamReadyRef.current = { promise, resolve };
+      streamReadyRef.current = { promise, resolve, streamKey, generation };
     };
-    const streamKey = `${clientId}::${threadId || ""}`;
+    handshakeDoneRef.current = false;
     eventCursorRef.current = eventCursorsRef.current.get(streamKey) || 0;
     resetReady();
     const markReady = (value) => {
-      streamReadyRef.current?.resolve?.(value);
+      if (streamReadyRef.current?.generation === generation && streamReadyRef.current?.streamKey === streamKey) {
+        streamReadyRef.current.resolve?.(value);
+      }
     };
 
     const scheduleReconnect = (source) => {
-      if (stopped || !mountedRef.current || !source || source !== es) return;
+      if (!isCurrentGeneration() || !source || source !== es) return;
       setConnected(false);
       markReady(false);
       source.close();
@@ -1156,7 +1217,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     };
     
     const connect = () => {
-      if (stopped || !mountedRef.current) return;
+      if (!isCurrentGeneration()) return;
       resetReady();
       const serial = ++connectionSerial;
       let lastSignalAt = Date.now();
@@ -1172,23 +1233,24 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       
       nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
-        // 5 秒内未收到 connected（半开连接/服务端初始化挂起）则主动重连。
+        // 运行时冷启动可能需要几十秒；不能在 Pi 还在初始化时 5 秒就反复重建连接。
         window.setTimeout(() => {
-          if (!stopped && serial === connectionSerial && es === nextSource && !handshakeDoneRef.current) {
+          if (isCurrentGeneration() && serial === connectionSerial && es === nextSource && !handshakeDoneRef.current) {
             scheduleReconnect(nextSource);
           }
-        }, 5000);
+        }, 50000);
       };
       handshakeDoneRef.current = false;
 
       nextSource.addEventListener("heartbeat", () => {
+        if (!isCurrentGeneration() || serial !== connectionSerial || es !== nextSource) return;
         // 心跳只证明 SSE 通道仍存活；“Agent 已连接”由 connected 握手确认，
         // 避免 Runtime 还在初始化时提前显示为已连接。
         lastSignalAt = Date.now();
       });
       
       nextSource.onmessage = (e) => {
-        if (!mountedRef.current) return;
+        if (!isCurrentGeneration() || serial !== connectionSerial || es !== nextSource) return;
         lastSignalAt = Date.now();
         const eventId = Number(e.lastEventId || 0);
         try { 
@@ -1227,14 +1289,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       };
       
       nextSource.onerror = () => {
-        if (!stopped && mountedRef.current && serial === connectionSerial && es === nextSource) {
+        if (isCurrentGeneration() && serial === connectionSerial && es === nextSource) {
           scheduleReconnect(nextSource);
         }
       };
       watchdogTimer = setInterval(() => {
         // 某些代理/浏览器会保持 TCP 为 open，却不再触发 EventSource.onerror；
         // 服务端 heartbeat 正常时不会触发这里，静默超过 20 秒才强制重连。
-        if (Date.now() - lastSignalAt > 20000) scheduleReconnect(nextSource);
+        if (isCurrentGeneration() && Date.now() - lastSignalAt > 20000) scheduleReconnect(nextSource);
       }, 5000);
     };
     
@@ -1253,7 +1315,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdogTimer) clearInterval(watchdogTimer);
       markReady(false);
-      streamReadyRef.current = null;
+      if (streamReadyRef.current?.generation === generation && streamReadyRef.current?.streamKey === streamKey) {
+        streamReadyRef.current = null;
+      }
     };
   }, [clientId, threadId, workspace]);
 
@@ -1267,10 +1331,17 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
         const data = await res.json().catch(() => ({}));
         if (cancelled || !data?.usage) return;
         const snapshot = data.usage;
-        if (snapshot.usage) {
-          setRunState((s) => (s.usage ? s : { ...s, usage: snapshot.usage }));
-        } else if (Number(snapshot.estimatedContextTokens) > 0) {
-          setRunState((s) => (s.usage ? s : { ...s, usage: { context: Number(snapshot.estimatedContextTokens) } }));
+        const snapshotUsage = snapshot.usage
+          ? { ...snapshot.usage }
+          : Number(snapshot.estimatedContextTokens) > 0
+            ? { context: Number(snapshot.estimatedContextTokens) }
+            : null;
+        if (snapshotUsage) {
+          snapshotUsage.contextWindow = snapshot.contextWindow;
+          snapshotUsage.compactThreshold = snapshot.compactThreshold;
+          snapshotUsage.compactionMode = snapshot.compactionMode;
+          snapshotUsage.compactThresholdSource = snapshot.compactThresholdSource;
+          setRunState((s) => (s.usage ? s : { ...s, usage: snapshotUsage }));
         }
       } catch {}
     })();
@@ -1384,9 +1455,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     if (FLOW_EVENT_TYPES.has(type) && (runInProgress || eventRunId === activeRunIdRef.current)) {
       const sequence = Number(envelope.id || envelope.seq || 0);
       const eventKey = sequence ? `seq:${sequence}` : `${type}:${eventRunId || "current"}:${envelope.at || Date.now()}`;
-      setExecutionEvents((previous) => {
-        return appendExecutionFlowEvent(previous, { key: eventKey, type, data, at: envelope.at || new Date().toISOString() });
-      });
+      enqueueExecutionEvent({ key: eventKey, type, data, at: envelope.at || new Date().toISOString() });
     }
     let aid = assistantIdRef.current;
     // 刷新、断线重连或切换回正在执行的子对话时，历史事件可能先于本地气泡到达。
@@ -1651,7 +1720,19 @@ case "runtime_connecting":
         if (!agentErrorRef.current) setAgentPhase("整理回复");
         break;
       case "stats":
-        setRunState((s) => ({ ...s, usage: data.tokens || null, cost: data.cost ?? null }));
+        setRunState((s) => ({
+          ...s,
+          usage: data.tokens
+            ? {
+              ...data.tokens,
+              contextWindow: s.usage?.contextWindow,
+              compactThreshold: s.usage?.compactThreshold,
+              compactionMode: s.usage?.compactionMode,
+              compactThresholdSource: s.usage?.compactThresholdSource,
+            }
+            : null,
+          cost: data.cost ?? null,
+        }));
         break;
       case "agent_retry":
         // Pi 结算失败后，工作台可能会在同一请求内重放一次。失败回合
@@ -1861,6 +1942,8 @@ case "runtime_connecting":
           }
         }
         upsertRunSummary(data);
+        // run_finished 才是本轮产物完整可用的时点；交给 App 自动打开首个产物。
+        onRunFinished?.(data);
         if (data.runId && !["cancelled", "aborted"].includes(data.status)) flushQueued(true);
         break;
       case "memory_proposal":
@@ -1935,6 +2018,7 @@ case "runtime_connecting":
         eventCount: Number(data.eventCount || previous?.eventCount || 0),
         // 完成语义：显式 complete_task 或服务端推断结果，随 run_finished 一起到达
         completion: data.completion || previous?.completion || null,
+        reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
         status: "done",
         summary: true,
         createdAt: previous?.createdAt || Date.now(),
@@ -1992,19 +2076,19 @@ case "runtime_connecting":
     const sourceReferences = source.references || references;
     const rawText = String(source.rawText ?? overrideText ?? input).trim();
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
-    if (!options.payload && /^\/(?:compact|new|chat|agent|help)$/i.test(rawText)) {
+    if (!options.payload && /^\/(?:compact|new|chat|agent|review|help)$/i.test(rawText)) {
       const command = rawText.toLowerCase();
       setInput("");
       setComposerMenu(null);
       if (command === "/compact") return compactContext();
       if (command === "/new") { onNewSession?.(workspace); return; }
-      if (command === "/chat" || command === "/agent") {
+      if (["/chat", "/agent", "/review"].includes(command)) {
         const mode = command.slice(1);
         setEditMode(mode);
-        pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : "Agent（执行与产出）") + "。");
+        pushSystem("已切换到 " + (mode === "chat" ? "Chat（只读检索）" : mode === "review" ? "Review（审查与安全副本）" : "Work（执行与产出）") + "。");
         return;
       }
-      pushSystem("输入帮助：/compact 压缩上下文；/new 新建会话；/chat 或 /agent 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
+      pushSystem("输入帮助：/compact 压缩上下文；/new 新建会话；/chat、/agent 或 /review 切换模式；@ 选择文件；& 选择历史会话。", "composer-help");
       return;
     }
     const text = rawText || (sourceImages.length ? "（图片消息）" : "（附件消息）");
@@ -2067,6 +2151,11 @@ case "runtime_connecting":
     const selectedCurrentDoc = source.currentDoc ?? currentDoc;
     const selectedEditMode = normalizeUiMode(forcedMode || source.editMode || editMode);
     const selectedEffort = source.effort ?? effort;
+    if (selectedEditMode === "review" && !selectedCurrentDoc && !sendReferences.some((item) => item?.kind === "file") && !allAttachments.length) {
+      setModelMsg("Review 需要先打开、@ 引用或上传一份材料");
+      window.setTimeout(() => setModelMsg(""), 3200);
+      return;
+    }
     const contextPrefix = selectedCurrentDoc ? `[当前打开文件: ${selectedCurrentDoc}]\n` : "";
     const mapContextPrefix = mapProject
       ? `[当前地图项目: ${mapProject}${mapContext?.center ? `；视图中心 ${mapContext.center[0]},${mapContext.center[1]}；缩放 ${mapContext.zoom}；可视范围 ${mapContext.bounds?.join(",") || "未知"}` : ""}]\n`
@@ -2123,14 +2212,17 @@ case "runtime_connecting":
     agentErrorRef.current = false;
     activeRunIdRef.current = null;
     agentEventAtRef.current = 0;
-    setExecutionEvents(runtimeConnectingEventRef.current ? [runtimeConnectingEventRef.current] : []);
+    replaceExecutionEvents(runtimeConnectingEventRef.current ? [runtimeConnectingEventRef.current] : []);
     setAgentPhase("准备会话运行时");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     try {
       // prompt 是异步 admission；确保本轮 run_admitting/capability_plan/首个 token 不会在
       // EventSource 尚未完成握手时丢失。服务端 channel.history 会按游标回放，
       // 等待只是给握手一个短窗口；SSE 断线时 3 秒后照常发送，事件由重连回放补齐。
-      const streamReady = streamReadyRef.current?.promise;
+      const currentStreamKey = `${clientId}::${threadId || ""}`;
+      const streamReady = streamReadyRef.current?.streamKey === currentStreamKey
+        ? streamReadyRef.current.promise
+        : null;
       if (streamReady) {
         await Promise.race([
           streamReady,
@@ -2331,6 +2423,31 @@ case "runtime_connecting":
     pushSystem("已将当前地图视图加入待注入上下文。", `map_context:${mapContext.updatedAt || text}`);
   };
 
+  // 消息列表把这些操作作为稳定回调传入 memo 子项；否则每个 SSE 事件都会
+  // 生成一组新函数，抵消长历史消息的 memo 优化。
+  const handleMessageAskAnswered = useCallback((messageId, blockId, answer) => {
+    patch(messageId, (msg) => ({ ...msg, blocks: (msg.blocks || []).map((block) => block.id === blockId ? { ...block, answer } : block) }));
+    setBusy(true);
+    setAgentPhase("继续执行");
+    setRunState((state) => ({ ...state, status: "running" }));
+  }, [patch, setAgentPhase]);
+
+  const handleMessageToggleTool = useCallback((messageId, toolId) => {
+    patch(messageId, (msg) => {
+      const blocks = (msg.blocks || []).map((block, index) => {
+        if (block.type === "tool" && (block.id === toolId || (block.id === undefined && index === toolId))) {
+          return { ...block, expanded: !block.expanded };
+        }
+        return block;
+      });
+      return { ...msg, blocks };
+    });
+  }, [patch]);
+
+  const resendRef = useRef(null);
+  resendRef.current = send;
+  const handleMessageResend = useCallback((text) => resendRef.current?.(text), []);
+
   // 滚动：用户向上滑动查看历史时暂停自动滚动；在底部才自动滚到最新
   const scrollTimerRef = useRef(null);
   const textareaRef = useRef(null);
@@ -2443,15 +2560,15 @@ case "runtime_connecting":
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
           {runState.verificationStatus && runState.verificationStatus !== "not_checked" && <span className={`task-status-meta verification-${runState.verificationStatus}`}>产物校验 {runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}</span>}
         </div>
-        {editMode === "agent" && (
+        {(editMode === "agent" || editMode === "review") && (
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
-            <summary><span>Agent</span><span>能力已就绪 · 点击查看配置</span></summary>
+            <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
             <div className="agent-capability-details">
               <span>Profile：{project?.settings?.agentProfile || project?.agentProfile || "通用 Agent"}</span>
               <span>模型：{model || defaultModel || "按 Pi 配置"}</span>
               <span>Skills：{project?.settings?.skills?.length ? `${project.settings.skills.length} 项` : "按任务加载"}</span>
-              <span>Office CLI：自动判断</span>
-              <span>写入：受运行环境权限控制</span>
+              <span>Office CLI：{editMode === "review" ? "读取材料/副本批注" : "自动判断"}</span>
+              <span>写入：{editMode === "review" ? "确认前保护原文" : "受运行环境权限控制"}</span>
             </div>
           </details>
         )}
@@ -2465,6 +2582,7 @@ case "runtime_connecting":
                 contextWindow={selectedContextWindow}
                 contextTokens={selectedUsage.context}
                 compactThreshold={selectedCompactThreshold}
+                compactionMode={selectedCompactionMode}
                 model={selectedModelInfo}
                 compacting={compacting}
                 busy={busy}
@@ -2489,25 +2607,14 @@ case "runtime_connecting":
               加载更早的 {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} 条消息（前面还有 {hiddenMessageCount} 条）
             </button>
           )}
+          {historyWindow?.hasMore && (
+            <div className="chat-history-window-note" role="status">
+              历史较长，当前先加载最近 {historyWindow.end - historyWindow.start} 条以保持切换流畅；模型仍使用完整 Pi 会话上下文。
+            </div>
+          )}
            {visibleMessages.map((m, i) => (
             <React.Fragment key={m.id}>
-              <Message m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={(blockId, answer) => {
-            patch(m.id, (msg) => ({ ...msg, blocks: (msg.blocks || []).map((block) => block.id === blockId ? { ...block, answer } : block) }));
-            setBusy(true);
-            setAgentPhase("继续执行");
-            setRunState((state) => ({ ...state, status: "running" }));
-          }} onResend={(text) => send(text)} onToggleTool={(toolId) => {
-            patch(m.id, (msg) => {
-              let blocks = [...(msg.blocks || [])];
-              blocks = blocks.map((b, i) => {
-                if (b.type === "tool" && (b.id === toolId || (b.id === undefined && i === toolId))) {
-                  return { ...b, expanded: !b.expanded };
-                }
-                return b;
-              });
-              return { ...msg, blocks };
-            });
-          }} />
+              <MemoMessage m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} />
             </React.Fragment>
            ))}
           </div>
@@ -2775,7 +2882,7 @@ function SafeMarkdown({ text }) {
 
 function RunSummary({ m, onOpenFile, onRollbackRun }) {
   const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "running" ? "执行中" : "已完成";
-  const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "office" ? "Office" : "Agent";
+  const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "review" ? "Review" : m.runMode === "office" ? "Office" : "Work";
   const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
   const title = String(m.conclusion || m.text || m.task?.text || m.task?.goal || "本轮任务")
     .replace(/^\s*#{1,6}\s*/, "")
@@ -2787,6 +2894,18 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
   const traceSummary = trace ? runTraceSummaryText(trace) : "";
   const completion = m.completion || trace?.completion || null;
+  const reviewSources = useMemo(() => {
+    const sourceMap = new Map((Array.isArray(m.reviewSources) ? m.reviewSources : []).map((item) => [item.sourceId, { ...item }]));
+    for (const event of Array.isArray(m.events) ? m.events : []) {
+      const data = event?.data || {};
+      if (event?.type === "review_source_read" && data.sourceId) sourceMap.set(data.sourceId, { ...(sourceMap.get(data.sourceId) || {}), ...data });
+      if (["review_source_applied", "review_source_unused"].includes(event?.type) && data.sourceId) {
+        sourceMap.set(data.sourceId, { ...(sourceMap.get(data.sourceId) || {}), ...data, status: event.type === "review_source_applied" ? "applied" : "read-not-applied" });
+      }
+    }
+    return [...sourceMap.values()].filter((item) => item.sourceId);
+  }, [m.events, m.reviewSources]);
+  const [toolsOpen, setToolsOpen] = useState(false);
   return (
     <div className="msg system summary-msg">
       <div className="bubble run-summary-bubble">
@@ -2831,8 +2950,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
           )}
           {trace?.tools?.length > 0 && (
             <div className="run-trace-tools">
-              <span className="file-change-label"><Icon name="flow" size={11} /> 本轮工具（{trace.tools.length}）</span>
-              <div className="run-trace-tool-list">
+              <button type="button" className="run-trace-tools-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
+                <span className="file-change-label"><Icon name="flow" size={11} /> 本轮工具（{trace.tools.length}）</span>
+                <span className="run-trace-tools-chevron">{toolsOpen ? "▾" : "▸"}</span>
+              </button>
+              {toolsOpen && <div className="run-trace-tool-list">
                 {trace.tools.map((tool) => (
                   <span
                     key={tool.id}
@@ -2841,6 +2963,20 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
                   >
                     {tool.name}{tool.startMissing ? "（已恢复）" : ""}
                   </span>
+                ))}
+              </div>}
+            </div>
+          )}
+          {m.runMode === "review" && reviewSources.length > 0 && (
+            <div className="review-source-summary">
+              <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
+              <div className="review-source-list">
+                {reviewSources.map((source) => (
+                  <div className="review-source-row" key={source.sourceId}>
+                    <strong>{source.sourceId}</strong>
+                    <span title={`${source.relPath || ""}${source.rootName ? ` @ ${source.rootName}` : ""}`}>{source.title || source.relPath}</span>
+                    <em className={`review-source-status ${source.status || "read"}`}>{source.status === "applied" ? "已采用" : source.status === "read-not-applied" ? "未采用" : source.status === "failed" ? "读取失败" : "已读取"}</em>
+                  </div>
                 ))}
               </div>
             </div>
@@ -2933,8 +3069,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             <div className="msg-blocks">
               {blocks.map((b, i) => {
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
-                if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool(b.id || i)} />;
-                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={onAskAnswered} />;
+                if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool?.(m.id, b.id || i)} />;
+                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
                 if (b.type === "approval") return <ApprovalBlock key={b.id || i} block={b} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
@@ -2978,6 +3114,22 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     </div>
   );
 }
+
+// 流式消息变化时只重新计算被 patch 的那一条；长会话的历史 Markdown、工具卡
+// 不应随每个 token 一起重新渲染。操作回调保持稳定，工作区/线程真正变化时
+// 则仍由 onOpenFile、threadId 等关键属性触发必要更新。
+const MemoMessage = React.memo(Message, (previous, next) => {
+  const phaseChangedWhileWaiting = (previous.m?.status === "streaming" || next.m?.status === "streaming")
+    && previous.agentPhase !== next.agentPhase;
+  return previous.m === next.m
+    && previous.model === next.model
+    && previous.index === next.index
+    && previous.prevRole === next.prevRole
+    && previous.clientId === next.clientId
+    && previous.threadId === next.threadId
+    && previous.onOpenFile === next.onOpenFile
+    && !phaseChangedWhileWaiting;
+});
 
 function ReferenceChips({ references = [], onOpenFile }) {
   if (!references.length) return null;
@@ -3154,11 +3306,12 @@ function ApprovalBlock({ block }) {
 }
 
 // ========== Proma 风格上下文用量圈 ==========
-function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, model, compacting, busy, onCompact }) {
+function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, compactionMode, model, compacting, busy, onCompact }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const percentage = Math.min(100, Math.round((contextTokens / Math.max(1, contextWindow)) * 100));
-  const thresholdPercentage = Math.min(100, Math.round((compactThreshold / Math.max(1, contextWindow)) * 100));
+  const hasThreshold = Number(compactThreshold) > 0;
+  const thresholdPercentage = hasThreshold ? Math.min(100, Math.round((compactThreshold / Math.max(1, contextWindow)) * 100)) : null;
   const tone = percentage >= 85 ? "danger" : percentage >= 60 ? "warning" : "ok";
   const radius = 14;
   const circumference = 2 * Math.PI * radius;
@@ -3202,7 +3355,8 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
           <div className="context-ring-stats">
             <span>当前 <b>{contextTokens.toLocaleString()}</b></span>
             <span>上限 <b>{contextWindow.toLocaleString()}</b></span>
-            <span>压缩线 <b>{thresholdPercentage}%</b></span>
+            <span>压缩机制 <b>{compactionMode === "pi-native" ? "Pi 自动" : compactionMode === "app-fallback" ? "未知模型兜底" : "手动"}</b></span>
+            <span>压缩线 <b>{hasThreshold ? `${thresholdPercentage}%` : "关闭"}</b></span>
           </div>
           <div className="context-ring-breakdown">
             <span>输入 {details.input.toLocaleString()}</span>

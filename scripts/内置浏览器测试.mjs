@@ -91,7 +91,10 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /browser-control-toggle/, "浏览器面板需要提供明确的用户接管入口");
   assert.match(panel, /onToggleFullscreen/, "浏览器面板需要支持铺满工作区");
   assert.match(app, /browser-fullscreen/, "工作台需要支持浏览器专注模式");
-  assert.match(fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8"), /quality: 86/);
+  assert.match(fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8"), /quality: 90/);
+  assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
+  assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
+  assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);
   assert.match(app, /setBrowserPanelOpen\(true\)/, "浏览器活动应自动打开独立侧栏");
   assert.match(app, /app-browser-slot/, "浏览器应为独立可伸缩侧栏");
   assert.doesNotMatch(app, /setPreviewTab\("browser"\)/, "浏览器不应再作为工作产物页签");
@@ -118,6 +121,11 @@ if (LIVE) {
       assert.ok(snap.elements.length > 5, `元素过少：${snap.elements.length}`);
       const target = snap.elements.find((line) => /\[e\d+\] (search|searchbox|textbox|textarea|input)\b/.test(line));
       assert.ok(target, "未找到搜索框元素");
+    });
+    await test("面板尺寸同步到 CSS viewport", async () => {
+      const resized = await browserUserInput(key, { action: "resize", width: 720, height: 760 });
+      assert.equal(resized.result?.viewport?.width ?? resized.viewport?.width, 720, "viewport 宽度未同步");
+      assert.equal(resized.result?.viewport?.height ?? resized.viewport?.height, 760, "viewport 高度未同步");
     });
     await test("输入关键词并提交后出现结果", async () => {
       const snap = await browserSnapshot(key);

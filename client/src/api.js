@@ -107,6 +107,8 @@ export const switchWorkspace = (path) =>
   api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
 export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
+export const pickWorkspace = () =>
+  api("/api/workspace/pick", { method: "POST", body: JSON.stringify({}) });
 export const deleteWorkspace = (path) =>
   api("/api/workspace/delete", { method: "POST", body: JSON.stringify({ path }) });
 export const listFileRoots = () => api("/api/file-roots");
@@ -127,7 +129,15 @@ export const exportSkill = (name) =>
   api("/api/skills/export", { method: "POST", body: JSON.stringify({ name }) });
 export const importSkill = (payload) =>
   api("/api/skills/import", { method: "POST", body: JSON.stringify(payload) });
-export const getSession = (id) => api(`/api/sessions/${encodeURIComponent(id)}`);
+export const getSession = (id, options = {}) => {
+  const query = new URLSearchParams();
+  if (options.view) query.set("view", options.view);
+  for (const key of ["limit", "before"]) {
+    if (options[key] !== undefined && options[key] !== null && options[key] !== "") query.set(key, String(options[key]));
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return api(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
+};
 export const deleteSession = (id) =>
   fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
 export const deleteSessions = (ids) =>

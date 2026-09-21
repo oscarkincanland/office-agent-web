@@ -129,13 +129,26 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
         badge.className = "comment-anchor-badge";
         badge.textContent = String(index + 1);
         badge.style.position = "absolute";
+        // 徽标必须挂在"页面"里：docx 页面（section）自身是定位上下文，
+        // 挂在 host/body 上会以整个文档为参照，既跑位又会把页面撑出大片空白。
+        const pageEl = el.closest("section.oaw-docx") || (doc.body || container);
+        const baseRect = pageEl.getBoundingClientRect();
         const rect = el.getBoundingClientRect();
-        badge.style.left = Math.max(4, rect.left - 26) + "px";
-        badge.style.top = rect.top + "px";
+        badge.style.left = Math.max(4, rect.left - baseRect.left - 26) + "px";
+        badge.style.top = Math.max(0, rect.top - baseRect.top) + "px";
         badge.style.zIndex = "50";
-        (doc.body || container).appendChild(badge);
+        pageEl.appendChild(badge);
       }
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      // 只滚动预览容器，避免把整个工作台/页面一起滚动（那样会在底部露出空白）
+      const scroller = container && container.tagName !== "IFRAME" ? container : null;
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 4) {
+        const rect = el.getBoundingClientRect();
+        const baseRect = scroller.getBoundingClientRect();
+        const delta = rect.top - baseRect.top - (baseRect.height - rect.height) / 2;
+        scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + delta), behavior: "smooth" });
+      } else {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
       // 高亮保持时长（设置面板可调，默认 20 秒）
       const ms = loadSettings().commentHighlightMs || 20000;
       clearTimeout(highlightTimerRef.current);

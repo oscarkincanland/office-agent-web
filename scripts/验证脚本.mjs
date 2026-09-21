@@ -122,19 +122,23 @@ async function smokeTest() {
     const chat = toolPolicyForMode("chat");
     const office = toolPolicyForMode("office");
     const agent = toolPolicyForMode("agent");
+    const review = toolPolicyForMode("review");
     const has = (policy, name) => policy.tools.includes(name);
     if (modeLabel("chat") !== "Chat" || !modeDescription("office")) throw new Error("模式元数据缺失");
     if (!has(chat, "kb_search") || !has(chat, "context_read") || !has(chat, "skills_search") || !has(chat, "skills_read") || has(chat, "bash") || has(chat, "write") || has(chat, "officecli")) throw new Error("Chat 不是只读工具集");
     if (!has(office, "officecli") || has(office, "bash") || has(office, "write") || has(office, "edit")) throw new Error("Office 工具边界异常");
     if (!has(agent, "bash") || !has(agent, "write") || !has(agent, "memory_update") || !has(agent, "todo")) throw new Error("Agent 完整工具集缺失");
+    if (modeLabel("review") !== "Review" || !has(review, "kb_search") || !has(review, "kb_read") || !has(review, "review_copy") || !has(review, "review_source_apply") || has(review, "bash") || has(review, "browser_open") || has(review, "web_search") || has(review, "web_fetch") || has(review, "map_edit") || has(review, "memory_update")) throw new Error("Review 工具边界异常");
     const chatPlan = planTaskCapabilities({ text: "搜索知识库", task: { mode: "chat" } });
     if (chatPlan.mode !== "chat" || chatPlan.capabilities[0]?.label !== "Chat 检索") throw new Error("Chat 能力计划未标识");
     const chatDocumentPlan = planTaskCapabilities({ text: "查看报告.docx", task: { mode: "chat", currentFile: "报告.docx" } });
     if (chatDocumentPlan.routing.officecli !== "not_needed" || chatDocumentPlan.output.saveToWorkspace) throw new Error("Chat 文档请求错误触发 Office/写入路由");
     if (modeLabel("agent") !== "Agent") throw new Error("Agent 主模式标签异常");
+    const reviewPlan = planTaskCapabilities({ text: "按知识库规范审查报告.docx", task: { mode: "review", currentFile: "报告.docx" } });
+    if (reviewPlan.mode !== "review" || !reviewPlan.capabilities.some((item) => item.id === "reviewEvidence")) throw new Error("Review 能力计划未标识");
     const profile = profilePolicyFor("研究");
     if (!profile.preferredTools.includes("kb_search") || profile.maxContextTokens < 1 || !profile.approval) throw new Error("Agent Profile 策略缺失");
-    ok("第三阶段 Chat/Office/Agent 模式工具边界");
+    ok("第三阶段 Chat/Office/Review/Work 模式工具边界");
   } catch (e) {
     fail("第三阶段模式边界检查: " + e.message);
   }

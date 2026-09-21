@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.11.2",
+  "version": "0.11.3",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
@@ -35,7 +35,9 @@
     "map:tiles": "node scripts/build-vector-tiles.mjs",
     "map:data": "npm run map:fetch && npm run map:prepare && npm run map:tiles",
     "map:m2-data": "node scripts/生成M2数据.mjs",
-    "setup": "node scripts/install-officecli.mjs"
+    "setup": "node scripts/install-officecli.mjs",
+    "test:write-lock": "node scripts/写入锁并发测试.mjs",
+    "test:repeat-guard": "node scripts/重复调用抑制测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

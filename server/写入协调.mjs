@@ -242,6 +242,27 @@ export function acquireWriteLock({ workspace, targetPath, runId, threadId = null
   }
 }
 
+/**
+ * 异步等待可用写锁。
+ *
+ * 背景：工作区级写锁（bash / officecli / 地图工具）此前一直持到 Run 结束，同一工作区
+ * 并发执行两个任务时，后一个 Run 的每次写入都会被拒（实测 12 天内 33 次
+ * “文件正在被其他任务修改”）。现在工具侧改为“用完即放”，并发时的重叠通常只有秒级，
+ * 这里用短退避重试把冲突变成“稍等一下”，超过上限才按原错误抛出。
+ */
+export async function acquireWriteLockWithRetry(options = {}, { timeoutMs = 20000, intervalMs = 350 } = {}) {
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  for (;;) {
+    try {
+      return acquireWriteLock(options);
+    } catch (error) {
+      if (error?.code !== "WRITE_CONFLICT" || Date.now() >= deadline) throw error;
+      const wait = intervalMs + Math.random() * 250;
+      await new Promise((resolve) => { setTimeout(resolve, wait); });
+    }
+  }
+}
+
 export function releaseWriteLock(token) {
   if (!token?.key) return false;
   const record = locks.get(token.key);

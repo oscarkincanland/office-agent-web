@@ -227,6 +227,9 @@ export class PiRuntimeManager {
       ? SessionManager.open(sessionPath, sessionStore || undefined, cwd)
       : SessionManager.create(cwd, sessionStore || undefined);
     const settingsManager = options.settingsManager || SettingsManager.inMemory({
+      // 上下文压缩交给 Pi 按当前模型的 contextWindow 自动判断；
+      // 明确保留输出/工具调用空间，避免工作台另设固定 token 线与 Pi 竞争。
+      compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
       // 工作台自己负责备用模型和最终失败收敛；Pi 只保留一次短重试，
       // 避免供应商不可达时叠加多层指数退避，把界面长时间卡在“连接模型”。
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 800, provider: { maxRetries: 0 } },

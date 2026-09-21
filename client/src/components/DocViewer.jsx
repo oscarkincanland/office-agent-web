@@ -7,7 +7,7 @@ import PptxViewer from "./PptxViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
 
-const ICONS = { docx: "doc", xlsx: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
+const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
 // 在 iframe 文档的 body 中查找首个匹配 text 的文本节点并按 wrapType 包裹
@@ -132,10 +132,12 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     lastSavedJsonRef.current = "[]";
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = null;
-    if (doc?.kind === "html" || doc?.kind === "text") {
+    // DOCX/PPTX 由专用查看器自己读取批注/原始文件；这里不要再触发一轮
+    // OfficeCLI 查询，否则每次点击 Word 预览都会重复启动一次读取进程。
+    if ((doc?.kind === "html" && !isOfficePreview) || doc?.kind === "text") {
       fetchComments();
     }
-    if (isHtmlKind) {
+    if (isHtmlKind && !isOfficePreview) {
       fetch(`/api/doc/${encodeURIComponent(doc.name)}/annotations`)
         .then((r) => r.json())
         .then((d) => {
@@ -149,7 +151,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       setAnnotations([]);
       setAnnoLoaded(true);
     }
-  }, [doc?.name, doc?.kind, fetchComments, isHtmlKind]);
+  }, [doc?.name, doc?.kind, fetchComments, isHtmlKind, isOfficePreview]);
 
   const startLive = useCallback(async () => {
     if (!doc) return;

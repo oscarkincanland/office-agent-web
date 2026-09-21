@@ -3,6 +3,8 @@ import { renderAsync } from "docx-preview";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from "docx";
 import Icon from "./Icon.jsx";
 import CommentMarker from "./CommentMarker.jsx";
+import { repaginateDocx } from "./文档分页.js";
+import { extractDocxOutline } from "./文档目录.js";
 
 /**
  * Word 文档查看器（增强版）
@@ -84,6 +86,7 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
   const [currentPage, setCurrentPage] = useState(1);
   const [selectionMenu, setSelectionMenu] = useState(null);
   const [selectionNote, setSelectionNote] = useState("");
+  const [imageNotice, setImageNotice] = useState("");
 
   // 选中文档中的文字后显示 Codex 风格操作条：加入上下文、写批注或交给 Agent。
   useEffect(() => {
@@ -136,25 +139,55 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
     if (!host) return;
     setLoading(true);
     setError("");
+    setImageNotice("");
     try {
       const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
-      const data = new Uint8Array(buf);
-      host.innerHTML = "";
-      await renderAsync(data, host, null, {
-        className: "oaw-docx",
-        inWrapper: true,
-        breakPages: true,
-        // 保留 Word 写入的 lastRenderedPageBreak，避免长文被压成一个连续大页面。
-        ignoreLastRenderedPageBreak: false,
-        renderComments: showComments, // 批注显示跟随工具栏开关
-        renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
-        useBase64URL: false,          // 图片用 Blob URL（useBase64URL 的 FileReader 异步链路在部分文档下 src 落空）
-      });
+
+      // docx-preview 的图片是异步取回的，渲染完成后要给它一点时间；个别文档在
+      // blob 链路下拿不到图片（src 落空 / 解码失败），这里改用 base64 数据链重渲染一次。
+      const paint = async (buffer, { base64URL = false } = {}) => {
+        host.innerHTML = "";
+        await renderAsync(new Uint8Array(buffer), host, null, {
+          className: "oaw-docx",
+          inWrapper: true,
+          breakPages: true,
+          // 保留 Word 写入的 lastRenderedPageBreak，避免长文被压成一个连续大页面。
+          ignoreLastRenderedPageBreak: false,
+          renderComments: showComments, // 批注显示跟随工具栏开关
+          renderChanges: showChanges,   // 修订痕迹显示跟随工具栏开关
+          useBase64URL: base64URL,
+        });
+      };
+      const brokenImages = async (timeoutMs) => {
+        const deadline = Date.now() + timeoutMs;
+        for (;;) {
+          const images = [...host.querySelectorAll("img")];
+          if (images.length === 0) return [];
+          if (images.every((img) => img.complete)) {
+            return images.filter((img) => img.naturalWidth === 0);
+          }
+          if (Date.now() > deadline) return images.filter((img) => img.complete && img.naturalWidth === 0);
+          await new Promise((resolve) => { setTimeout(resolve, 120); });
+        }
+      };
+
+      await paint(buf);
+      let broken = await brokenImages(6000);
+      if (broken.length) {
+        await paint(buf, { base64URL: true });
+        broken = await brokenImages(8000);
+      }
+      if (broken.length) setImageNotice(`有 ${broken.length} 张图片未能加载`);
+
+      // 按 A4 页高做二次分页：生成的文档通常没有 Word 的 lastRenderedPageBreak，
+      // 只靠 breakPages 会出现 9000+px 的超长"纸"，这里补上逐页切分。
+      repaginateDocx(host);
       const pages = host.querySelectorAll("section.oaw-docx");
-      pages.forEach((page, index) => { page.dataset.page = String(index + 1); });
-      buildOutline(host);
+      // 目录用 docx 内部样式解析（heading N/标题 N），页号取二次分页后的真实页码
+      const parsedOutline = await extractDocxOutline(buf);
+      buildOutline(host, parsedOutline);
       setPageCount(pages.length || 1);
       setCurrentPage(1);
       setDirty(false);
@@ -179,12 +212,49 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
 
   useEffect(() => { renderDoc(); }, [renderDoc, renderKey]);
 
-  // 提取标题大纲（从渲染 DOM：Heading 类 + 加粗大字号段落启发式）
-  const buildOutline = (host) => {
+  // 提取标题大纲：优先使用 docx 内部样式（heading N / 标题 N）解析出的真实层级；
+  // 解析不到时才退回"编号开头的短段落"启发式，且不再把加粗正文全部列进来。
+  const buildOutline = (host, parsed) => {
+    const clean = (text) => String(text || "").replace(/\s+/g, " ").trim();
+    const compact = (text) => clean(text).replace(/\s+/g, "");
+    const pageOf = (el) => {
+      const section = el?.closest("section.oaw-docx");
+      return section ? Number(section.dataset.page || 0) || null : null;
+    };
+    const parsedItems = Array.isArray(parsed?.items) ? parsed.items : [];
+    const headingClasses = Array.isArray(parsed?.headingClasses) ? parsed.headingClasses : [];
+
+    if (parsedItems.length) {
+      const classLevels = new Map(headingClasses.filter((item) => item.className).map((item) => [item.className, item.level]));
+      const domHeads = classLevels.size
+        ? [...host.querySelectorAll("section.oaw-docx p")].filter((el) => [...el.classList].some((cls) => classLevels.has(cls)))
+        : [];
+      const domText = domHeads.map((el) => compact(el.textContent));
+      const exact = domHeads.length === parsedItems.length
+        && parsedItems.every((item, index) => domText[index] === compact(item.text));
+      const items = [];
+      if (exact) {
+        parsedItems.forEach((item, index) => items.push({ ...item, el: domHeads[index], page: pageOf(domHeads[index]) }));
+      } else {
+        // 顺序配对失败（表格/文本框里的标题等）时按文本顺序兜底匹配
+        let cursor = 0;
+        for (const item of parsedItems) {
+          const key = compact(item.text).slice(0, 24);
+          let hit = null;
+          for (let i = cursor; i < domHeads.length; i += 1) {
+            if (key && (domText[i].startsWith(key) || domText[i].includes(key))) { hit = { el: domHeads[i], index: i }; break; }
+          }
+          if (hit) { cursor = hit.index + 1; items.push({ ...item, el: hit.el, page: pageOf(hit.el) }); }
+          else items.push({ ...item, el: null, page: null });
+        }
+      }
+      setOutline(numberedOutline(items));
+      return;
+    }
+
+    // 兜底启发式
     const items = [];
-    // 1) 标准 Heading 类 / h1-h6（docx-preview 实际生成 oaw-docx_heading1 小写类名）
-    const headingEls = host.querySelectorAll("section.oaw-docx [class*=heading], section.oaw-docx h1, section.oaw-docx h2, section.oaw-docx h3, section.oaw-docx h4, section.oaw-docx h5, section.oaw-docx h6");
-    headingEls.forEach((el) => {
+    host.querySelectorAll("section.oaw-docx [class*=heading], section.oaw-docx h1, section.oaw-docx h2, section.oaw-docx h3, section.oaw-docx h4, section.oaw-docx h5, section.oaw-docx h6").forEach((el) => {
       const cls = el.className || "";
       let level = 3;
       if (/heading1/i.test(cls) || el.tagName === "H1") level = 1;
@@ -193,46 +263,62 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       else if (/heading4/i.test(cls) || el.tagName === "H4") level = 4;
       else if (/heading5/i.test(cls) || el.tagName === "H5") level = 5;
       else if (/heading6/i.test(cls) || el.tagName === "H6") level = 6;
-      const text = el.textContent.trim();
-      if (text) {
-        const page = el.closest("section.oaw-docx");
-        items.push({ level, text: text.replace(/\s+/g, " ").trim().slice(0, 100), page: page ? Number(page.dataset.page || 1) : null, el });
-      }
+      const text = clean(el.textContent);
+      if (text) items.push({ level, text: text.slice(0, 100), el, page: pageOf(el) });
     });
-    // 2) 启发式：无 Heading 类时，提取加粗+较大字号的短段落作为标题
     if (items.length === 0) {
-      const paras = host.querySelectorAll("section.oaw-docx p");
-      paras.forEach((el) => {
-        const st = window.getComputedStyle ? window.getComputedStyle(el) : el.style || {};
-        const fs = parseFloat(st.fontSize) || 0;
-        const bold = st.fontWeight === "bold" || parseInt(st.fontWeight, 10) >= 600;
-        const text = el.textContent.trim();
-        // 标题特征：使用计算样式而不是 element.style，并兼容“ 一、 / （一） ”这类正式报告标题。
-        const numbered = /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、|[（(][一二三四五六七八九十百零\d]+[）)]|\d+[.)、])/.test(text);
-        if (text && (bold || fs >= 13 || numbered) && text.length <= 80) {
-          let level = numbered && /^[（(]/.test(text) ? 2 : 3;
-          if (fs >= 22 || /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、)/.test(text)) level = 1;
-          else if (fs >= 18) level = 2;
-          const page = el.closest("section.oaw-docx");
-          items.push({ level, text: text.replace(/\s+/g, " ").trim().slice(0, 100), page: page ? Number(page.dataset.page || 1) : null, el });
-        }
+      const numbered = /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+、|[（(][一二三四五六七八九十百零\d]+[）)]|\d+(?:\.\d+)+)/;
+      host.querySelectorAll("section.oaw-docx p").forEach((el) => {
+        const text = clean(el.textContent);
+        if (!text || text.length > 60 || !numbered.test(text)) return;
+        let level = 2;
+        if (/^第[一二三四五六七八九十百零\d]+[章节篇部分]|^[一二三四五六七八九十百零\d]+、/.test(text)) level = 1;
+        else if (/^\d+(?:\.\d+){2,}/.test(text)) level = 3;
+        items.push({ level, text: text.slice(0, 100), el, page: pageOf(el) });
       });
     }
-    setOutline(items);
+    setOutline(numberedOutline(items));
+  };
+
+  // 目录编号：Word 风格的多级序号；标题自带编号（一、/1.1/（一））时不再重复编号
+  const numberedOutline = (items) => {
+    const ownNumber = /^(?:第[一二三四五六七八九十百零\d]+[章节篇部分]|[一二三四五六七八九十百零\d]+[、.．)）]|[（(][一二三四五六七八九十百零\d]+[）)]|\d+(?:\.\d+)+)/;
+    const counters = [];
+    return items.map((item) => {
+      const level = Math.max(1, Math.min(6, item.level || 1));
+      counters[level - 1] = (counters[level - 1] || 0) + 1;
+      for (let i = level; i < counters.length; i += 1) counters[i] = 0;
+      const parts = counters.slice(0, level);
+      const number = ownNumber.test(item.text) || parts.some((value) => !value) ? "" : parts.join(".");
+      return { ...item, level, number };
+    });
+  };
+
+  // 只滚动预览容器，避免把整个工作台一起滚动
+  const scrollHostTo = (el, offset = 16) => {
+    const host = hostRef.current;
+    if (!host || !el) return false;
+    const rect = el.getBoundingClientRect();
+    const base = host.getBoundingClientRect();
+    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - offset), behavior: "smooth" });
+    const page = Number(el.closest("section.oaw-docx")?.dataset.page || 0);
+    if (page) setCurrentPage(page);
+    return true;
   };
 
   const jumpToHeading = (item) => {
-    if (item.page) setCurrentPage(item.page);
-    item.el?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (!scrollHostTo(item.el, 24) && item.page) jumpToPage(item.page);
   };
 
   const jumpToPage = (page) => {
     const target = Math.max(1, Math.min(pageCount || 1, Number(page) || 1));
     const el = hostRef.current?.querySelector(`section.oaw-docx[data-page="${target}"]`);
-    if (el) {
-      setCurrentPage(target);
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    if (!el) return;
+    setCurrentPage(target);
+    const host = hostRef.current;
+    const rect = el.getBoundingClientRect();
+    const base = host.getBoundingClientRect();
+    host.scrollTo({ top: Math.max(0, host.scrollTop + (rect.top - base.top) - 8), behavior: "smooth" });
   };
 
   // ===== 编辑模式：contentEditable + execCommand（即时生效，零后端延迟） =====
@@ -481,7 +567,7 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
             </button>
           </>
         )}
-        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 页` : ""}</span>
+        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 页` : ""}{imageNotice ? ` · ${imageNotice}` : ""}</span>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}
@@ -590,21 +676,21 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
         {outlineOpen && outline.length > 0 && (
           <div className="oaw-docx-outline" style={{ width: outlineW, minWidth: outlineW, maxWidth: outlineW }}>
             <div className="oaw-docx-outline-head">
-              <span><Icon name="list" size={11} /> 目录</span>
+              <span><Icon name="list" size={11} /> 目录{outline.length ? ` (${outline.length})` : ""}</span>
               <button className="btn-xs" onClick={() => setOutlineOpen(false)}>×</button>
             </div>
             <div className="oaw-docx-outline-list">
-                  {outline.map((item, i) => (
+              {outline.map((item, i) => (
                 <div
                   key={i}
-                  className="oaw-docx-outline-item"
+                  className={`oaw-docx-outline-item level-${item.level || 1}`}
                   style={{ paddingLeft: `${(item.level - 1) * 12 + 6}px` }}
                   onClick={() => jumpToHeading(item)}
                   title={item.text}
                 >
-                  <span className="oaw-docx-outline-index">{i + 1}</span>
+                  {item.number ? <span className="oaw-docx-outline-index">{item.number}</span> : null}
                   <span className="oaw-docx-outline-text">{item.text}</span>
-                  {item.page && <span className="oaw-docx-outline-page">{item.page}</span>}
+                  {item.page ? <span className="oaw-docx-outline-page">{item.page}</span> : null}
                 </div>
               ))}
             </div>

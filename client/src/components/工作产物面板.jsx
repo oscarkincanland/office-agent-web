@@ -30,26 +30,74 @@ function artifactStatusLabel({ publication, result, resultStatus }) {
 function EventStream({ clientId, threadId }) {
   const [events, setEvents] = useState([]);
   const [connected, setConnected] = useState(false);
+  const eventsRef = useRef(new Map());
+  const cursorRef = useRef(0);
+  const flushTimerRef = useRef(null);
 
   useEffect(() => {
     setEvents([]);
     setConnected(false);
+    eventsRef.current = new Map();
+    cursorRef.current = 0;
     if (!clientId || !threadId) return undefined;
-    const source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}&after=0`);
-    source.onopen = () => setConnected(true);
-    source.onmessage = (message) => {
-      try {
-        const payload = JSON.parse(message.data || "{}");
-        const event = payload.event || payload;
-        if (!event?.type) return;
-        setEvents((previous) => {
-          const next = [...previous.filter((item) => item.seq !== event.seq), event];
-          return next.slice(-120);
-        });
-      } catch {}
+    let source = null;
+    let retryTimer = null;
+    let stopped = false;
+    let retryDelay = 800;
+
+    const flush = () => {
+      flushTimerRef.current = null;
+      const next = [...eventsRef.current.values()]
+        .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0))
+        .slice(-120);
+      setEvents(next);
     };
-    source.onerror = () => setConnected(false);
-    return () => source.close();
+    const scheduleFlush = () => {
+      if (!flushTimerRef.current) flushTimerRef.current = window.setTimeout(flush, 80);
+    };
+    const scheduleReconnect = () => {
+      if (stopped || retryTimer) return;
+      setConnected(false);
+      try { source?.close(); } catch {}
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        connect();
+      }, retryDelay);
+      retryDelay = Math.min(5000, retryDelay * 2);
+    };
+    const connect = () => {
+      if (stopped) return;
+      const after = cursorRef.current || 0;
+      source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}&after=${after}&limit=400`);
+      source.onopen = () => {
+        retryDelay = 800;
+        setConnected(true);
+      };
+      source.onmessage = (message) => {
+        try {
+          const payload = JSON.parse(message.data || "{}");
+          const event = payload.event || payload;
+          if (!event?.type) return;
+          const seq = Number(event.seq || 0);
+          if (seq && seq <= cursorRef.current) return;
+          if (seq) cursorRef.current = seq;
+          eventsRef.current.set(seq || `${event.type}:${event.at || Date.now()}`, event);
+          while (eventsRef.current.size > 160) eventsRef.current.delete(eventsRef.current.keys().next().value);
+          scheduleFlush();
+        } catch {}
+      };
+      source.onerror = scheduleReconnect;
+    };
+    connect();
+    return () => {
+      stopped = true;
+      try { source?.close(); } catch {}
+      if (retryTimer) clearTimeout(retryTimer);
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
   }, [clientId, threadId]);
 
   return (

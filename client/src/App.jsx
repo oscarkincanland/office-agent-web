@@ -202,6 +202,7 @@ export default function App() {
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
+  const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
   const [docLoading, setDocLoading] = useState(false); // 文档加载中
@@ -210,15 +211,20 @@ export default function App() {
   const sessionsRefreshRef = useRef(null);
   const projectsRefreshRef = useRef(null);
   const eventRefreshTimerRef = useRef(null);
+  const eventBatchTimerRef = useRef(null);
+  const eventBatchRef = useRef({ updates: 0, artifacts: 0 });
   const sessionHistoryCacheRef = useRef(new Map());
+  const sessionHistoryMetaRef = useRef(new Map());
   const chatInputRef = useRef(null); // 引用 ChatPanel 输入框（@ 按钮插入）
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
   const workspaceSwitchSeqRef = useRef(0);
   const filesRequestSeqRef = useRef(0);
+  const docRequestSeqRef = useRef(0);
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
+  const autoOpenedRunRef = useRef(new Set());
   const pendingChatInsertRef = useRef([]);
   const { theme, toggleTheme } = useTheme();
 
@@ -297,6 +303,7 @@ export default function App() {
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
     setHistoryThreadId(null);
+    setHistoryWindow(null);
     setTabs([]);
     setActiveTab(null);
     currentDirRef.current = "";
@@ -336,13 +343,36 @@ const refreshFiles = useCallback(async (dir) => {
   // 让切换后的后台任务仍能刷新历史和未读提示。
   useEffect(() => {
     let source;
+    let reconnectTimer = null;
+    let retryDelay = 800;
     let cancelled = false;
     const cursorKey = "oaw_event_cursor";
+    const flushEventBatch = () => {
+      eventBatchTimerRef.current = null;
+      const pending = eventBatchRef.current;
+      eventBatchRef.current = { updates: 0, artifacts: 0 };
+      if (pending.updates) setEventVersion((value) => value + pending.updates);
+      if (pending.artifacts) setArtifactVersion((value) => value + pending.artifacts);
+    };
+    const scheduleEventBatch = (artifact = false) => {
+      eventBatchRef.current.updates += 1;
+      if (artifact) eventBatchRef.current.artifacts += 1;
+      if (!eventBatchTimerRef.current) eventBatchTimerRef.current = window.setTimeout(flushEventBatch, 100);
+    };
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer) return;
+      try { source?.close(); } catch {}
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, retryDelay);
+      retryDelay = Math.min(5000, retryDelay * 2);
+    };
     const connect = async () => {
       let cursor = eventCursorRef.current;
       if (!localStorage.getItem(cursorKey)) {
         try {
-          const state = await fetch(`/api/agent/events/state?client=${encodeURIComponent(clientId)}`).then((r) => r.json());
+          const state = await fetch(`/api/agent/events/state?client=${encodeURIComponent(clientId)}`, { signal: AbortSignal.timeout(3000) }).then((r) => r.json());
           if (Number.isFinite(Number(state.latest))) cursor = Number(state.latest);
           eventCursorRef.current = cursor;
           localStorage.setItem(cursorKey, String(cursor));
@@ -350,6 +380,7 @@ const refreshFiles = useCallback(async (dir) => {
       }
       if (cancelled) return;
       source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&after=${encodeURIComponent(cursor)}`);
+      source.onopen = () => { retryDelay = 800; };
       source.onmessage = (message) => {
         try {
           const payload = JSON.parse(message.data || "{}");
@@ -358,10 +389,8 @@ const refreshFiles = useCallback(async (dir) => {
           if (!seq || seq <= eventCursorRef.current) return;
           eventCursorRef.current = seq;
           localStorage.setItem(cursorKey, String(seq));
-          setEventVersion((value) => value + 1);
-          if (["run_finished", "file_changed", "artifact_published"].includes(event.type)) {
-            setArtifactVersion((value) => value + 1);
-          }
+          const isCurrentThread = !event.threadId || event.threadId === currentThreadRef.current;
+          scheduleEventBatch(isCurrentThread && ["run_finished", "file_changed", "artifact_published"].includes(event.type));
           const thread = event.threadId || "";
           const noticeKey = `${thread}:${event.runId || "event"}:${event.type}`;
           if (thread && thread !== currentThreadRef.current && GLOBAL_EVENT_NOTICES.has(event.type) && !eventNoticeKeysRef.current.has(noticeKey)) {
@@ -378,11 +407,18 @@ const refreshFiles = useCallback(async (dir) => {
           }
         } catch {}
       };
+      source.onerror = scheduleReconnect;
     };
     connect();
     return () => {
       cancelled = true;
       source?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (eventBatchTimerRef.current) {
+        clearTimeout(eventBatchTimerRef.current);
+        eventBatchTimerRef.current = null;
+      }
+      eventBatchRef.current = { updates: 0, artifacts: 0 };
       if (eventRefreshTimerRef.current) {
         clearTimeout(eventRefreshTimerRef.current);
         eventRefreshTimerRef.current = null;
@@ -470,6 +506,7 @@ const refreshFiles = useCallback(async (dir) => {
     setTabs([]);
     setActiveTab(null);
     setHistoryMessages(null);
+    setHistoryWindow(null);
     setCurrentSessionId(null);
     try {
       const r = await switchWorkspace(requestedPath);
@@ -523,6 +560,7 @@ const refreshFiles = useCallback(async (dir) => {
   }, [refreshFiles]);
 
   const open = useCallback(async (name, thread = threadId, cwd = currentWorkspace) => {
+    const requestSeq = ++docRequestSeqRef.current;
     setDocLoading(true);
     // 容错：调用方可能只传了工作区（例如产物跨工作区打开），thread 缺失时回退到当前会话
     const effectiveThread = thread || threadId;
@@ -534,8 +572,13 @@ const refreshFiles = useCallback(async (dir) => {
       const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(effectiveThread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
       const doc = await response.json();
       if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
+      if (requestSeq !== docRequestSeqRef.current) return;
       const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
       const nextDoc = { ...doc, url: previewUrl, previewRevision: revision };
+      // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
+      // 避免用户还停留在产物列表而误以为文件没有打开。
+      setPreviewOpen(true);
+      setPreviewTab("document");
       // 单次 setTabs：避免 React 批处理导致重复 tab
       setTabs((prev) => {
         const exists = prev.find((t) => t.name === name);
@@ -546,8 +589,24 @@ const refreshFiles = useCallback(async (dir) => {
       });
       setActiveTab(name);
       setDocLoading(false);
-    } catch (e) { alert("打开失败: " + e.message); setDocLoading(false); }
+    } catch (e) {
+      const message = String(e?.message || "");
+      // 文件被移动/删除，或文件列表还是切换工作区之前的旧数据时，不弹生硬的 "not found"，
+      // 而是刷新列表并提示重新选择。
+      if (/not found|enoent|http 404/i.test(message)) {
+        try { await refreshFiles?.(); } catch {}
+        alert(`文件不存在或已被移动：${name}\n已刷新文件列表，请重新选择。`);
+      } else {
+        alert("打开失败: " + message);
+      }
+      setDocLoading(false);
+    }
   }, [clientId, threadId, currentWorkspace]);
+
+  const handleChatOpenFile = useCallback((name) => {
+    if (activeModule === "map") mapBridgeRef.current?.onOpenFile?.(name);
+    else open(name);
+  }, [activeModule, open]);
 
   // 关闭 tab
   const closeTab = useCallback((name) => {
@@ -590,14 +649,16 @@ const refreshFiles = useCallback(async (dir) => {
     if (cachedHistory) {
       setHistoryThreadId(conversationId);
       setHistoryMessages(cachedHistory);
+      setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
     } else {
       setHistoryThreadId(null);
       setHistoryMessages(null);
+      setHistoryWindow(null);
     }
     // 恢复 Agent 与读取历史互不依赖；并行执行可明显缩短点击历史后的空白等待。
     // 但在 resume 完成前不切换 thread，避免 SSE 先创建一个新的空会话并与恢复竞态。
     const historyPromise = Promise.all([
-      getSession(session.id),
+      getSession(session.id, { view: "chat", limit: 360 }),
       listRuns("", 50, { sessionId: session.id }).catch(() => ({ runs: [] })),
     ]);
     const resumePromise = resumeAgentThread(clientId, conversationId, session.id, resumedWorkspace)
@@ -716,6 +777,12 @@ const refreshFiles = useCallback(async (dir) => {
         return left - right;
       }));
       sessionHistoryCacheRef.current.set(session.id, loadedHistory);
+      sessionHistoryMetaRef.current.set(session.id, d.info?.historyHasMore ? {
+        total: Number(d.info.historyTotal || 0),
+        start: Number(d.info.historyStart || 0),
+        end: Number(d.info.historyEnd || 0),
+        hasMore: true,
+      } : null);
       // 只保留最近几条缓存，避免长会话历史常驻内存；再次点击时仍可先显示缓存。
       while (sessionHistoryCacheRef.current.size > 8) {
         const first = sessionHistoryCacheRef.current.keys().next().value;
@@ -723,6 +790,7 @@ const refreshFiles = useCallback(async (dir) => {
         sessionHistoryCacheRef.current.delete(first);
       }
       setHistoryMessages(loadedHistory);
+      setHistoryWindow(sessionHistoryMetaRef.current.get(session.id) || null);
       setHistoryThreadId(conversationId);
       // 从消息里解析会话关联的文件，尝试打开
       const fileMatch = msgs.find((m) => m.role === "user" && m.text && m.text.includes("当前打开文件"));
@@ -766,8 +834,11 @@ const refreshFiles = useCallback(async (dir) => {
 
   const handleDeleteSession = useCallback(async (id) => {
     await deleteSession(id);
+    sessionHistoryCacheRef.current.delete(id);
+    sessionHistoryMetaRef.current.delete(id);
     if (currentSessionId === id) {
       setHistoryMessages(null);
+      setHistoryWindow(null);
       setCurrentSessionId(null);
     }
     await refreshSessions();
@@ -775,8 +846,13 @@ const refreshFiles = useCallback(async (dir) => {
 
   const handleBatchDeleteSessions = useCallback(async (ids) => {
     const result = await deleteSessions(ids);
+    for (const id of ids || []) {
+      sessionHistoryCacheRef.current.delete(id);
+      sessionHistoryMetaRef.current.delete(id);
+    }
     if (currentSessionId && result.deleted?.includes(currentSessionId)) {
       setHistoryMessages(null);
+      setHistoryWindow(null);
       setCurrentSessionId(null);
     }
     await refreshSessions();
@@ -828,6 +904,31 @@ const refreshFiles = useCallback(async (dir) => {
       refreshSessions();
     }, 200);
   }, [refreshSessions]);
+
+  // 一轮任务以 run_finished 为权威结束点：刷新产物列表，并自动打开本轮首个产物。
+  // 用 runId 去重，避免 SSE 重连回放导致同一个文件重复打开或反复刷新。
+  const handleRunFinished = useCallback((result = {}) => {
+    const runId = String(result.runId || "");
+    if (runId && autoOpenedRunRef.current.has(runId)) return;
+    if (runId) {
+      autoOpenedRunRef.current.add(runId);
+      if (autoOpenedRunRef.current.size > 80) {
+        const first = autoOpenedRunRef.current.values().next().value;
+        if (first) autoOpenedRunRef.current.delete(first);
+      }
+    }
+    setArtifactVersion((value) => value + 1);
+    const status = String(result.status || "completed").toLowerCase();
+    if (!["completed", "success"].includes(status)) return;
+    const artifacts = (Array.isArray(result.artifacts) ? result.artifacts : [])
+      .map((item) => typeof item === "string" ? { path: item } : item)
+      .filter((item) => item?.path && item.status !== "deleted");
+    const firstArtifact = artifacts[0];
+    if (!firstArtifact) return;
+    setPreviewOpen(true);
+    setPreviewTab("document");
+    void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
+  }, [currentWorkspace, open, threadId]);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
   const handleSessionChange = useCallback((id) => {
@@ -929,15 +1030,14 @@ const refreshFiles = useCallback(async (dir) => {
         handleAgentEnd();
         mapBridgeRef.current?.onAgentEnd?.();
       }}
+      onRunFinished={handleRunFinished}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
+      historyWindow={historyWindow}
       onNewSession={handleNewSession}
-      onOpenFile={(name) => {
-         if (activeModule === "map") mapBridgeRef.current?.onOpenFile?.(name);
-        else open(name);
-      }}
+      onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
       sessions={visibleSessions}
       onSelectSession={handleSelectSession}
@@ -1131,6 +1231,19 @@ const refreshFiles = useCallback(async (dir) => {
                 <Icon name="tool" size={15} />
                 <span>Work</span>
               </button>
+              <button
+                type="button"
+                className={`conversation-mode-option review ${conversationMode === "review" ? "active" : ""}`}
+                aria-pressed={conversationMode === "review"}
+                title="Review：先依据实际读取的规范生成审查报告与安全副本，确认后才写回原文"
+                onClick={() => {
+                  const switched = chatInputRef.current?.setMode?.("review");
+                  if (switched !== false) setConversationMode("review");
+                }}
+              >
+                <Icon name="shield" size={15} />
+                <span>Review</span>
+              </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
@@ -1286,7 +1399,7 @@ const refreshFiles = useCallback(async (dir) => {
                <div className="module-brand-heading"><Logo size={22} /><span><h2>成果</h2><p>查看、验收、固定和回滚工作产物</p></span></div>
              </div>
              <div className="module-body module-artifacts-body">
-               <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} refreshToken={artifactVersion} onOpenFile={(name) => { closeExternalModules(); open(name); }} />
+               <WorkProductPanel tab="artifacts" clientId={clientId} threadId={threadId} workspace={currentWorkspace} projectId={currentProject?.id || ""} currentSessionId={currentSessionId} refreshToken={artifactVersion} onOpenFile={(name, thread, cwd) => { closeExternalModules(); open(name, thread, cwd); }} />
              </div>
            </div>
          )}

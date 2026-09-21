@@ -16,6 +16,7 @@ const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.
 const settingsSource = fs.readFileSync(new URL("../client/src/components/SettingsPanel.jsx", import.meta.url), "utf8");
 const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8");
 const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
+const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8");
 let runId = null;
 let selectiveRunId = null;
 
@@ -42,12 +43,23 @@ try {
   assert.match(chatPanelSource, /body: JSON\.stringify\(\{ id: block\.id, decision \}\)/, "每次工具询问应提交用户的审批决定");
   assert.match(appSource, /if \(switched !== false\) setConversationMode\(/, "模式切换失败时顶部状态不能误更新");
   assert.match(serverSource, /\/api\/agent\/approval-mode/, "审批模式应由服务端持久化");
-  assert.match(agentSource, /modelContextWindow[\s\S]{0,220}0\.78/, "自动压缩阈值应根据模型上下文窗口计算");
+  assert.match(agentSource, /windowInfo\.known && entry\?\.session\?\.autoCompactionEnabled !== false/, "已知模型应交给 Pi SDK 按模型上下文自动压缩");
+  assert.match(agentSource, /UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS = 26000/, "只有未知模型才保留 2.6 万 token 兜底");
+  assert.match(agentSource, /compactionMode: compactionPolicy\.mode/, "上下文快照应说明压缩责任归属");
+  assert.match(agentSource, /PI_COMPACTION_RESERVE_TOKENS = 16384/, "Pi 自动压缩应保留输出与工具调用空间");
+  assert.match(agentSource, /compactThresholdSource: compactionPolicy\.source/, "上下文快照应暴露压缩阈值来源");
+  assert.match(chatPanelSource, /PI_COMPACTION_RESERVE_TOKENS = 16384/, "前端上下文圈应与 Pi 的默认保留空间一致");
+  assert.match(chatPanelSource, /compactionMode === "pi-native" \? "Pi 自动"/, "前端应区分 Pi 原生压缩与未知模型兜底");
+  assert.match(agentSource, /entry\.promptChars = 0/, "压缩成功后应清零本地估算，避免下一轮重复压缩");
+  assert.match(serverSource, /historyHasMore/, "长会话 Chat 视图应返回历史窗口元数据");
+  assert.match(chatPanelSource, /const MemoMessage = React\.memo\(Message/, "历史消息应按消息对象 memo，避免流式更新重渲染整页");
   assert.match(chatPanelSource, /const agentPhaseRef = useRef\(""\)/, "重复 token 不应反复触发相同的 React 状态更新");
   assert.match(chatPanelSource, /elapsedMs < 32/, "流式正文应合帧更新，避免每个 token 都触发 Markdown 渲染");
   assert.match(chatPanelSource, /const queueToolOutput = useCallback/);
   assert.match(chatPanelSource, /case "tool_output":[\s\S]{0,220}queueToolOutput\(aid, data\)/, "工具输出增量应先合并，再批量更新消息");
   assert.match(agentSource, /entry\.busy \|\| entry\.compacting \|\| entry\.queuedCount > 0/, "压缩期间新消息必须被视为排队");
+  assert.match(agentSource, /this\.resumePromises = new Map\(\)/, "重复恢复同一会话必须复用同一个 Runtime 创建 Promise");
+  assert.match(agentSource, /this\.recoveryPromises = new Map\(\)/, "失效 Runtime 恢复必须按会话单飞，不能重复重启");
   assert.match(agentSource, /AUTO_COMPACT_COOLDOWN_MS = 10000/, "自动压缩应有冷却窗口，避免连续触发");
   assert.doesNotMatch(agentSource, /emitChannelSafe\(entry, "context_compacting"/, "压缩开始只由 Pi SDK 事件产生，不能重复合成一份");
   assert.doesNotMatch(agentSource, /emitChannelSafe\(entry, "context_compacted"/, "压缩完成只由 Pi SDK 事件产生，不能重复合成一份");
@@ -56,9 +68,23 @@ try {
   assert.match(chatPanelSource, /previous\?\.products \|\| \[\]/, "空的终结事件不能覆盖已有产物列表");
   assert.match(chatPanelSource, /window\.setTimeout\(resolve, 3000\)/, "发送应给 SSE 握手最多 3 秒，超时后靠服务端回放补齐 admission 事件");
   assert.match(chatPanelSource, /streamIdsRef/, "SSE 游标必须按通道代际隔离，避免 Runtime 重建后事件被旧游标过滤");
+  assert.match(chatPanelSource, /streamGenerationRef/, "切换会话后必须隔离旧 EventSource 的迟到回调");
+  assert.match(chatPanelSource, /generation === streamGenerationRef\.current/, "旧会话 SSE 回调不能写入当前会话");
+  assert.match(chatPanelSource, /}, 50000\);/, "Pi Runtime 冷启动期间不能 5 秒就误判 SSE 握手失败");
+  assert.match(chatPanelSource, /streamReadyRef\.current\?\.streamKey === currentStreamKey/, "发送只能等待当前会话的 SSE 握手");
   assert.match(serverSource, /stream_resync/, "历史窗口截断时必须通知前端重同步");
+  assert.match(serverSource, /}, 5000\);/, "Runtime 初始化期间 SSE 应发送短周期心跳");
   assert.match(serverSource, /protocolVersion: PROTOCOL_VERSION/, "SSE 载荷必须携带协议版本与通道代际");
   assert.match(stylesSource, /\.preview-maximized \.center-area \{ display: none; \}/, "工作区最大化应占满对话主区域");
+  assert.match(appSource, /onRunFinished=\{handleRunFinished\}/, "本轮完成后应把权威产物交给预览层");
+  assert.match(appSource, /void open\(firstArtifact\.path/, "本轮完成后应自动打开首个产物");
+  assert.match(chatPanelSource, /onRunFinished\?\.\(data\)/, "前端应在 run_finished 后通知产物预览");
+  assert.match(chatPanelSource, /run-trace-tools-toggle/, "本轮工具应提供独立折叠交互");
+  assert.match(chatPanelSource, /const \[toolsOpen, setToolsOpen\] = useState\(false\)/, "本轮工具默认应折叠");
+  assert.match(serverSource, /function officeResults\(response\)/, "Excel 解析应兼容 Office CLI 结果结构");
+  assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
+  assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");
+  assert.match(excelSource, /hooks 顺序错误/, "Excel 空结果不能破坏 React hooks 顺序");
 
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
   const plan = planTaskCapabilities({ text: "测试一下", task: { mode: "agent" } });

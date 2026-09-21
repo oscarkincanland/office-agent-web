@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { sortFiles } from "./文件排序.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -197,7 +198,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
               {s.title || s.label || "未命名会话"}
             </span>
             <span className="session-time">
-              {s.mode && <span className={`session-mode mode-${s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "office" ? "Office" : "Agent"}</span>}
+              {s.mode && <span className={`session-mode mode-${s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "review" ? "Review" : s.mode === "office" ? "Office" : "Work"}</span>}
               {s.runStatus && s.runStatus !== "idle" ? ({ running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", cancel_requested: "正在中断", completed: "已完成", failed: "失败", aborted: "已中断" }[s.runStatus] || s.runStatus) : formatTime(s.modified)}
               {s.artifactCount > 0 && <span className="session-artifact-count"> · 产物 {s.artifactCount}</span>}
             </span>
@@ -280,6 +281,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
   const [modalTab, setModalTab] = useState("settings"); // 设置弹窗子 tab：settings | memory
   const [fileQ, setFileQ] = useState("");    // 文件搜索关键词
+  const [fileSort, setFileSort] = useState(() => {
+    try { return localStorage.getItem("oaw_file_sort") === "type" ? "type" : "time"; } catch { return "time"; }
+  }); // 文件树排序：time=按修改时间，type=按文件类型分组
   const [fileSearchResults, setFileSearchResults] = useState(null);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
   const fileSearchSeqRef = useRef(0);
@@ -333,6 +337,15 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     setFileSearchResults(null);
     onDirChange?.(dir || "");
   }, [onDirChange]);
+
+  // 文件树排序：目录始终在前；时间=按修改时间倒序，类型=按扩展名分组（同组按名称）
+  const sortFileList = useCallback((list) => sortFiles(list, fileSort), [fileSort]);
+
+  const toggleFileSort = () => {
+    const next = fileSort === "time" ? "type" : "time";
+    setFileSort(next);
+    try { localStorage.setItem("oaw_file_sort", next); } catch {}
+  };
 
   const refreshArtifacts = useCallback(async () => {
     setArtifactLoading(true);
@@ -391,6 +404,25 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       setCustomMode(false);
       setSwitcherOpen(false);
     } catch (e) { alert("验证失败: " + e.message); }
+    finally { setApplying(false); }
+  };
+
+  const pickCustomWorkspace = async () => {
+    if (applying) return;
+    setApplying(true);
+    try {
+      const result = await pickWorkspace();
+      if (result.canceled) return;
+      if (result.workspace) setCustomPath(result.workspace);
+      if (!result.ok) {
+        const reason = result.writeAccess?.message || result.error || "无效目录";
+        alert(`无法将此目录用作可写工作区：${reason}`);
+        return;
+      }
+      await onWorkspaceChange(result.workspace);
+      setCustomMode(false);
+      setSwitcherOpen(false);
+    } catch (e) { alert("选择工作区失败: " + e.message); }
     finally { setApplying(false); }
   };
 
@@ -623,6 +655,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <button className="btn-xs" onClick={applyCustom} disabled={applying}>
             {applying ? "验证中..." : "打开"}
           </button>
+          <button className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器">
+            <Icon name="folderOpen" size={11} /> 选择文件夹
+          </button>
         </div>
       )}
       {switcherOpen && (
@@ -662,6 +697,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                   <div className="workspace-switcher-custom-form">
                     <input autoFocus value={customPath} placeholder="输入文件夹绝对路径" onChange={(e) => setCustomPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyCustom(); }} />
                     <button type="button" className="btn-xs" onClick={applyCustom} disabled={applying}>{applying ? "验证中…" : "打开"}</button>
+                    <button type="button" className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器"><Icon name="folderOpen" size={11} /> 选择文件夹</button>
                   </div>
                 )}
               </div>
@@ -742,6 +778,14 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       <div className="sidebar-section-head">
         <Icon name="folder" size={12} />
         <span className="section-name">文件</span>
+        <button
+          className="btn-xs section-sort"
+          onClick={toggleFileSort}
+          title={fileSort === "time" ? "当前按修改时间排序，点击改为按类型分组" : "当前按文件类型排序，点击改为按修改时间排序"}
+        >
+          <Icon name={fileSort === "time" ? "history" : "layers"} size={11} />
+          <span className="section-sort-text">{fileSort === "time" ? "时间" : "类型"}</span>
+        </button>
         <span className="section-count">{files.length}</span>
         <button className="btn-xs section-refresh" onClick={() => onRefreshFiles()} title="刷新文件">
           <Icon name="refresh" size={11} />
@@ -775,7 +819,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <div className="file-list">
           {fileSearchLoading && <div className="file-search-status">正在搜索整个工作区…</div>}
           {!fileSearchLoading && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
-          {(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
+          {sortFileList(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
             const filePath = f.relPath || (currentDir ? `${currentDir}/${f.name}` : f.name);
             const isNew = newFiles.has(filePath);
             return (

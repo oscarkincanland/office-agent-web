@@ -3,21 +3,47 @@ import Spreadsheet from "x-data-spreadsheet";
 import "x-data-spreadsheet/dist/xspreadsheet.css";
 import { saveCells } from "../api.js";
 
-const COL_RE = /^([A-Z]+)(\d+)$/;
-function colToIndex(col) { let n = 0; for (const ch of col) n = n * 26 + (ch.charCodeAt(0) - 64); return n; }
 function indexToCol(i) { let s = ""; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - r) / 26); } return s; }
 
 export default function ExcelGrid({ name, sheets, grids }) {
   const hostRef = useRef(null);
   const [spread, setSpread] = useState(null);
-  const [activeSheet, setActiveSheet] = useState(sheets?.[0] || "");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const sheetNames = Array.isArray(sheets) ? sheets : [];
+  const hasSheets = sheetNames.length > 0;
   // 保存时记录每个 sheet 的初始数据
   const initialRef = useRef({});
 
-  // sheets 为空（文件读取失败）时显示错误
-  if (!sheets || sheets.length === 0) {
+  useEffect(() => {
+    if (!hostRef.current || !hasSheets) return undefined;
+    const s = new Spreadsheet(hostRef.current, {
+      showToolbar: true,
+      showGrid: true,
+      view: { height: () => Math.max(200, hostRef.current?.clientHeight - 40) },
+    });
+    setSpread(s);
+    return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
+  }, [hasSheets]);
+
+  // 一次加载所有 sheets（带 name），x-spreadsheet 底部标签栏可切换
+  useEffect(() => {
+    if (!spread || !hasSheets) return;
+    const allSheets = sheetNames.map((s) => ({
+      name: s,
+      rows: grids?.[s]?.rows || grids?.[s] || {},
+    }));
+    initialRef.current = {};
+    for (const s of sheetNames) {
+      initialRef.current[s] = JSON.parse(JSON.stringify(grids?.[s]?.rows || grids?.[s] || {}));
+    }
+    spread.loadData(allSheets);
+    if (typeof spread.change === "function") spread.change(() => {});
+  }, [spread, hasSheets, sheetNames, grids]);
+
+  // sheets 为空（文件读取失败）时显示错误。放在 hooks 之后，避免文件从加载中
+  // 变为可读时触发 React 的 hooks 顺序错误。
+  if (!hasSheets) {
     return (
       <div className="excel-wrap">
         <div className="excel-toolbar">
@@ -30,36 +56,6 @@ export default function ExcelGrid({ name, sheets, grids }) {
       </div>
     );
   }
-
-  useEffect(() => {
-    if (!hostRef.current) return;
-    const s = new Spreadsheet(hostRef.current, {
-      showToolbar: true,
-      showGrid: true,
-      view: { height: () => Math.max(200, hostRef.current?.clientHeight - 40) },
-    });
-    setSpread(s);
-    return () => { if (typeof s.destroy === "function") try { s.destroy(); } catch {} };
-  }, []);
-
-  // 一次加载所有 sheets（带 name），x-spreadsheet 底部标签栏可切换
-  useEffect(() => {
-    if (!spread) return;
-    const allSheets = sheets.map((s) => ({
-      name: s,
-      rows: grids[s]?.rows || grids[s] || {},
-    }));
-    initialRef.current = {};
-    for (const s of sheets) {
-      initialRef.current[s] = JSON.parse(JSON.stringify(grids[s]?.rows || grids[s] || {}));
-    }
-    spread.loadData(allSheets);
-    if (typeof spread.change === "function") spread.change(() => {});
-    // 记录当前激活的 sheet（x-spreadsheet 切换 sheet 时触发）
-    try {
-      spread.on("change", () => {});
-    } catch {}
-  }, [spread, sheets, grids]);
 
   const handleSave = async () => {
     if (!spread) return;

@@ -206,33 +206,32 @@ function colToIndex(col) {
   for (const ch of col) n = n * 26 + (ch.charCodeAt(0) - 64);
   return n;
 }
-function indexToCol(i) {
-  let s = "";
-  while (i > 0) {
-    const r = (i - 1) % 26;
-    s = String.fromCharCode(65 + r) + s;
-    i = Math.floor((i - r) / 26);
-  }
-  return s;
-}
-
 function sheetToGrid(children) {
   const rows = {};
   for (const row of children || []) {
     if (row.type !== "row") continue;
-    const m = row.path.match(/row\[(\d+)\]/);
+    const m = String(row.path || "").match(/row\[(\d+)\]/);
     const ri = m ? parseInt(m[1], 10) : null;
     if (!ri) continue;
     rows[ri] = { cells: {} };
-    for (const cell of row.children || []) {
+    for (const cell of nodeChildren(row)) {
       if (cell.type !== "cell") continue;
-      const ref = cell.path.match(COL_RE);
+      const ref = String(cell.path || "").match(COL_RE);
       if (!ref) continue;
       const ci = colToIndex(ref[1]);
       rows[ri].cells[ci] = { text: cell.text ?? "" };
     }
   }
   return rows;
+}
+
+function officeResults(response) {
+  const data = response?.json?.data || {};
+  return Array.isArray(data.results) ? data.results : Array.isArray(data.Results) ? data.Results : [];
+}
+
+function nodeChildren(node) {
+  return Array.isArray(node?.children) ? node.children : Array.isArray(node?.Children) ? node.Children : [];
 }
 
 async function readWorkbook(file) {
@@ -244,18 +243,14 @@ async function readWorkbook(file) {
     const sheetNodes = [];
     const collect = (results) => {
       for (const r of results || []) {
-        if (r.type === "sheet") sheetNodes.push(r);
-        if (r.children) {
-          for (const c of r.children) {
-            if (c.type === "sheet") sheetNodes.push(c);
-          }
-        }
+        if (r.type === "sheet" && r.path) sheetNodes.push(r);
+        collect(nodeChildren(r));
       }
     };
-    collect(info.json?.data?.results || []);
+    collect(officeResults(info));
     if (sheetNodes.length === 0) {
       info = await get(file, "/", 2);
-      collect(info.json?.data?.results || []);
+      collect(officeResults(info));
     }
     if (sheetNodes.length === 0) {
       throw new Error("无法枚举工作表");
@@ -269,9 +264,12 @@ async function readWorkbook(file) {
       }
     }
     for (const s of sheets) {
-      const r = await get(file, s.name, 3);
-      const res = r.json?.data?.results?.[0];
-      grids[s.name] = sheetToGrid(res?.children || []);
+      // 使用 Office CLI 返回的 DOM 路径，而不是工作表显示名；名称含空格、斜杠
+      // 或非 ASCII 字符时，显示名不一定能作为查询路径。
+      const r = await get(file, s.path || `/${s.name}`, 3);
+      const results = officeResults(r);
+      const res = results.find((item) => item.type === "sheet") || results[0];
+      grids[s.name] = sheetToGrid(nodeChildren(res));
     }
     return { sheets: sheets.map((s) => s.name), grids };
   } catch (officeErr) {
@@ -290,8 +288,7 @@ async function readWorkbook(file) {
         data.forEach((row, ri) => {
           const cells = {};
           row.forEach((val, ci) => {
-            const col = String.fromCharCode(65 + ci);
-            cells[`${col}${ri + 1}`] = { text: String(val) };
+            cells[ci + 1] = { text: String(val) };
           });
           rows[ri + 1] = { cells };
         });
@@ -749,6 +746,7 @@ function mimeForExt(ext) {
   return ({
     docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    xls: "application/vnd.ms-excel",
     pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     pdf: "application/pdf", csv: "text/csv", json: "application/json",
     md: "text/markdown", markdown: "text/markdown", txt: "text/plain", html: "text/html", htm: "text/html",
@@ -810,7 +808,13 @@ function respondWorkspaceFileError(req, res, error) {
 }
 
 function requireWorkspaceWriteForTask(capabilityPlan, workspace) {
-  if (!capabilityPlan?.output?.expected || capabilityPlan.output.saveToWorkspace === false) return null;
+  const reviewNeedsWorkspace = capabilityPlan?.mode === "review";
+  if (
+    (!reviewNeedsWorkspace && !capabilityPlan?.output?.expected) ||
+    capabilityPlan.output.saveToWorkspace === false
+  ) {
+    return null;
+  }
   const writeAccess = evaluateWorkspaceWrite(workspace);
   capabilityPlan.workspaceWrite = writeAccess;
   if (writeAccess.status === "passed") return writeAccess;
@@ -839,7 +843,7 @@ app.post("/api/files/upload", async (req, res) => {
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
-  if (!/\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
+  if (!/\.(docx|xlsx|xls|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
   try {
     const workspace = getWorkspace();
     const result = await withOfficecliReleaseRetry(workspace, safe, () =>
@@ -871,7 +875,7 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
+  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
   try {
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
@@ -920,7 +924,7 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     try { agentManager.setCurrentFile(agentKey(client, thread), fileName); } catch {}
   }
   try {
-    if (ext === "xlsx") {
+    if (ext === "xlsx" || ext === "xls") {
       const wb = await readWorkbook(p);
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "xlsx", name: fileName, ...wb });
@@ -1673,9 +1677,10 @@ app.get("/api/browser/state", (req, res) => {
 
 app.post("/api/browser/open", async (req, res) => {
   const { client, thread, url } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
   const key = browserModule.browserSessionKey(client, thread);
   try {
-    const state = await browserModule.browserOpen(key, url);
+    const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
     res.json({ ok: true, state });
   } catch (error) {
     res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
@@ -1715,7 +1720,12 @@ app.get("/api/browser/stream", (req, res) => {
   const session = browserModule.getBrowserSession(key);
   write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
   if (session?.state?.active) session.refreshTabs().catch(() => {});
-  if (withFrames && session?.frame?.data) write({ type: "frame", data: { data: session.frame.data, at: session.frame.at } });
+  if (withFrames && session?.frame?.data) write({ type: "frame", data: {
+    data: session.frame.data,
+    at: session.frame.at,
+    width: session.frame.width || session.state.viewport?.width || null,
+    height: session.frame.height || session.state.viewport?.height || null,
+  } });
   unsubscribe = browserModule.subscribeBrowser(key, (type, data) => {
     if (type === "frame" && !withFrames) return;
     write({ type, data });
@@ -1744,20 +1754,6 @@ app.post("/api/browser/close", async (req, res) => {
     res.status(500).json({ ok: false, error: String(error?.message || error) });
   }
 });
-
-// 用户可独立使用内置浏览器（无需 Agent）：打开/导航到指定网址
-app.post("/api/browser/open", async (req, res) => {
-  const { client, thread, url } = req.body || {};
-  if (!client) return res.status(400).json({ ok: false, error: "client required" });
-  const key = browserModule.browserSessionKey(client, thread);
-  try {
-    const state = await browserModule.browserOpen(key, String(url || "").trim() || "https://cn.bing.com");
-    res.json({ ok: true, state });
-  } catch (error) {
-    res.status(400).json({ ok: false, error: String(error?.message || error), code: error?.code || null });
-  }
-});
-
 
 app.get("/api/agent/import-preview", (_req, res) => {
   try {
@@ -2378,6 +2374,7 @@ app.get("/api/agent/events", (req, res) => {
   const queryCursor = Number(req.query.after || 0) || 0;
   const headerCursor = Number(req.headers["last-event-id"] || 0) || 0;
   const after = Math.max(queryCursor, headerCursor);
+  const replayLimit = Math.max(1, Math.min(2000, Number(req.query.limit || 2000) || 2000));
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -2392,7 +2389,7 @@ app.get("/api/agent/events", (req, res) => {
     try { res.write(`id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`); } catch {}
   };
   const unsubscribe = subscribeEvents(send);
-  const replay = listEvents({ after, clientId, threadId, limit: 2000 });
+  const replay = listEvents({ after, clientId, threadId, limit: replayLimit });
   for (const event of replay.events) send(event);
   try { res.write(`event: open\ndata: ${JSON.stringify({ cursor: lastSent, latest: replay.latest, earliest: replay.earliest, truncated: replay.truncated })}\n\n`); } catch {}
   req.on("close", unsubscribe);
@@ -2655,8 +2652,56 @@ app.post("/api/workspace/delete", (req, res) => {
 app.post("/api/workspace/switch", (req, res) => {
   const { path: dir } = req.body || {};
   if (!dir) return res.status(400).json({ error: "path required" });
-  if (!setWorkspace(dir)) return res.status(400).json({ error: "无效目录" });
+  const workspace = normalizeWorkspace(dir);
+  if (!workspace) return res.status(400).json({ error: "路径不存在或不是可访问的文件夹", code: "WORKSPACE_INVALID" });
+  const write = evaluateWorkspaceWrite(workspace);
+  if (write.status !== "passed") {
+    return res.status(403).json({
+      error: `无法将此目录用作可写工作区：${write.message || "当前服务进程没有写权限"}`,
+      code: write.code || "WORKSPACE_WRITE_UNAVAILABLE",
+      workspace,
+      writeAccess: write,
+    });
+  }
+  if (!setWorkspace(workspace)) return res.status(400).json({ error: "工作区切换失败", code: "WORKSPACE_SWITCH_FAILED" });
   res.json({ ok: true, workspace: getWorkspace(), files: listWorkspace() });
+});
+
+// POST /api/workspace/pick - 调用 Windows 原生文件夹选择器，再复用同一套可写探针。
+app.post("/api/workspace/pick", async (_req, res) => {
+  if (process.platform !== "win32") {
+    return res.status(501).json({ error: "当前平台没有可用的原生文件夹选择器", code: "FOLDER_PICKER_UNAVAILABLE" });
+  }
+  try {
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execFileAsync = promisify(execFile);
+    const pickerScript = [
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+      "$dialog.Description = '选择 Open Plan 可写工作区'",
+      "$dialog.ShowNewFolderButton = $true",
+      "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath }",
+    ].join("; ");
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", pickerScript], {
+      windowsHide: false,
+      timeout: 120000,
+      maxBuffer: 64 * 1024,
+      encoding: "utf8",
+    });
+    const selected = String(stdout || "").replace(/^\uFEFF/, "").trim();
+    if (!selected) return res.json({ ok: false, canceled: true });
+    const workspace = normalizeWorkspace(selected);
+    if (!workspace) return res.json({ ok: false, workspace: selected, code: "WORKSPACE_INVALID", error: "路径不存在或不是可访问的文件夹" });
+    const write = evaluateWorkspaceWrite(workspace);
+    if (write.status !== "passed") {
+      return res.json({ ok: false, workspace, code: write.code || "WORKSPACE_WRITE_UNAVAILABLE", error: write.message || "当前服务进程没有写权限", writeAccess: write });
+    }
+    res.json({ ok: true, workspace, writeAccess: write });
+  } catch (error) {
+    const code = error?.killed ? "FOLDER_PICKER_TIMEOUT" : "FOLDER_PICKER_FAILED";
+    res.status(500).json({ error: `文件夹选择器启动失败：${error?.message || error}`, code });
+  }
 });
 
 // POST /api/workspace/validate - 验证自定义路径是否可作为工作区
@@ -2855,6 +2900,39 @@ app.post("/api/sessions", (req, res) => {
   }
 });
 
+function compactSessionEntryForChat(entry) {
+  if (!entry || entry.type !== "message" || !entry.message) return entry;
+  const message = { ...entry.message };
+  const compactText = (value, limit = 12000) => {
+    const text = String(value ?? "");
+    return text.length > limit ? `${text.slice(0, limit)}\n…[历史输出已折叠]` : text;
+  };
+  if (Array.isArray(message.content)) {
+    message.content = message.content.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      if (block.type === "image" || block.type === "input_image") {
+        return { type: "text", text: "[历史图片已省略，可重新打开原会话查看]" };
+      }
+      if (block.type === "text" || block.type === "input_text") {
+        return { ...block, text: compactText(block.text || block.content || "") };
+      }
+      if (block.type === "toolCall" || block.type === "tool_call") {
+        const input = typeof block.input === "string" ? compactText(block.input) : block.input;
+        return input === block.input ? block : { ...block, input };
+      }
+      return block;
+    });
+  } else if (typeof message.content === "string") {
+    message.content = compactText(message.content);
+  }
+  if (message.role === "toolResult" || message.role === "tool_result") {
+    message.content = Array.isArray(message.content)
+      ? message.content.filter((block) => block?.type === "text").map((block) => ({ ...block, text: compactText(block.text || block.content || "") }))
+      : compactText(message.content || message.output || "");
+  }
+  return { ...entry, message };
+}
+
 // GET /api/sessions/:id - 获取会话详情（含 entries、fork 树、leafId）
 app.get("/api/sessions/:id", (req, res) => {
   const found = findSessionFile(req.params.id);
@@ -2864,6 +2942,20 @@ app.get("/api/sessions/:id", (req, res) => {
     const all = parseJsonl(text);
     const header = all.find((e) => e && e.type === "header") || all[0] || {};
     const entries = all.filter((e) => e !== header);
+    const chatView = String(req.query.view || "") === "chat";
+    // Chat 视图只服务前端展示，不承担 Pi 会话恢复。恢复仍使用磁盘上的完整
+    // JSONL；这里按尾部窗口返回，避免切换一个长会话时把整份工具输出一次性
+    // 传到浏览器并触发大批量 JSON/Markdown 解析。
+    const chatLimit = chatView
+      ? Math.max(80, Math.min(600, Number.parseInt(req.query.limit, 10) || 360))
+      : entries.length;
+    const requestedBefore = chatView ? Number.parseInt(req.query.before, 10) : NaN;
+    const historyEnd = Number.isFinite(requestedBefore)
+      ? Math.max(0, Math.min(entries.length, requestedBefore))
+      : entries.length;
+    const historyStart = chatView ? Math.max(0, historyEnd - chatLimit) : 0;
+    const chatEntries = chatView ? entries.slice(historyStart, historyEnd) : entries;
+    const responseEntries = chatView ? chatEntries.map(compactSessionEntryForChat) : entries;
 
     // 按 parentId 组织 fork 层级（key 为 parentId，value 为子节点 id 数组）
     const tree = {};
@@ -2884,8 +2976,9 @@ app.get("/api/sessions/:id", (req, res) => {
     }
 
     res.json({
-      entries,
-      tree,
+      entries: responseEntries,
+      // Chat 页面不使用 fork tree；不要把几千个节点再复制一份进响应。
+      tree: chatView ? {} : tree,
       leafId,
       info: {
         id: header.sessionId || header.id || sessionBaseName(found.fileName),
@@ -2902,6 +2995,11 @@ app.get("/api/sessions/:id", (req, res) => {
         branchPurpose: header.branchPurpose || "",
         fileName: found.fileName,
         modified: found.mtime,
+        chatView,
+        historyTotal: chatView ? entries.length : undefined,
+        historyStart: chatView ? historyStart : undefined,
+        historyEnd: chatView ? historyEnd : undefined,
+        historyHasMore: chatView ? historyStart > 0 : false,
       },
     });
   } catch (e) {
@@ -3137,7 +3235,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       validations: [...validations, ...stagedValidations],
       completion: failureCompletion,
     });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
     return;
   }
 
@@ -3170,7 +3268,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
         references: resolved,
       });
     }
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)) });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)) });
   }
 }
 
@@ -3424,7 +3522,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const cancelled = getRun(run.id)?.status === "cancel_requested";
       const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations] });
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -3497,7 +3595,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
         references,
       });
     }
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -3510,7 +3608,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
       completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", {}),
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
     return finished;
     return finished;
   }
@@ -3676,9 +3774,12 @@ app.get("/api/agent/stream", async (req, res) => {
     at: new Date().toISOString(),
     data: { client, thread },
   })}\n\n`);
+  // Runtime 冷启动/恢复期间也要持续刷新代理和 EventSource 的存活时间。
+  // 5 秒粒度比默认 15 秒更适合浏览器切换会话后的半开连接检测；
+  // 前端会把它当作传输层心跳，不会提前标记 Agent 已握手。
   heartbeat = setInterval(() => {
     write(`event: heartbeat\ndata: ${JSON.stringify({ type: "heartbeat", at: new Date().toISOString() })}\n\n`);
-  }, 15000);
+  }, 5000);
 
 try {
     entry = await ensureRuntimeWithTimeout(agentKey(client, thread), { threadId: thread, cwd: workspace, modelSpec: defaultModel });

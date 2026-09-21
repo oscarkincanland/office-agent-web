@@ -4,10 +4,10 @@ const OFFICE_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc)$/i;
 const DOCUMENT_EXTENSIONS = /\.(?:docx|xlsx|pptx|xls|doc|pdf|csv|json|md|markdown|txt|html|htm)$/i;
 
 /**
- * 工作台保留三种后端模式值。office 是历史兼容值，前端主入口只展示
- * Chat / Agent；Office CLI 作为 Agent 内部能力按任务需要自动路由。
+ * 工作台保留四种后端模式值。office 是历史兼容值，前端主入口展示
+ * Chat / Work / Review；Office CLI 作为 Work 或 Review 的受控能力使用。
  */
-export const TASK_MODES = Object.freeze(["chat", "office", "agent"]);
+export const TASK_MODES = Object.freeze(["chat", "office", "agent", "review"]);
 
 const READ_ONLY_TOOLS = Object.freeze([
   "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
@@ -15,6 +15,12 @@ const READ_ONLY_TOOLS = Object.freeze([
 ]);
 const OFFICE_TOOLS = Object.freeze([
   ...READ_ONLY_TOOLS, "officecli",
+]);
+// Review 只依赖本地材料与规范库，不应因为通用 Agent 的工具集合而
+// 暴露联网搜索能力；否则审查依据不可追溯，也会产生无关事件。
+const REVIEW_TOOLS = Object.freeze([
+  "read", "grep", "find", "ls", "ask_user", "kb_search", "kb_read", "context_read", "skills_search", "skills_read",
+  "officecli", "write", "edit", "review_copy", "review_source_apply", "todo", "complete_task",
 ]);
 const AGENT_TOOLS = Object.freeze([
   ...OFFICE_TOOLS,
@@ -34,6 +40,7 @@ export function modeLabel(mode) {
     chat: "Chat",
     office: "Office",
     agent: "Agent",
+    review: "Review",
   }[normalizeTaskMode(mode)];
 }
 
@@ -42,6 +49,7 @@ export function modeDescription(mode) {
     chat: "只读检索知识库、Skills 和工作区资料，不修改文件",
     office: "通过 Office CLI 精准编辑 Office 文档，不开放通用脚本写入",
     agent: "可调用完整工具链，执行分析、修改并生成工作产物",
+    review: "依据知识库规范审查材料，生成报告和副本；确认后才写回原文",
   }[normalizeTaskMode(mode)];
 }
 
@@ -51,6 +59,8 @@ export function toolPolicyForMode(mode) {
     ? READ_ONLY_TOOLS
     : normalized === "office"
       ? OFFICE_TOOLS
+      : normalized === "review"
+        ? REVIEW_TOOLS
       : AGENT_TOOLS;
   return {
     mode: normalized,
@@ -83,6 +93,8 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
       ? { id: "chat", label: "Chat 检索", status: "ready", required: true, reason: "只读检索知识库、Skills 和工作区资料" }
       : mode === "office"
         ? { id: "office", label: "Office 对话", status: "ready", required: true, reason: "通过 Office CLI 精准处理 Office 文档" }
+        : mode === "review"
+          ? { id: "review", label: "Review 审查", status: "ready", required: true, reason: "依据规范生成审查报告和安全副本" }
         : { id: "agent", label: "Agent 对话", status: "ready", required: true, reason: "处理本轮任务并保持会话上下文" },
   ];
   if (document) capabilities.push({ id: "document", label: "文档读取", status: "planned", required: true, reason: "本轮存在文档、文件引用或附件" });
@@ -90,6 +102,7 @@ export function planTaskCapabilities({ text = "", task = {}, references = [], at
   // Chat 只负责检索与解释，即使用户提到 docx/xlsx，也不能触发 Office CLI
   // 预检或写入路由；Office CLI 仅作为 Office 兼容模式或 Agent 内部能力使用。
   if (office && mode !== "chat") capabilities.push({ id: "officecli", label: "Office CLI", status: "preferred", required: Boolean(output), reason: "本轮涉及 Office 文件或 Office 编辑意图" });
+  if (mode === "review") capabilities.push({ id: "reviewEvidence", label: "规范依据台账", status: "required", required: true, reason: "每条审查结论必须绑定实际读取的规范文件" });
   if (map) capabilities.push({ id: "map", label: "地图工具", status: "planned", required: false, reason: "本轮出现地图、图层或空间分析意图" });
   if (workflow) capabilities.push({ id: "skills", label: "Skills / 工作流", status: "planned", required: Boolean(task.workflowId), reason: task.workflowId ? `工作流 ${task.workflowId} 声明了技能依赖` : "本轮出现工作流或技能意图" });
   return {

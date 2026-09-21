@@ -22,6 +22,8 @@ const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
 const DEFAULT_BODY_TIMEOUT_MS = 0;
 const MANUAL_PROXY_PROBE_URL = "https://api.openai.com/v1/models";
 const MANUAL_PROXY_PROBE_TIMEOUT_MS = 3_000;
+// 代理可能在系统启动后稍晚才就绪；回退直连只能是短暂降级，不能污染整个服务生命周期。
+const MANUAL_PROXY_RETRY_INTERVAL_MS = 10_000;
 const SECRET_PATTERN = /(api[_-]?key|authorization|bearer|access[_-]?token|refresh[_-]?token|password)([\s=:]+)[^\s,;]+/gi;
 const NETWORK_ERROR_CODES = new Set([
   "EACCES",
@@ -184,20 +186,32 @@ export function createPiNetworkAdapter(options = {}) {
   if (settings.mode === "manual") ({ direct: directDispatcher, proxy: proxyDispatcher } = createManualDispatchers(settings));
 
   const precheckManualProxy = () => {
-    if (settings.mode !== "manual" || !proxyDispatcher || proxyFallback) return Promise.resolve();
-    if (!proxyProbePromise) {
-      proxyProbePromise = (async () => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), MANUAL_PROXY_PROBE_TIMEOUT_MS);
-        try {
-          await undiciFetch(MANUAL_PROXY_PROBE_URL, { method: "GET", signal: controller.signal, dispatcher: proxyDispatcher });
-        } catch {
-          proxyFallback = { active: true, at: new Date().toISOString(), message: "代理不可达，已回退直连" };
-        } finally {
-          clearTimeout(timer);
-        }
-      })();
-    }
+    if (settings.mode !== "manual" || !proxyDispatcher) return Promise.resolve();
+    const retryAt = Number(proxyFallback?.retryAt || 0);
+    // 正常请求直接使用用户配置的代理；只有发生过传输失败后，才做恢复探测。
+    // 这样不会因为探测地址不可用而误判一个实际可工作的本地代理。
+    if (!proxyFallback?.active || proxyProbePromise || retryAt > Date.now()) return Promise.resolve();
+    proxyProbePromise = (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), MANUAL_PROXY_PROBE_TIMEOUT_MS);
+      try {
+        // 只要拿到 HTTP 响应就说明代理的 CONNECT/TLS 链路可用；401/404 也属于有效探测结果。
+        const response = await undiciFetch(MANUAL_PROXY_PROBE_URL, { method: "GET", signal: controller.signal, dispatcher: proxyDispatcher });
+        try { await response.body?.cancel?.(); } catch {}
+        proxyFallback = null;
+      } catch (error) {
+        proxyFallback = {
+          active: true,
+          at: new Date().toISOString(),
+          retryAt: Date.now() + MANUAL_PROXY_RETRY_INTERVAL_MS,
+          message: "代理暂时不可达，已临时回退直连，稍后自动重试代理",
+          error: sanitizeMessage(error?.message || error),
+        };
+      } finally {
+        clearTimeout(timer);
+        proxyProbePromise = null;
+      }
+    })();
     return proxyProbePromise;
   };
 
@@ -209,12 +223,22 @@ export function createPiNetworkAdapter(options = {}) {
 
   const fetch = async (input, init = {}) => {
     if (closed) throw new Error("Pi 网络适配器已关闭");
-    if (settings.mode === "manual" && proxyDispatcher && !proxyFallback?.active) await precheckManualProxy();
+    if (settings.mode === "manual" && proxyDispatcher && proxyFallback?.active) await precheckManualProxy();
+    const selectedDispatcher = init?.dispatcher || selectDispatcher(input);
     try {
-      const requestInit = { ...init, dispatcher: init?.dispatcher || selectDispatcher(input) };
+      const requestInit = { ...init, dispatcher: selectedDispatcher };
       return await undiciFetch(input, requestInit);
     } catch (error) {
       const classification = classifyPiError(error, { mode: settings.mode, url: hostnameFromInput(input) });
+      if (settings.mode === "manual" && selectedDispatcher === proxyDispatcher && classification.retryable) {
+        proxyFallback = {
+          active: true,
+          at: new Date().toISOString(),
+          retryAt: Date.now() + MANUAL_PROXY_RETRY_INTERVAL_MS,
+          message: "代理请求失败，已临时回退直连，稍后自动重试代理",
+          error: sanitizeMessage(error?.message || error),
+        };
+      }
       const wrapped = new Error(classification.message, { cause: error });
       wrapped.name = "PiNetworkError";
       wrapped.code = classification.code;
@@ -232,7 +256,11 @@ export function createPiNetworkAdapter(options = {}) {
         noProxy: settings.noProxy,
         proxy: redactProxyUrl(settings.mode === "manual" ? settings.proxyUrl : settings.httpsProxy || settings.httpProxy),
         hasProxy: Boolean(settings.mode === "manual" ? settings.proxyUrl : settings.httpsProxy || settings.httpProxy),
-        proxyFallback: proxyFallback && proxyFallback.active ? { at: proxyFallback.at, message: proxyFallback.message } : null,
+        proxyFallback: proxyFallback && proxyFallback.active ? {
+          at: proxyFallback.at,
+          retryAt: proxyFallback.retryAt || null,
+          message: proxyFallback.message,
+        } : null,
         closed,
       };
     },

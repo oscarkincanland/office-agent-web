@@ -23,12 +23,14 @@ import { createDemoAnalysis } from "./map-analysis.mjs";
 import { atomicWriteFile, atomicWriteJson } from "./持久化工具.mjs";
 import {
   acquireWriteLock,
+  acquireWriteLockWithRetry,
   ensureStagedDirectory,
-  holdWorkspaceWriteLock,
   isProtectedMemoryTarget,
+  releaseWriteLock,
   resolveReadablePath,
   stageWrite,
   stagedAccess,
+  writeWorkspaceFile,
 } from "./写入协调.mjs";
 import {
   approveMemoryProposal as approveStoredMemoryProposal,
@@ -231,15 +233,52 @@ function searchLocalSkills(query = "", limit = 12) {
   return matched.slice(0, Math.max(1, Math.min(30, Number(limit) || 12)));
 }
 
-// Pi 已经负责一次短重试；工作台只对“无副作用首轮请求收到空 400”做一次安全重放。
-// 已开始工具执行的回合绝不重放，避免 Office 写入等副作用被重复执行。
-const APP_PROMPT_RETRY_DELAYS = [];
-const SETTLED_AGENT_RETRY_DELAYS = [1200];
+// Pi 已经负责一次短重试；工作台再补一层：无工具副作用的失败回合按退避重放，
+// 并在连接类故障时按候选链切换模型。已开始工具执行的回合绝不重放，避免
+// Office 写入等副作用被重复执行。
+const APP_PROMPT_RETRY_DELAYS = [2000, 6000, 15000];
+const SETTLED_AGENT_RETRY_DELAYS = [1500, 5000, 12000];
+const MODEL_FALLBACK_LIMIT = 2;
+
+/**
+ * 同参数重复调用抑制。
+ *
+ * 实测同一 Run 内会出现 11× 相同 bash、7× ls 同目录、6× read 同文件这类"绕圈"，
+ * 既烧 token 又拖长任务。这里按 工具名 + 参数指纹 计数：同一 Run 内第 3 次重复时
+ * 通过 steer 注入一条提醒（对 SDK 内置工具 ls/read/grep 同样生效），每个指纹只提醒
+ * 一次，不阻断工具执行，并写入 tool_repeat_warning 事件供复盘。
+ */
+const REPEATED_TOOL_WARN_AT = 3;
+
+function toolFingerprint(name, args) {
+  const text = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  return `${String(name || "?")}::${String(text || "").replace(/\s+/g, " ").trim().slice(0, 300)}`;
+}
+
+export function noteRepeatedToolCall(entry, session, ev, emit) {
+  try {
+    const name = String(ev?.toolName || "?");
+    const runId = entry?.activeRunId || "none";
+    if (!entry.toolRepeat || entry.toolRepeat.runId !== runId) {
+      entry.toolRepeat = { runId, counts: new Map(), warned: new Set() };
+    }
+    const key = toolFingerprint(name, ev?.args);
+    const count = (entry.toolRepeat.counts.get(key) || 0) + 1;
+    entry.toolRepeat.counts.set(key, count);
+    if (count < REPEATED_TOOL_WARN_AT || entry.toolRepeat.warned.has(key)) return;
+    entry.toolRepeat.warned.add(key);
+    emit("tool_repeat_warning", { name, count, input: key.slice(0, 220) });
+    const notice = `[系统提醒] 「${name}」的同一操作已第 ${count} 次用相同参数调用且没有进展。请立即改变方案：换工具、换参数、先诊断失败原因，或调用 ask_user 询问用户；不要继续用相同参数重试。`;
+    Promise.resolve(session?.steer?.(notice)).catch(() => {});
+  } catch { /* 提醒失败不影响工具执行 */ }
+}
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
-const AUTO_COMPACT_INPUT_TOKENS = 26000;
+const UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS = 26000;
+const PI_COMPACTION_RESERVE_TOKENS = 16384;
 const AUTO_COMPACT_COOLDOWN_MS = 10000;
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
+const ESTIMATED_TOKENS_PER_CHAR = 3.5;
 // 只监控“首个模型/工具事件”的等待时间，不限制已经开始执行的长任务。
 // 供应商连接卡住时必须自动释放 Agent，否则前端会永久停留在“连接模型”。
 const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env.OAW_MODEL_FIRST_EVENT_TIMEOUT_MS || "45000", 10) || 45000);
@@ -247,7 +286,7 @@ const MODEL_FIRST_EVENT_TIMEOUT_MS = Math.max(10000, Number.parseInt(process.env
 // 避免长时间 Office/脚本任务被误中止。可通过环境变量按供应商特性调整。
 const MODEL_IDLE_TIMEOUT_MS = Math.max(30000, Number.parseInt(process.env.OAW_MODEL_IDLE_TIMEOUT_MS || "120000", 10) || 120000);
 const TERMINAL_AGENT_ERROR_PATTERN = /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied|model not found|no model selected|insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing|usage limit|monthly usage|invalid request|bad request|context length|content policy|abort(?:ed|ing)?|cancel(?:led|ed)?)/i;
-const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again)/i;
+const TRANSIENT_AGENT_ERROR_PATTERN = /(?:429|408|425|500|501|502|503|504|529|rate.?limit|overloaded|service.?unavailable|internal.?error|provider.?returned.?error|network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|timed?.?out|timeout|terminated|websocket.?closed|temporar(?:y|ily)|try again|模型连接超过|模型流式输出超过|没有响应|已自动中止)/i;
 
 // 服务重启后 entry.promptChars 会归零，但 Pi 已恢复的 JSONL 会话仍可能很长。
 // 仅在会话创建/恢复时估算一次，避免每次发送都遍历历史消息。
@@ -612,6 +651,10 @@ class AgentManager extends EventEmitter {
     super();
     this.sessions = new Map(); // agentKey(clientId:threadId) -> session entry
     this.pendingAsks = new Map(); // agentKey -> resolve(回答)（ask_user 工具阻塞等待）
+    // 同一会话的 SSE、恢复和发送请求可能同时触发 Runtime 初始化；
+    // 单飞锁避免两个 Pi Runtime 互相覆盖，导致新事件通道被替换。
+    this.resumePromises = new Map();
+    this.recoveryPromises = new Map();
   }
 
   /** 读取并清除待回答的问题（返回 resolve 函数） */
@@ -780,6 +823,57 @@ class AgentManager extends EventEmitter {
       return { runId, workspace: entry.workspace, threadId: entry.threadId, kind };
     };
     const writeEvent = (type, data) => emitChannelSafe(entry, type, data);
+    const normalizedReviewPath = (value) => {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      try { return path.resolve(entry?.workspace || workspace, raw).toLowerCase(); } catch { return raw.toLowerCase(); }
+    };
+    const assertReviewWriteAllowed = (targetPath, kind = "write") => {
+      if (entry?.mode !== "review" || entry?.reviewConfirmed) return;
+      const target = normalizedReviewPath(targetPath);
+      const protectedPaths = entry?.reviewProtectedPaths || new Set();
+      const hit = [...protectedPaths].find((item) => item === target);
+      if (!hit) return;
+      const error = new Error(`审查模式尚未确认写回原文：${path.relative(entry.workspace, targetPath) || targetPath}`);
+      error.code = "REVIEW_CONFIRMATION_REQUIRED";
+      writeEvent("review_write_blocked", {
+        runId: entry.activeRunId,
+        path: path.relative(entry.workspace, targetPath).replace(/\\/g, "/"),
+        kind,
+        reason: "请先确认审查报告和批注副本，再写回原文件",
+      });
+      throw error;
+    };
+    const reviewSourceEvent = (type, data) => {
+      if (entry?.mode !== "review") return;
+      emitChannelSafe(entry, type, data);
+    };
+    const registerReviewSource = ({ relPath, rootName, title, content, status = "read", reason = "" } = {}) => {
+      if (!relPath) return null;
+      entry.reviewSources = Array.isArray(entry.reviewSources) ? entry.reviewSources : [];
+      const key = `${rootName || ""}::${relPath}`.toLowerCase();
+      let source = entry.reviewSources.find((item) => item.key === key);
+      if (!source) {
+        source = {
+          key,
+          sourceId: `R-${String(entry.reviewSources.length + 1).padStart(2, "0")}`,
+          title: String(title || relPath),
+          relPath: String(relPath),
+          rootName: String(rootName || ""),
+          contentHash: content == null ? null : `sha256:${crypto.createHash("sha256").update(String(content)).digest("hex")}`,
+          readAt: new Date().toISOString(),
+          status,
+          findingIds: [],
+          reason: String(reason || ""),
+        };
+        entry.reviewSources.push(source);
+      } else {
+        source.status = status || source.status;
+        if (reason) source.reason = String(reason);
+        if (content != null && !source.contentHash) source.contentHash = `sha256:${crypto.createHash("sha256").update(String(content)).digest("hex")}`;
+      }
+      return source;
+    };
     const managedReadTool = createReadToolDefinition(workspace, {
       operations: {
         readFile: async (absolutePath) => fs.promises.readFile(resolveReadablePath({ runId: entry?.activeRunId, workspace: entry?.workspace || workspace, targetPath: absolutePath })),
@@ -795,6 +889,7 @@ class AgentManager extends EventEmitter {
         mkdir: async (directory) => ensureStagedDirectory({ ...activeWriteContext("write"), targetPath: directory, kind: "write" }),
         writeFile: async (absolutePath, content) => {
           const ctx = activeWriteContext("write");
+          assertReviewWriteAllowed(absolutePath, "write");
           // 敏感文件（.env 等）写入被规则表直接拒绝
           await requireToolApproval({
             entry, tool: "write", input: String(absolutePath || ""),
@@ -808,17 +903,73 @@ class AgentManager extends EventEmitter {
       operations: {
         access: async (absolutePath) => {
           const ctx = activeWriteContext("edit");
-          acquireWriteLock({ ...ctx, targetPath: absolutePath, kind: "edit" });
+          assertReviewWriteAllowed(absolutePath, "edit");
+          // 同一文件的并发编辑用退避等待，超过窗口才按冲突报错
+          await acquireWriteLockWithRetry({ ...ctx, targetPath: absolutePath, kind: "edit" });
           return fs.promises.access(resolveReadablePath({ ...ctx, targetPath: absolutePath }), fs.constants.R_OK);
         },
         readFile: async (absolutePath) => {
           const ctx = activeWriteContext("edit");
           return fs.promises.readFile(resolveReadablePath({ ...ctx, targetPath: absolutePath }));
         },
-        writeFile: async (absolutePath, content) => stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent }),
+        writeFile: async (absolutePath, content) => {
+          assertReviewWriteAllowed(absolutePath, "edit");
+          return stageWrite({ ...activeWriteContext("edit"), targetPath: absolutePath, content, onEvent: writeEvent });
+        },
+      },
+    });
+    const reviewCopyTool = defineTool({
+      name: "review_copy",
+      label: "生成审查副本",
+      description: "Review 模式专用：把工作区中的原文件复制为安全副本，后续批注只允许写入副本。source 和 destination 都必须是当前工作区内的相对路径。",
+      parameters: Type.Object({
+        source: Type.String({ description: "原文件相对工作区路径" }),
+        destination: Type.String({ description: "副本相对工作区路径，如 审查副本/批注稿_文件.docx" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const ctx = activeWriteContext("review_copy");
+        const source = path.resolve(entry.workspace, String(params.source || ""));
+        const destination = path.resolve(entry.workspace, String(params.destination || ""));
+        if (!isInside(entry.workspace, source) || !isInside(entry.workspace, destination) || source === destination) {
+          const error = new Error("审查副本的 source/destination 必须是工作区内两个不同文件");
+          error.code = "REVIEW_COPY_PATH_INVALID";
+          throw error;
+        }
+        assertReviewWriteAllowed(destination, "review_copy");
+        await requireToolApproval({
+          entry, tool: "write", input: destination,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        const readable = resolveReadablePath({ ...ctx, targetPath: source });
+        const content = await fs.promises.readFile(readable);
+        const relative = path.relative(entry.workspace, destination).replace(/\\/g, "/");
+        writeEvent("write_started", { ...ctx, path: relative, kind: "review_copy" });
+        writeEvent("write_locked", { ...ctx, path: relative, kind: "review_copy" });
+        const copied = writeWorkspaceFile({ workspace: entry.workspace, targetPath: destination, content, runId: ctx.runId, threadId: ctx.threadId, kind: "review_copy" });
+        writeEvent("file_changed", { runId: ctx.runId, files: [relative], kind: "review_copy" });
+        return {
+          content: [{ type: "text", text: `已生成审查副本：${copied.path}` }],
+          details: { source: path.relative(entry.workspace, source).replace(/\\/g, "/"), destination: copied.path, status: "materialized" },
+        };
       },
     });
     const localBash = createLocalBashOperations();
+    // 工作区级写锁只覆盖单次工具调用：长任务整轮持锁会把并发 Run 全部挡在门外
+    // （实测 33 次「文件正在被其他任务修改」都来自这种整轮持锁）。
+    const withWorkspaceWriteLock = async (ctx, kind, action) => {
+      const token = await acquireWriteLockWithRetry({
+        workspace: ctx.workspace,
+        targetPath: ctx.workspace,
+        runId: ctx.runId,
+        threadId: ctx.threadId,
+        kind,
+      });
+      try {
+        return await action();
+      } finally {
+        releaseWriteLock(token);
+      }
+    };
     const managedBashTool = createBashToolDefinition(workspace, {
       operations: {
 exec: async (command, cwd, options) => {
@@ -842,15 +993,16 @@ exec: async (command, cwd, options) => {
             writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error.code, message: error.message });
             throw error;
           }
-          holdWorkspaceWriteLock({ ...ctx, kind: "bash" });
-          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: String(command || "").slice(0, 500) });
-          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
-          try {
-            return await localBash.exec(command, cwd, normalizeBashOptions(options));
-          } catch (error) {
-            writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
-            throw error;
-          }
+          return withWorkspaceWriteLock(ctx, "bash", async () => {
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", command: commandText.slice(0, 500) });
+            writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash" });
+            try {
+              return await localBash.exec(command, cwd, normalizeBashOptions(options));
+            } catch (error) {
+              writeEvent("write_rejected", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: ".", kind: "bash", code: error?.code || "BASH_FAILED", message: String(error?.message || error) });
+              throw error;
+            }
+          });
         },
       },
     });
@@ -859,7 +1011,9 @@ exec: async (command, cwd, options) => {
       name: "officecli",
       label: "Office CLI",
       description:
-        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"请核对这段内容\\\" --json', 'add deck.pptx /slide[1] --type shape --prop text=... --prop size=24pt'. For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error. Use --json for structured output. Prefer this tool over bash for all document operations.",
+        "Run officecli commands on Office documents (.docx/.xlsx/.pptx) in the current workspace folder. Pass the FULL command arguments as a single string, e.g. 'view report.docx text', 'get report.docx / --depth 2 --json', 'get report.docx /body/p[3] --json', 'set report.docx /body/p[1] --prop bold=true', 'set report.docx / --find draft --replace final', 'add report.docx /body/p[3] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"请核对这段内容\\\" --json', 'add deck.pptx /slide[1] --type shape --prop text=... --prop size=24pt'. For Word comments, first locate a real paragraph path with get/query, use one get path per command, then verify with query <file> comment --json. " +
+        "STRICT RULES (avoid wasted retries): (1) the file path must be a workspace-relative path such as '报告.docx' or '初稿/报告.docx' — absolute paths and ../ are rejected; (2) 'view' requires a subcommand ('view <file> text', 'view <file> summary'), never call bare 'view'; (3) only these options exist: --json, --find, --compact, --fields, -h/--help — there is NO --limit/--page/--offset, unknown options abort the command; (4) 'query <file> <selector>' takes a CSS-like selector as its own argument ('paragraph', 'paragraph[style=Normal]', 'table', 'run', '*'); do not pass subcommand names or paths as the selector; (5) very large workbooks may return code 'decompression_bomb' (>3,000,000 XML elements): do not retry the same command, tell the user the file must be split, or read the data with a script instead. " +
+        "File names are relative to the current workspace folder (may include subfolder paths). The user's CURRENT WORKING FILE is noted in the context file — when the user asks to modify a document, operate on that file unless they say otherwise. If the operating system reports access denied, is denied, EPERM, or EACCES, explain that the service process lacks write access (sandbox, mount, or directory permissions); only report a file lock for a sharing violation or another-process lock error; for a sharing violation tell the user to close WPS/Word/Excel and do not retry more than twice. Use --json for structured output. Prefer this tool over bash for all document operations.",
       parameters: Type.Object({
         args: Type.String({ description: "officecli command arguments (single string)" }),
       }),
@@ -867,11 +1021,6 @@ execute: async (_toolCallId, params) => {
         const { runOfficecli, validateOfficecliArgs } = await import("./office.mjs");
         const args = parseArgs(String(params.args || ""));
         const ctx = activeWriteContext("officecli");
-        // 写入/删除类 Office 命令默认进入用户审批（规则表见 审批策略.mjs）
-        await requireToolApproval({
-          entry, tool: "officecli", input: String(params.args || ""),
-          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
-        });
         let parsed;
         try {
           parsed = validateOfficecliArgs(args, entry.workspace);
@@ -881,34 +1030,51 @@ execute: async (_toolCallId, params) => {
           throw error;
         }
         const mutating = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "open", "close", "save"]).has(parsed.command);
+        if (mutating && parsed.file) assertReviewWriteAllowed(parsed.file, "officecli");
+        // 写入/删除类 Office 命令默认进入用户审批（规则表见 审批策略.mjs）
+        await requireToolApproval({
+          entry, tool: "officecli", input: String(params.args || ""),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+        let officeLock = null;
         if (mutating) {
-          holdWorkspaceWriteLock({ ...ctx, kind: "officecli" });
+          officeLock = await acquireWriteLockWithRetry({
+            workspace: ctx.workspace,
+            targetPath: ctx.workspace,
+            runId: ctx.runId,
+            threadId: ctx.threadId,
+            kind: "officecli",
+          });
           writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli", command: String(params.args || "").slice(0, 500) });
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: entry.currentFile || ".", kind: "officecli" });
         }
-        let r;
         try {
-          r = await runAgentOfficeCommand(args, runOfficecli, entry.workspace);
-        } catch (error) {
-          const normalized = normalizeOfficeFailure(error, args);
-          writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: normalized.code || "OFFICECLI_START_FAILED", message: String(normalized.message || normalized) });
-          throw normalized;
+          let r;
+          try {
+            r = await runAgentOfficeCommand(args, runOfficecli, entry.workspace);
+          } catch (error) {
+            const normalized = normalizeOfficeFailure(error, args);
+            writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: normalized.code || "OFFICECLI_START_FAILED", message: String(normalized.message || normalized) });
+            throw normalized;
+          }
+          if (Number(r.code) !== 0) {
+            const detail = String(r.stderr || r.text || `退出码 ${r.code}`).trim().slice(0, 800);
+            const error = normalizeOfficeFailure(new Error(`Office CLI 执行失败（退出码 ${r.code}）：${detail}`), args, r);
+            error.exitCode = r.code;
+            writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
+            throw error;
+          }
+          const body = limitToolText(r.stdout + (r.stderr || ""));
+          const hint = entry.currentFile
+            ? `\n[当前工作文件: ${entry.currentFile}]`
+            : "";
+          return {
+            content: [{ type: "text", text: limitToolText((body || `(exit ${r.code}, no output)`) + hint) }],
+            details: { code: r.code, command: r.command || args },
+          };
+        } finally {
+          if (officeLock) releaseWriteLock(officeLock);
         }
-        if (Number(r.code) !== 0) {
-          const detail = String(r.stderr || r.text || `退出码 ${r.code}`).trim().slice(0, 800);
-          const error = normalizeOfficeFailure(new Error(`Office CLI 执行失败（退出码 ${r.code}）：${detail}`), args, r);
-          error.exitCode = r.code;
-          writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
-          throw error;
-        }
-        const body = limitToolText(r.stdout + (r.stderr || ""));
-        const hint = entry.currentFile
-          ? `\n[当前工作文件: ${entry.currentFile}]`
-          : "";
-        return {
-          content: [{ type: "text", text: limitToolText((body || `(exit ${r.code}, no output)`) + hint) }],
-          details: { code: r.code, command: r.command || args },
-        };
       },
     });
 
@@ -961,13 +1127,26 @@ execute: async (_toolCallId, params) => {
       }),
       execute: async (_toolCallId, params) => {
         const kb = await import("./kb.mjs");
+        const query = String(params.query || "").trim();
+        reviewSourceEvent("review_source_search_started", { query });
         await kb.scan();
-        const results = kb.search(params.query || "", null, 8);
-        if (!results.length) return { content: [{ type: "text", text: "未找到匹配的知识库文档。" }], details: {} };
+        const results = kb.search(query, null, 8);
+        const roots = kb.status().roots || [];
+        reviewSourceEvent("review_source_search_result", {
+          query,
+          candidates: results.map((r) => ({
+            title: r.title,
+            relPath: r.relPath,
+            rootName: roots[r.rootIdx]?.name || "",
+            score: r.score,
+            status: "candidate",
+          })),
+        });
+        if (!results.length) return { content: [{ type: "text", text: "未找到匹配的知识库文档。" }], details: { candidates: [] } };
         const lines = results.map(
           (r) => `[${r.title}] 路径: ${r.relPath}（得分 ${r.score}）\n  摘要: ${r.snippet}`
         );
-        return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+        return { content: [{ type: "text", text: lines.join("\n") }], details: { candidates: results } };
       },
     });
 
@@ -993,10 +1172,62 @@ execute: async (_toolCallId, params) => {
         }
         const doc = kb.getDoc(relPath, rootIdx);
         if (!doc) {
+          reviewSourceEvent("review_source_read", { sourceId: null, relPath, rootName, status: "failed", reason: `未找到文档: ${raw}` });
           return { content: [{ type: "text", text: `未找到文档: ${raw}` }], details: {} };
         }
+        const roots = kb.status().roots || [];
+        const source = registerReviewSource({
+          relPath: doc.relPath || relPath,
+          rootName: roots[doc.rootIdx]?.name || rootName,
+          title: doc.title,
+          content: doc.content,
+          status: "read",
+        });
+        reviewSourceEvent("review_source_read_started", {
+          sourceId: source.sourceId,
+          relPath: source.relPath,
+          rootName: source.rootName,
+        });
+        reviewSourceEvent("review_source_read", {
+          ...source,
+          status: "read",
+        });
         const text = `# ${doc.title}\n\n标签: ${doc.tags.join(", ") || "无"}\n路径: ${relPath}\n\n${doc.content}`;
-        return { content: [{ type: "text", text: limitToolText(text) }], details: {} };
+        return { content: [{ type: "text", text: limitToolText(text) }], details: { source } };
+      },
+    });
+
+    const reviewSourceApplyTool = defineTool({
+      name: "review_source_apply",
+      label: "登记审查依据",
+      description: "Review 模式专用：把已经通过 kb_read 实际读取的规范登记为本轮采用或未采用，并关联问题编号。不得登记未读取的搜索候选。",
+      parameters: Type.Object({
+        sourceIds: Type.Array(Type.String({ description: "已读取规范编号，如 R-01" })),
+        status: Type.Union([Type.Literal("applied"), Type.Literal("read-not-applied")]),
+        findingIds: Type.Optional(Type.Array(Type.String({ description: "关联的问题编号，如 F-01" }))),
+        reason: Type.String({ description: "采用或未采用的理由" }),
+      }),
+      execute: async (_toolCallId, params) => {
+        const sources = Array.isArray(entry.reviewSources) ? entry.reviewSources : [];
+        const ids = new Set((params.sourceIds || []).map((item) => String(item || "").trim()));
+        const findings = (params.findingIds || []).map((item) => String(item || "").trim()).filter(Boolean);
+        const changed = [];
+        for (const source of sources) {
+          if (!ids.has(source.sourceId)) continue;
+          source.status = params.status;
+          source.reason = String(params.reason || "");
+          source.findingIds = findings;
+          changed.push(source.sourceId);
+          reviewSourceEvent(params.status === "applied" ? "review_source_applied" : "review_source_unused", {
+            sourceId: source.sourceId,
+            findingIds: findings,
+            reason: source.reason,
+          });
+        }
+        return {
+          content: [{ type: "text", text: changed.length ? `已登记审查依据：${changed.join(", ")}（${params.status}）` : "没有找到已读取的规范编号，请先调用 kb_read。" }],
+          details: { sourceIds: changed, status: params.status },
+        };
       },
     });
 
@@ -1371,9 +1602,6 @@ execute: async (_toolCallId, params) => {
           entry, tool: "map_edit", input: `${params.action} ${params.layerId || ""}`.trim(),
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        holdWorkspaceWriteLock({ ...ctx, kind: "map_edit" });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
-        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
         const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
         const layerId = String(params.layerId || "");
         if (!layerId) return { content: [{ type: "text", text: "layerId 必填" }], details: {} };
@@ -1406,8 +1634,12 @@ execute: async (_toolCallId, params) => {
           base.paint = paint || defs[params.type] || defs.fill;
           style.layers.push(base);
         }
-        atomicWriteFile(stylePath, JSON.stringify(style, null, 2), "utf8");
-        emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/style.json`] });
+        await withWorkspaceWriteLock(ctx, "map_edit", async () => {
+          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
+          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
+          atomicWriteFile(stylePath, JSON.stringify(style, null, 2), "utf8");
+          emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/style.json`] });
+        });
         const vis = style.layers.find((x) => x.id === layerId)?.layout?.visibility;
         return {
           content: [{ type: "text", text: `已更新样式图层 ${layerId}（${params.action}${vis ? ", 可见性=" + vis : ""}），前端地图已实时刷新。` }],
@@ -1444,19 +1676,20 @@ execute: async (_toolCallId, params) => {
           entry, tool: "map_import", input: String(rel || ""),
           runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
         });
-        holdWorkspaceWriteLock({ ...ctx, kind: "map_import" });
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         // 导入会同时更新当前地图项目的 GeoJSON、配置、样式和瓦片；以项目目录
         // 作为本 Run 的归属边界，不能把输入源文件误算成产物。
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
-        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
         let geojson;
         try { geojson = JSON.parse(fs.readFileSync(fp, "utf8")); } catch {
           return { content: [{ type: "text", text: `不是合法的 GeoJSON: ${rel}` }], details: {} };
         }
         const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
         const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
-        const r = await map.importLayer(name, layerId, geojson);
+        const r = await withWorkspaceWriteLock(ctx, "map_import", async () => {
+          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
+          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
+          return map.importLayer(name, layerId, geojson);
+        });
         const count = geojson.features?.length || 0;
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/layers/${layerId}.geojson`] });
         return {
@@ -1502,14 +1735,15 @@ execute: async (_toolCallId, params) => {
         if (!action?.geojson) return { content: [{ type: "text", text: "当前没有可保存的地图分析结果，请先生成热力图或等时圈。" }], details: {} };
         const map = await import("./map.mjs");
         const ctx = activeWriteContext("map_save_analysis");
-        holdWorkspaceWriteLock({ ...ctx, kind: "map_save_analysis" });
-        writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
-        writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${params.project || action.project || "zhejiang-map"}`, kind: "map_save_analysis" });
         const project = params.project || action.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
-        await map.importLayer(project, layerId, action.geojson);
-        if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
-        emitChannelSafe(entry, "file_changed", { files: [`maps/${project}/layers/${layerId}.geojson`] });
+        await withWorkspaceWriteLock(ctx, "map_save_analysis", async () => {
+          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${project}`, kind: "map_save_analysis" });
+          writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${project}`, kind: "map_save_analysis" });
+          await map.importLayer(project, layerId, action.geojson);
+          if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
+          emitChannelSafe(entry, "file_changed", { files: [`maps/${project}/layers/${layerId}.geojson`] });
+        });
         return { content: [{ type: "text", text: `已将${action.title || "分析结果"}保存为正式图层 ${layerId}。` }], details: { project, layerId } };
       },
     });
@@ -1670,14 +1904,34 @@ execute: async (_toolCallId, params) => {
           const done = (answer) => {
             clearTimeout(timer);
             resolvePendingAsk(clientId, String(answer || ""), "answered");
+            if (entry.mode === "review" && entry.reviewAwaitingConfirmation) {
+              const value = String(answer || "").trim();
+              const confirmed = /^(是|确认|同意|写回|继续|可以|好|yes|y|ok|okay)$/i.test(value) || /确认.*写回|同意.*写回|写回.*原文/.test(value);
+              entry.reviewConfirmed = confirmed;
+              emitChannelSafe(entry, confirmed ? "review_confirmed" : "review_confirmation_rejected", {
+                runId: entry.activeRunId,
+                answer: value,
+              });
+              entry.reviewAwaitingConfirmation = false;
+            }
             resolve({ content: [{ type: "text", text: `用户回答：${answer}` }] });
           };
           this.pendingAsks.set(clientId, done);
+          const reviewConfirmation = entry.mode === "review" && /写回|原文|批注副本|确认/.test(String(params.question || ""));
+          entry.reviewAwaitingConfirmation = reviewConfirmation;
           emitChannelSafe(entry, "ask_user", {
             askId: pendingAskId,
             question: params.question,
             options: opts,
           });
+          if (reviewConfirmation) {
+            emitChannelSafe(entry, "review_waiting_confirmation", {
+              runId: entry.activeRunId,
+              sourceFiles: [...(entry.reviewProtectedPaths || [])].map((item) => path.relative(entry.workspace, item).replace(/\\/g, "/")),
+              copyFiles: [],
+              reportFiles: [],
+            });
+          }
         });
       },
     });
@@ -1693,8 +1947,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "ask_user", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -1703,7 +1957,7 @@ execute: async (_toolCallId, params) => {
     // 显式激活全部自定义工具（pi SDK 仅激活 tools 白名单中的工具，customTools 需手动激活，
     // 否则 kb_search/map_read/ask_user 等对模型不可见）
     try {
-      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "todo", "kb_search", "kb_read", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"]);
+      piRuntimeManager.setActiveTools(runtimeRecord.runtimeId, session, [...session.getActiveToolNames(), "ask_user", "officecli", "review_copy", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close"]);
     } catch {}
 
     // event channel with history for SSE replay
@@ -1718,7 +1972,7 @@ execute: async (_toolCallId, params) => {
       const ev = { id, type, at, streamId: channel.streamId, protocolVersion: PROTOCOL_VERSION, data: eventData };
       pushChannelEvent(channel, ev);
       channel.emitter.emit("event", ev);
-      if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
+      if (entry?.activeRunId && ["agent_started", "turn_started", "turn_ended", "message_start", "message_end", "tool_start", "tool_end", "tool_repeat_warning", "ask_user", "agent_error", "agent_retry", "assistant_final", "agent_end", "stats"].includes(type)) {
         try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
       }
     };
@@ -1797,6 +2051,8 @@ execute: async (_toolCallId, params) => {
             name: ev.toolName,
             input: typeof ev.args === "string" ? ev.args : JSON.stringify(ev.args || "", null, 2),
           });
+          // 同参数重复到阈值时提醒模型换方案（只提醒一次，不阻断执行）
+          noteRepeatedToolCall(entry, session, ev, emit);
           break;
         case "tool_execution_update":
           // 工具执行过程中的输出流
@@ -1955,7 +2211,7 @@ execute: async (_toolCallId, params) => {
       }
     });
 
-    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, modePolicyKey: "", lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
+    entry = { session, channel, busy: false, compacting: false, compactionKind: null, compactionPromise: null, compactionRunId: null, loader, clientId, workspace, threadId: options.threadId || null, runtimeId: runtimeRecord.runtimeId, references: [], currentFile: null, activeRunId: null, task: null, mode: "agent", modePolicy: null, modePolicyKey: "", reviewConfirmed: false, reviewAwaitingConfirmation: false, reviewProtectedPaths: new Set(), reviewSources: [], lastAgentError: null, lastSettledError: null, lastAssistantText: "", lastFinalText: "", turnStarted: false, toolStarted: false, firstResponseReceived: false, activeToolCount: 0, lastPiEventAt: Date.now(), pendingAbortPromise: null, lastResourceReloadAt: Date.now(), resourceReloadPromise: null, requestedThinkingLevel: null, effectiveThinkingLevel: null, promptChain: Promise.resolve(), queuedCount: 0, promptChars: estimateRestoredContextChars(session), lastUsage: null, lastCompactionAt: 0, autoCompacting: false };
     piRuntimeManager.bindSession(runtimeRecord.runtimeId, { session, profile: options.profile, toolPolicy: null });
     this.sessions.set(clientId, entry);
     return entry;
@@ -1983,27 +2239,42 @@ execute: async (_toolCallId, params) => {
     const health = this.runtimeHealth(clientId);
     const staleError = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(health?.error?.code || ""));
     if (health?.status !== "failed" && health?.health?.status !== "failed" && !staleError) return existing;
-
-    const failedModel = existing.session?.model?.provider && existing.session?.model?.id
-      ? `${existing.session.model.provider}/${existing.session.model.id}`
-      : "";
-    const fallbackModel = configuredModelSpec();
-    const modelSpec = fallbackModel && fallbackModel !== failedModel
-      ? fallbackModel
-      : String(options.modelSpec || "").trim();
-    const found = findSessionFileForAgent(existing.session?.sessionId || "");
-    const recovered = await this.restartRuntime(clientId, {
-      threadId: options.threadId || existing.threadId || null,
-      sessionPath: found?.fullPath || null,
-      cwd: options.cwd || existing.workspace,
-      modelSpec,
-    });
-    const entry = this.sessions.get(clientId);
-    if (entry && modelSpec && modelSpec !== failedModel) {
-      entry.modelFallbackSpec = modelSpec;
-      entry.modelFallbackFrom = failedModel || null;
+    const inFlight = this.recoveryPromises.get(clientId);
+    if (inFlight) return inFlight;
+    const recovery = (async () => {
+      // 重新读取当前 entry：等待单飞锁期间可能已经被另一条路径恢复。
+      const current = this.sessions.get(clientId);
+      if (!current) return this.getOrCreate(clientId, options);
+      const currentHealth = this.runtimeHealth(clientId);
+      const currentStale = ["PI_SETTLED_ERROR", "MODEL_TIMEOUT", "PI_RUNTIME_FAILED"].includes(String(currentHealth?.error?.code || ""));
+      if (currentHealth?.status !== "failed" && currentHealth?.health?.status !== "failed" && !currentStale) return current;
+      const failedModel = current.session?.model?.provider && current.session?.model?.id
+        ? `${current.session.model.provider}/${current.session.model.id}`
+        : "";
+      const fallbackModel = configuredModelSpec();
+      const modelSpec = fallbackModel && fallbackModel !== failedModel
+        ? fallbackModel
+        : String(options.modelSpec || "").trim();
+      const found = findSessionFileForAgent(current.session?.sessionId || "");
+      await this.restartRuntime(clientId, {
+        threadId: options.threadId || current.threadId || null,
+        sessionPath: found?.fullPath || null,
+        cwd: options.cwd || current.workspace,
+        modelSpec,
+      });
+      const entry = this.sessions.get(clientId);
+      if (entry && modelSpec && modelSpec !== failedModel) {
+        entry.modelFallbackSpec = modelSpec;
+        entry.modelFallbackFrom = failedModel || null;
+      }
+      return entry || this.getOrCreate(clientId, options);
+    })();
+    this.recoveryPromises.set(clientId, recovery);
+    try {
+      return await recovery;
+    } finally {
+      if (this.recoveryPromises.get(clientId) === recovery) this.recoveryPromises.delete(clientId);
     }
-    return entry || this.getOrCreate(clientId, options);
   }
 
 promptWithContext(clientId, text, images = [], effort, references = [], runContext = null) {
@@ -2051,31 +2322,83 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     return operation;
   }
 
-  /** 解析当前模型的实际上下文窗口：Pi 会话模型 → 本地目录同名模型 → 保守默认值。 */
-  resolveEntryContextWindow(entry) {
+  /**
+   * 解析当前模型的实际上下文窗口。
+   * known=false 时不能把默认值当成模型真实能力，只能启用未知模型兜底。
+   */
+  resolveEntryContextWindowInfo(entry) {
     const fromSession = Number(entry?.session?.model?.contextWindow || entry?.session?.model?.contextLength || 0);
-    if (fromSession > 0) return fromSession;
+    if (fromSession > 0) return { contextWindow: fromSession, known: true, source: "session_model" };
     const modelId = String(entry?.session?.model?.id || "").trim();
     if (modelId) {
       const match = localStoredModels().find((item) => String(item?.id) === modelId || String(item?.id).split("/").pop() === modelId);
       const fromCatalog = Number(match?.contextWindow || match?.contextLength || 0);
-      if (fromCatalog > 0) return fromCatalog;
+      if (fromCatalog > 0) return { contextWindow: fromCatalog, known: true, source: "model_catalog" };
     }
-    return DEFAULT_CONTEXT_WINDOW;
+    return { contextWindow: DEFAULT_CONTEXT_WINDOW, known: false, source: "default_fallback" };
+  }
+
+  resolveEntryContextWindow(entry) {
+    return this.resolveEntryContextWindowInfo(entry).contextWindow;
+  }
+
+  resolveCompactionPolicy(entry) {
+    const windowInfo = this.resolveEntryContextWindowInfo(entry);
+    const piAutoCompactionEnabled = entry?.session?.autoCompactionEnabled !== false;
+    if (windowInfo.known && piAutoCompactionEnabled) {
+      return {
+        mode: "pi-native",
+        source: "pi-sdk",
+        enabled: true,
+        contextWindow: windowInfo.contextWindow,
+        threshold: Math.max(0, windowInfo.contextWindow - PI_COMPACTION_RESERVE_TOKENS),
+        reserveTokens: PI_COMPACTION_RESERVE_TOKENS,
+      };
+    }
+    if (!piAutoCompactionEnabled) {
+      return {
+        mode: "manual",
+        source: "disabled",
+        enabled: false,
+        contextWindow: windowInfo.contextWindow,
+        threshold: null,
+        reserveTokens: null,
+      };
+    }
+    return {
+      mode: "app-fallback",
+      source: windowInfo.source,
+      enabled: true,
+      contextWindow: windowInfo.contextWindow,
+      threshold: UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS,
+      reserveTokens: null,
+    };
   }
 
   async _maybeCompact(entry, runContext = null) {
     if (entry.compacting || !entry.promptChars) return;
     if (entry.lastCompactionAt && Date.now() - entry.lastCompactionAt < AUTO_COMPACT_COOLDOWN_MS) return;
+    const windowInfo = this.resolveEntryContextWindowInfo(entry);
+    // 已知模型交给 Pi SDK：它会在安全的回合边界按 contextWindow 自动压缩，
+    // 并在真正溢出时负责恢复/重试。工作台不能再用固定 2.6 万 token 抢先压缩。
+    if (windowInfo.known && entry?.session?.autoCompactionEnabled !== false) return;
+    // 用户显式关闭 Pi 自动压缩时，不用工作台偷偷改回自动模式。
+    if (entry?.session?.autoCompactionEnabled === false) return;
     const inputTokens = Number(entry.lastUsage?.inputTokens ?? entry.lastUsage?.input ?? 0);
     const cacheReadTokens = Number(entry.lastUsage?.cacheReadTokens ?? entry.lastUsage?.cacheRead ?? entry.lastUsage?.cache_read ?? 0);
     const cacheWriteTokens = Number(entry.lastUsage?.cacheWriteTokens ?? entry.lastUsage?.cacheWrite ?? entry.lastUsage?.cache_write ?? 0);
     // Pi 的 usage.input 只包含未命中缓存的 token；长会话的大部分上下文会
     // 出现在 cacheRead 中。只看 input 会让 4 万 token 的会话误判为很短。
-    const contextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
-    const modelContextWindow = this.resolveEntryContextWindow(entry);
-    const compactTokenThreshold = Math.floor(modelContextWindow * 0.78);
-    if (entry.promptChars < AUTO_COMPACT_PROMPT_CHARS && contextTokens < compactTokenThreshold) return;
+    const observedContextTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
+    // usage 可能只覆盖最近一次请求，服务重启后甚至暂时没有 usage；用累计
+    // prompt 字符数作保守下限，避免把恢复后的长 JSONL 会话误判为空。
+    const estimatedContextTokens = Math.ceil(Number(entry.promptChars || 0) / ESTIMATED_TOKENS_PER_CHAR);
+    const estimatedFallbackThreshold = Math.min(
+      UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS,
+      Math.ceil(AUTO_COMPACT_PROMPT_CHARS / ESTIMATED_TOKENS_PER_CHAR),
+    );
+    const shouldCompact = observedContextTokens >= estimatedFallbackThreshold || estimatedContextTokens >= estimatedFallbackThreshold;
+    if (!shouldCompact) return;
     entry.compacting = true;
     entry.autoCompacting = true;
     entry.compactionKind = "automatic";
@@ -2087,6 +2410,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       entry.compactionPromise = compactPromise;
       await compactPromise;
       compacted = true;
+      // 不依赖某个 Pi 版本是否发出 compaction_end；成功的 Promise 本身就是
+      // 本地计数器的权威边界，防止下一轮再次按旧预算触发压缩。
+      entry.promptChars = 0;
+      entry.lastUsage = null;
     } catch (error) {
       // 自动压缩失败不阻断任务；下一轮仍会保留预算告警并可手动压缩。
       emitChannelSafe(entry, "context_compact_warning", { runId, message: String(error?.message || error).slice(0, 300) });
@@ -2107,6 +2434,33 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.activeRunId = runContext?.runId || null;
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
+    if (!isStreaming) {
+      entry.reviewConfirmed = false;
+      entry.reviewAwaitingConfirmation = false;
+      entry.reviewSources = [];
+      const reviewTargets = [
+        runContext?.task?.currentFile,
+        ...(Array.isArray(runContext?.task?.references) ? runContext.task.references.filter((item) => item?.kind === "file").map((item) => item.target) : []),
+      ].filter(Boolean);
+      entry.reviewProtectedPaths = new Set(reviewTargets.map((value) => {
+        try { return path.resolve(entry.workspace, String(value)).toLowerCase(); } catch { return String(value).toLowerCase(); }
+      }).filter(Boolean));
+      if (entry.mode === "review") {
+        const material = String(reviewTargets[0] || "附件材料");
+        const ext = path.extname(material).toLowerCase();
+        const materialType = ext === ".docx" || ext === ".doc" ? "Word 文档"
+          : [".xlsx", ".xls", ".csv"].includes(ext) ? "表格材料"
+            : ext === ".pptx" ? "演示文稿"
+              : [".md", ".markdown", ".txt"].includes(ext) ? "文字稿"
+                : ext === ".pdf" ? "PDF 材料" : "待确认材料";
+        emitChannelSafe(entry, "review_material_classified", {
+          runId: entry.activeRunId,
+          materialType,
+          confidence: materialType === "待确认材料" ? "medium" : "high",
+          targets: reviewTargets,
+        });
+      }
+    }
     entry.lastAgentError = null;
     entry.lastSettledError = null;
     entry.lastAssistantText = "";
@@ -2225,6 +2579,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         }
         let transportAttempt = 0;
         let settledReplayAttempt = 0;
+        const modelFallbackTried = [];
         let modelFallbackAttempted = false;
         let continuationAttempted = false;
         while (true) {
@@ -2317,7 +2672,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
             const currentSpec = entry.session?.model?.provider && entry.session?.model?.id
               ? `${entry.session.model.provider}/${entry.session.model.id}`
               : "";
-            const canFallbackModel = !modelFallbackAttempted
+            const canFallbackModel = modelFallbackTried.length < MODEL_FALLBACK_LIMIT
               && !entry.toolStarted
               && !entry.firstResponseReceived
               && info.retryable;
@@ -2332,7 +2687,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
                   ]);
                   entry.pendingAbortPromise = null;
                 }
-                const fallback = await this.fallbackModel(entry, currentSpec);
+                if (currentSpec && !modelFallbackTried.includes(currentSpec)) modelFallbackTried.push(currentSpec);
+                const fallback = await this.fallbackModel(entry, modelFallbackTried);
                 if (fallback) {
                   modelFallbackAttempted = true;
                   entry.lastAgentError = null;
@@ -2343,7 +2699,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
                   emitChannelSafe(entry, "agent_model_fallback", {
                     from: currentSpec,
                     to: fallback,
-                    message: `模型连接失败，已切换到 ${fallback}`,
+                    attempt: modelFallbackTried.length,
+                    message: `模型连接失败，已切换到 ${fallback}（第 ${modelFallbackTried.length} 次切换，最多 ${MODEL_FALLBACK_LIMIT} 次）`,
                   });
                   await waitForAgentRetry(300);
                   continue;
@@ -2417,6 +2774,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     try {
       const result = await compactPromise;
       entry.lastCompactionAt = Date.now();
+      entry.promptChars = 0;
+      entry.lastUsage = null;
       return {
         ok: true,
         tokensBefore: result?.tokensBefore || 0,
@@ -2444,6 +2803,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   }
 
   async resumeThread(clientId, threadId, sessionPath, cwd = getWorkspace()) {
+    const inFlight = this.resumePromises.get(clientId);
+    if (inFlight) return inFlight;
+    const resume = (async () => {
     const workspace = normalizeWorkspace(cwd) || normalizeWorkspace(getWorkspace());
     if (!workspace) throw new Error("当前工作区不存在或不是文件夹");
     const old = this.sessions.get(clientId);
@@ -2454,6 +2816,13 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     }
     const entry = await this._create(clientId, { cwd: workspace, sessionPath, threadId });
     return { ok: true, threadId, sessionId: entry.session.sessionId, runtimeId: entry.runtimeId, cwd: workspace };
+    })();
+    this.resumePromises.set(clientId, resume);
+    try {
+      return await resume;
+    } finally {
+      if (this.resumePromises.get(clientId) === resume) this.resumePromises.delete(clientId);
+    }
   }
 
   /** 记录当前工作文件，并同步到 agent 上下文（agent 通过读 .agent-context.md 感知）。 */
@@ -2474,9 +2843,20 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       ];
       if (mode === "chat") {
         lines.push("- 当前为 Chat：只读检索、解释与引用；不得修改文件、执行脚本、调用 Office CLI 或写入长期记忆。");
+      } else if (mode === "review") {
+        lines.push(
+          "- 当前为 Review：先识别材料类型，再用 kb_search 查找候选规范；只有实际调用 kb_read 并成功返回全文的规范才能作为依据。",
+          "- 必须维护规范依据台账：读取规范后使用系统分配的 R-* 编号；每条问题使用 F-* 编号，并在报告中写明 R-* 依据。搜索命中但未 kb_read 的文件只能标记为候选/未采用。",
+          "- 审查默认生成审查报告和批注副本。优先用 review_copy 复制原文件，再对副本使用 officecli 添加批注；不得在用户明确确认前修改当前工作文件。",
+          "- 报告生成并回读验证后，必须调用 ask_user 询问是否写回原文件；只有用户明确确认后系统才会解除原文保护。拒绝或超时就保留报告/副本并说明未写回。",
+          "- 收尾前列出材料读取、规范依据（实际读取/采用/未采用）、审查问题、修改文件、产物、假设和下一步；最后调用 complete_task。",
+          "- Review 禁止使用 bash、地图编辑、浏览器自动化和 memory_update；Office 文档一律用 officecli，文本报告用 write/edit。",
+        );
       } else {
         lines.push(
         "- Office 文档一律用 officecli 工具操作；新建或修改文件必须写入当前工作区。",
+        "- 工具使用纪律：读取/编辑文件前先用 ls 或列目录确认真实文件名，不要凭记忆拼路径（实测 13 次 read/ls 因文件名不存在失败）；搜索、遍历、批量命令必须限定在当前工作区内，禁止从系统盘根目录全盘扫描；bash 默认 120 秒超时，长任务请显式传 timeout（最多 600 秒）或拆成小步执行。",
+        "- 同一个操作连续失败两次就停止重试：先看错误里的 code 与建议（例如 sharing violation 让用户关闭 WPS/Word，decompression_bomb 说明文件过大需要拆分），必要时用 ask_user 询问，而不是重复提交同一条命令。",
         "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。sharing violation 或另一个进程占用才表示文件锁；Access denied、is denied、EPERM 或 EACCES 表示当前服务进程缺少系统写权限。",
           "- 完成时简要列出读取来源、修改文件、产物、假设和下一步；收尾必须调用 complete_task 声明 success/partial/blocked/failed。",
           "- 复杂任务先调用 todo 创建 2-6 项结构化待办；每完成一项就用完整快照更新 todo。只有稳定的新项目事实或偏好才提交 memory_update 建议。",
@@ -2553,10 +2933,28 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     if (!entry) return null;
     const usage = entry.lastUsage ? { ...entry.lastUsage } : null;
     const contextChars = Number(entry.promptChars || 0);
+    const usageContextBase = usage ? Number(usage.contextTokens ?? usage.context ?? 0) : 0;
+    const usageContextTokens = usageContextBase > 0
+      ? usageContextBase
+      : usage
+        ? Number(usage.inputTokens ?? usage.input ?? 0)
+          + Number(usage.cacheReadTokens ?? usage.cacheRead ?? usage.cache_read ?? 0)
+          + Number(usage.cacheWriteTokens ?? usage.cacheWrite ?? usage.cache_write ?? 0)
+        : 0;
+    const estimatedContextTokens = Math.ceil(contextChars / ESTIMATED_TOKENS_PER_CHAR);
+    const contextWindow = this.resolveEntryContextWindow(entry);
+    const compactionPolicy = this.resolveCompactionPolicy(entry);
     return {
       usage,
       contextChars,
-      estimatedContextTokens: usage ? 0 : Math.ceil(contextChars / 3.5),
+      estimatedContextTokens,
+      contextTokens: Math.max(usageContextTokens, estimatedContextTokens),
+      contextWindow,
+      compactThreshold: compactionPolicy.threshold,
+      compactThresholdSource: compactionPolicy.source,
+      compactionMode: compactionPolicy.mode,
+      compactionEnabled: compactionPolicy.enabled,
+      compactionReserveTokens: compactionPolicy.reserveTokens,
     };
   }
 
@@ -2660,8 +3058,8 @@ const result = await piRuntimeManager.probeModel(model, options);
     };
   }
 
-  async fallbackModel(entry, failedSpec) {
-    const current = String(failedSpec || "").trim();
+  async fallbackModel(entry, triedSpecs = []) {
+    const tried = new Set((Array.isArray(triedSpecs) ? triedSpecs : [triedSpecs]).filter(Boolean));
     const catalog = await this.listModelCatalog();
     const available = new Map((catalog.available || []).map((item) => [item.id, item]));
     const preferred = [
@@ -2672,9 +3070,13 @@ const result = await piRuntimeManager.probeModel(model, options);
       "opencode-go/mimo-v2.5",
       "opencode-go/hy3",
     ];
-    const candidate = [...preferred, ...available.keys()]
+    // 先排除已经试过的 provider/model，并优先换到另一个 provider；
+    // 同一 provider 下没有别的可用模型时，才退回该 provider 的其他模型。
+    const failedProvider = String([...tried].pop() || "").split("/")[0];
+    const candidates = [...new Set([...preferred, ...available.keys()])]
       .map((id) => available.get(id))
-      .find((item) => item && item.id !== current);
+      .filter((item) => item && !tried.has(item.id));
+    const candidate = candidates.find((item) => item.provider !== failedProvider) || candidates[0];
     if (!candidate) return null;
     const [provider, ...idParts] = candidate.id.split("/");
     const id = idParts.join("/");
@@ -2684,7 +3086,7 @@ const result = await piRuntimeManager.probeModel(model, options);
     if (!model) return null;
     await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
     entry.modelFallbackSpec = candidate.id;
-    entry.modelFallbackFrom = current || null;
+    entry.modelFallbackFrom = [...tried].pop() || null;
     return candidate.id;
   }
 

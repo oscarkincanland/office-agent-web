@@ -1,5 +1,5 @@
-const DEFAULT_BASH_TIMEOUT_SECONDS = 60;
-const MAX_BASH_TIMEOUT_SECONDS = 300;
+const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
+const MAX_BASH_TIMEOUT_SECONDS = 600;
 
 // Git Bash 的 `/` 可能映射到整台 Windows 主机。Agent 只应检索当前工作区，
 // 禁止 find/rg/grep 等命令从系统根目录开始扫描，避免任务无限占用工具通道。

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { PROJECT_DIR } from "./workspace.mjs";
+import { loadNetworkSettings } from "./Pi配置管理.mjs";
 
 /**
  * 内置浏览器：Agent 可直接操作的可视化浏览器。
@@ -17,10 +18,13 @@ import { PROJECT_DIR } from "./workspace.mjs";
 
 const PROFILE_DIR = process.env.OAW_BROWSER_PROFILE || path.join(PROJECT_DIR, ".oaw", "browser-profile");
 const SHOT_DIR = path.join(PROJECT_DIR, ".oaw", "browser-shots");
-const PORT_FILE = path.join(PROFILE_DIR, ".oaw-devtools-port");
 // 以更接近桌面浏览器的视口启动，面板缩放时仍保持清晰的网页文字。
 const VIEWPORT = { width: 1440, height: 900 };
-const NAV_TIMEOUT_MS = 25000;
+const MAX_CAPTURE = { width: 2400, height: 1600 };
+// 页面导航不能把 Agent 回合阻塞到 25 秒；超时后仍保留当前页面，
+// 后续 browser_snapshot/browser_wait 类操作可以继续观察加载结果。
+const NAV_TIMEOUT_MS = 8000;
+const FRAME_BROADCAST_INTERVAL_MS = 90;
 
 const sessions = new Map(); // key -> BrowserSession
 const subscribers = new Map(); // key -> Set<fn(type, data)>
@@ -79,6 +83,28 @@ function findBrowserExecutable() {
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
   ].filter(Boolean);
   return candidates.find((item) => { try { return fs.existsSync(item); } catch { return false; } }) || null;
+}
+
+function sessionProfileDir(key) {
+  const token = Buffer.from(String(key || "default"), "utf8").toString("base64url").slice(0, 96) || "default";
+  return path.join(PROFILE_DIR, "sessions", token);
+}
+
+function browserProxyArgs() {
+  try {
+    const settings = loadNetworkSettings();
+    if (settings.mode !== "manual" || !settings.proxyUrl) return [];
+    const args = [`--proxy-server=${settings.proxyUrl}`];
+    const bypass = String(settings.noProxy || "")
+      .split(/[;,\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(";");
+    if (bypass) args.push(`--proxy-bypass-list=${bypass}`);
+    return args;
+  } catch {
+    return [];
+  }
 }
 
 function allocatePort() {
@@ -253,21 +279,48 @@ function normalizeNavUrl(raw) {
   if (!value) throw new Error("URL 不能为空");
   if (/^https?:\/\//i.test(value)) return value;
   if (/^[\w-]+(\.[\w-]+)+(\/|$)/.test(value)) return `https://${value}`;
-  throw new Error(`无效的 URL：${value}（需 http/https 链接，或先调用 web_search 获取链接）`);
+  // 地址栏同时承担搜索入口：用户输入中文或普通关键词时，直接进入搜索结果页。
+  // 仍然拒绝 file/javascript 等非网页协议，避免把本地协议交给浏览器进程。
+  if (!/^[a-z][a-z\d+.-]*:/i.test(value)) {
+    return `https://cn.bing.com/search?q=${encodeURIComponent(value)}`;
+  }
+  throw new Error(`无效的 URL：${value}（需 http/https 链接，或输入普通关键词搜索）`);
 }
 
 class BrowserSession {
   constructor(key) {
     this.key = key;
+    this.profileDir = sessionProfileDir(key);
+    this.portFile = path.join(this.profileDir, ".oaw-devtools-port");
     this.child = null;
     this.cdp = null;
     this.port = 0;
+    this.browserStderr = "";
     this.frame = null;
+    this.pendingFrame = null;
+    this.frameBroadcastTimer = null;
     this.lastUserInputAt = 0;
     this.activeTargetId = null;
     this.tabs = [];
     this.tabsTimer = null;
     this.state = { active: false, url: "about:blank", title: "", loading: false, viewport: { ...VIEWPORT }, startedAt: null, error: null };
+  }
+
+  queueFrameBroadcast(frame) {
+    this.pendingFrame = frame;
+    if (this.frameBroadcastTimer) return;
+    this.frameBroadcastTimer = setTimeout(() => {
+      this.frameBroadcastTimer = null;
+      const next = this.pendingFrame;
+      this.pendingFrame = null;
+      if (next) broadcast(this.key, "frame", next);
+    }, FRAME_BROADCAST_INTERVAL_MS);
+  }
+
+  clearFrameBroadcast() {
+    if (this.frameBroadcastTimer) clearTimeout(this.frameBroadcastTimer);
+    this.frameBroadcastTimer = null;
+    this.pendingFrame = null;
   }
 
   /** 列出所有页面标签（id/标题/URL/是否激活）。 */
@@ -340,6 +393,7 @@ class BrowserSession {
     try { await fetch(`http://127.0.0.1:${this.port}/json/activate/${targetId}`, { signal: AbortSignal.timeout(3000) }); } catch {}
     try { this.cdp?.close(); } catch {}
     this.cdp = null;
+    this.clearFrameBroadcast();
     this.frame = null;
     await this.connectToTarget(target);
     this.activeTargetId = targetId;
@@ -403,6 +457,36 @@ class BrowserSession {
     return { x: Math.round(x), y: Math.round(y) };
   }
 
+  async resize(width, height) {
+    await this.ensureStarted();
+    const next = {
+      width: Math.max(320, Math.min(MAX_CAPTURE.width, Math.round(Number(width) || VIEWPORT.width))),
+      height: Math.max(240, Math.min(MAX_CAPTURE.height, Math.round(Number(height) || VIEWPORT.height))),
+    };
+    const previous = this.state.viewport || VIEWPORT;
+    if (previous.width === next.width && previous.height === next.height) return this.stateView();
+    await this.cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: next.width,
+      height: next.height,
+      deviceScaleFactor: 1,
+      mobile: false,
+      screenWidth: next.width,
+      screenHeight: next.height,
+    });
+    this.state.viewport = next;
+    // resize 后先发一张与新 viewport 匹配的帧，避免前端短暂拿旧帧尺寸计算点击坐标。
+    try {
+      const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90 });
+      const data = result.data || "";
+      if (data) {
+        this.frame = { data, at: Date.now(), width: next.width, height: next.height };
+        this.queueFrameBroadcast({ data, at: this.frame.at, width: next.width, height: next.height });
+      }
+    } catch {}
+    this.emitState();
+    return this.stateView();
+  }
+
   stateView() {
     return {
       active: this.state.active,
@@ -410,6 +494,7 @@ class BrowserSession {
       title: this.state.title,
       loading: this.state.loading,
       viewport: this.state.viewport,
+      frameSize: this.frame ? { width: this.frame.width || null, height: this.frame.height || null } : null,
       error: this.state.error,
       hasFrame: Boolean(this.frame),
     };
@@ -423,7 +508,7 @@ class BrowserSession {
     if (this.state.active) return;
     const executable = findBrowserExecutable();
     if (!executable) throw new Error("未找到 Edge/Chrome，无法启动内置浏览器（可设置环境变量 OAW_BROWSER_PATH 指定浏览器路径）");
-    fs.mkdirSync(PROFILE_DIR, { recursive: true });
+    fs.mkdirSync(this.profileDir, { recursive: true });
     // 1) 尝试复用上次启动且仍在运行的实例（服务重启后浏览器不中断）
     if (await this.tryReuse()) return;
 
@@ -431,7 +516,7 @@ class BrowserSession {
     const headless = process.env.OAW_BROWSER_HEADLESS !== "0";
     const args = [
       `--remote-debugging-port=${this.port}`,
-      `--user-data-dir=${PROFILE_DIR}`,
+      `--user-data-dir=${this.profileDir}`,
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
@@ -450,8 +535,13 @@ class BrowserSession {
       `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       "about:blank",
     ];
+    args.splice(args.length - 1, 0, ...browserProxyArgs());
     if (headless) args.unshift("--headless=new");
-    this.child = spawn(executable, args, { stdio: "ignore", windowsHide: true });
+    this.browserStderr = "";
+    this.child = spawn(executable, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    this.child.stderr?.on("data", (chunk) => {
+      this.browserStderr = `${this.browserStderr}${String(chunk)}`.slice(-4000);
+    });
     this.child.on("exit", () => {
       if (this.state.active) {
         this.state.active = false;
@@ -474,17 +564,18 @@ class BrowserSession {
     if (!target?.webSocketDebuggerUrl) {
       const exited = this.child?.exitCode;
       await this.close().catch(() => {});
-      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : ""}`);
+      const detail = this.browserStderr.trim().replace(/\s+/g, " ");
+      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : ""}${detail ? `：${detail.slice(0, 800)}` : ""}`);
     }
-    try { fs.writeFileSync(PORT_FILE, String(this.port)); } catch {}
+    try { fs.writeFileSync(this.portFile, String(this.port)); } catch {}
     await this.connectToTarget(target);
   }
 
   /** 复用上次记录的浏览器实例（同 profile）。 */
   async tryReuse() {
     try {
-      if (!fs.existsSync(PORT_FILE)) return false;
-      const port = Number(String(fs.readFileSync(PORT_FILE, "utf8")).trim());
+      if (!fs.existsSync(this.portFile)) return false;
+      const port = Number(String(fs.readFileSync(this.portFile, "utf8")).trim());
       if (!Number.isFinite(port) || port <= 0) return false;
       const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
       const list = await response.json();
@@ -495,7 +586,7 @@ class BrowserSession {
       await this.connectToTarget(target);
       return true;
     } catch {
-      try { fs.rmSync(PORT_FILE, { force: true }); } catch {}
+      try { fs.rmSync(this.portFile, { force: true }); } catch {}
       return false;
     }
   }
@@ -519,14 +610,15 @@ class BrowserSession {
     await this.cdp.send("Page.enable");
     await this.cdp.send("Runtime.enable");
     this.cdp.on("Page.screencastFrame", (params) => {
-      const metadata = params?.metadata || {};
       this.frame = {
         data: params.data,
         at: Date.now(),
-        width: Number(metadata.deviceWidth) || null,
-        height: Number(metadata.deviceHeight) || null,
+        // deviceWidth/deviceHeight 是 Chromium 的屏幕元数据，不一定是截图 JPEG 的像素尺寸；
+        // 交互坐标和前端显示都应以当前 CSS viewport 为准。
+        width: this.state.viewport.width,
+        height: this.state.viewport.height,
       };
-      broadcast(this.key, "frame", { data: params.data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
+      this.queueFrameBroadcast({ data: params.data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
       this.cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
     });
     this.cdp.on("Page.frameNavigated", (params) => {
@@ -542,8 +634,9 @@ class BrowserSession {
       this.emitState();
       this.scheduleTabsRefresh();
     });
-    // 不跳帧并提高 JPEG 质量，避免用户接管时文字和验证码发糊；前端只保留最新一帧。
-    await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: 86, maxWidth: VIEWPORT.width, maxHeight: VIEWPORT.height, everyNthFrame: 1 }).catch(() => {});
+    // 保持高质量和完整视口；服务端以约 11fps 推送最新帧，避免每个 CDP 帧
+    // 都挤占 SSE、React 和浏览器主线程。
+    await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: MAX_CAPTURE.width, maxHeight: MAX_CAPTURE.height, everyNthFrame: 1 }).catch(() => {});
     if (target.id) this.activeTargetId = target.id;
     this.state.active = true;
     this.state.startedAt = this.state.startedAt || new Date().toISOString();
@@ -576,9 +669,11 @@ class BrowserSession {
     while (Date.now() < deadline) {
       try {
         const ready = await this.evaluate("document.readyState");
-        if (ready === "complete" || ready === "interactive") return true;
+        // interactive 只代表 HTML 已解析，SPA/搜索页的脚本和可交互控件
+        // 可能还没挂载；browser_open 紧接 browser_snapshot 时会因此得到空页。
+        if (ready === "complete") return true;
       } catch {}
-      await sleep(400);
+      await sleep(150);
     }
     return false;
   }
@@ -590,8 +685,9 @@ class BrowserSession {
     this.state.url = url;
     this.emitState();
     await this.cdp.send("Page.navigate", { url });
-    await this.waitForLoad();
+    await this.waitForLoad(NAV_TIMEOUT_MS);
     this.state.loading = false;
+    if (this.state.error && this.state.error.startsWith("页面加载超时")) this.state.error = null;
     await this.refreshTitle().catch(() => {});
     this.emitState();
     this.scheduleTabsRefresh();
@@ -684,13 +780,13 @@ class BrowserSession {
 
   async screenshot() {
     await this.ensureStarted();
-    const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 70 });
+    const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 90 });
     const data = result.data || "";
     fs.mkdirSync(SHOT_DIR, { recursive: true });
     const file = path.join(SHOT_DIR, `shot-${Date.now()}.jpg`);
     try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
-    this.frame = { data, at: Date.now() };
-    broadcast(this.key, "frame", { data, at: this.frame.at });
+    this.frame = { data, at: Date.now(), width: this.state.viewport.width, height: this.state.viewport.height };
+    this.queueFrameBroadcast({ data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
     return { file, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
   }
 
@@ -708,13 +804,14 @@ class BrowserSession {
     const child = this.child;
     const port = this.port;
     this.state.active = false;
+    this.clearFrameBroadcast();
     this.frame = null;
     this.emitState();
     broadcast(this.key, "closed", {});
     try { this.cdp?.close(); } catch {}
     this.cdp = null;
     this.child = null;
-    try { fs.rmSync(PORT_FILE, { force: true }); } catch {}
+    try { fs.rmSync(this.portFile, { force: true }); } catch {}
     if (port) {
       try {
         const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
@@ -842,6 +939,7 @@ export async function browserUserInput(key, payload = {}) {
     }
     return { pointer: phase, point };
   }
+  if (action === "resize") return session.resize(payload.width, payload.height);
   if (action === "wheel") {
     const point = await session.resolvePoint(payload);
     const deltaY = Math.max(-3000, Math.min(3000, Number(payload.deltaY) || 0));
