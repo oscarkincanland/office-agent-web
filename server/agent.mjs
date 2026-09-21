@@ -2982,7 +2982,17 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       modelSpec: spec,
     });
     if (entry.busy || entry.compacting || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
-    const [provider, id] = String(spec).split("/");
+    // 模型 id 本身可能含斜线（如 command-code 的 deepseek/deepseek-v4-flash）：
+    // 只能按第一个斜线切分 provider，否则 id 会被截断成 deepseek 并报 model not found。
+    const specText = String(spec || "").trim();
+    const specSeparator = specText.indexOf("/");
+    if (specSeparator <= 0 || specSeparator === specText.length - 1) {
+      const error = new Error("模型标识必须是 provider/model");
+      error.code = "MODEL_SPEC_INVALID";
+      throw error;
+    }
+    const provider = specText.slice(0, specSeparator);
+    const id = specText.slice(specSeparator + 1);
     if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
     const mr = await this.modelRuntime();
     // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，

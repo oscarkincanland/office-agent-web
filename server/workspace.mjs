@@ -43,7 +43,7 @@ export { AGENT_DIR, LOCAL_PI_AGENT_DIR } from "./Pi配置管理.mjs";
 fs.mkdirSync(WORKSPACE_DIR, { recursive: true });
 
 const ROOTS_STATE_FILE = path.join(PROJECT_DIR, ".file-roots.json");
-const SUPPORTED_EXTENSIONS = /\.(docx|xlsx|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i;
+const SUPPORTED_EXTENSIONS = /\.(docx|doc|xlsx|xls|pptx|pdf|csv|json|md|markdown|txt|html|htm|wps)$/i;
 const SEARCH_SKIP_DIRS = new Set(["node_modules", ".git", ".venv", "__pycache__", ".next", "dist", "build", "coverage"]);
 
 // 当前工作区（可切换），默认项目内的 office-workspace；切换后持久化，重启恢复

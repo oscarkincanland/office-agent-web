@@ -891,7 +891,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               {selectedModelInfo?.contextWindow && <span>上下文 {Number(selectedModelInfo.contextWindow).toLocaleString()} tokens</span>}
               {selectedModelInfo?.vision && <span>支持图片</span>}
             </div>
-            <button className="btn-sm primary model-probe-btn" onClick={probe} disabled={!(activeModel || defaultModel) || probeLoading}><Icon name="flow" size={12} /> {probeLoading ? "测试中…" : "测试真实连接"}</button>
+            <button className="btn-sm primary model-probe-btn" onClick={() => probe()} disabled={!(activeModel || defaultModel) || probeLoading}><Icon name="flow" size={12} /> {probeLoading ? "测试中…" : "测试真实连接"}</button>
           </div>
           <div className="model-runtime-card">
             <span className="model-card-label">运行时状态</span>

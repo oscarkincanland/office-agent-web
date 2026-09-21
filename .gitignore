@@ -28,6 +28,8 @@ od-pipeline.cjs
 # 环境与临时文件
 .env
 *.local
+*.bak-*
+*.bak
 office-workspace/maps/settings.local.json
 _temp/
 _tmp/

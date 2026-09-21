@@ -948,6 +948,27 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   }
 });
 
+// OfficeCLI 只能渲染 docx/xlsx/pptx。老式 .doc/.wps 或渲染失败时返回占位页，
+// 避免 iframe 一片空白让用户以为"预览坏了"。
+function previewUnsupportedPage(fileName, ext, detail) {
+  const safeName = String(fileName || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+  const tips = {
+    doc: "老式 .doc 二进制格式不被预览引擎支持。请用 WPS/Word 打开后另存为 .docx，即可在规聚中正常预览。",
+    wps: "WPS 专有格式不被预览引擎支持。请用 WPS 打开后另存为 .docx。",
+  }[String(ext || "").toLowerCase()] || "该格式暂不支持内嵌预览。";
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${safeName}</title>
+<style>body{margin:0;font:14px/1.7 -apple-system,"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#2b2f36;display:flex;align-items:center;justify-content:center;height:100vh}
+.card{max-width:520px;background:#fff;border:1px solid #e3e6eb;border-radius:12px;padding:28px 32px;box-shadow:0 6px 20px rgba(15,23,42,.06)}
+h1{font-size:16px;margin:0 0 10px}.ext{display:inline-block;font-size:12px;color:#7a8291;border:1px solid #e3e6eb;border-radius:6px;padding:1px 6px;margin-left:6px}
+p{margin:8px 0;color:#4b5563}.file{font-weight:600;color:#111827;word-break:break-all}
+.err{margin-top:12px;font-size:12px;color:#9aa1ad}</style></head>
+<body><div class="card"><h1>无法内嵌预览<span class="ext">.${String(ext || "").toLowerCase()}</span></h1>
+<p class="file">${safeName}</p><p>${tips}</p>
+<p>也可以让 Agent 直接读取或转换该文件（例如另存为 .docx 后再预览）。</p>
+${detail ? `<div class="err">渲染引擎信息：${String(detail).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</div>` : ""}
+</div></body></html>`;
+}
+
 // rendered html for docx/pptx (iframe target)
 app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
@@ -956,12 +977,14 @@ app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   if (!p) return res.status(404).send("not found");
   try {
     const html = await renderHtml(p);
+    // 老式 .doc/.wps 会被渲染成空字符串；直接 send("") 就是一片空白。
+    if (!html || !String(html).trim()) return res.send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase()));
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
     res.send(html);
   } catch (e) {
-    res.status(500).send("render failed: " + e.message);
+    res.status(500).send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase(), e.message));
   }
 });
 
@@ -1259,7 +1282,7 @@ app.get("/api/models", async (_req, res) => {
     const store = loadModelsStore();
     for (const m of models) {
       const provCfg = store[m.provider];
-      const cfg = provCfg?.models?.find((x) => x.id === m.id.split("/")[1]);
+      const cfg = provCfg?.models?.find((x) => x.id === String(m.id).slice(String(m.id).indexOf("/") + 1));
       if (cfg) m.vision = (cfg.input || []).includes("image") || !!m.vision;
     }
     res.json({ ...catalog, models, default: loadSettingsDefault() });
