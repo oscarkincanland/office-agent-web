@@ -213,7 +213,10 @@ test("取消后的 Run 不再注入进度提醒、也不再继续 ask_user 后�
   assert.match(agentSource, /isRunStopping/);
   assert.match(agentSource, /!this\.isRunStopping\(entry\.clientId\)/);
   assert.match(agentSource, /本轮任务已被用户取消，请立即停止执行/);
+  assert.match(agentSource, /entry\.cancelRequested = true/);
   assert.match(agentSource, /\["cancel_requested", "cancelled", "aborted"\]\.includes\(status\)/);
+  // 兜底回读 Run 状态必须有节流，避免每个回合都解析 Run JSON
+  assert.match(agentSource, /now - entry\.runStopCheckedAt < 5000/);
 });
 
 test("系统指令要求中文表达与进度可见", () => {

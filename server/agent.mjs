@@ -697,14 +697,22 @@ class AgentManager extends EventEmitter {
   /** 当前 Run 是否已进入取消/终态：用于抑制提醒与停止 ask_user 后的继续执行。 */
   isRunStopping(clientId) {
     const entry = this.sessions.get(clientId);
-    const runId = entry?.activeRunId;
+    if (!entry) return false;
+    // 快速路径：取消请求会直接在 entry 上打标（abort 路径）
+    if (entry.cancelRequested) return true;
+    const runId = entry.activeRunId;
     if (!runId) return false;
+    const now = Date.now();
+    // 兜底路径回读 Run 状态，但每 5 秒最多一次，避免每个回合都解析 Run JSON
+    if (entry.runStopCheckedAt && now - entry.runStopCheckedAt < 5000) return Boolean(entry.runStopCache);
+    entry.runStopCheckedAt = now;
     try {
       const status = String(getRun(runId)?.status || "");
-      return ["cancel_requested", "cancelled", "aborted"].includes(status);
+      entry.runStopCache = ["cancel_requested", "cancelled", "aborted"].includes(status);
     } catch {
-      return false;
+      entry.runStopCache = false;
     }
+    return entry.runStopCache;
   }
 
   memoryProposals(threadId = "", filters = {}) {
@@ -2512,6 +2520,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.turnCount = 0;
     entry.runToolCount = 0;
     entry.runStartedAt = Date.now();
+    // 新一轮任务：取消标记与 Run 状态缓存都重置
+    entry.cancelRequested = false;
+    entry.runStopCache = false;
+    entry.runStopCheckedAt = 0;
     entry.completionNudgeSent = false;
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
@@ -2853,6 +2865,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   async abort(clientId) {
     const entry = this.sessions.get(clientId);
     if (!entry) return { ok: true };
+    // 打标：后续的轮次提醒与 ask_user 续跑都要据此停止
+    entry.cancelRequested = true;
+    entry.runStopCache = true;
+    entry.runStopCheckedAt = Date.now();
     try {
       await piRuntimeManager.abort(entry.runtimeId, entry.session);
       emitChannelSafe(entry, "aborted", {});
