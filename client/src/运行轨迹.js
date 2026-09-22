@@ -18,12 +18,16 @@ export const COMPLETION_LABELS = Object.freeze({
 
 export const PHASE_LABELS = Object.freeze({
   idle: "等待",
-  preparing: "准备",
+  planning: "计划",
   executing: "执行",
-  finishing: "整理产物",
+  verifying: "验证",
+  delivering: "交付",
   done: "完成",
   failed: "失败",
   cancelled: "已取消",
+  // 兼容旧数据/旧事件（preparing 曾用于 run_admitting 阶段）
+  preparing: "计划",
+  finishing: "交付",
 });
 
 export function completionLabel(status) {
@@ -59,6 +63,16 @@ function setPhase(trace, phase, at) {
   trace.phases.push({ phase, at: at || new Date().toISOString() });
 }
 
+/** 阶段只能前进（计划 → 执行 → 验证 → 交付）：后到的早期事件不把阶段拉回去。 */
+export const PHASE_ORDER = Object.freeze(["idle", "planning", "executing", "verifying", "delivering", "done"]);
+function advancePhase(trace, phase, at) {
+  const current = PHASE_ORDER.indexOf(trace.phase === "preparing" ? "planning" : trace.phase === "finishing" ? "delivering" : trace.phase);
+  const next = PHASE_ORDER.indexOf(phase);
+  if (next < 0) return;
+  if (current >= 0 && current >= next) return;
+  setPhase(trace, phase, at);
+}
+
 function findTool(trace, data) {
   const toolCallId = data?.toolCallId ? String(data.toolCallId) : "";
   if (toolCallId) {
@@ -82,10 +96,16 @@ export function applyRunTraceEvent(trace, event) {
     case "run_admitting":
     case "run_admitted":
       if (!trace.startedAt) trace.startedAt = at;
-      setPhase(trace, "preparing", at);
+      setPhase(trace, "planning", at);
+      break;
+    case "capability_plan":
+    case "mode_policy":
+      if (!trace.startedAt) trace.startedAt = at;
+      advancePhase(trace, "planning", at);
       break;
     case "tool_start": {
       if (!trace.startedAt) trace.startedAt = at;
+      advancePhase(trace, "executing", at);
       const existing = findTool(trace, data);
       if (existing) {
         if (existing.status !== "done") existing.status = "running";
@@ -162,6 +182,7 @@ export function applyRunTraceEvent(trace, event) {
       trace.errors.push({ message: String(data.message || "模型调用失败").slice(0, 300), at, type });
       break;
     case "todo_updated": {
+      advancePhase(trace, "planning", at);
       // 计划进度：最后一次完整快照即当前计划（服务端每次提交完整清单）
       const items = Array.isArray(data.items) ? data.items : [];
       trace.todos = items.map((item, index) => ({
@@ -184,8 +205,17 @@ export function applyRunTraceEvent(trace, event) {
         };
       }
       break;
+    case "artifacts_validated":
+      trace.verification = data.status || trace.verification || "not_checked";
+      advancePhase(trace, "verifying", at);
+      break;
+    case "artifact_staged":
+    case "artifact_materialized":
+    case "artifact_published":
+      advancePhase(trace, "delivering", at);
+      break;
     case "agent_end":
-      if (!trace.completion) setPhase(trace, "finishing", at);
+      if (!trace.completion) advancePhase(trace, "delivering", at);
       break;
     case "run_finished": {
       trace.endedAt = at;

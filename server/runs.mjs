@@ -609,6 +609,20 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
           : "not_checked";
     const verificationNote = run.verificationStatus === "failed" ? "，产物校验发现问题" : run.verificationStatus === "warning" ? "，产物校验有提示" : "";
     run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
+    // 验收阶段事件：让前端执行流能显示"验证"阶段与结果（发布前预检 / 显式校验）
+    if (run.validations.length) {
+      const validatedAt = new Date().toISOString();
+      const validateSeq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+      run.eventSeq = validateSeq;
+      const validateData = {
+        status: run.verificationStatus,
+        checked: run.validations.length,
+        failed: run.validations.filter((item) => item.status === "failed").length,
+        precheck: run.validations.some((item) => item.source === "publish_precheck"),
+      };
+      run.events.push({ seq: validateSeq, type: "artifacts_validated", data: validateData, at: validatedAt });
+      appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "artifacts_validated", data: validateData });
+    }
     // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
     if (completion && typeof completion === "object") run.completion = completion;
     // 计划漂移收口：收尾时仍有未完成待办时，写进 completion.incomplete 并如实降级，

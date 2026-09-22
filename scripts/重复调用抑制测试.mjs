@@ -70,4 +70,4 @@ test("空 400 仍被识别为可安全重放", () => {
 });
 
 console.log(failed ? "\nP2 测试：存在失败" : "\nP2 测试：全部通过");
-process.exit(failed);
+process.exitCode = failed ? 1 : 0;

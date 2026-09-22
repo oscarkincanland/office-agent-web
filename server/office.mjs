@@ -47,17 +47,47 @@ export function validateOfficecliArgs(args, cwd = WORKSPACE_DIR) {
   return { command, file, path: target, absolute: false };
 }
 
+/** Office CLI 子进程环境：默认放宽大工作簿的元素上限（供应商默认 300 万会拒开大表）。 */
+function officecliEnv() {
+  const env = { ...process.env };
+  if (!env.OFFICECLI_MAX_DOM_ELEMENTS) env.OFFICECLI_MAX_DOM_ELEMENTS = "8000000";
+  return env;
+}
+
+/** 是否"文件被其他进程占用"（OfficeCLI 会以 io_error + being used by another process 报出）。 */
+export function isOfficeSharingViolation(result) {
+  const text = `${result?.stderr || ""}\n${result?.stdout || ""}\n${result?.text || ""}`;
+  return /being used by another process|sharing violation|正在被另一个进程使用/i.test(text);
+}
+
+const MUTATING_COMMANDS = new Set(["set", "batch", "add", "remove", "move", "swap", "delete", "create", "import", "save"]);
+
 /**
  * Run an officecli command inside the workspace directory.
  * Returns { code, stdout, stderr, json } — `json` is parsed when --json was used
  * or when output starts with {/[.
  */
 export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
+  const command = Array.isArray(args) ? args.map(String) : [];
+  return runOfficecliOnce(command, { cwd, timeoutMs, executable }).then(async (result) => {
+    // 文件被 WPS/Word/Excel 打开时写入会失败：自动 close 释放句柄后重试一次，
+    // 仍失败则标记 lockBlocked，由上层提示用户关闭文档（而不是让模型反复重试）。
+    const file = MUTATING_COMMANDS.has(command[0]?.toLowerCase()) ? command[1] : "";
+    if (result.code === 0 || !file || !isOfficeSharingViolation(result)) return result;
+    try { await runOfficecliOnce(["close", file], { cwd, timeoutMs: 20000, executable }); } catch {}
+    const retry = await runOfficecliOnce(command, { cwd, timeoutMs, executable });
+    retry.lockRecoveryAttempted = true;
+    if (!isOfficeSharingViolation(retry)) return retry;
+    retry.lockBlocked = true;
+    return retry;
+  });
+}
+
+function runOfficecliOnce(command, { cwd = WORKSPACE_DIR, timeoutMs = 120000, executable = OFFICECLI } = {}) {
   return officeLimiter.run(() => new Promise((resolve, reject) => {
-    const command = Array.isArray(args) ? args.map(String) : [];
     let child;
     try {
-      child = spawn(executable, command, { cwd, windowsHide: true });
+      child = spawn(executable, command, { cwd, windowsHide: true, env: officecliEnv() });
     } catch (error) {
       reject(createOfficeCliError(`Office CLI 启动失败：${error?.message || error}`, "OFFICECLI_START_FAILED", { executable, cwd, args: command }));
       return;
@@ -98,7 +128,7 @@ export function runOfficecli(args, { cwd = WORKSPACE_DIR, timeoutMs = 120000, ex
       }
       resolve({ code, stdout: out, stderr: err, text, json, command, executable, cwd, timedOut });
     });
-  }), { cwd, args: Array.isArray(args) ? args.slice(0, 8) : [] });
+  }), { cwd, args: Array.isArray(command) ? command.slice(0, 8) : [] });
 }
 
 // Office CLI 探测缓存：成功 60 秒内复用，失败 15 秒内复用。

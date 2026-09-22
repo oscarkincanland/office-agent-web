@@ -7,6 +7,7 @@ import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, reduceRunTrace, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 
@@ -146,18 +147,8 @@ const MODE_META = {
 // 中心对话区只保留能解释“任务进行到哪一步”的 SSE 事件；高频 token/thinking
 // 仍由消息流渲染，避免把每个 token 都变成一条 UI 记录。运行期间展开，完成后
 // 自动收成一行，用户仍可点击核对模型请求、工具调用、写入和收尾是否完整。
-const FLOW_EVENT_TYPES = new Set([
-"runtime_connecting", "runtime_init_failed", "tool_approval_request", "tool_approval_resolved",
-  "run_admitting", "run_admitted", "model_request_started", "agent_started",
-  "turn_started", "turn_ended", "tool_start", "tool_end", "ask_user", "agent_retry",
-  "agent_retry_end", "agent_model_fallback", "agent_model_fallback_failed",
-  "context_compacting", "context_compacted", "context_compact_warning",
-  "agent_turn_end", "agent_error", "file_changed", "agent_summary",
-  "assistant_final", "agent_end", "run_finished", "aborted", "write_rejected",
-  "write_started", "write_locked", "artifact_staged", "artifact_materialized", "write_cleaned",
-  "capability_plan", "mode_policy", "thinking_level", "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed", "task_completed",
-  "review_material_classified", "review_source_search_started", "review_source_search_result", "review_source_read_started", "review_source_read", "review_source_applied", "review_source_unused", "review_waiting_confirmation", "review_confirmed", "review_confirmation_rejected", "review_write_blocked",
-]);
+// 进入执行流的事件类型来自 ../事件展示.js 的注册表（唯一事实来源），
+// 不在组件里维护第二份清单。
 
 // 恢复 Pi JSONL 时可能同时存在空 assistant 占位、SSE 重试留下的重复消息，
 // 以及同一条最终回复被 assistant_final/run_finished 各写入一次。历史层只做
@@ -231,80 +222,8 @@ export function normalizeHistoryMessages(items) {
   return result;
 }
 
-function flowEventLabel(event) {
-  const data = event?.data || {};
-  const tool = data.name || data.toolName || "工具";
-  const toolLabels = {
-    read: "读取文件", write: "写入文件", edit: "编辑文件", bash: "执行命令",
-    officecli: "执行 Office CLI", find: "查找文件", grep: "搜索内容", ls: "列出文件",
-    ask_user: "等待用户回答",
-  };
-  const toolLabel = toolLabels[String(tool).toLowerCase()] || tool;
-  switch (event?.type) {
-    case "runtime_connecting": return "正在准备会话运行时";
-    case "run_admitting": return "准备任务";
-    case "stream_waiting": return "正在接收事件流";
-    case "run_admitted": return "任务已受理";
-    case "model_request_started": return "请求模型";
-    case "agent_started": return "模型已开始处理";
-    case "turn_started": return "开始生成回合";
-    case "turn_ended": return "生成段结束";
-    case "write_started": return "准备写入";
-    case "write_locked": return "写入已锁定";
-    case "artifact_staged": return "产物已暂存";
-    case "artifact_materialized": return "产物已发布";
-    case "write_cleaned": return "清理暂存产物";
-    case "steer": return "插入新指令";
-    case "tool_start": return `调用 ${toolLabel}`;
-    case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
-    case "todo_updated": return `任务清单已更新${data.todoProgress ? `（${data.todoProgress.completed || 0}/${data.todoProgress.total || 0}）` : ""}`;
-    case "officecli_failed": return `Office CLI 失败${data.message ? `：${String(data.message).slice(0, 60)}` : ""}`;
-    case "ask_user": return "等待用户回答";
-    case "tool_approval_request": return `等待审批：${toolLabel}`;
-    case "tool_approval_resolved": return data.decision === "allow" ? "审批已通过" : "审批已拒绝";
-    case "agent_retry": return "模型连接重试";
-    case "agent_retry_end": return data.success ? "模型连接已恢复" : "模型重试结束";
-    case "agent_model_fallback": return `切换备用模型${data.to ? `：${data.to}` : ""}`;
-    case "agent_model_fallback_failed": return "备用模型切换失败";
-    case "context_compacting": return "压缩上下文";
-    case "context_compacted": return "上下文压缩完成";
-    case "context_compact_warning": return "上下文压缩有提示";
-    case "agent_turn_end": return "模型收尾";
-    case "agent_error": return eventMessageText(data.message, data.category === "quota" ? "模型额度不足" : "模型调用失败");
-    case "write_rejected": return data.message || "工具操作被拦截";
-    case "file_changed": return `文件已更新${data.files?.length ? `（${data.files.length}）` : ""}`;
-    case "agent_summary": return "生成任务总结";
-    case "assistant_final": return "收到最终回复";
-    case "agent_end": return "Agent 处理结束";
-    case "run_finished": return data.status === "completed" ? "任务完成" : `任务${data.status || "结束"}`;
-    case "task_completed": return `任务${completionLabel(data.status)}${data.summary ? `：${String(data.summary).slice(0, 50)}` : ""}`;
-    case "aborted": return "任务已中断";
-    case "capability_plan": return "能力准备完成";
-    case "mode_policy": return `模式：${MODE_META[normalizeUiMode(data.mode)]?.label || "Chat"}`;
-    case "review_material_classified": return `材料识别：${data.materialType || "待判断"}`;
-    case "review_source_search_started": return "搜索审查规范";
-    case "review_source_search_result": return `找到规范候选${Array.isArray(data.candidates) ? `（${data.candidates.length}）` : ""}`;
-    case "review_source_read_started": return `读取规范${data.sourceId ? ` ${data.sourceId}` : ""}`;
-    case "review_source_read": return data.status === "failed" ? "规范读取失败" : `已读取规范 ${data.sourceId || ""}`;
-    case "review_source_applied": return `采用规范 ${data.sourceId || ""}`;
-    case "review_source_unused": return `规范未采用 ${data.sourceId || ""}`;
-    case "review_waiting_confirmation": return "等待确认后写回原文";
-    case "review_confirmed": return "已确认写回原文";
-    case "review_confirmation_rejected": return "已拒绝写回原文";
-    case "review_write_blocked": return "原文写回已保护";
-    case "thinking_level": return `思考深度：${data.effective || data.requested || "默认"}`;
-    case "agent_queued": return `任务已排队${data.position ? `（第 ${data.position} 项）` : ""}`;
-    case "agent_queue_update": return data.steering ? "正在调整任务" : "等待后续任务";
-    default: return event?.type || "事件";
-  }
-}
-
-function flowEventTone(event) {
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected"].includes(event?.type) || event?.data?.isError) return "error";
-  if (event?.type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "running";
-  if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed"].includes(event?.type)) return "success";
-  return "running";
-}
+// 事件文案 / 语气 / 阶段统一来自 ../事件展示.js（事件展示注册表），
+// 这里不再维护第二份 switch，新增事件只需在注册表登记一次。
 
 function appendExecutionFlowEvent(previous, event) {
   if (previous.some((item) => item.key === event.key)) return previous;
@@ -3399,8 +3318,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool }) {
   const [expanded, setExpanded] = useState(false);
   const [hidden, setHidden] = useState(() => localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true");
   const wasRunningRef = useRef(running);
-  // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏
-  const STAGE_ONLY_EVENTS = new Set(["runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started", "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan", "agent_end", "assistant_final"]);
+  // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
   const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
   const latest = contentEvents[contentEvents.length - 1] || events[events.length - 1];
   const visibleEvents = contentEvents.length > 0
@@ -3452,17 +3370,26 @@ function ExecutionFlow({ events = [], running = false, onFocusTool }) {
           {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}
           <AgentBrainGraph trace={runTrace} running={running} onFocusTool={onFocusTool} />
           <div className="execution-flow-list">
-          {visibleEvents.map((event) => {
+          {visibleEvents.map((event, index) => {
             const data = event.data || {};
             const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
             const label = flowEventLabel(event);
             const showDetail = detail && String(detail).trim() !== String(label).trim();
+            // 阶段推进：计划 → 执行 → 验证 → 交付，阶段变化时插入分组标题
+            const phase = phaseForEvent(event);
+            const previousPhase = index > 0 ? phaseForEvent(visibleEvents[index - 1]) : null;
+            const showPhase = phase && phase !== previousPhase && phase !== "done";
             return (
-              <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key}>
-                <span className="execution-flow-dot" />
-                <span className="execution-flow-label">{label}</span>
-                {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
-                <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+              <div key={event.key}>
+                {showPhase && (
+                  <div className={`execution-flow-phase phase-${phase}`}>{PHASE_LABELS[phase] || phase}</div>
+                )}
+                <div className={`execution-flow-item ${flowEventTone(event)}`}>
+                  <span className="execution-flow-dot" />
+                  <span className="execution-flow-label">{label}</span>
+                  {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
+                  <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
+                </div>
               </div>
             );
           })}

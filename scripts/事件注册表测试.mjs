@@ -86,4 +86,4 @@ test("server 代码里发出的事件类型都已登记", () => {
 const summary = registrySummary();
 console.log(`  注册表：${summary.total} 种（生命周期 ${summary.lifecycle} / 落盘 ${summary.persisted} / 增量 ${summary.delta}）`);
 console.log(failed ? "\n事件注册表测试：存在失败" : "\n事件注册表测试：全部通过");
-process.exit(failed);
+process.exitCode = failed ? 1 : 0;

@@ -206,4 +206,4 @@ test("inferCompletion 区分失败/取消/部分完成", () => {
 });
 
 console.log(failed ? "\n执行轨迹归约：失败" : "\n执行轨迹归约：通过");
-process.exit(failed ? 1 : 0);
+process.exitCode = failed ? 1 : 0;

@@ -1690,7 +1690,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   padding: 4px 10px 7px 27px;
   border-top: 1px solid var(--border);
 }
-.execution-flow-item {
+.execution-flow-item { 
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1698,6 +1698,19 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   color: var(--muted);
   font-size: 10px;
 }
+/* 阶段分组标题：计划 → 执行 → 验证 → 交付 */
+.execution-flow-phase {
+  margin: 6px 0 2px;
+  padding: 1px 0 1px 2px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--dim);
+  font-size: 9px;
+  letter-spacing: .08em;
+}
+.execution-flow-phase.phase-planning { border-left-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.execution-flow-phase.phase-executing { border-left-color: color-mix(in srgb, var(--warning) 60%, transparent); }
+.execution-flow-phase.phase-verifying { border-left-color: color-mix(in srgb, var(--success) 60%, transparent); }
+.execution-flow-phase.phase-delivering { border-left-color: color-mix(in srgb, var(--accent) 70%, transparent); }
 .execution-flow-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
 .execution-flow-item.success .execution-flow-dot { background: var(--success); }
 .execution-flow-item.error .execution-flow-dot { background: var(--error); }

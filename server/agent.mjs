@@ -1066,6 +1066,25 @@ execute: async (_toolCallId, params) => {
           }
           if (Number(r.code) !== 0) {
             const detail = String(r.stderr || r.text || `退出码 ${r.code}`).trim().slice(0, 800);
+            // 仍被 WPS/Word/Excel 占用（已自动 close 重试过一次）：明确要求停下来问用户，
+            // 并把"同文件连续占用"次数记到本轮，第二次直接拒绝继续重试。
+            if (r.lockBlocked) {
+              const lockKey = String(parsed.file || entry.currentFile || "").toLowerCase();
+              entry.officeLockFailures = entry.officeLockFailures || new Map();
+              const count = (entry.officeLockFailures.get(lockKey) || 0) + 1;
+              entry.officeLockFailures.set(lockKey, count);
+              const error = new Error(
+                `${detail || "文件被其他程序占用"}\n已自动执行 close 并重试一次仍失败（本文件本轮第 ${count} 次）。`
+                + (count >= 2
+                  ? "请停止重试，直接调用 ask_user 请用户保存并关闭 WPS/Word/Excel（或关闭预览窗口）后再继续。"
+                  : "请先调用 ask_user 请用户关闭该文档，再重试一次。"),
+              );
+              error.code = "OFFICE_DOCUMENT_LOCKED";
+              error.args = args.slice(0, 8);
+              error.lockFailures = count;
+              writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
+              throw error;
+            }
             const error = normalizeOfficeFailure(new Error(`Office CLI 执行失败（退出码 ${r.code}）：${detail}`), args, r);
             error.exitCode = r.code;
             writeEvent("officecli_failed", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, command: args.slice(0, 8), code: error.code, exitCode: r.code, message: detail });
@@ -2455,6 +2474,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.pendingCompletion = null;
     entry.turnCount = 0;
     entry.completionNudgeSent = false;
+    entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
     if (!isStreaming) {

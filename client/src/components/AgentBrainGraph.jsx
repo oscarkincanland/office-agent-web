@@ -16,8 +16,11 @@ const CATEGORY_ICON = { 读取: "file", 写入: "edit", 命令: "terminal", 分�
 
 const PHASE_LABEL = {
   idle: "等待",
+  planning: "理解任务",
   preparing: "理解任务",
   executing: "执行中",
+  verifying: "验收中",
+  delivering: "整理产物",
   finishing: "整理产物",
   done: "已完成",
   failed: "失败",

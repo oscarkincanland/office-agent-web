@@ -52,6 +52,7 @@ const REGISTRY = [
   { type: "write_rejected", lifecycle: true, persist: true, note: "写入被拒（含失败码）" },
   { type: "write_cleaned", lifecycle: true, persist: true, note: "临时产物清理" },
   { type: "artifact_staged", lifecycle: true, persist: true, note: "产物暂存" },
+  { type: "artifacts_validated", lifecycle: true, persist: true, note: "产物验收结果（发布前预检）" },
   { type: "artifact_materialized", lifecycle: true, persist: true, note: "产物落盘发布" },
   { type: "artifact_published", lifecycle: true, persist: true, note: "产物固定/发布" },
   { type: "artifact_rolled_back", lifecycle: true, persist: true, note: "产物回滚" },

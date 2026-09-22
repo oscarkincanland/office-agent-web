@@ -60,4 +60,4 @@ await test("同 Run 重入仍然计数正确", async () => {
 
 fs.rmSync(workspace, { recursive: true, force: true });
 console.log(failed ? "\n写锁并发测试：存在失败" : "\n写锁并发测试：全部通过");
-process.exit(failed);
+process.exitCode = failed ? 1 : 0;
