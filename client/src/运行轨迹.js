@@ -38,6 +38,8 @@ export function createRunTrace(runId = null) {
     tools: [],
     files: [],
     errors: [],
+    todos: [],
+    verification: null,
     completion: null,
     startedAt: null,
     endedAt: null,
@@ -159,6 +161,16 @@ export function applyRunTraceEvent(trace, event) {
     case "agent_error":
       trace.errors.push({ message: String(data.message || "模型调用失败").slice(0, 300), at, type });
       break;
+    case "todo_updated": {
+      // 计划进度：最后一次完整快照即当前计划（服务端每次提交完整清单）
+      const items = Array.isArray(data.items) ? data.items : [];
+      trace.todos = items.map((item, index) => ({
+        id: String(item?.id || `t${index + 1}`),
+        title: String(item?.title || "").slice(0, 120),
+        status: String(item?.status || "planned"),
+      }));
+      break;
+    }
     case "task_completed":
       if (data.status) {
         trace.completion = {
@@ -178,6 +190,8 @@ export function applyRunTraceEvent(trace, event) {
     case "run_finished": {
       trace.endedAt = at;
       const status = String(data.status || "completed");
+      // 验收状态：发布前预检 + 显式校验的结果，未检查时如实显示
+      trace.verification = data.verificationStatus || trace.verification || "not_checked";
       // 服务端 run_finished 携带的 completion 是权威结果（显式或推断），优先采用；
       // 旧服务端没有该字段时才本地推断。
       if (data.completion && typeof data.completion === "object" && data.completion.status) {
@@ -220,12 +234,15 @@ export function reduceRunTrace(events = [], runId = null) {
   return trace;
 }
 
-/** 折叠态聚合统计：工具数量、成功/失败/执行中、文件与错误计数。 */
+/** 折叠态聚合统计：工具数量、成功/失败/执行中、文件与错误计数、计划进度与验收。 */
 export function summarizeRunTrace(trace) {
   const tools = trace?.tools || [];
   const ok = tools.filter((tool) => tool.status === "done" && !tool.isError).length;
   const failed = tools.filter((tool) => tool.status === "done" && tool.isError).length;
   const running = tools.filter((tool) => tool.status !== "done").length;
+  const todos = trace?.todos || [];
+  const todoDone = todos.filter((todo) => todo.status === "completed").length;
+  const todoUnfinished = todos.filter((todo) => !["completed", "skipped"].includes(todo.status)).length;
   return {
     toolTotal: tools.length,
     toolOk: ok,
@@ -233,12 +250,26 @@ export function summarizeRunTrace(trace) {
     toolRunning: running,
     fileCount: (trace?.files || []).length,
     errorCount: (trace?.errors || []).length,
+    todoTotal: todos.length,
+    todoDone,
+    todoUnfinished,
+    verification: trace?.verification || "not_checked",
     completion: trace?.completion || null,
     phase: trace?.phase || "idle",
   };
 }
 
-/** 折叠态一行摘要，例如：已调用 6 个工具 · 5 成功 · 1 执行中 · 2 个文件变更 */
+/** 验收状态文案：与产物验证（发布前预检、显式校验）保持一致。 */
+export function verificationLabel(status) {
+  return {
+    passed: "验收通过",
+    warning: "验收有提示",
+    failed: "验收失败",
+    not_checked: "未验收",
+  }[String(status || "not_checked")] || "未验收";
+}
+
+/** 折叠态一行摘要，例如：已调用 6 个工具 · 5 成功 · 待办 3/4 · 验收通过 · 2 个文件变更 */
 export function runTraceSummaryText(trace) {
   const stats = summarizeRunTrace(trace);
   const parts = [];
@@ -250,8 +281,13 @@ export function runTraceSummaryText(trace) {
     if (stats.toolRunning) details.push(`${stats.toolRunning} 执行中`);
     if (details.length) parts.push(details.join(" · "));
   }
+  if (stats.todoTotal) {
+    parts.push(`待办 ${stats.todoDone}/${stats.todoTotal}${stats.todoUnfinished ? `（未完成 ${stats.todoUnfinished}）` : ""}`);
+  }
   if (stats.fileCount) parts.push(`${stats.fileCount} 个文件变更`);
   if (stats.errorCount) parts.push(`${stats.errorCount} 次错误`);
+  // 验收只在有产物或明确校验过时展示，避免每个纯问答回合都写"未验收"
+  if (stats.fileCount || stats.verification !== "not_checked") parts.push(verificationLabel(stats.verification));
   if (stats.completion) parts.push(completionLabel(stats.completion.status));
   return parts.join(" · ");
 }

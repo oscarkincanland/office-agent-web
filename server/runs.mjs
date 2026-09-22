@@ -8,11 +8,13 @@ import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
 import {
   discardStagedRun,
   ensureRunStaging,
+  listStagedFilesForValidation,
   publishStagedRun,
   reclaimStaleWriteLocks,
   releaseRunLocks,
   withWriteLock,
 } from "./写入协调.mjs";
+import { validateArtifactFile } from "./产物验证.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
@@ -531,7 +533,20 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
   });
   let finalStatus = status;
   let finalError = error;
-  const validationList = Array.isArray(validations) ? validations : [];
+  let validationList = Array.isArray(validations) ? validations : [];
+  // 发布前自动验收：对暂存产物做一次结构校验（非空、Office/PDF 容器签名、JSON 可解析），
+  // 结果并入 run.validations。这样"产物是否可用"不再只依赖模型自觉声明：
+  // 校验失败的文件不会发布，全部失败时 Run 落为 failed（下面的既有逻辑处理）。
+  if (finalStatus === "completed") {
+    try {
+      const keyOf = (value) => String(value || "").replace(/\\/g, "/");
+      const already = new Set(validationList.map((item) => keyOf(item?.path)));
+      const prechecks = listStagedFilesForValidation(run.id)
+        .filter((item) => !already.has(keyOf(item.path)))
+        .map((item) => ({ ...validateArtifactFile(item.file, item.root, item.path), source: "publish_precheck" }));
+      if (prechecks.length) validationList = [...validationList, ...prechecks];
+    } catch { /* 预检失败不阻断发布流程，交给原有校验体系 */ }
+  }
   const effectivePublishPaths = publishPaths ?? (validationList.some((item) => item?.status === "failed")
     ? validationList.filter((item) => item?.status !== "failed").map((item) => item?.path).filter(Boolean)
     : null);
@@ -596,6 +611,22 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.summary = summary || (artifacts.length ? `本轮处理 ${artifacts.length} 个文件${verificationNote}` : "本轮未产生文件变更");
     // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
     if (completion && typeof completion === "object") run.completion = completion;
+    // 计划漂移收口：收尾时仍有未完成待办时，写进 completion.incomplete 并如实降级，
+    // 避免"计划没做完"却报告 success。
+    const unfinishedTodos = (Array.isArray(run.todos) ? run.todos : [])
+      .filter((todo) => !["completed", "skipped"].includes(String(todo?.status || "")));
+    if (unfinishedTodos.length && run.completion && typeof run.completion === "object") {
+      const titles = unfinishedTodos
+        .map((todo) => String(todo?.title || todo?.id || "").trim())
+        .filter(Boolean)
+        .slice(0, 10);
+      run.completion = {
+        ...run.completion,
+        status: run.completion.status === "success" ? "partial" : run.completion.status,
+        incomplete: [...new Set([...(Array.isArray(run.completion.incomplete) ? run.completion.incomplete : []), ...titles])].slice(0, 12),
+        todoNote: `收尾时仍有 ${unfinishedTodos.length} 项待办未完成`,
+      };
+    }
     run.finishedAt = new Date().toISOString();
     run.events = Array.isArray(run.events) ? run.events : [];
     run.steps = Array.isArray(run.steps) ? run.steps : [];
@@ -627,7 +658,18 @@ export function recoverActiveRuns({ onlyIds = null } = {}) {
   const recovered = [];
   for (const name of fs.readdirSync(RUNS_DIR).filter((item) => item.endsWith(".json"))) {
     const run = loadRun(path.basename(name, ".json"));
-    if (!run || !ACTIVE_RUN_STATUSES.has(run.status) || run.status === "recovering") continue;
+    if (!run || !ACTIVE_RUN_STATUSES.has(run.status)) continue;
+    // 上次重启已经标记为 recovering、这次重启仍然挂着：说明用户没有再继续它，
+    // 按失败收尾（discard staging + 补 run_finished），避免 run_started 永远没有终态。
+    if (run.status === "recovering") {
+      const finished = finishRun(run.id, {
+        status: "failed",
+        error: run.error || "服务重启两次后未被恢复，任务已终止",
+        summary: "任务在服务重启后未被继续，已自动收尾",
+      });
+      if (finished) recovered.push(`${run.id}(收尾)`);
+      continue;
+    }
     if (allowList && !allowList.has(run.id)) continue;
     run.status = "recovering";
     run.recovery = { required: true, reason: "服务重启后需要用户确认继续", detectedAt: new Date().toISOString() };

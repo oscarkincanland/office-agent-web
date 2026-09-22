@@ -1,5 +1,3 @@
-import crypto from "node:crypto";
-
 /**
  * Event Protocol V2：统一事件信封、通道代际与生命周期/增量分层。
  *
@@ -10,28 +8,15 @@ import crypto from "node:crypto";
  * 同时：token/thinking/tool_output 属于高频增量，历史窗口溢出时它们应
  * 先被淘汰；工具边界、错误、终态等生命周期事件必须保留，保证断线回放
  * 能重建完整执行轨迹。
+ *
+ * 事件清单本身来自 ./事件注册表.mjs（唯一事实来源），本文件只保留协议逻辑。
  */
+import crypto from "node:crypto";
+import { DELTA_EVENT_TYPES, LIFECYCLE_EVENT_TYPES } from "./事件注册表.mjs";
 
 export const PROTOCOL_VERSION = 2;
 
-/** 生命周期事件：语义必须完整保留，不允许被高频增量挤出历史窗口。 */
-export const LIFECYCLE_EVENT_TYPES = new Set([
-  "run_admitting", "run_admitted", "capability_plan", "mode_policy", "thinking_level",
-  "agent_started", "turn_started", "turn_ended", "message_start", "message_end",
-  "tool_start", "tool_end",
-  "write_started", "write_locked", "write_rejected", "artifact_staged",
-  "artifact_materialized", "write_cleaned",
-  "ask_user", "tool_approval_request", "tool_approval_resolved",
-  "agent_retry", "agent_retry_end", "agent_model_fallback", "agent_model_fallback_failed",
-  "context_compacting", "context_compacted", "context_compact_warning",
-  "agent_error", "agent_turn_end", "file_changed", "agent_summary",
-  "assistant_final", "agent_end", "run_finished", "aborted",
-  "agent_queued", "agent_queue_update", "steer", "todo_updated", "officecli_failed",
-  "stats",
-]);
-
-/** 高频增量事件：仅用于实时渲染，允许有限窗口，可被优先淘汰。 */
-export const DELTA_EVENT_TYPES = new Set(["token", "thinking", "tool_output"]);
+export { DELTA_EVENT_TYPES, LIFECYCLE_EVENT_TYPES };
 
 /** 通道历史默认上限（生命周期为主，增量可淘汰）。 */
 export const CHANNEL_HISTORY_LIMIT = 4000;

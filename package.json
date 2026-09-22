@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "private": true,
   "description": "Web-based planning workbench with AI agent (规聚)",
   "type": "module",
@@ -37,7 +37,8 @@
     "map:m2-data": "node scripts/生成M2数据.mjs",
     "setup": "node scripts/install-officecli.mjs",
     "test:write-lock": "node scripts/写入锁并发测试.mjs",
-    "test:repeat-guard": "node scripts/重复调用抑制测试.mjs"
+    "test:repeat-guard": "node scripts/重复调用抑制测试.mjs",
+    "test:event-registry": "node scripts/事件注册表测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

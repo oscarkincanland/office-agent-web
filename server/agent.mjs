@@ -239,6 +239,13 @@ function searchLocalSkills(query = "", limit = 12) {
 const APP_PROMPT_RETRY_DELAYS = [2000, 6000, 15000];
 const SETTLED_AGENT_RETRY_DELAYS = [1500, 5000, 12000];
 const MODEL_FALLBACK_LIMIT = 2;
+// 收尾强制完成声明：本轮确实调用过工具、但没有 complete_task 时，追加一个短回合
+// 让模型显式声明完成状态（否则 Run 只能靠推断，用户无法区分"回答完了"与"任务完成了"）。
+const COMPLETION_NUDGE_PROMPT =
+  "系统提醒：本轮工具执行已经结束，但还没有声明完成状态。请立即调用 complete_task，如实填写 status（success/partial/blocked/failed）、summary、未完成项 incomplete 或阻塞原因 blockers、以及验证方式 verification。不要再执行新的工具调用，也不要扩展任务范围。";
+// 轮次软预算：长任务到点先给阶段结论，避免 50+ 轮无汇报地跑下去。
+const TURN_BUDGET_SOFT = 25;
+const TURN_BUDGET_HARD = 45;
 
 /**
  * 同参数重复调用抑制。
@@ -1855,7 +1862,8 @@ execute: async (_toolCallId, params) => {
         if (!completion) {
           return { content: [{ type: "text", text: "完成状态无效：status 必须是 success/partial/blocked/failed 且 summary 非空。" }], isError: true };
         }
-        entry.pendingCompletion = completion;
+        // 打上 Run 标记：同一会话上一轮的完成声明不能串到本轮
+        entry.pendingCompletion = { ...completion, runId: entry.activeRunId || null };
         emitChannelSafe(entry, "task_completed", { ...completion, runId: entry.activeRunId || null });
         const label = completionStatusLabel(completion.status);
         return {
@@ -1991,7 +1999,18 @@ execute: async (_toolCallId, params) => {
           emit("agent_started", {});
           break;
         case "turn_start":
+          if (entry) entry.turnCount = Number(entry.turnCount || 0) + 1;
           emit("turn_started", { turnIndex: ev.turnIndex ?? null });
+          // 轮次软预算：到点提醒模型先给阶段结论，必要时问用户是否继续
+          if (entry && entry.turnCount === TURN_BUDGET_SOFT) {
+            const notice = `[系统提醒] 本轮已经进行 ${TURN_BUDGET_SOFT} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），并用 ask_user 询问用户是否继续，不要无汇报地继续扩大范围。`;
+            emitChannelSafe(entry, "steer", { source: "turn-budget", message: notice, turnCount: entry.turnCount });
+            Promise.resolve(entry.session?.steer?.(notice)).catch(() => {});
+          } else if (entry && entry.turnCount === TURN_BUDGET_HARD) {
+            const notice = `[系统提醒] 本轮已经进行 ${TURN_BUDGET_HARD} 个模型回合，已明显超出常规预算。请立即收尾：总结当前结果、把未完成项写入 complete_task 的 incomplete，并调用 complete_task 结束本轮，剩余工作交给用户决定是否新开一轮。`;
+            emitChannelSafe(entry, "steer", { source: "turn-budget-hard", message: notice, turnCount: entry.turnCount });
+            Promise.resolve(entry.session?.steer?.(notice)).catch(() => {});
+          }
           break;
         case "turn_end":
           emit("turn_ended", { turnIndex: ev.turnIndex ?? null, toolCount: Array.isArray(ev.toolResults) ? ev.toolResults.length : 0 });
@@ -2432,6 +2451,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.busy = true;
     entry.references = Array.isArray(references) ? references : [];
     entry.activeRunId = runContext?.runId || null;
+    // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
+    entry.pendingCompletion = null;
+    entry.turnCount = 0;
+    entry.completionNudgeSent = false;
     entry.task = runContext?.task || null;
     entry.mode = normalizeTaskMode(runContext?.task?.mode || entry.mode || "agent");
     if (!isStreaming) {
@@ -2736,6 +2759,27 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       const settledError = entry.lastSettledError;
       entry.lastSettledError = null;
       if (settledError) throw createSettledAgentError(settledError);
+      // 收尾强制完成声明：本轮确实执行过工具、但没有调用 complete_task 时，追加一个
+      // 只做声明的短回合（每轮最多一次），让 Run 的完成语义可判定而不是靠推断。
+      if (!entry.pendingCompletion && entry.toolStarted && !entry.completionNudgeSent) {
+        entry.completionNudgeSent = true;
+        emitChannelSafe(entry, "completion_nudge", {
+          runId: entry.activeRunId,
+          message: "本轮工具执行已结束但未声明完成状态，已请求模型补充 complete_task",
+        });
+        try {
+          await piRuntimeManager.runPrompt(entry.runtimeId, async () => {
+            await promptWithFirstEventTimeout(entry, COMPLETION_NUDGE_PROMPT, {});
+          }, { steer: false, metadata: { clientId: entry.clientId, threadId: entry.threadId, runId: entry.activeRunId, purpose: "completion_nudge" } });
+        } catch (nudgeError) {
+          emitChannelSafe(entry, "agent_error", {
+            runId: entry.activeRunId,
+            message: `补充完成状态失败：${String(nudgeError?.message || nudgeError).slice(0, 200)}`,
+            code: "COMPLETION_NUDGE_FAILED",
+            retryable: false,
+          });
+        }
+      }
     } finally {
       const activeRunId = entry.activeRunId;
       if (activeRunId) {
@@ -2860,6 +2904,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         "- Word 批注必须先 get/query 找到真实 `/body/p[...]` 路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"...\\\" --json`，一次 get 只传一个路径，完成后 query comment 回读。sharing violation 或另一个进程占用才表示文件锁；Access denied、is denied、EPERM 或 EACCES 表示当前服务进程缺少系统写权限。",
           "- 完成时简要列出读取来源、修改文件、产物、假设和下一步；收尾必须调用 complete_task 声明 success/partial/blocked/failed。",
           "- 复杂任务先调用 todo 创建 2-6 项结构化待办；每完成一项就用完整快照更新 todo。只有稳定的新项目事实或偏好才提交 memory_update 建议。",
+          "- 计划触发条件（满足任一就必须先建计划再动手）：① 本轮会新增或修改文件；② 预计工具调用 ≥5 次；③ 涉及多份材料或多个相互依赖的步骤；④ 用户要求整理、审查、生成、批量处理。短问答与单次查询不要建计划。",
+          "- 收尾时若待办仍有未完成项，必须在 complete_task 的 incomplete 里逐条写明原因；系统会把未完成待办计入完成状态，不要用 success 掩盖半成品。",
         );
       }
       if (memCtx) lines.push("- 工作区记忆摘要：\n" + memCtx.slice(0, mode === "chat" ? 800 : 1500));

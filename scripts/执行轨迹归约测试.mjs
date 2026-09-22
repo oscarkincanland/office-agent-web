@@ -12,6 +12,7 @@ import {
   reduceRunTrace,
   runTraceSummaryText,
   summarizeRunTrace,
+  verificationLabel,
 } from "../client/src/运行轨迹.js";
 import { inferCompletion, normalizeCompletion } from "../server/运行轨迹.mjs";
 
@@ -151,6 +152,38 @@ test("折叠摘要包含工具统计与完成状态", () => {
   assert.match(text, /1 个文件变更/);
   assert.match(text, /部分完成/);
   assert.equal(completionLabel("blocked"), "受阻");
+});
+
+// ---------- 3.5 计划进度与验收（P0 摘要补齐）----------
+test("todo_updated 记录计划进度并进入折叠摘要", () => {
+  const trace = reduceRunTrace([
+    ev("todo_updated", { items: [
+      { id: "t1", title: "改标题", status: "completed" },
+      { id: "t2", title: "改表格", status: "in_progress" },
+      { id: "t3", title: "回读校验", status: "planned" },
+    ] }, 0),
+    ev("run_finished", { status: "completed" }, 1),
+  ]);
+  assert.equal(trace.todos.length, 3);
+  assert.equal(summarizeRunTrace(trace).todoDone, 1);
+  assert.equal(summarizeRunTrace(trace).todoUnfinished, 2);
+  const text = runTraceSummaryText(trace);
+  assert.match(text, /待办 1\/3/);
+  assert.match(text, /未完成 2/);
+});
+
+test("run_finished 的验收状态进入摘要与标签", () => {
+  const trace = reduceRunTrace([
+    ev("file_changed", { files: ["报告.md"] }, 0),
+    ev("run_finished", { status: "completed", verificationStatus: "failed" }, 1),
+  ]);
+  assert.equal(trace.verification, "failed");
+  assert.equal(verificationLabel("failed"), "验收失败");
+  const text = runTraceSummaryText(trace);
+  assert.match(text, /验收失败/);
+  // 纯问答（无产物、未检查）不显示"未验收"，避免噪音
+  const chatTrace = reduceRunTrace([ev("run_finished", { status: "completed" }, 0)]);
+  assert.doesNotMatch(runTraceSummaryText(chatTrace), /未验收/);
 });
 
 // ---------- 4. 服务端完成模块 ----------

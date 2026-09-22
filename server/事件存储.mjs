@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import { appendJsonLine, atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { PERSISTED_TYPES as PERSISTED_REGISTRY } from "./事件注册表.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EVENT_DIR = path.resolve(process.env.OAW_EVENT_DIR || path.join(PROJECT_DIR, ".oaw", "events"));
@@ -16,16 +17,8 @@ const EVENT_LOCK_TIMEOUT_MS = 3000;
 
 // token/thinking/tool_output 属于高频流式事件，仍由当前会话 SSE 实时发送，
 // 但不写入根级 Store，避免长任务把持久日志膨胀成不可用的副作用。
-const PERSISTED_TYPES = new Set([
-  "run_started", "run_recovered", "run_cancel_requested", "run_recovery_started",
-  "prompt", "capability_plan", "mode_policy", "tool_start", "tool_end", "ask_user",
-  "agent_retry", "agent_retry_end", "agent_error", "assistant_final", "agent_end",
-  "aborted", "context_compacted", "file_changed", "agent_summary", "step_updated", "artifact_published", "run_finished",
-  "write_started", "write_locked", "write_rejected", "artifact_staged", "artifact_materialized", "write_cleaned",
-  "memory_proposal_created", "memory_proposal_edited", "memory_proposal_rejected", "memory_proposal_approved",
-  "memory_proposal_merged", "memory_proposal_failed", "memory_written",
-  "memory_file_edited", "memory_initialized", "todo_updated", "officecli_failed",
-]);
+// 具体清单来自 ./事件注册表.mjs（唯一事实来源，新增事件必须登记）。
+const PERSISTED_TYPES = PERSISTED_REGISTRY;
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(0);

@@ -3210,8 +3210,10 @@ function otherRunsStagedPaths(currentRunId) {
 
 // 完成语义：显式 complete_task 优先；否则按 Run 终态推断（source:"inferred"），
 // 前端据此区分“回答结束”与“任务真正完成”。
-function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [] } = {}) {
-  const explicit = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
+function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [], runId = null } = {}) {
+  const pending = entry?.pendingCompletion && typeof entry.pendingCompletion === "object" ? entry.pendingCompletion : null;
+  // 完成声明必须属于当前 Run：同一会话上一轮的声明不能串到本轮（否则会误报 success）。
+  const explicit = pending && (!runId || !pending.runId || pending.runId === runId) ? pending : null;
   return explicit || inferCompletion({ runStatus, artifacts, validations });
 }
 
@@ -3249,7 +3251,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
     const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
     if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
     const cancelled = getRun(run.id)?.status === "cancel_requested";
-    const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations] });
+    const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
     const failed = finishRun(run.id, {
       status: cancelled ? "cancelled" : "failed",
       sessionId: entry?.session?.sessionId || null,
@@ -3543,7 +3545,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
       if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
       const cancelled = getRun(run.id)?.status === "cancel_requested";
-      const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations] });
+      const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
       if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)) });
     }
@@ -3605,7 +3607,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       summary: status === "cancelled" ? "恢复任务已取消" : (changed.length ? `恢复任务完成，共处理 ${changed.length} 个文件` : "恢复任务完成，未检测到文件变更"),
       validations: allValidations,
       publishPaths,
-      completion: resolveRunCompletion(entry, status, { artifacts: changed.length + publishableStagedValidations.length, validations: allValidations }),
+      completion: resolveRunCompletion(entry, status, { artifacts: changed.length + publishableStagedValidations.length, validations: allValidations, runId: run.id }),
     });
     const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
     if (productPaths.length) {
@@ -3629,7 +3631,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       sessionId: entry.session?.sessionId || run.sessionId,
       error: message,
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
-      completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", {}),
+      completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { runId: run.id }),
     });
     emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)) });
     return finished;
