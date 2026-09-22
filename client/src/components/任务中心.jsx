@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import Icon from "./Icon.jsx";
+import 跑马灯文本 from "./跑马灯文本.jsx";
 
 const ACTIVE = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 const statusText = {
@@ -44,7 +45,11 @@ function TaskCard({ run, selected, onSelect, projectName = "" }) {
     <button className={`task-center-item ${selected ? "selected" : ""}`} onClick={() => onSelect(run.id)}>
       <span className={`task-center-dot ${status}`} />
       <span className="task-center-item-main">
-        <span className="task-center-item-title">{taskTitle(run)}</span>
+        <跑马灯文本
+          text={taskTitle(run)}
+          active={ACTIVE.has(status)}
+          className="task-center-item-title"
+        />
       <span className="task-center-item-meta">{projectName ? `${projectName} · ` : ""}{modeText(run)} · {statusText[status] || status} · {progressText(run)}</span>
       </span>
       <Icon name="chevronRight" size={12} />

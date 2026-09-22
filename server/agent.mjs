@@ -11,13 +11,20 @@ import {
   createWriteToolDefinition,
   DefaultResourceLoader,
   defineTool,
+  PI_COMPACTION_POLICY,
   piRuntimeManager,
 } from "./Pi运行时管理.mjs";
 import { Type } from "typebox";
 import { AGENT_DIR, PROJECT_DIR, WORKSPACE_DIR, OFFICECLI, getWorkspace, normalizeWorkspace, isInside } from "./workspace.mjs";
+import {
+  TURN_PROGRESS_INTERVAL,
+  turnNoticeKind,
+  turnNoticeText,
+  turnBudgetPolicy,
+} from "./轮次预算.mjs";
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { recordRunEvent, updateRunTodo } from "./runs.mjs";
+import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 import { createDemoAnalysis } from "./map-analysis.mjs";
 import { atomicWriteFile, atomicWriteJson } from "./持久化工具.mjs";
@@ -243,9 +250,8 @@ const MODEL_FALLBACK_LIMIT = 2;
 // 让模型显式声明完成状态（否则 Run 只能靠推断，用户无法区分"回答完了"与"任务完成了"）。
 const COMPLETION_NUDGE_PROMPT =
   "系统提醒：本轮工具执行已经结束，但还没有声明完成状态。请立即调用 complete_task，如实填写 status（success/partial/blocked/failed）、summary、未完成项 incomplete 或阻塞原因 blockers、以及验证方式 verification。不要再执行新的工具调用，也不要扩展任务范围。";
-// 轮次软预算：长任务到点先给阶段结论，避免 50+ 轮无汇报地跑下去。
-const TURN_BUDGET_SOFT = 25;
-const TURN_BUDGET_HARD = 45;
+// 轮次预算与周期进度播报来自 server/轮次预算.mjs（唯一事实来源，含单测覆盖）：
+// TURN_BUDGET_SOFT/HARD = 25/45 关键点，TURN_PROGRESS_INTERVAL = 每 N 轮进度小结。
 
 /**
  * 同参数重复调用抑制。
@@ -282,7 +288,8 @@ export function noteRepeatedToolCall(entry, session, ev, emit) {
 const RESOURCE_RELOAD_INTERVAL_MS = 30000;
 const AUTO_COMPACT_PROMPT_CHARS = 90000;
 const UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS = 26000;
-const PI_COMPACTION_RESERVE_TOKENS = 16384;
+const PI_COMPACTION_RESERVE_TOKENS = PI_COMPACTION_POLICY.reserveTokens;
+const PI_COMPACTION_KEEP_RECENT_TOKENS = PI_COMPACTION_POLICY.keepRecentTokens;
 const AUTO_COMPACT_COOLDOWN_MS = 10000;
 const DEFAULT_CONTEXT_WINDOW = 1_000_000;
 const ESTIMATED_TOKENS_PER_CHAR = 3.5;
@@ -672,10 +679,32 @@ class AgentManager extends EventEmitter {
   }
 
   submitAnswer(clientId, answer) {
+    // 取消后仍停在 ask_user 等待回答时，继续执行会与取消意图相反：
+    // 这里直接把"已取消"作为回答回填，让模型收尾而不是继续扩大任务。
+    if (this.isRunStopping(clientId)) {
+      const live = this.askPending(clientId);
+      if (live) {
+        live("[系统提醒] 本轮任务已被用户取消，请立即停止执行，不要再调用工具，直接在正文里说明本轮已取消。");
+        return { ok: true, mode: "cancelled", cancelled: true };
+      }
+    }
     const live = this.askPending(clientId);
     if (live) { live(String(answer || "")); return { ok: true, mode: "live" }; }
     const recovered = resolvePendingAsk(clientId, String(answer || ""), "queued");
     return recovered ? { ok: true, mode: "queued", questionId: recovered.id } : { ok: false };
+  }
+
+  /** 当前 Run 是否已进入取消/终态：用于抑制提醒与停止 ask_user 后的继续执行。 */
+  isRunStopping(clientId) {
+    const entry = this.sessions.get(clientId);
+    const runId = entry?.activeRunId;
+    if (!runId) return false;
+    try {
+      const status = String(getRun(runId)?.status || "");
+      return ["cancel_requested", "cancelled", "aborted"].includes(status);
+    } catch {
+      return false;
+    }
   }
 
   memoryProposals(threadId = "", filters = {}) {
@@ -792,6 +821,8 @@ class AgentManager extends EventEmitter {
               "# Open Plan（规聚）Workspace",
               "",
               "- **工作区与当前文件**: 每轮对话的「动态上下文」消息已给出当前工作区绝对路径、当前工作文件与上下文文件路径（`.agent-context.<thread>.md` 是权威版本；旧版 `.agent-context.md` 可能被同工作区其他会话覆盖）。不要假设默认工作区路径，需要细节时 read 动态上下文中给出的那个文件。",
+              "- **表达语言（重要）**: 面向用户的正文回复、进度小结、待办标题，以及你的内部推理（thinking / reasoning）一律使用与用户相同的语言（默认中文）。工具名、代码、文件路径和专有名词保持原样；不要为了“显得专业”而把思考过程写成英文。",
+              "- **进度可见（重要）**: 长任务不要静默连续调用工具。每完成一个阶段（或收到系统进度提醒时），先在正文里用 2-3 行说明「已经完成什么 / 当前在做什么 / 下一步做什么」，再继续执行；阶段结论要具体（文件路径、数据、结论），不要写“正在处理中”这类空话。",
               "- ALWAYS operate on office documents through the `officecli` tool — it runs on Windows natively and resolves file names relative to the current workspace. NEVER try to run `officecli` via the bash tool.",
               "- The bash tool may run inside WSL: Windows paths like `F:\\...` are not directly valid there; prefer the officecli tool for documents and `read`/`write` for text.",
               "- **Word 批注**: 先用 `officecli get <file> /body --depth 3 --json` 或 `query <file> paragraph --json` 找到真实段落路径，再用 `add <file> /body/p[N] --type comment --prop author=\\\"规聚 Agent\\\" --prop initials=OA --prop text=\\\"批注内容\\\" --json` 写入；一次 get 只传一个 DOM 路径，完成后用 `query <file> comment --json` 回读校验。若错误明确为 sharing violation 或另一个进程占用，再提示关闭 WPS/Word/OfficeCLI 预览；若是 Access denied、is denied、EPERM 或 EACCES，应说明服务进程缺少系统写权限，不要尝试绕过沙箱。",
@@ -2020,15 +2051,16 @@ execute: async (_toolCallId, params) => {
         case "turn_start":
           if (entry) entry.turnCount = Number(entry.turnCount || 0) + 1;
           emit("turn_started", { turnIndex: ev.turnIndex ?? null });
-          // 轮次软预算：到点提醒模型先给阶段结论，必要时问用户是否继续
-          if (entry && entry.turnCount === TURN_BUDGET_SOFT) {
-            const notice = `[系统提醒] 本轮已经进行 ${TURN_BUDGET_SOFT} 个模型回合。请先给出一段阶段结论（已完成什么、还差什么、下一步计划），并用 ask_user 询问用户是否继续，不要无汇报地继续扩大范围。`;
-            emitChannelSafe(entry, "steer", { source: "turn-budget", message: notice, turnCount: entry.turnCount });
-            Promise.resolve(entry.session?.steer?.(notice)).catch(() => {});
-          } else if (entry && entry.turnCount === TURN_BUDGET_HARD) {
-            const notice = `[系统提醒] 本轮已经进行 ${TURN_BUDGET_HARD} 个模型回合，已明显超出常规预算。请立即收尾：总结当前结果、把未完成项写入 complete_task 的 incomplete，并调用 complete_task 结束本轮，剩余工作交给用户决定是否新开一轮。`;
-            emitChannelSafe(entry, "steer", { source: "turn-budget-hard", message: notice, turnCount: entry.turnCount });
-            Promise.resolve(entry.session?.steer?.(notice)).catch(() => {});
+          // 轮次提醒：周期进度小结（每 N 轮）+ 25/45 轮关键点，
+          // 判定与文案统一来自 server/轮次预算.mjs。
+          // 已请求取消的 Run 不再提醒——此时鼓励"汇报进度"会与收尾意图相反。
+          if (entry && !this.isRunStopping(entry.clientId)) {
+            const noticeKind = turnNoticeKind(entry.turnCount);
+            if (noticeKind) {
+              const notice = turnNoticeText(noticeKind, entry.turnCount, { interval: TURN_PROGRESS_INTERVAL });
+              emitChannelSafe(entry, "steer", { source: noticeKind, message: notice, turnCount: entry.turnCount });
+              Promise.resolve(entry.session?.steer?.(notice)).catch(() => {});
+            }
           }
           break;
         case "turn_end":
@@ -2082,6 +2114,7 @@ execute: async (_toolCallId, params) => {
             entry.toolStarted = true;
             entry.firstResponseReceived = true;
             entry.activeToolCount = Number(entry.activeToolCount || 0) + 1;
+            entry.runToolCount = Number(entry.runToolCount || 0) + 1;
           }
           // 工具调用开始：传递工具名 + 输入参数（pi SDK 字段是 args）
           emit("tool_start", {
@@ -2226,7 +2259,11 @@ execute: async (_toolCallId, params) => {
             entry.lastFinalText = entry.lastAssistantText;
             emit("assistant_final", { text: entry.lastAssistantText });
           }
-          emit("agent_end", {});
+          emit("agent_end", {
+            turns: Number(entry?.turnCount || 0),
+            tools: Number(entry?.runToolCount || 0),
+            durationMs: entry?.runStartedAt ? Math.max(0, Date.now() - entry.runStartedAt) : 0,
+          });
           entry.lastAgentError = null;
           entry.lastAssistantText = "";
           break;
@@ -2473,6 +2510,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
     entry.pendingCompletion = null;
     entry.turnCount = 0;
+    entry.runToolCount = 0;
+    entry.runStartedAt = Date.now();
     entry.completionNudgeSent = false;
     entry.officeLockFailures = new Map();
     entry.task = runContext?.task || null;
@@ -3021,6 +3060,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       compactionMode: compactionPolicy.mode,
       compactionEnabled: compactionPolicy.enabled,
       compactionReserveTokens: compactionPolicy.reserveTokens,
+      compactionKeepRecentTokens: compactionPolicy.mode === "pi-native" ? PI_COMPACTION_KEEP_RECENT_TOKENS : null,
+      // 轮次预算策略（进度播报间隔 + 25/45 关键点），设置页/诊断可直接读取
+      turnBudget: turnBudgetPolicy(),
     };
   }
 

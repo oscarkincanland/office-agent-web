@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import MapViewer from "./MapViewer.jsx";
 import ChatPanel from "./ChatPanel.jsx";
 import LayerPanel from "./LayerPanel.jsx";
@@ -1663,6 +1663,7 @@ export default function MapPanel({
         {/* 右栏：agent 对话；地图模式可由 App 提供同一个常驻 ChatPanel，避免切换地图时丢失消息流。 */}
         {!hideChat && <div className="mp-right" style={{ width: rightW, minWidth: rightW, maxWidth: rightW }}>
           <ChatPanel
+              compact
               clientId={clientId}
               threadId={threadId}
               workspace={workspace}

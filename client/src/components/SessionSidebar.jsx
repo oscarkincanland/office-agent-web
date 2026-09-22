@@ -7,6 +7,10 @@ import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
 import MemoryTab from "./MemoryTab.jsx";
 import SettingsPanel from "./SettingsPanel.jsx";
+import 跑马灯文本 from "./跑马灯文本.jsx";
+
+// 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
+const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 
 const FILE_TYPE_META = {
   docx: { label: "W", className: "word", title: "Word 文档" },
@@ -165,7 +169,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
     return (
     <div
       key={s.id}
-      className={`session-item ${selecting && selectedIds.has(s.id) ? "selected" : ""}`}
+      className={`session-item ${selecting && selectedIds.has(s.id) ? "selected" : ""} ${RUNNING_SESSION_STATUSES.has(s.runStatus) ? "is-running" : ""}`}
       onClick={() => selecting ? toggleSelected(s.id) : onSelect(s)}
       onMouseEnter={() => setActionsId(s.id)}
       onMouseLeave={() => setActionsId((id) => id === s.id ? null : id)}
@@ -195,7 +199,11 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
               {isPinned && <Icon name="pin" size={10} className="pin-icon" />}
               {s.frozen && <span className="session-frozen-mark" title="会话已冻结">冻结</span>}
               {s.parentSessionId && <span className="session-branch-mark" title={s.branchPurpose || "独立分支"}>分支</span>}
-              {s.title || s.label || "未命名会话"}
+              <跑马灯文本
+                text={s.title || s.label || "未命名会话"}
+                active={RUNNING_SESSION_STATUSES.has(s.runStatus)}
+                className="session-label-text"
+              />
             </span>
             <span className="session-time">
               {s.mode && <span className={`session-mode mode-${s.mode}`}>{s.mode === "chat" ? "Chat" : s.mode === "review" ? "Review" : s.mode === "office" ? "Office" : "Work"}</span>}
@@ -733,7 +741,14 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {projects.map((project) => (
             <div key={project.id} className={"sidebar-project-card " + (project.id === currentProjectId ? "active" : "")} role="button" tabIndex={0} onClick={() => onProjectChange?.(project.id)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onProjectChange?.(project.id); }}>
               <Icon name="folder" size={15} />
-              <span className="sidebar-project-main"><strong>{project.name}</strong><small>{project.type || "综合项目"} · {project.status || "进行中"}</small></span>
+              <span className="sidebar-project-main">
+                <跑马灯文本
+                  text={project.name}
+                  active={projectSessions(project).some((session) => RUNNING_SESSION_STATUSES.has(session.runStatus))}
+                  className="sidebar-project-name"
+                />
+                <small>{project.type || "综合项目"} · {project.status || "进行中"}</small>
+              </span>
               {project.pendingMemoryCount > 0 && <span className="sidebar-project-badge">待沉淀 {project.pendingMemoryCount}</span>}
               <span className="sidebar-project-count">会话 {project.sessionCount ?? projectSessions(project).length}</span>
               {project.id === currentProjectId && projectSessions(project).length > 0 && (
@@ -743,10 +758,14 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                     <button type="button" onClick={() => { setHistoryProjectId(project.id); setModal("history"); }}>查看全部</button>
                   </div>
                   {projectSessions(project).slice(0, 4).map((session) => (
-                    <div className="project-session-row" key={session.id}>
+                    <div className={"project-session-row " + (RUNNING_SESSION_STATUSES.has(session.runStatus) ? "is-running" : "")} key={session.id}>
                       <button type="button" className="project-session-open" onClick={() => onSelectSession?.(session)} title="打开会话">
                         <i data-status={session.runStatus || "idle"} />
-                        <span>{session.title || session.label || "未命名会话"}</span>
+                        <跑马灯文本
+                          text={session.title || session.label || "未命名会话"}
+                          active={RUNNING_SESSION_STATUSES.has(session.runStatus)}
+                          className="project-session-name"
+                        />
                         <small>{session.runStatus === "running" ? "执行中" : formatTime(session.modified)}</small>
                       </button>
                       <button type="button" className="project-session-edit" onClick={() => { setHistoryProjectId(project.id); setHistoryEditSessionId(session.id); setModal("history"); }} title="编辑会话名称" aria-label="编辑会话名称"><Icon name="penTool" size={11} /></button>

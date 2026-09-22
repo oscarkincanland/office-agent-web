@@ -8929,3 +8929,255 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-skin="glass"] .sp-opt.active {
   box-shadow: 0 7px 18px color-mix(in srgb, var(--accent) 18%, transparent);
 }
+
+/* ==========================================================================
+   v0.11.8 · 进度叙事与界面美化
+   1) 跑马灯文本（运行中会话/项目名滚动 + 流动高光）
+   2) 会话列表间隔与卡片化
+   3) 执行过程：进度行 + 系统提示聚合
+   4) 上下文预算浮层
+   5) 思考块视觉优化
+   6) 对话框与地图紧凑模式
+   ========================================================================== */
+
+/* ---------- 1. 跑马灯文本 ---------- */
+.marquee {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.marquee-inner {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.marquee.is-active .marquee-inner {
+  /* 流动高光：只有运行中的名字才有"灯效"，静止项保持普通文字 */
+  background-image: linear-gradient(
+    100deg,
+    currentColor 0%,
+    currentColor 34%,
+    color-mix(in srgb, var(--accent) 92%, #ffffff) 47%,
+    #7dd3fc 52%,
+    color-mix(in srgb, var(--accent) 92%, #ffffff) 57%,
+    currentColor 70%,
+    currentColor 100%
+  );
+  background-size: 260% 100%;
+  background-position: 140% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: marquee-shine 2.8s linear infinite;
+}
+.marquee.is-scrolling .marquee-inner {
+  display: inline-block;
+  width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+  animation: marquee-scroll var(--marquee-duration, 8s) ease-in-out infinite alternate;
+}
+.marquee.is-active.is-scrolling .marquee-inner {
+  animation:
+    marquee-scroll var(--marquee-duration, 8s) ease-in-out infinite alternate,
+    marquee-shine 2.8s linear infinite;
+}
+@keyframes marquee-shine {
+  0% { background-position: 140% 0; }
+  100% { background-position: -40% 0; }
+}
+@keyframes marquee-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(var(--marquee-shift, -40px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee.is-active .marquee-inner,
+  .marquee.is-scrolling .marquee-inner,
+  .marquee.is-active.is-scrolling .marquee-inner { animation: none; }
+  .marquee.is-active .marquee-inner { background-image: none; -webkit-text-fill-color: currentColor; }
+}
+.session-label-text, .project-session-name, .sidebar-project-name, .task-center-item-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* ---------- 2. 会话列表：卡片化 + 间隔 ---------- */
+.session-group { margin-bottom: 6px; }
+.session-group-title { padding: 4px 10px 2px; }
+.session-item {
+  margin: 0 6px 6px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  border-bottom: 1px solid transparent;
+  transition: background .16s ease, border-color .16s ease, transform .16s ease;
+}
+.session-item:hover {
+  border-color: color-mix(in srgb, var(--border) 90%, transparent);
+  background: color-mix(in srgb, var(--selected) 88%, transparent);
+}
+.session-item.selected { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.session-item .session-indicator { border-radius: 3px; }
+.session-label { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* 运行中的会话：左侧指示条 + 卡片边框跟着呼吸，和名字灯效呼应 */
+.session-item.is-running,
+.session-item:has(.marquee.is-active) {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.session-item.is-running .session-indicator[data-status="running"],
+.session-item:has(.marquee.is-active) .session-indicator[data-status="running"] { animation: session-pulse 1.9s ease-in-out infinite; }
+@keyframes session-pulse {
+  0%, 100% { opacity: .55; box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+  50% { opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+}
+/* 左侧栏「最近会话」行：同样给运行中的行留出间隔与高亮 */
+.project-session-row {
+  margin-bottom: 3px;
+  padding: 0 2px;
+  border-radius: 7px;
+  transition: background .16s ease;
+}
+.project-session-row:hover { background: color-mix(in srgb, var(--selected) 80%, transparent); }
+.project-session-row.is-running,
+.project-session-row:has(.marquee.is-active) { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.project-session-open { padding: 6px 4px; }
+
+/* ---------- 3. 执行过程：进度行 + 系统提示聚合 ---------- */
+.execution-flow-progress {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 26px;
+  padding: 4px 10px 6px 11px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.efp-pulse {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-breathe 1.5s ease-in-out infinite;
+}
+.efp-phase {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 9px;
+}
+.efp-items { flex: 0 0 auto; color: var(--dim); }
+.efp-note {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.execution-flow-progress.phase-verifying .efp-phase { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); color: var(--warning); }
+.execution-flow-progress.phase-delivering .efp-phase { border-color: color-mix(in srgb, var(--success) 45%, var(--border)); color: var(--success); }
+.execution-flow-notes { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.efn-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  text-align: left;
+}
+.efn-toggle:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.efn-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+}
+.efn-chevron { margin-left: auto; color: var(--accent); font-family: monospace; }
+.efn-list { padding: 2px 10px 8px; }
+.efn-item {
+  display: flex;
+  gap: 6px;
+  padding: 3px 0;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 70%, transparent);
+  color: var(--muted);
+  font-size: 9px;
+}
+.efn-item:first-child { border-top: 0; }
+.efn-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.efn-count { flex: 0 0 auto; color: var(--accent); }
+.efn-item.kind-compact .efn-text { color: var(--warning); }
+.efn-item.kind-progress .efn-text { color: var(--accent); }
+
+/* ---------- 4. 上下文预算浮层 ---------- */
+.context-ring-meter { position: relative; }
+.context-ring-marker {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--warning);
+  transform: translateX(-1px);
+}
+.context-ring-budget {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 9px;
+}
+.crb-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.crb-row b { color: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.crb-hint { margin: 1px 0 4px; color: var(--dim); font-size: 9px; line-height: 1.5; }
+
+/* ---------- 5. 思考块：更克制的排版 ---------- */
+.thinking-block {
+  border-left-width: 2px;
+  border-left-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 7px;
+}
+.thinking-header { gap: 7px; }
+.thinking-label { letter-spacing: .3px; }
+.thinking-text {
+  color: color-mix(in srgb, var(--muted) 92%, transparent);
+  font-style: normal;
+  font-size: 10.5px;
+  line-height: 1.62;
+  letter-spacing: .1px;
+}
+.thinking-block.expanded .thinking-text { border-top: 1px dashed color-mix(in srgb, var(--border) 75%, transparent); }
+.thinking-block:hover { border-left-color: var(--accent); }
+
+/* ---------- 6. 对话框：间距与层次 ---------- */
+.chat-body { scroll-behavior: smooth; }
+.msg + .msg { margin-top: 2px; }
+.msg .bubble { border-radius: 10px; }
+.msg.user .bubble { border-radius: 12px 12px 4px 12px; }
+.msg.system .bubble { border-radius: 999px; padding: 5px 12px; }
+.chat-compact .chat-head { padding: 6px 9px; }
+.chat-compact .chat-head .doc-hint,
+.chat-compact .chat-head .chat-project-badge { display: none; }
+.chat-compact .task-status-bar { padding: 3px 9px; font-size: 10px; }
+.chat-compact .task-status-bar code,
+.chat-compact .task-status-bar .task-mode-meta { display: none; }
+.chat-compact .chat-stream-shell { padding: 0 6px; }
+.chat-compact .chat-body { padding: 8px 8px 4px; }
+.chat-compact .msg { font-size: 12px; }
+.chat-compact .bubble { max-width: 94%; }
+.chat-compact .chat-input { padding: 6px 8px; }

@@ -43,6 +43,10 @@ export function createRunTrace(runId = null) {
     files: [],
     errors: [],
     todos: [],
+    // 进度叙事：模型回合数、周期进度小结（steer）与耗时，供「执行过程」头行展示
+    turns: 0,
+    notes: [],
+    durationMs: null,
     verification: null,
     completion: null,
     startedAt: null,
@@ -98,6 +102,24 @@ export function applyRunTraceEvent(trace, event) {
       if (!trace.startedAt) trace.startedAt = at;
       setPhase(trace, "planning", at);
       break;
+    case "turn_started":
+      // 模型回合计数：进度行用它表达"第 N 轮"，跨实时流与历史回放一致
+      trace.turns = Number(trace.turns || 0) + 1;
+      break;
+    case "steer": {
+      // 周期进度播报与轮次预算提醒：作为进度时间线上的里程碑保留
+      const source = String(data.source || "user");
+      if (source === "turn-progress" || source.startsWith("turn-budget")) {
+        trace.notes.push({
+          id: `${source}:${data.turnCount ?? trace.turns}:${String(data.message || "").slice(0, 40)}`,
+          source,
+          message: String(data.message || "").slice(0, 300),
+          turnCount: Number(data.turnCount || trace.turns || 0),
+          at,
+        });
+      }
+      break;
+    }
     case "capability_plan":
     case "mode_policy":
       if (!trace.startedAt) trace.startedAt = at;
@@ -216,9 +238,16 @@ export function applyRunTraceEvent(trace, event) {
       break;
     case "agent_end":
       if (!trace.completion) advancePhase(trace, "delivering", at);
+      // 服务端 agent_end 带上本轮轮次/工具/耗时；旧服务端没有该字段时保留本地统计
+      if (Number(data.turns) > 0) trace.turns = Math.max(Number(trace.turns || 0), Number(data.turns));
+      if (Number(data.durationMs) > 0) trace.durationMs = Number(data.durationMs);
       break;
     case "run_finished": {
       trace.endedAt = at;
+      if (!(Number(trace.durationMs) > 0) && trace.startedAt) {
+        const ms = new Date(at).getTime() - new Date(trace.startedAt).getTime();
+        if (Number.isFinite(ms) && ms > 0) trace.durationMs = ms;
+      }
       const status = String(data.status || "completed");
       // 验收状态：发布前预检 + 显式校验的结果，未检查时如实显示
       trace.verification = data.verificationStatus || trace.verification || "not_checked";
@@ -283,10 +312,42 @@ export function summarizeRunTrace(trace) {
     todoTotal: todos.length,
     todoDone,
     todoUnfinished,
+    turns: Number(trace?.turns || 0),
+    noteCount: (trace?.notes || []).length,
+    durationMs: Number(trace?.durationMs || 0),
+    startedAt: trace?.startedAt || null,
     verification: trace?.verification || "not_checked",
     completion: trace?.completion || null,
     phase: trace?.phase || "idle",
   };
+}
+
+/** 耗时文案：45 秒 / 3 分 12 秒 / 1 小时 2 分 */
+export function formatDuration(ms) {
+  const total = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  if (total < 60) return `${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 60) return seconds ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时 ${minutes % 60} 分`;
+}
+
+/**
+ * 运行中进度行：阶段 · 第 N 轮 · 工具 M · 待办 x/y · 用时。
+ * 与折叠摘要互补——摘要讲"做了什么"，进度行讲"现在到哪一步"。
+ */
+export function runTraceProgressText(trace, { now = Date.now(), running = false } = {}) {
+  const stats = summarizeRunTrace(trace);
+  const parts = [];
+  if (stats.turns) parts.push(`第 ${stats.turns} 轮`);
+  if (stats.toolTotal) parts.push(`工具 ${stats.toolTotal}`);
+  if (stats.todoTotal) parts.push(`待办 ${stats.todoDone}/${stats.todoTotal}`);
+  const startedAt = stats.startedAt ? new Date(stats.startedAt).getTime() : 0;
+  const elapsed = running && startedAt ? now - startedAt : stats.durationMs;
+  if (elapsed > 0) parts.push(`用时 ${formatDuration(elapsed)}`);
+  if (stats.noteCount) parts.push(`进度小结 ${stats.noteCount} 次`);
+  return parts.join(" · ");
 }
 
 /** 验收状态文案：与产物验证（发布前预检、显式校验）保持一致。 */

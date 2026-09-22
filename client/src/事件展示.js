@@ -147,7 +147,13 @@ export function flowEventLabel(event) {
       const checked = Number(data.checked || 0);
       return data.status === "failed" ? `产物验收失败（${failed}/${checked}）` : `产物验收通过（${checked} 项）`;
     }
-    case "steer": return "插入新指令";
+    case "steer": {
+      const source = String(data.source || "user");
+      if (source === "turn-progress") return `进度播报提醒（第 ${data.turnCount || "?"} 轮）`;
+      if (source === "turn-budget-hard") return "轮次预算用尽提醒";
+      if (source === "turn-budget") return "阶段结论提醒";
+      return "插入新指令";
+    }
     case "tool_repeat_warning": return `重复调用提醒：${data.name || "工具"} 第 ${data.count || 3} 次`;
     case "completion_nudge": return "补充完成状态";
     case "tool_start": return `调用 ${toolLabel}`;

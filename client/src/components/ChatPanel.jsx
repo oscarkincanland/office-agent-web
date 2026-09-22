@@ -6,7 +6,7 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, reduceRunTrace, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
+import { completionLabel, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace } from "../运行轨迹.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -52,7 +52,10 @@ const THINKING_KEY = "oaw_thinking_level";
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
 const EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
 const DEFAULT_CONTEXT_WINDOW = 128000;
+// 与服务端 Pi 压缩策略保持一致（server/Pi运行时管理.mjs 的 PI_COMPACTION_POLICY）：
+// 服务端快照没返回时用作展示兜底，不代表新策略。
 const PI_COMPACTION_RESERVE_TOKENS = 16384;
+const PI_COMPACTION_KEEP_RECENT_TOKENS = 20000;
 const LIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested", "finishing"]);
 const MAX_VISIBLE_MESSAGES = 120;
 const MESSAGE_PAGE_SIZE = 80;
@@ -340,7 +343,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -406,6 +409,23 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     }, 80);
   }, [replaceExecutionEvents]);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  // 本轮系统提示（上下文压缩 / 文件变更等）：聚合为一条可展开摘要，
+  // 不再往对话流里逐条堆气泡——那些气泡既不会随回合结束清理，刷新回放时还会重复出现。
+  const [systemNotes, setSystemNotes] = useState([]);
+  const pushSystemNote = useCallback((note) => {
+    const key = String(note?.key || "").trim();
+    if (!key) return;
+    setSystemNotes((list) => {
+      const index = list.findIndex((item) => item.key === key);
+      if (index >= 0) {
+        const next = [...list];
+        next[index] = { ...next[index], ...note, count: Number(next[index].count || 1) + 1 };
+        return next;
+      }
+      return [...list, { ...note, count: 1 }].slice(-40);
+    });
+  }, []);
+  const clearSystemNotes = useCallback(() => setSystemNotes([]), []);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
@@ -476,6 +496,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     ? Number(runState.usage.compactThreshold)
     : Math.max(0, selectedContextWindow - PI_COMPACTION_RESERVE_TOKENS);
   const selectedCompactionMode = runState.usage?.compactionMode || "pi-native";
+  // 压缩预算明细：预留空间与"压缩后保留最近多少"，用于浮层里解释压缩线怎么来的
+  const selectedCompactionReserve = Number(runState.usage?.compactionReserveTokens) > 0
+    ? Number(runState.usage.compactionReserveTokens)
+    : PI_COMPACTION_RESERVE_TOKENS;
+  const selectedCompactionKeepRecent = Number(runState.usage?.compactionKeepRecentTokens) > 0
+    ? Number(runState.usage.compactionKeepRecentTokens)
+    : PI_COMPACTION_KEEP_RECENT_TOKENS;
   const modelGroups = useMemo(() => {
     const query = modelQ.trim().toLowerCase();
     const groups = new Map();
@@ -1260,6 +1287,8 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
           snapshotUsage.compactThreshold = snapshot.compactThreshold;
           snapshotUsage.compactionMode = snapshot.compactionMode;
           snapshotUsage.compactThresholdSource = snapshot.compactThresholdSource;
+          snapshotUsage.compactionReserveTokens = snapshot.compactionReserveTokens;
+          snapshotUsage.compactionKeepRecentTokens = snapshot.compactionKeepRecentTokens;
           setRunState((s) => (s.usage ? s : { ...s, usage: snapshotUsage }));
         }
       } catch {}
@@ -1462,6 +1491,8 @@ case "runtime_connecting":
       case "run_admitted":
         setAgentPhase("任务已受理");
         if (data.runId) setRunState((s) => ({ ...s, runId: data.runId }));
+        // 新的一轮任务开始：上一轮的系统提示摘要不再跟随，避免长期堆在顶部
+        clearSystemNotes();
         break;
       case "model_request_started":
         setAgentPhase("正在请求模型");
@@ -1738,15 +1769,32 @@ case "runtime_connecting":
             usage: estimated > 0
               ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, context: estimated }
               : null,
+            compaction: {
+              count: Number(s.compaction?.count || 0) + 1,
+              automatic: !!data.automatic,
+              tokensBefore: Number(data.tokensBefore || 0),
+              tokensAfter: estimated,
+              at: envelope.at || new Date().toISOString(),
+            },
           };
         });
-        pushSystem(`${data.automatic ? "上下文达到预算，已自动压缩" : "上下文已压缩"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}。`, `context_compacted:${envelope.id || data.runId || envelope.at || "session"}`);
+        pushSystemNote({
+          key: "compact",
+          kind: "compact",
+          text: `${data.automatic ? "已自动压缩上下文" : "已压缩上下文"}${data.tokensBefore ? `（压缩前约 ${Number(data.tokensBefore).toLocaleString()} tokens）` : ""}`,
+        });
         break;
       case "context_compacting":
-        pushSystem("当前会话上下文较长，正在压缩重复过程信息…", `context_compacting:${envelope.id || data.runId || envelope.at || "session"}`);
+        setAgentPhase("正在压缩上下文");
+        pushSystemNote({ key: "compact", kind: "compact", text: "上下文较长，正在压缩重复过程信息…", pending: true });
         break;
       case "context_compact_warning":
-        pushSystem(`自动压缩未完成：${data.message || "将继续使用当前上下文"}`, `context_compact_warning:${envelope.id || data.runId || envelope.at || "session"}`);
+        pushSystemNote({
+          key: "compact-warning",
+          kind: "compact",
+          text: `自动压缩未完成：${data.message || "将继续使用当前上下文"}`,
+          pending: true,
+        });
         break;
       case "agent_end": {
         const endedWithError = agentErrorRef.current;
@@ -1792,9 +1840,23 @@ case "runtime_connecting":
         setAgentPhase(data.category === "quota" ? "模型额度不足" : "模型调用失败");
         setRunState((s) => ({ ...s, status: "failed", runId: data.runId || s.runId || null }));
         break;
-      case "steer":
-        pushSystem(`⟳ 插入新指令: ${(data.text || "").slice(0, 60)}...`, `steer:${data.text || ""}`);
+      case "steer": {
+        const source = String(data.source || "user");
+        const message = String(data.message || data.text || "").trim();
+        if (source === "turn-progress" || source.startsWith("turn-budget")) {
+          // 进度播报提醒：只在顶部进度行留痕（事件列表 + 进度小结计数），
+          // 不再插一条转瞬即逝又永不清理的气泡；模型的小结本体在正文里。
+          pushSystemNote({
+            key: source,
+            kind: "progress",
+            text: message,
+            turnCount: Number(data.turnCount || 0),
+          });
+        } else if (message) {
+          pushSystem(`⟳ 插入新指令：${message.slice(0, 60)}${message.length > 60 ? "…" : ""}`, `steer:${message.slice(0, 40)}`);
+        }
         break;
+      }
       case "aborted":
         flushToolOutput();
         finalizeStopped();
@@ -1802,8 +1864,13 @@ case "runtime_connecting":
       case "file_changed":
         {
           const files = Array.isArray(data.files) ? data.files.filter(Boolean) : [];
-          const runKey = data.runId || runState.runId || "unknown";
-          pushSystem(`文件已更新: ${files.join(", ")}`, `file_changed:${runKey}:${files.join("|")}`);
+          // 按轮次聚合：同一轮内多次改文件只保留一条摘要，条目内合并文件名
+          pushSystemNote({
+            key: "file_changed",
+            kind: "file",
+            text: `文件已更新：${files.join("、")}`,
+            files,
+          });
         }
         if (data.files?.length) onFileChanged(data.files);
         break;
@@ -2412,10 +2479,28 @@ case "runtime_connecting":
   const visibleMessages = messages.slice(visibleStart);
   const hiddenMessageCount = visibleStart;
   const showExecutionFlow = executionEvents.length > 0 || busy;
+  // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
+  // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
+  const recentNarration = useMemo(() => {
+    const PROGRESS_WORDS = /(已完成|已更新|下一步|接下来|当前|正在|进度|阶段|首先|然后)/;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role !== "assistant") continue;
+      const blocks = Array.isArray(message.blocks) ? message.blocks : [];
+      const text = (blocks.filter((block) => block?.type === "text").map((block) => String(block.text || "")).join("\n") || String(message.text || "")).trim();
+      if (!text) continue;
+      const firstLine = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+      if (!firstLine) continue;
+      const normalized = firstLine.replace(/^[#>*\-\s]+/, "").trim();
+      if (!PROGRESS_WORDS.test(normalized)) continue;
+      return normalized.length > 68 ? `${normalized.slice(0, 68)}…` : normalized;
+    }
+    return "";
+  }, [messages]);
 
   return (
     <ErrorBoundary>
-      <div className={`chat${embedded ? " chat-embedded" : ""}`}>
+      <div className={`chat${embedded ? " chat-embedded" : ""}${compact ? " chat-compact" : ""}`}>
         {/* 会话历史抽屉（对话栏一侧，可折叠隐藏） */}
         <div className={`chat-hist ${histOpen ? "open" : ""}`}>
           <div className="chat-hist-head" onClick={() => setHistOpen((v) => !v)}>
@@ -2479,7 +2564,7 @@ case "runtime_connecting":
           {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
           {runState.verificationStatus && runState.verificationStatus !== "not_checked" && <span className={`task-status-meta verification-${runState.verificationStatus}`}>产物校验 {runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}</span>}
         </div>
-        {(editMode === "agent" || editMode === "review") && (
+        {!compact && (editMode === "agent" || editMode === "review") && (
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
             <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
             <div className="agent-capability-details">
@@ -2494,7 +2579,16 @@ case "runtime_connecting":
 
         <div className="chat-stream-shell">
           <div className="chat-topbar">
-            {showExecutionFlow && <ExecutionFlow events={executionEvents} running={busy} onFocusTool={focusTool} />}
+            {showExecutionFlow && (
+              <ExecutionFlow
+                events={executionEvents}
+                running={busy}
+                onFocusTool={focusTool}
+                notes={systemNotes}
+                note={recentNarration}
+                compaction={runState.compaction || null}
+              />
+            )}
             <div className="chat-top-controls" aria-label="会话控制">
               <ContextUsageRing
                 usage={runState.usage}
@@ -2502,6 +2596,9 @@ case "runtime_connecting":
                 contextTokens={selectedUsage.context}
                 compactThreshold={selectedCompactThreshold}
                 compactionMode={selectedCompactionMode}
+                compactionReserveTokens={selectedCompactionReserve}
+                compactionKeepRecentTokens={selectedCompactionKeepRecent}
+                compaction={runState.compaction || null}
                 model={selectedModelInfo}
                 compacting={compacting}
                 busy={busy}
@@ -3225,13 +3322,16 @@ function ApprovalBlock({ block }) {
 }
 
 // ========== Proma 风格上下文用量圈 ==========
-function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, compactionMode, model, compacting, busy, onCompact }) {
+function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshold, compactionMode, compactionReserveTokens, compactionKeepRecentTokens, compaction, model, compacting, busy, onCompact }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
   const percentage = Math.min(100, Math.round((contextTokens / Math.max(1, contextWindow)) * 100));
   const hasThreshold = Number(compactThreshold) > 0;
   const thresholdPercentage = hasThreshold ? Math.min(100, Math.round((compactThreshold / Math.max(1, contextWindow)) * 100)) : null;
   const tone = percentage >= 85 ? "danger" : percentage >= 60 ? "warning" : "ok";
+  const reserveTokens = Number(compactionReserveTokens) > 0 ? Number(compactionReserveTokens) : 0;
+  const keepRecentTokens = Number(compactionKeepRecentTokens) > 0 ? Number(compactionKeepRecentTokens) : 0;
+  const compactCount = Number(compaction?.count || 0);
   const radius = 14;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (circumference * percentage) / 100;
@@ -3253,7 +3353,7 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
         className={`context-ring-button ${tone}`}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        title={`上下文 ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} tokens`}
+        title={`上下文 ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} tokens${hasThreshold ? ` · 压缩线 ${formatTokenCount(compactThreshold)}` : ""}`}
       >
         <span className="context-ring-svg" aria-hidden="true">
           <svg viewBox="0 0 36 36">
@@ -3270,12 +3370,38 @@ function ContextUsageRing({ usage, contextWindow, contextTokens, compactThreshol
             <span><strong>上下文记录</strong><small>{modelDisplayName(model)}</small></span>
             <span className={`context-ring-percent ${tone}`}>{percentage}%</span>
           </div>
-          <div className="context-ring-meter"><i style={{ width: `${percentage}%` }} /></div>
+          <div className="context-ring-meter">
+            <i style={{ width: `${percentage}%` }} />
+            {hasThreshold && thresholdPercentage < 100 && <em className="context-ring-marker" style={{ left: `${thresholdPercentage}%` }} title={`压缩线 ${thresholdPercentage}%`} />}
+          </div>
           <div className="context-ring-stats">
             <span>当前 <b>{contextTokens.toLocaleString()}</b></span>
             <span>上限 <b>{contextWindow.toLocaleString()}</b></span>
             <span>压缩机制 <b>{compactionMode === "pi-native" ? "Pi 自动" : compactionMode === "app-fallback" ? "未知模型兜底" : "手动"}</b></span>
-            <span>压缩线 <b>{hasThreshold ? `${thresholdPercentage}%` : "关闭"}</b></span>
+          </div>
+          <div className="context-ring-budget">
+            <div className="crb-row">
+              <span>压缩线</span>
+              <b>{hasThreshold ? `${Number(compactThreshold).toLocaleString()} tokens（${thresholdPercentage}%）` : "已关闭"}</b>
+            </div>
+            <div className="crb-hint">
+              {hasThreshold && reserveTokens > 0
+                ? `= 窗口 ${contextWindow.toLocaleString()} − 预留 ${reserveTokens.toLocaleString()} tokens（留给回复与工具调用）`
+                : "当前模型没有自动压缩线，需要手动压缩。"}
+            </div>
+            <div className="crb-row">
+              <span>压缩后保留</span>
+              <b>{keepRecentTokens > 0 ? `最近 ${keepRecentTokens.toLocaleString()} tokens` : "由服务端决定"}</b>
+            </div>
+            <div className="crb-row">
+              <span>上次压缩</span>
+              <b>
+                {compactCount > 0
+                  ? `${compactCount} 次${compaction?.at ? ` · ${new Date(compaction.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : ""}${compaction?.tokensBefore ? ` · 压缩前 ${Number(compaction.tokensBefore).toLocaleString()}` : ""}`
+                  : "本次会话尚未压缩"}
+              </b>
+            </div>
+            <div className="crb-hint">进度圈变色（60% 提醒 / 85% 偏高）只是观感提示；真正触发压缩的是压缩线，不是这两个颜色。</div>
           </div>
           <div className="context-ring-breakdown">
             <span>输入 {details.input.toLocaleString()}</span>
@@ -3313,9 +3439,10 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 }
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool }) {
+function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null }) {
   // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
   const [expanded, setExpanded] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
   const [hidden, setHidden] = useState(() => localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true");
   const wasRunningRef = useRef(running);
   // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
@@ -3329,6 +3456,14 @@ function ExecutionFlow({ events = [], running = false, onFocusTool }) {
   const traceStats = summarizeRunTrace(runTrace);
   const traceSummary = runTraceSummaryText(runTrace);
   const completion = traceStats.completion;
+  // 运行中的进度行：秒级刷新"用时"，让长任务一眼看出进行到哪一步
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  const progressText = runTraceProgressText(runTrace, { now, running });
   useEffect(() => {
     // 收到终结事件后自动回到一行摘要
     if (wasRunningRef.current && !running) setExpanded(false);
@@ -3344,6 +3479,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool }) {
       </div>
     );
   }
+  const phaseLabel = PHASE_LABELS[runTrace.phase] || "执行";
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
@@ -3365,6 +3501,38 @@ function ExecutionFlow({ events = [], running = false, onFocusTool }) {
         </button>
         <button type="button" className="execution-flow-hide" onClick={() => { setHidden(true); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "true"); }} title="隐藏执行流" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
       </div>
+      {/* 进度行：只在运行中出现——"现在到哪一步 / 还要多久 / 最近说了什么" */}
+      {running && (progressText || note) && (
+        <div className={`execution-flow-progress phase-${runTrace.phase}`} title={note ? `最近小结：${note}` : progressText}>
+          <span className="efp-pulse" aria-hidden="true" />
+          <span className="efp-phase">{phaseLabel}</span>
+          {progressText && <span className="efp-items">{progressText}</span>}
+          {note && <span className="efp-note">{note}</span>}
+        </div>
+      )}
+      {/* 系统提示聚合：压缩 / 文件变更等只留一条可展开摘要，不再逐条堆气泡 */}
+      {notes.length > 0 && (
+        <div className={`execution-flow-notes ${notesOpen ? "open" : ""}`}>
+          <button type="button" className="efn-toggle" onClick={() => setNotesOpen((value) => !value)} aria-expanded={notesOpen}>
+            <Icon name="info" size={11} />
+            <span>系统提示 {notes.length} 条</span>
+            {Number(compaction?.count) > 0 && <span className="efn-chip">上下文压缩 {compaction.count} 次</span>}
+            {notes.some((item) => item.kind === "file") && <span className="efn-chip">文件变更</span>}
+            {notes.some((item) => item.kind === "progress") && <span className="efn-chip">进度播报</span>}
+            <span className="efn-chevron">{notesOpen ? "▾" : "▸"}</span>
+          </button>
+          {notesOpen && (
+            <div className="efn-list">
+              {notes.map((item) => (
+                <div className={`efn-item kind-${item.kind || "info"}`} key={item.key}>
+                  <span className="efn-text">{item.text}</span>
+                  {Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {expanded && (
         <>
           {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}

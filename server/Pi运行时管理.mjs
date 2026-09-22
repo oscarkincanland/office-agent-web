@@ -26,6 +26,13 @@ import {
 
 const RUNTIME_RECORD_FILE = process.env.OAW_RUNTIME_RECORD_FILE || path.join(PROJECT_DIR, ".oaw", "运行时记录.json");
 export const PI_PACKAGE_VERSION = "0.85.1";
+/**
+ * Pi 原生上下文压缩策略（唯一事实来源）。
+ * reserveTokens：接近窗口上限时预留的输出/工具空间，压缩线 = contextWindow − reserveTokens；
+ * keepRecentTokens：压缩后保留的最近上下文，保证任务连续性。
+ * 前端「上下文」浮层直接展示这两个数字，避免用户误以为 UI 的 60%/85% 颜色阈值就是压缩线。
+ */
+export const PI_COMPACTION_POLICY = Object.freeze({ reserveTokens: 16384, keepRecentTokens: 20000 });
 const RUNTIME_RECORD_LIMIT = 120;
 const DEFAULT_AGENT_CONCURRENCY = 2;
 const DEFAULT_OFFICE_CONCURRENCY = 1;
@@ -229,7 +236,7 @@ export class PiRuntimeManager {
     const settingsManager = options.settingsManager || SettingsManager.inMemory({
       // 上下文压缩交给 Pi 按当前模型的 contextWindow 自动判断；
       // 明确保留输出/工具调用空间，避免工作台另设固定 token 线与 Pi 竞争。
-      compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 },
+      compaction: { enabled: true, reserveTokens: PI_COMPACTION_POLICY.reserveTokens, keepRecentTokens: PI_COMPACTION_POLICY.keepRecentTokens },
       // 工作台自己负责备用模型和最终失败收敛；Pi 只保留一次短重试，
       // 避免供应商不可达时叠加多层指数退避，把界面长时间卡在“连接模型”。
       retry: { enabled: true, maxRetries: 1, baseDelayMs: 800, provider: { maxRetries: 0 } },
@@ -418,7 +425,9 @@ export class PiRuntimeManager {
         timeoutMs: limit,
         maxRetries: 0,
         maxRetryDelayMs: 1000,
-        reasoning: "off",
+        // Anthropic Messages 传输在 reasoning="off" 时算不出思考预算（budget 未定义），
+        // max_tokens 会变成 null 而被网关判为非法参数，把真实错误（如套餐不含该模型）掩盖掉。
+        reasoning: model?.api === "anthropic-messages" ? "low" : "off",
         maxTokens: 16,
         fetch: this.networkAdapter().fetch,
         // OpenCode Go 要求 x-opencode-session；Pi Agent 本身会自动传递
