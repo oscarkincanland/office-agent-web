@@ -123,6 +123,52 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 清理占用指定 profile 的孤儿浏览器进程（服务被强杀/启动失败后常见）。 */
+function killBrowserProcessesForProfile(profileDir) {
+  return new Promise((resolve) => {
+    if (process.platform !== "win32") return resolve(0);
+    const target = path.resolve(profileDir).replace(/'/g, "''");
+    const script = [
+      `$p='${target}';`,
+      "$procs = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($p) };",
+      "$n = 0;",
+      "foreach ($proc in $procs) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; $n++ } catch {} }",
+      "Write-Output $n",
+    ].join(" ");
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 20000 }, (error, stdout) => {
+      resolve(Number(String(stdout || "").trim()) || 0);
+    });
+  });
+}
+
+/** 清掉 profile 里的 Chromium 单例锁（异常退出后残留会让新实例以退出码 21 退出）。 */
+function clearProfileLocks(profileDir) {
+  let cleared = 0;
+  for (const name of ["SingletonLock", "SingletonCookie", "SingletonSocket", "lockfile"]) {
+    const file = path.join(profileDir, name);
+    try {
+      if (fs.existsSync(file)) { fs.rmSync(file, { force: true, recursive: true }); cleared += 1; }
+    } catch {}
+  }
+  return cleared;
+}
+
+/**
+ * 强制释放某个浏览器会话：关掉 CDP、杀掉该 profile 的孤儿进程并清锁。
+ * 用于 /api/browser/reset 与启动失败后的自救。
+ */
+export async function resetBrowserSession(key) {
+  const session = getBrowserSession(key);
+  const profileDir = session?.profileDir || sessionProfileDir(key);
+  if (session) {
+    try { await session.close(); } catch {}
+  }
+  const killed = await killBrowserProcessesForProfile(profileDir);
+  const cleared = clearProfileLocks(profileDir);
+  try { fs.rmSync(path.join(profileDir, ".oaw-devtools-port"), { force: true }); } catch {}
+  return { profileDir, killed, cleared };
+}
+
 /** 页面内快照脚本：给可交互元素编号并输出语义清单 + 正文。 */
 const SNAPSHOT_SCRIPT = `(() => {
   const SELECTOR = 'a,button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[contenteditable="true"],[onclick]';
@@ -504,14 +550,68 @@ class BrowserSession {
     broadcast(this.key, "state", this.stateView());
   }
 
+  /** 探活：复用外部实例时没有 exit 事件可依赖，必须主动确认 CDP 连接仍可用。 */
+  async probeAlive() {
+    if (!this.state.active) return false;
+    try {
+      if (this.cdp) {
+        await Promise.race([
+          this.cdp.send("Browser.getVersion"),
+          new Promise((_, reject) => { setTimeout(() => reject(new Error("probe timeout")), 2500); }),
+        ]);
+        return true;
+      }
+      if (this.port) {
+        const response = await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(1500) });
+        if (response.ok) return true;
+      }
+    } catch {}
+    return false;
+  }
+
   async start() {
-    if (this.state.active) return;
+    if (this.state.active && await this.probeAlive()) return;
+    if (this.state.active) {
+      // 进程已死但状态还挂着（复用的外部实例被强杀时没有 exit 事件）：
+      // 清理连接、端口文件与单例锁，再走一次启动流程。
+      try { this.cdp?.close(); } catch {}
+      this.cdp = null;
+      this.state.active = false;
+      this.frame = null;
+      try { fs.rmSync(this.portFile, { force: true }); } catch {}
+      clearProfileLocks(this.profileDir);
+      this.emitState();
+    }
     const executable = findBrowserExecutable();
     if (!executable) throw new Error("未找到 Edge/Chrome，无法启动内置浏览器（可设置环境变量 OAW_BROWSER_PATH 指定浏览器路径）");
     fs.mkdirSync(this.profileDir, { recursive: true });
     // 1) 尝试复用上次启动且仍在运行的实例（服务重启后浏览器不中断）
     if (await this.tryReuse()) return;
 
+    // 2) 启动，最多两次：第一次失败通常是被孤儿进程/单例锁占用（退出码 21），
+    //    清理该 profile 的孤儿与锁后再试一次，避免"内置浏览器打不开"需要重启服务。
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) {
+        const killed = await killBrowserProcessesForProfile(this.profileDir);
+        const cleared = clearProfileLocks(this.profileDir);
+        console.warn(`[browser] 启动失败后清理 profile 占用：进程 ${killed} 个、锁文件 ${cleared} 个`);
+      } else {
+        clearProfileLocks(this.profileDir);
+      }
+      try {
+        await this.launch(executable);
+        return;
+      } catch (error) {
+        lastError = error;
+        await this.close().catch(() => {});
+      }
+    }
+    throw lastError || new Error("浏览器启动失败");
+  }
+
+  /** 真正拉起 Edge/Chrome 并等待 CDP 就绪（由 start 负责重试与清理）。 */
+  async launch(executable) {
     this.port = await allocatePort();
     const headless = process.env.OAW_BROWSER_HEADLESS !== "0";
     const args = [
@@ -549,23 +649,25 @@ class BrowserSession {
       }
     });
 
-    // 等待 CDP 端点就绪
+    // 等待 CDP 端点就绪。注意：Chromium 在 Windows 上可能"启动器进程先退出（退出码 0），
+    // 真实浏览器进程随后才监听 CDP 端口"（单例接管/再执行），因此不能因为 child 退出就提前
+    // 放弃，必须把探测窗口跑满；只有窗口内始终探测不到端点才算失败。
     let target = null;
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      await sleep(300);
+    const deadline = Date.now() + 25000;
+    while (Date.now() < deadline) {
       try {
         const response = await fetch(`http://127.0.0.1:${this.port}/json/list`, { signal: AbortSignal.timeout(2000) });
         const list = await response.json();
         target = list.find((item) => item.type === "page") || null;
         if (target?.webSocketDebuggerUrl) break;
       } catch {}
-      if (this.child?.exitCode !== null && this.child?.exitCode !== undefined) break;
+      await sleep(300);
     }
     if (!target?.webSocketDebuggerUrl) {
       const exited = this.child?.exitCode;
-      await this.close().catch(() => {});
       const detail = this.browserStderr.trim().replace(/\s+/g, " ");
-      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : ""}${detail ? `：${detail.slice(0, 800)}` : ""}`);
+      const hint = exited === 21 ? "（用户数据目录被其他浏览器进程占用，已尝试清理）" : "";
+      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）${hint}` : "（进程仍在运行但未监听调试端口）"}${detail ? `：${detail.slice(0, 800)}` : ""}`);
     }
     try { fs.writeFileSync(this.portFile, String(this.port)); } catch {}
     await this.connectToTarget(target);
@@ -586,7 +688,10 @@ class BrowserSession {
       await this.connectToTarget(target);
       return true;
     } catch {
+      // 端口文件还在但端口不可达：说明上次启动的进程已死，清掉端口文件与锁，
+      // 否则新实例会因用户数据目录被占用（退出码 21）起不来。
       try { fs.rmSync(this.portFile, { force: true }); } catch {}
+      clearProfileLocks(this.profileDir);
       return false;
     }
   }
@@ -646,7 +751,10 @@ class BrowserSession {
   }
 
   async ensureStarted() {
-    if (!this.state.active) await this.start();
+    // 复用外部实例时进程被强杀不会有 exit 事件：必须探活，否则 navigate/snapshot
+    // 会拿着已关闭的 CDP 连接报"浏览器连接已关闭"。
+    if (this.state.active && await this.probeAlive()) return;
+    await this.start();
   }
 
   async evaluate(expression) {
@@ -821,12 +929,7 @@ class BrowserSession {
         }
       } catch {}
     }
-    if (child?.pid) {
-      await new Promise((resolve) => {
-        execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => resolve());
-        setTimeout(resolve, 3000);
-      });
-    } else if (port) {
+    if (port) {
       // 复用模式（无子进程句柄）：通过浏览器级 CDP 优雅关闭
       try {
         const versionResponse = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) });
@@ -839,6 +942,18 @@ class BrowserSession {
         }
       } catch {}
     }
+    // 按 profile 兜底清理进程：Chromium 在 Windows 上可能"启动器进程先退出"，
+    // child.pid 不等于真实浏览器进程号，只靠 taskkill child 会留下孤儿进程。
+    const killed = await killBrowserProcessesForProfile(this.profileDir);
+    if (killed === 0 && child?.pid) {
+      await new Promise((resolve) => {
+        execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    }
+    // 关掉进程后清一次单例锁：避免下次启动因残留锁以退出码 21 失败
+    clearProfileLocks(this.profileDir);
+    this.state.processCount = killed;
   }
 }
 
@@ -992,12 +1107,22 @@ export async function browserClose(key, { force = false, reason = "" } = {}) {
   return { closed: true, reason };
 }
 
-/** 服务退出时清理所有浏览器进程。 */
-export function shutdownBrowsers() {
+/** 服务退出时清理所有浏览器进程（含孤儿进程与 profile 锁）。 */
+export async function shutdownBrowsers() {
+  const tasks = [];
   for (const [key, session] of sessions.entries()) {
-    try { session.close(); } catch {}
+    const profileDir = session.profileDir;
+    tasks.push(
+      Promise.resolve()
+        .then(() => session.close())
+        .catch(() => {})
+        .then(() => killBrowserProcessesForProfile(profileDir))
+        .then(() => clearProfileLocks(profileDir))
+        .catch(() => {}),
+    );
     sessions.delete(key);
   }
+  await Promise.all(tasks);
 }
 
 process.on("exit", () => {

@@ -1778,6 +1778,20 @@ app.post("/api/browser/close", async (req, res) => {
   }
 });
 
+// POST /api/browser/reset - 强制释放某会话的内置浏览器：关 CDP、杀该 profile 的孤儿进程、
+// 清单例锁。用于"内置浏览器打不开（退出码 21 / 端口不可达）"时无需重启服务即可恢复。
+app.post("/api/browser/reset", async (req, res) => {
+  const { client, thread } = req.body || {};
+  if (!client) return res.status(400).json({ ok: false, error: "client required" });
+  const key = browserModule.browserSessionKey(client, thread);
+  try {
+    const result = await browserModule.resetBrowserSession(key);
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: String(error?.message || error) });
+  }
+});
+
 app.get("/api/agent/import-preview", (_req, res) => {
   try {
     res.json(previewLocalPiConfig());
@@ -4530,6 +4544,7 @@ async function shutdownService(reason, exitCode = 0) {
   console.warn(`[service] 正在关闭（${reason}）...`);
   try { await agentManager.disposeAll(); } catch (error) { recordProcessFault("shutdown_dispose_failed", error); }
   try { stopAllWatches(); } catch (error) { recordProcessFault("shutdown_watch_failed", error); }
+  try { await shutdownBrowsers(); } catch (error) { recordProcessFault("shutdown_browser_failed", error); }
   if (memoryWatcher) { try { memoryWatcher.close(); } catch (error) { recordProcessFault("shutdown_memory_watch_failed", error); } }
   if (httpServer) {
     await new Promise((resolve) => {

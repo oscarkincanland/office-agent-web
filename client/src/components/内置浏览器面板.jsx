@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
-import { browserClose, browserInput, browserOpen, browserState } from "../api.js";
+import { browserClose, browserInput, browserOpen, browserReset, browserState } from "../api.js";
 
 /**
  * 内置浏览器面板（工作产物 → 浏览器）
@@ -125,16 +125,29 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     if (!target) return;
     setBusy(true);
     setMessage("");
-    try {
-      const result = await browserOpen(clientId, threadId || "", target);
-      if (result?.ok === false) throw new Error(result.error || "打开网页失败");
+    const applyState = (result) => {
       if (result?.state) setState((previous) => ({ ...previous, ...result.state }));
       setOpenDraft(target);
       addressEditingRef.current = false;
       setUrlDraft(target);
       setTakeover(false);
+    };
+    try {
+      const result = await browserOpen(clientId, threadId || "", target);
+      if (result?.ok === false) throw new Error(result.error || "打开网页失败");
+      applyState(result);
     } catch (error) {
-      setMessage(String(error.message || error));
+      // 启动失败（常见：孤儿进程占用用户数据目录 → 退出码 21）：先强制释放该会话的
+      // 浏览器（杀孤儿 + 清锁），再重试一次，避免用户必须重启服务。
+      try {
+        setMessage("正在修复浏览器环境…");
+        await browserReset(clientId, threadId || "");
+        const retry = await browserOpen(clientId, threadId || "", target);
+        if (retry?.ok === false) throw new Error(retry.error || "打开网页失败");
+        applyState(retry);
+      } catch (retryError) {
+        setMessage(String(retryError?.message || retryError || error?.message || error));
+      }
     } finally {
       setBusy(false);
     }

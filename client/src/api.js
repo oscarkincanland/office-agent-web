@@ -54,6 +54,8 @@ export const browserInput = (payload = {}) =>
   api("/api/browser/input", { method: "POST", body: JSON.stringify(payload) });
 export const browserClose = (client, thread, { force = false } = {}) =>
   api("/api/browser/close", { method: "POST", body: JSON.stringify({ client, thread, force }) });
+export const browserReset = (client, thread) =>
+  api("/api/browser/reset", { method: "POST", body: JSON.stringify({ client, thread }) });
 
 export const listModels = () => api("/api/models");
 export const refreshModels = () => api("/api/models/refresh", { method: "POST" });
