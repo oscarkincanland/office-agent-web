@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
+import 跑马灯文本 from "./跑马灯文本.jsx";
+import { MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 
 /**
@@ -256,6 +258,8 @@ function ProjectSettingsSection({ project, projects = [], currentWorkspace = "",
 export default function SettingsPanel({ onReset, project = null, projects = [], currentWorkspace = "", models = [], defaultModel = "", activeModel = "", clientId = "", threadId = "", initialSection = "model", onModelChange, onModelsRefresh, onProjectUpdated, onProjectSelect }) {
   const { theme, setTheme, skin, setSkin } = useTheme();
   const [settingsSection, setSettingsSection] = useState("model");
+  const appearance = useAppearance();
+  const setAppearance = useAppearanceSetter();
   const [msgFontSize, setMsgFontSize] = useSetting("msgFontSize");
   const [commentHighlightMs, setCommentHighlightMs] = useSetting("commentHighlightMs");
   const [thinkingDefaultOpen, setThinkingDefaultOpen] = useSetting("thinkingDefaultOpen");
@@ -818,6 +822,74 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
             className="sp-range"
           />
           <span className="sp-val">{Math.round(commentHighlightMs / 1000)}s</span>
+        </div>
+      </div>
+
+      <div className="sp-section" id="settings-marquee">
+        <div className="sp-section-title"><Icon name="flow" size={12} /> 跑马灯与动效</div>
+        <div className="sp-hint">运行中的会话、项目与任务名会用跑马灯滚动；样式、配色、速度与动效强度都在这里调，改完立即生效。</div>
+        <div className="sp-row">
+          <span className="sp-label">样式</span>
+          <div className="sp-options sp-marquee-styles">
+            {MARQUEE_STYLES.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.marqueeStyle === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ marqueeStyle: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">配色</span>
+          <div className="sp-options sp-marquee-colors">
+            {MARQUEE_COLORS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt sp-color-opt color-${item.id} ${appearance.marqueeColor === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ marqueeColor: item.id })}
+              ><i className={`marquee-swatch color-${item.id}`} aria-hidden="true" />{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">滚动速度</span>
+          <div className="sp-options">
+            {MARQUEE_SPEEDS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.marqueeSpeed === item.id ? "active" : ""}`}
+                onClick={() => setAppearance({ marqueeSpeed: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">动效强度</span>
+          <div className="sp-options">
+            {MOTION_LEVELS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.motionLevel === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ motionLevel: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row sp-marquee-preview-row">
+          <span className="sp-label">效果预览</span>
+          <div className="sp-marquee-preview">
+            <span className="sp-marquee-dot" aria-hidden="true" />
+            <跑马灯文本
+              text="正在执行：把可研报告的结构梳理成清单，并逐条核对数据来源与引用"
+              active
+              className="sp-marquee-preview-text"
+            />
+            <small>执行中</small>
+          </div>
         </div>
       </div>
 

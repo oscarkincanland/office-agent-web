@@ -382,6 +382,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAgentPhaseState(value);
   }, []);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // 执行流隐藏状态上提到这里：隐藏时状态栏要回到上方，避免状态信息整体消失
+  const [flowHidden, setFlowHiddenRaw] = useState(() => {
+    try { return localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true"; } catch { return false; }
+  });
+  const setFlowHidden = useCallback((next) => {
+    setFlowHiddenRaw(Boolean(next));
+    try { localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, next ? "true" : "false"); } catch {}
+  }, []);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
   const [executionEvents, setExecutionEvents] = useState([]);
@@ -2479,6 +2487,29 @@ case "runtime_connecting":
   const visibleMessages = messages.slice(visibleStart);
   const hiddenMessageCount = visibleStart;
   const showExecutionFlow = executionEvents.length > 0 || busy;
+  // 执行流可见时，状态栏内容并入执行流头行——避免"状态栏 + 执行过程"两条横栏上下重复
+  const flowVisible = showExecutionFlow && !flowHidden;
+  const statusText = frozen
+    ? "会话已冻结"
+    : runState.status === "running" ? (agentPhase || "任务执行中")
+      : runState.status === "finishing" ? "整理产物"
+        : runState.status === "recovering" ? "等待恢复"
+          : runState.status === "cancel_requested" ? "正在取消"
+            : runState.status === "cancelled" ? "任务已取消"
+              : runState.status === "aborted" ? "任务已中断"
+                : runState.status === "failed" ? "任务失败"
+                  : runState.status === "completed" ? "任务已完成"
+                    : "待命";
+  const statusChips = [
+    { key: "mode", label: MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label, title: "本轮工作模式" },
+    runState.thinkingLevel ? { key: "thinking", label: `推理 ${runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}` } : null,
+    selectedUsage.context > 0 ? { key: "context", label: `上下文 ${Math.round(Number(selectedUsage.context) / 1000)}k`, title: `当前上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens` } : null,
+    runState.references?.length > 0 ? { key: "refs", label: `引用 ${runState.references.length}` } : null,
+    runState.artifacts?.length > 0 ? { key: "artifacts", label: `产物 ${runState.artifacts.length}` } : null,
+    runState.verificationStatus && runState.verificationStatus !== "not_checked"
+      ? { key: "verification", label: `产物校验 ${runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}` }
+      : null,
+  ].filter(Boolean);
   // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
   // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
   const recentNarration = useMemo(() => {
@@ -2553,17 +2584,16 @@ case "runtime_connecting":
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
-        <div className="task-status-bar" role="status" aria-live="polite">
-          <span className={`task-status-dot ${runState.status}`} />
-          <span>{frozen ? "会话已冻结" : runState.status === "running" ? (agentPhase || "任务执行中") : runState.status === "finishing" ? "整理产物" : runState.status === "recovering" ? "等待恢复" : runState.status === "cancel_requested" ? "正在取消" : runState.status === "cancelled" ? "任务已取消" : runState.status === "aborted" ? "任务已中断" : runState.status === "failed" ? "任务失败" : runState.status === "completed" ? "任务已完成" : "待命"}</span>
-          <span className="task-status-meta task-mode-meta">{MODE_META[normalizeUiMode(runState.mode || editMode)]?.label || currentMode.label}</span>
-          {runState.thinkingLevel && <span className="task-status-meta">推理 {runState.thinkingLevel === "low" ? "快速" : runState.thinkingLevel === "high" ? "深度" : runState.thinkingLevel}</span>}
-           {selectedUsage.context > 0 && <span className="task-status-meta" title={`当前上下文约 ${Number(selectedUsage.context).toLocaleString()} tokens`}>上下文 {Math.round(Number(selectedUsage.context) / 1000)}k</span>}
-          {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
-          {runState.references?.length > 0 && <span className="task-status-meta">引用 {runState.references.length}</span>}
-          {runState.artifacts?.length > 0 && <span className="task-status-meta">产物 {runState.artifacts.length}</span>}
-          {runState.verificationStatus && runState.verificationStatus !== "not_checked" && <span className={`task-status-meta verification-${runState.verificationStatus}`}>产物校验 {runState.verificationStatus === "passed" ? "通过" : runState.verificationStatus === "warning" ? "有提示" : "失败"}</span>}
-        </div>
+        {!flowVisible && (
+          <div className="task-status-bar" role="status" aria-live="polite">
+            <span className={`task-status-dot ${runState.status}`} />
+            <span>{statusText}</span>
+            {statusChips.map((chip) => (
+              <span className={`task-status-meta${chip.key === "mode" ? " task-mode-meta" : ""}${chip.key === "verification" ? ` verification-${runState.verificationStatus}` : ""}`} key={chip.key} title={chip.title || ""}>{chip.label}</span>
+            ))}
+            {runState.runId && <code title={runState.runId}>{runState.runId.slice(0, 18)}</code>}
+          </div>
+        )}
         {!compact && (editMode === "agent" || editMode === "review") && (
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
             <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
@@ -2587,6 +2617,11 @@ case "runtime_connecting":
                 notes={systemNotes}
                 note={recentNarration}
                 compaction={runState.compaction || null}
+                hidden={flowHidden}
+                onHiddenChange={setFlowHidden}
+                statusText={statusText}
+                statusChips={statusChips}
+                statusDotClass={runState.status}
               />
             )}
             <div className="chat-top-controls" aria-label="会话控制">
@@ -3439,11 +3474,10 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 }
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null }) {
+function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "" }) {
   // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
   const [expanded, setExpanded] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
-  const [hidden, setHidden] = useState(() => localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true");
   const wasRunningRef = useRef(running);
   // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
   const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
@@ -3473,7 +3507,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   if (hidden) {
     return (
       <div className="execution-flow execution-flow-hidden">
-        <button type="button" onClick={() => { setHidden(false); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "false"); }}>
+        <button type="button" onClick={() => onHiddenChange?.(false)}>
           <Icon name="eye" size={12} /> 显示执行流 <span>{events.length ? `${events.length} 个事件` : "等待首个事件"}</span>
         </button>
       </div>
@@ -3497,10 +3531,20 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
               {completionLabel(completion.status)}
             </span>
           )}
-          {running && <span className="execution-flow-live"><i /> SSE 实时</span>}
+          {running && <span className="execution-flow-live"><i /> 实时</span>}
         </button>
-        <button type="button" className="execution-flow-hide" onClick={() => { setHidden(true); localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, "true"); }} title="隐藏执行流" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
+        <button type="button" className="execution-flow-hide" onClick={() => onHiddenChange?.(true)} title="隐藏执行流（状态栏会回到上方）" aria-label="隐藏执行流"><Icon name="eyeOff" size={12} /></button>
       </div>
+      {/* 运行状态行：并入原独立状态栏，只占一条，避免上下两条横栏重复 */}
+      {(statusText || statusChips.length > 0) && (
+        <div className="execution-flow-status" role="status" aria-live="polite">
+          <span className={`task-status-dot ${statusDotClass}`} />
+          <span className="efs-text">{statusText}</span>
+          {statusChips.map((chip) => (
+            <span className="efs-chip" key={chip.key} title={chip.title || ""}>{chip.label}</span>
+          ))}
+        </div>
+      )}
       {/* 进度行：只在运行中出现——"现在到哪一步 / 还要多久 / 最近说了什么" */}
       {running && (progressText || note) && (
         <div className={`execution-flow-progress phase-${runTrace.phase}`} title={note ? `最近小结：${note}` : progressText}>
