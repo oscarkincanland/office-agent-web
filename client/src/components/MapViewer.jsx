@@ -439,8 +439,8 @@ const MapViewer = forwardRef(function MapViewer(
       style: STYLE_PATH(project),
       center: config?.center || [120.0, 29.2],
       zoom: config?.zoom || 7,
-      // 导出依赖 WebGL canvas 内容，避免默认的绘制缓冲在下一帧被清空。
-      preserveDrawingBuffer: true,
+      // MapLibre 5.x 通过 canvasContextAttributes 保留 WebGL 绘制缓冲，供导出读回。
+      canvasContextAttributes: { preserveDrawingBuffer: true },
       attributionControl: { compact: true },
     });
     mapRef.current = map;

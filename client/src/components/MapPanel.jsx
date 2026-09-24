@@ -45,6 +45,88 @@ function geometryBounds(geometry) {
   return b[0] === Infinity ? null : b;
 }
 
+function waitForMapToSettle(map, timeout = 12000) {
+  return new Promise((resolve) => {
+    let finished = false;
+    let rendered = false;
+    let idle = false;
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      map.off("idle", markIdle);
+      map.off("render", markRendered);
+      map.off("styledata", check);
+    };
+    const finish = (settled) => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(settled)));
+    };
+    const check = () => {
+      if (!rendered || !idle) return;
+      const styleReady = typeof map.isStyleLoaded !== "function" || map.isStyleLoaded();
+      const tilesReady = typeof map.areTilesLoaded !== "function" || map.areTilesLoaded();
+      const moving = typeof map.isMoving === "function" && map.isMoving();
+      if (styleReady && tilesReady && !moving) finish(true);
+    };
+    const markRendered = () => {
+      rendered = true;
+      check();
+    };
+    const markIdle = () => {
+      idle = true;
+      check();
+    };
+    timer = setTimeout(() => finish(false), timeout);
+    map.on("idle", markIdle);
+    map.on("render", markRendered);
+    map.on("styledata", check);
+    map.triggerRepaint();
+  });
+}
+
+function loadCanvasImage(canvas) {
+  return new Promise((resolve, reject) => {
+    let dataUrl;
+    try {
+      dataUrl = canvas.toDataURL("image/png");
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("地图绘制缓冲无法转换为图片"));
+    image.src = dataUrl;
+  });
+}
+
+function readWebglCanvas(canvas) {
+  try {
+    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    if (!gl || !canvas.width || !canvas.height) return null;
+    const width = canvas.width;
+    const height = canvas.height;
+    const pixels = new Uint8Array(width * height * 4);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const output = document.createElement("canvas");
+    output.width = width;
+    output.height = height;
+    const ctx = output.getContext("2d");
+    const image = ctx.createImageData(width, height);
+    const rowBytes = width * 4;
+    for (let y = 0; y < height; y += 1) {
+      const source = pixels.subarray((height - y - 1) * rowBytes, (height - y) * rowBytes);
+      image.data.set(source, y * rowBytes);
+    }
+    ctx.putImageData(image, 0, 0);
+    return output;
+  } catch {
+    return null;
+  }
+}
+
 async function parseShapefile(shpjs, shpFile, selected) {
   const stem = shpFile.name.replace(/\.shp$/i, "");
   const companion = (ext) => selected.find((x) => (
@@ -627,34 +709,21 @@ export default function MapPanel({
     const size = EXPORT_SIZES[exp.size] || EXPORT_SIZES.a4l;
     const W = exp.size === "custom" ? Math.max(400, Math.min(4000, exp.customW)) : size.w;
     const H = exp.size === "custom" ? Math.max(300, Math.min(4000, exp.customH)) : size.h;
-    const scale = size.scale || 2;
     const titleH = exp.title ? 100 : 0;
     const legendH = exp.legend ? 160 : 0;
     const pad = 40;
     const mapH = H - titleH - legendH - pad;
     if (mapH < 200) return flash("画布太小，请调大尺寸");
     setMsg("导出中…");
+    const prevRatio = m.getPixelRatio();
     try {
-      const prevRatio = m.getPixelRatio();
-      m.setPixelRatio(scale);
-      m.resize();
-      await new Promise((resolve) => {
-        let finished = false;
-        const finish = () => {
-          if (finished) return;
-          finished = true;
-          clearTimeout(timer);
-          m.off("render", finish);
-          m.off("idle", finish);
-          requestAnimationFrame(() => requestAnimationFrame(resolve));
-        };
-        const timer = setTimeout(finish, 1800);
-        m.once("render", finish);
-        m.once("idle", finish);
-        m.triggerRepaint();
-      });
+      const settlePromise = waitForMapToSettle(m);
+      const settled = await settlePromise;
       const mapCanvas = m.getCanvas();
       const mw = mapCanvas.width, mh = mapCanvas.height;
+      if (!mw || !mh) throw new Error("地图画布尺寸为 0，请等待地图加载完成后重试");
+      const readbackCanvas = readWebglCanvas(mapCanvas);
+      const sourceCanvas = readbackCanvas || mapCanvas;
       const canvas = document.createElement("canvas");
       canvas.width = W; canvas.height = H;
       const ctx = canvas.getContext("2d");
@@ -665,11 +734,16 @@ export default function MapPanel({
       let sw, sh, sx = 0, sy = 0;
       if (mapRatio > boxRatio) { sh = mh; sw = mh * boxRatio; sx = (mw - sw) / 2; }
       else { sw = mw; sh = mw / boxRatio; sy = (mh - sh) / 2; }
-      // 先把 WebGL canvas 转成普通图片，避免部分浏览器在合成时拿到空的绘制缓冲。
-      const mapImage = new Image();
-      mapImage.src = mapCanvas.toDataURL("image/png");
-      await mapImage.decode().catch(() => {});
-      ctx.drawImage(mapImage, sx, sy, sw, sh, 0, titleH, W, mapH);
+      // 优先直接绘制 MapLibre 的 WebGL canvas。部分 Chromium/WebGL 组合中，
+      // canvas -> dataURL -> Image 虽然 onload 成功，但图片像素仍可能是空白。
+      let mapImage;
+      try { mapImage = await loadCanvasImage(sourceCanvas); } catch {}
+      try {
+        ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, titleH, W, mapH);
+      } catch (drawError) {
+        if (!mapImage) throw drawError;
+        ctx.drawImage(mapImage, sx, sy, sw, sh, 0, titleH, W, mapH);
+      }
       // 标题
       if (exp.title) {
         ctx.fillStyle = "#222";
@@ -731,10 +805,16 @@ export default function MapPanel({
       a.href = canvas.toDataURL("image/png");
       a.download = `${(exp.title || project + "地图").replace(/[\\/:*?"<>|]/g, "_")}.png`;
       a.click();
-      m.setPixelRatio(prevRatio);
-      flash("导出完成 ✓");
+      flash(settled ? "导出完成 ✓" : "导出完成（部分地图资源仍在加载）✓");
     } catch (e) {
       flash("导出失败: " + e.message);
+    } finally {
+      try {
+        if (m.getPixelRatio() !== prevRatio) {
+          m.setPixelRatio(prevRatio);
+          m.resize();
+        }
+      } catch {}
     }
   };
 

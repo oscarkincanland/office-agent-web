@@ -553,7 +553,7 @@
       "source": "boundary-city",
       "source-layer": "boundary-city",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -650,21 +650,7 @@
       "type": "line",
       "paint": {
         "line-color": "#ff7f0e",
-        "line-width": [
-          "interpolate",
-          [
-            "linear"
-          ],
-          [
-            "zoom"
-          ],
-          5,
-          0.8,
-          10,
-          1.8,
-          13,
-          3.2
-        ],
+        "line-width": 2,
         "line-opacity": 0.85
       }
     },
@@ -870,7 +856,7 @@
         ],
         "text-anchor": "bottom",
         "text-allow-overlap": false,
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "text-color": "#2d3142",
