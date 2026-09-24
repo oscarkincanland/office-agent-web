@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { motionScrollBehavior } from "../界面外观.js";
 
 /**
  * 会话消息目录栏（珠子时间线，参考 pi web）
@@ -11,7 +12,7 @@ export default function ChatTimeline({ messages, containerRef }) {
 
   const scrollToMsg = useCallback((idx) => {
     const el = containerRef.current?.querySelector(`[data-msg-index="${idx}"]`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (el) el.scrollIntoView({ behavior: motionScrollBehavior(), block: "start" });
   }, [containerRef]);
 
   if (!messages || messages.length === 0) return null;

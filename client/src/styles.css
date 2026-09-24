@@ -85,6 +85,12 @@ body {
 }
 body.resizing { cursor: col-resize; user-select: none; }
 .app { display: flex; height: 100vh; overflow: hidden; }
+.load-recovery { position: fixed; z-index: 400; top: 10px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; max-width: min(680px, calc(100vw - 32px)); padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 7px; background: var(--panel-bg); color: var(--warning); box-shadow: 0 12px 30px rgba(0,0,0,.32); font-size: 11px; }
+.load-recovery > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.load-recovery .btn-xs { flex: 0 0 auto; color: var(--text); }
+.session-resume-warning { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning); font-size: 11px; }
+.session-resume-warning > span { flex: 1; min-width: 0; }
+.session-resume-warning .btn-xs { flex: 0 0 auto; color: var(--text); }
 /* sidebar */
 .sidebar {
   width: var(--sidebar-w);
@@ -389,6 +395,12 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .task-center-actions .btn-xs { min-width: 58px; }
 .task-center-actions .btn-xs.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
 .task-center-detail-error { margin-top: 8px; padding: 6px 8px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border-radius: 4px; font-size: 10px; word-break: break-word; }
+.task-center-status { display: grid; gap: 3px; margin-top: 8px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel2-bg); }
+.task-center-status-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 10px; }
+.task-center-status-row > span { color: var(--muted); flex: 0 0 auto; }
+.task-center-status-row > b { font-weight: 600; text-align: right; word-break: break-word; }
+.task-center-completion-note { margin-top: 6px; padding: 6px 8px; border-radius: 4px; background: color-mix(in srgb, var(--border) 35%, transparent); color: var(--muted); font-size: 10px; line-height: 1.55; word-break: break-word; }
+.task-center-completion-note.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .task-center-steps { margin-top: 12px; border-top: 1px solid var(--border); }
 .task-center-todos { margin-top: 12px; padding: 8px 0 4px; border-top: 1px solid var(--border); }
 .task-center-section-title { display: flex; justify-content: space-between; gap: 8px; padding: 7px 0 4px; color: var(--text); font-size: 11px; font-weight: 600; }
@@ -5643,6 +5655,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .preview-publications { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--border); }
 .preview-publication { display: flex; align-items: center; gap: 7px; min-height: 28px; color: var(--muted); font-size: 10px; }
 .preview-publication > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-publication-note { flex: 0 0 auto; color: var(--dim); font-size: 9px; }
 
 /* ===== 0.10 原型对齐：中间对话区 ===== */
 .center-content > .topbar { min-height: 66px; padding: 0 24px; gap: 10px; background: color-mix(in srgb, var(--panel-bg) 92%, var(--body-bg)); }
@@ -5865,6 +5878,11 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .sp-badge.ok { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
 .sp-badge.warn { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 .sp-note { font-size: 10px; color: var(--dim); line-height: 1.5; margin-top: 4px; }
+.approval-mode-now { color: var(--text); font-size: 11px; font-weight: 600; }
+.approval-rule-list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.approval-rule { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel2-bg); font-size: 10px; color: var(--muted); }
+.approval-rule > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.approval-rule code { color: var(--text); font-size: 10px; }
 .sp-probe-msg { margin: -2px 0 7px 96px; color: var(--muted); }
 .sp-danger {
   width: 100%;
@@ -7081,6 +7099,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .approval-allow { background: var(--success, #4a90d9); border-color: transparent; }
 .approval-always { }
 .approval-deny { background: var(--error, #d9534f); border-color: transparent; }
+.approval-scope { margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 
 /* ===== 对话栏历史抽屉（chat-hist，可折叠） ===== */
 .chat-hist {
@@ -8961,7 +8980,13 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 [data-marquee-speed="slow"] .marquee { --marquee-speed-scale: 1.6; }
 [data-marquee-speed="fast"] .marquee { --marquee-speed-scale: 0.6; }
 
+/* 滚动层：只负责位移；省略号交给灯效层，避免两层互相裁切 */
 .marquee-inner {
+  display: block;
+  min-width: 0;
+}
+/* 灯效层：承担省略号、渐变文字与呼吸亮度 */
+.marquee-text {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -8979,17 +9004,19 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   letter-spacing: inherit;
 }
 
-.marquee.is-active .marquee-inner { color: var(--marquee-a); font-weight: 600; }
+.marquee.is-active .marquee-text { color: var(--marquee-a); font-weight: 600; }
 
-/* 滚动：位移量由组件按溢出宽度写入 --marquee-shift，时长固定，速度倍率只改时长 */
+/* 滚动：位移量由组件按溢出宽度写入 --marquee-shift，时长固定，速度倍率只改时长。
+   滚动层（.marquee-inner）与灯效层（.marquee-text）是两个元素，
+   所以这里的 animation 不会再覆盖流光/霓虹，长名字也能正常滚动。 */
 .marquee.is-scrolling .marquee-inner {
   display: inline-block;
   width: max-content;
-  overflow: visible;
-  text-overflow: clip;
+  max-width: none;
   will-change: transform;
   animation: marquee-scroll calc(9s * var(--marquee-speed-scale, 1)) ease-in-out infinite alternate;
 }
+.marquee.is-scrolling .marquee-text { width: max-content; max-width: none; overflow: visible; text-overflow: clip; }
 @keyframes marquee-scroll {
   0%, 12% { transform: translateX(0); }
   88%, 100% { transform: translateX(var(--marquee-shift, -40px)); }
@@ -8998,8 +9025,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 /* 灯效：按 data-marquee-style 切换；只在支持 background-clip:text 时才用渐变文字，
    否则宁可不做效果，也不能让文字变透明看不见。 */
 @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  [data-marquee-style="shine"] .marquee.is-active .marquee-inner,
-  [data-marquee-style="rainbow"] .marquee.is-active .marquee-inner {
+  [data-marquee-style="shine"] .marquee.is-active .marquee-text,
+  [data-marquee-style="rainbow"] .marquee.is-active .marquee-text {
     background-image: linear-gradient(
       100deg,
       var(--marquee-a) 0%,
@@ -9018,7 +9045,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
     color: var(--marquee-a);
     animation: marquee-shine calc(3.4s * var(--marquee-speed-scale, 1)) linear infinite;
   }
-  [data-marquee-style="rainbow"] .marquee.is-active .marquee-inner {
+  [data-marquee-style="rainbow"] .marquee.is-active .marquee-text {
     background-image: linear-gradient(
       100deg,
       #f87171 0%, #fbbf24 16%, #34d399 32%, #22d3ee 48%, #60a5fa 64%, #a78bfa 80%, #f472b6 100%
@@ -9033,7 +9060,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 /* 霓虹呼吸：不加渐变，只做亮度与描边呼吸，最不容易"闪" */
-[data-marquee-style="neon"] .marquee.is-active .marquee-inner {
+[data-marquee-style="neon"] .marquee.is-active .marquee-text {
   color: var(--marquee-a);
   text-shadow: 0 0 7px color-mix(in srgb, var(--marquee-a) 55%, transparent);
   animation: marquee-neon calc(2.8s * var(--marquee-speed-scale, 1)) ease-in-out infinite;
@@ -9044,7 +9071,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 /* 终端扫描：等宽 + 硬边亮带，steps 让它像扫描线而不是渐变 */
-[data-marquee-style="terminal"] .marquee.is-active .marquee-inner {
+[data-marquee-style="terminal"] .marquee.is-active .marquee-text {
   font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
   letter-spacing: .2px;
   color: var(--marquee-a);
@@ -9066,7 +9093,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 /* 斜纹跑马：斜向条纹灯带滚动 */
-[data-marquee-style="stripe"] .marquee.is-active .marquee-inner {
+[data-marquee-style="stripe"] .marquee.is-active .marquee-text {
   color: var(--marquee-a);
 }
 [data-marquee-style="stripe"] .marquee.is-active::after {
@@ -9090,22 +9117,16 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 /* 静态高亮：完全不动，只用颜色和一条左侧色标表示运行中 */
-[data-marquee-style="static"] .marquee.is-active .marquee-inner { color: var(--marquee-a); }
+[data-marquee-style="static"] .marquee.is-active .marquee-text { color: var(--marquee-a); }
 
-/* 动效档位：克制 → 去掉扫描/条纹与呼吸，只留滚动 + 轻微高光；关闭 → 只留滚动与颜色 */
+/* 动效档位"克制"：去掉扫描线/条纹/霓虹呼吸，只留滚动 + 流光高光。
+   "关闭动效"与系统"减少动效"由文件末尾的统一动效闸门处理（静态文字 + 完整 title）。 */
 [data-motion-level="calm"] [data-marquee-style="terminal"] .marquee.is-active::after,
-[data-motion-level="calm"] [data-marquee-style="stripe"] .marquee.is-active::after,
-[data-motion-level="calm"] [data-marquee-style="neon"] .marquee.is-active .marquee-inner { animation: none; }
-[data-motion-level="calm"] [data-marquee-style="neon"] .marquee.is-active .marquee-inner { opacity: 1; }
-[data-motion-level="off"] .marquee.is-active .marquee-inner { animation: none !important; background-image: none !important; -webkit-text-fill-color: currentColor !important; }
-[data-motion-level="off"] .marquee.is-active::after { display: none; }
-
-@media (prefers-reduced-motion: reduce) {
-  .marquee.is-active .marquee-inner,
-  .marquee.is-scrolling .marquee-inner,
-  .marquee.is-active.is-scrolling .marquee-inner,
-  .marquee.is-active::after { animation: none; }
-  .marquee.is-active .marquee-inner { background-image: none; -webkit-text-fill-color: currentColor; }
+[data-motion-level="calm"] [data-marquee-style="stripe"] .marquee.is-active::after { display: none; }
+[data-motion-level="calm"] [data-marquee-style="neon"] .marquee.is-active .marquee-text {
+  animation: none;
+  opacity: 1;
+  text-shadow: 0 0 6px color-mix(in srgb, var(--marquee-a) 40%, transparent);
 }
 .session-label-text, .project-session-name, .sidebar-project-name, .task-center-item-title {
   min-width: 0;
@@ -9397,3 +9418,325 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .chat-compact .execution-flow-status { padding: 0 8px 3px 9px; }
 .chat-compact .execution-flow-status .efs-chip { display: none; }
+
+/* ==========================================================================
+   P2：Agent 主任务流（空白态示例 / 目标范围 / 模型选择 / 运行态 / 结果卡）
+   —— 只做一次性状态反馈，不做持续装饰动画；状态先于动效。
+   ========================================================================== */
+
+/* 空白态：按模式给可执行示例，步骤条 + 可点示例 */
+.chat-empty-title { color: var(--text); font-size: 14px; font-weight: 600; }
+.chat-empty-steps {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  list-style: none;
+  counter-reset: chat-step;
+  margin: 10px 0 12px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--dim);
+}
+.chat-empty-steps li { display: inline-flex; align-items: center; gap: 5px; }
+.chat-empty-steps li::before {
+  counter-increment: chat-step;
+  content: counter(chat-step);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  font-size: 9px;
+  color: var(--muted);
+}
+.chat-empty-examples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  max-width: 640px;
+  margin: 0 auto 12px;
+}
+.chat-empty-example {
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.chat-empty-example:hover { color: var(--text); border-color: var(--accent); background: var(--accent-soft, var(--selected)); }
+.chat-empty-example:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-empty .hint { max-width: 620px; margin: 0 auto; line-height: 1.7; }
+
+/* 目标范围标签：发送前可检查工作区 / 当前文件 / 是否可写 */
+.chat-target-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.chat-target-label { color: var(--muted); font-weight: 600; }
+.chat-target-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 260px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-target-chip.muted { border-style: dashed; }
+.chat-target-chip.file { color: var(--text); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.chat-target-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0 1px;
+  line-height: 1;
+  font-size: 12px;
+}
+.chat-target-chip button:hover { color: var(--error); }
+.chat-target-chip button:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-radius: 3px; }
+.chat-target-write { margin-left: auto; color: var(--dim); }
+.chat-target-write.auto { color: var(--warning); }
+
+/* 发送按钮：一次按下反馈，不做循环动画 */
+.send-btn, .pending-send-btn, .stop-btn { transition: transform .1s ease, background .12s ease, color .12s ease; }
+.send-btn:active, .pending-send-btn:active, .stop-btn:active { transform: scale(.96); }
+
+/* 模型选择：当前 / 最近 / 收藏 / 全部（高级入口） */
+.model-pinned-section + .model-pinned-section { border-top: 1px dashed var(--border); }
+.model-option-row { display: flex; align-items: center; }
+.model-option-row .model-option { flex: 1; min-width: 0; }
+.model-option-row.active .model-option { color: var(--accent); }
+.model-fav-btn {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+}
+.model-fav-btn:hover { color: var(--accent); }
+.model-fav-btn.active { color: var(--warning); }
+.model-fav-btn.active svg { fill: currentColor; }
+.model-fav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; }
+.model-all-toggle { display: flex; align-items: center; gap: 4px; border-top: 1px dashed var(--border); }
+
+/* 运行态：待审批可一键定位；下一步只讲一条 */
+.efs-approval {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.efs-approval:hover { background: color-mix(in srgb, var(--warning) 24%, transparent); }
+.efs-approval:focus-visible { outline: 2px solid var(--warning); outline-offset: 1px; }
+.execution-flow-next { display: flex; align-items: center; padding: 2px 11px 6px; font-size: 11px; color: var(--muted); }
+.execution-flow-next .efn-next { display: inline-flex; align-items: center; gap: 5px; }
+
+/* 审批卡片：批准后原位显示决定与影响范围 */
+.approval-block:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.approval-scope.resolved-scope { color: var(--muted); }
+
+/* 任务结果卡：目标达成 / 文件变更 / 验证 / 未完成项 / 下一步 + 技术详情 */
+.run-result {
+  margin-top: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel2-bg);
+}
+.run-result-grid { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.run-result-cell { display: flex; align-items: baseline; gap: 5px; }
+.run-result-label { color: var(--dim); font-size: 10px; }
+.run-result-value { font-size: 12px; color: var(--text); }
+.run-result-value.completion-success { color: var(--success); }
+.run-result-value.completion-partial { color: var(--warning); }
+.run-result-value.completion-blocked,
+.run-result-value.completion-failed { color: var(--error); }
+.run-result-value.completion-cancelled,
+.run-result-value.completion-unknown { color: var(--muted); }
+.run-result-flag {
+  color: var(--dim);
+  font-size: 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 5px;
+}
+.run-result-note { margin-top: 6px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.run-result-note.warn { color: var(--warning); }
+.run-result-next { margin-top: 7px; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+.run-result-tech { margin-top: 7px; }
+.run-result-tech summary { cursor: pointer; font-size: 10px; color: var(--dim); }
+.run-result-tech pre {
+  margin: 6px 0 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 30%, transparent);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* 命令面板：语义控件焦点圈 + 窄屏/矮屏优先保证结果区 */
+.cmd-panel { outline: none; }
+.cmd-input:focus-visible { outline: 2px solid var(--accent, #8abeb7); outline-offset: -2px; }
+.cmd-item.selected {
+  background: var(--selected, #3a3a4a);
+  border-left-color: var(--accent, #8abeb7);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent, #8abeb7) 35%, transparent);
+}
+@media (max-width: 720px), (max-height: 560px) {
+  .cmd-overlay { padding-top: 4vh; }
+  .cmd-panel { width: 100%; max-width: 96vw; max-height: 88vh; }
+}
+
+/* ==========================================================================
+   P3 · 统一动效闸门与一次性反馈（动效治理）
+   命中条件（二者任一，属性写在 <html> 上）：
+     - data-reduce-motion="1"   系统 prefers-reduced-motion: reduce
+       （index.html 内联脚本负责首帧前同步，界面外观.js 负责运行时同步）
+     - data-motion-level="off"  产品"关闭动效"
+   原则：
+     - 只关闭"持续动画"与"装饰性入场"；颜色、文字、边框、图标等静态等价信息全部保留。
+     - 清单刻意不含地图/浏览器模块的交互过渡，避免一条全局规则误杀必要过渡。
+     - 新增持续动画时必须同步本清单，scripts/动效治理测试.mjs 会校验覆盖。
+   ========================================================================== */
+
+/* 1) 持续动画：旋转 / blink / 呼吸 / 脉冲 */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .loading-spinner,
+  .typing,
+  .run-summary-dot.running,
+  .streaming-dot,
+  .ldot,
+  .tool-icon.run,
+  .brain-core.running .brain-core-dot,
+  .browser-status.loading i,
+  .browser-connection.offline i,
+  .conversation-status.working i,
+  .execution-flow-live i,
+  .efp-pulse,
+  .todo-item.running .todo-num,
+  .mp-spin,
+  .session-item .session-indicator,
+  .project-session-open > i,
+  .marquee-inner,
+  .marquee-text
+) { animation: none !important; }
+
+/* 2) 装饰性入场：弹层/面板/批注徽标/结果卡/文件高亮 */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .comment-anchor-badge,
+  .oa-anno-toolbar,
+  .comment-highlight,
+  .comment-highlight-active,
+  .ct-pop,
+  .cmd-panel,
+  .composer-suggestions,
+  .task-center-panel,
+  .run-result,
+  .run-artifact-row.fresh
+) { animation: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active::after {
+  animation: none !important;
+  display: none;
+}
+
+/* 3) 跑马灯静态回退：去掉渐变文字与描边，只留状态色标；
+      完整名字仍可从 title 与无障碍树读取（组件始终写入 title） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active .marquee-text {
+  background-image: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  text-shadow: none !important;
+}
+
+/* 4) 滚动与压感反馈立即落定（不做平滑滚动、不做出场缩放） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .chat-body { scroll-behavior: auto; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .send-btn, .pending-send-btn, .stop-btn, .chat-empty-example, .session-item, .ct-pop, .cmd-panel,
+  .efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot
+) { transition: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(.send-btn, .pending-send-btn, .stop-btn):active {
+  transform: none !important;
+}
+
+/* ---------- 一次性反馈（都由真实状态驱动，可中断、不阻塞交互） ---------- */
+/* 阶段/状态切换：只过渡颜色，不做位移，避免把用户正在读的内容顶走 */
+.efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot {
+  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+/* 弹层/面板：短位移 + 透明度，仅入场一次；关闭不做退场动画，焦点直接归还触发控件 */
+@keyframes oaw-pop-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.ct-pop,
+.cmd-panel,
+.composer-suggestions,
+.task-center-panel:not(.task-center-page-panel) { animation: oaw-pop-in 170ms ease-out both; }
+/* 结果卡：一次性淡入；状态来自事件与验证结果，不用庆祝动画 */
+@keyframes oaw-result-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.run-result { animation: oaw-result-in 160ms ease-out both; }
+/* 文件改动：只在"本轮刚结束"的结果卡短时高亮；历史回放不重播（由 ChatPanel 的 fresh 标记控制） */
+@keyframes oaw-file-flash {
+  0% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}
+.run-artifact-row.fresh { animation: oaw-file-flash 700ms ease-out both; }
+/* 一张卡里最多闪前 6 个文件，避免长产物列表整屏闪动 */
+.run-artifact-row.fresh:nth-child(n+7) { animation: none; }
+
+/* ---------- P4 · 无障碍：触屏最小点击目标 ---------- */
+/* 只在粗指针（触摸）设备放大命中区；桌面视觉完全不变，也不是新的动效。
+   小尺寸按钮（.btn-xs 约 18px、.btn-icon 约 20px）在手指上难以点中，
+   统一抬到 32px，键盘与读屏行为不受影响。 */
+@media (pointer: coarse) {
+  .btn-xs,
+  .btn-sm,
+  .btn-icon,
+  .msg-action,
+  .file-search-clear,
+  .att-remove,
+  .composer-suggestions [role="option"] {
+    min-height: 32px;
+  }
+  .btn-icon,
+  .file-search-clear,
+  .att-remove {
+    min-width: 32px;
+  }
+}
+

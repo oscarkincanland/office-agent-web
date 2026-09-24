@@ -158,6 +158,8 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
     const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
     return result?.readyToPublish;
   }).length;
+  // 只有「尚未回滚且存在上一正式版本」的成果才真正可回滚；首个版本没有历史版本。
+  const rollbackableCount = published.filter((item) => item.status !== "rolled_back" && item.rollbackTarget).length;
 
   const runAction = async (key, callback) => {
     setAction(key);
@@ -168,7 +170,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
   return (
     <div className="preview-artifact-panel artifact-workspace">
       <div className="artifact-workspace-head">
-        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果；所有操作都可回滚。</p></div>
+        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果；固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
         <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新当前会话产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
       <div className="artifact-summary-grid">
@@ -200,7 +202,11 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
         );
         })}
       </div>
-      {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>固定后仍可回滚</small></div>{published.map((item) => <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={11} /> {artifactName(item.path)} · v{item.version}</span>{item.status !== "rolled_back" && item.rollbackTarget && <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button>}</div>)}</div>}
+      {published.length > 0 && <div className="preview-publications artifact-publications"><div className="artifact-list-head"><span>正式成果版本</span><small>{rollbackableCount ? `可回滚 ${rollbackableCount} 个（回到上一正式版本）` : "当前没有可回滚的历史版本"}</small></div>{published.map((item) => {
+        const rolledBack = item.status === "rolled_back";
+        const canRollback = !rolledBack && !!item.rollbackTarget;
+        return <div className="preview-publication" key={item.id}><span title={item.path}><Icon name="check" size={11} /> {artifactName(item.path)} · v{item.version}{rolledBack ? " · 已回滚" : ""}</span>{canRollback ? <button className="btn-xs" onClick={() => runAction(`rollback-${item.id}`, () => rollbackPublishedArtifact(item.id))}>回滚</button> : <small className="preview-publication-note">{rolledBack ? "已回滚" : "首个版本 · 无历史版本可回滚"}</small>}</div>;
+      })}</div>}
     </div>
   );
 }

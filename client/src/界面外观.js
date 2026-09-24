@@ -102,7 +102,52 @@ export function applyAppearance(appearance = loadAppearance()) {
     root.dataset.marqueeColor = appearance.marqueeColor;
     root.dataset.marqueeSpeed = appearance.marqueeSpeed;
     root.dataset.motionLevel = appearance.motionLevel;
+    // 兜底再同步一次系统偏好：即使 index.html 的内联脚本被剥离，闸门依然生效
+    root.dataset.reduceMotion = prefersReducedMotion() ? "1" : "";
   } catch {}
+}
+
+/** 系统是否要求减少动效（纯函数，可在事件回调里直接调用） */
+export function prefersReducedMotion() {
+  try {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 统一动效闸门（非 React 版本）：系统"减少动效"优先于产品"完整动效"，
+ * 产品"关闭动效"再叠加。命中时不做持续动画/入场动画，滚动与文本揭示立即落定。
+ */
+export function isMotionReduced() {
+  return prefersReducedMotion() || loadAppearance().motionLevel === "off";
+}
+
+/** 滚动行为：闸门命中时立即落定，不使用平滑滚动 */
+export function motionScrollBehavior() {
+  return isMotionReduced() ? "auto" : "smooth";
+}
+
+/** React Hook：系统减少动效偏好（跟随系统设置变化） */
+export function useReducedMotion() {
+  const [reduced, setReduced] = useState(prefersReducedMotion);
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setReduced(query.matches);
+    sync();
+    query.addEventListener?.("change", sync);
+    return () => query.removeEventListener?.("change", sync);
+  }, []);
+  return reduced;
+}
+
+/** React Hook：动效闸门（组件内使用，跟随系统与产品设置变化） */
+export function useMotionGate() {
+  const { motionLevel } = useAppearance();
+  const reducedMotion = useReducedMotion();
+  return { motionLevel, reducedMotion, instant: reducedMotion || motionLevel === "off" };
 }
 
 /** 订阅外观变化（返回取消订阅函数） */
@@ -113,6 +158,17 @@ export function subscribeAppearance(listener) {
 
 // 模块加载即应用一次：即使当前页面还没渲染跑马灯，CSS 变体也先挂到 <html> 上
 applyAppearance();
+
+// 系统"减少动效"偏好变化时同步 <html>，CSS 闸门据此立即生效（与 index.html 内联脚本互为兜底）
+if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+  const reduceQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const syncReduceMotion = () => {
+    try { document.documentElement.dataset.reduceMotion = reduceQuery.matches ? "1" : ""; } catch {}
+  };
+  syncReduceMotion();
+  if (reduceQuery.addEventListener) reduceQuery.addEventListener("change", syncReduceMotion);
+  else if (reduceQuery.addListener) reduceQuery.addListener(syncReduceMotion);
+}
 
 /** React Hook：组件里读取外观配置并跟随设置面板实时更新 */
 export function useAppearance() {

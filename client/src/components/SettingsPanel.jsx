@@ -3,7 +3,7 @@ import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 import { MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, useAppearance, useAppearanceSetter } from "../界面外观.js";
-import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
+import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 
 /**
  * 设置面板（左侧栏底部 tab）
@@ -309,11 +309,31 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const [basemapStatus, setBasemapStatus] = useState({ tianditu: false, maptiler: false, geoapify: false });
   const [basemapMsg, setBasemapMsg] = useState("");
   const [basemapSaving, setBasemapSaving] = useState(false);
+  const [permissionRules, setPermissionRules] = useState(null); // { mode, defaults, user }
+  const [permissionBusy, setPermissionBusy] = useState(false);
 
   useEffect(() => { setModelList(models); }, [models]);
   useEffect(() => {
-    if (["appearance", "model", "services", "project", "advanced"].includes(initialSection)) setSettingsSection(initialSection);
+    if (["appearance", "model", "services", "project", "advanced", "permission"].includes(initialSection)) setSettingsSection(initialSection);
   }, [initialSection]);
+
+  const loadPermissionRules = useCallback(async () => {
+    try { setPermissionRules(await getPermissionRules()); }
+    catch { setPermissionRules({ mode: "ask", defaults: [], user: [] }); }
+  }, []);
+
+  useEffect(() => { if (settingsSection === "permission") loadPermissionRules(); }, [settingsSection, loadPermissionRules]);
+
+  const revokePermissionRule = useCallback(async (rule) => {
+    setPermissionBusy(true);
+    try {
+      const result = await removePermissionRule(rule);
+      if (Array.isArray(result?.rules)) setPermissionRules((prev) => ({ ...(prev || { mode: "ask", defaults: [] }), user: result.rules }));
+    } catch (error) {
+      window.alert(error.message || "撤销规则失败");
+    }
+    setPermissionBusy(false);
+  }, []);
 
   const availableModels = modelList.length ? modelList : models;
   const selectedModelInfo = availableModels.find((item) => item.id === (activeModel || defaultModel)) || null;
@@ -759,6 +779,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
           ["model", "模型与连接"],
           ["services", "服务集成"],
           ["project", "项目设置与记忆"],
+          ["permission", "审批与权限"],
           ["advanced", "命令面板与高级"],
         ].map(([id, label]) => (
           <button key={id} className={settingsSection === id ? "active" : ""} onClick={() => setSettingsSection(id)}>{label}</button>
@@ -1186,6 +1207,26 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         <div className="sp-note">等时圈优先使用 Geoapify Key，也兼容服务端 AMAP_KEY；Key 保存后立即生效。</div>
       </div>
       </>}
+
+      {settingsSection === "permission" && <div className="sp-section" id="settings-permission">
+        <div className="sp-section-title"><Icon name="shield" size={12} /> 审批与权限</div>
+        <div className="sp-note">规则保存在本机全局配置 <code>.oaw/permissions.json</code>，对所有会话、项目和工作区生效，重启后仍然有效。</div>
+        <div className="sp-row">
+          <span className="sp-label">当前模式</span>
+          <strong className="approval-mode-now">{permissionRules?.mode === "auto" ? "自动批准 · 放行原本需询问的操作，deny 规则仍生效" : "每次询问 · 写入与危险操作逐次确认"}</strong>
+        </div>
+        <div className="sp-section-title" style={{ marginTop: 10 }}><Icon name="list" size={12} /> 已授权的“总是允许”规则</div>
+        {!permissionRules ? <div className="sp-note">正在读取…</div>
+          : permissionRules.user?.length
+            ? <div className="approval-rule-list">{permissionRules.user.map((rule, index) => (
+                <div className="approval-rule" key={`${rule.tool}-${rule.pattern}-${index}`}>
+                  <span title={`${rule.tool} ${rule.pattern}`}><code>{rule.tool}</code> · <code>{rule.pattern}</code> · {rule.action}</span>
+                  <button className="btn-xs" disabled={permissionBusy} onClick={() => revokePermissionRule(rule)}>撤销</button>
+                </div>
+              ))}</div>
+            : <div className="sp-note">暂无“总是允许”规则；审批时选择“总是允许”会在此列出。</div>}
+        <div className="sp-note">撤销后，同类操作会立即恢复为逐次询问；既有的拒绝结论不会因为撤销规则而改变。</div>
+      </div>}
 
       {settingsSection === "advanced" && <div className="sp-section" id="settings-advanced">
         <div className="sp-section-title"><Icon name="menu" size={12} /> 高级</div>

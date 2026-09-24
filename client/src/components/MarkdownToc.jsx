@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import Icon from "./Icon.jsx";
+import { motionScrollBehavior } from "../界面外观.js";
 
 /**
  * Markdown 目录浮窗组件
@@ -102,7 +103,7 @@ export default function MarkdownToc({ content, targetRef }) {
     }
     
     if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      el.scrollIntoView({ behavior: motionScrollBehavior(), block: "start" });
       setActiveId(heading.id);
     }
   }, [targetRef]);

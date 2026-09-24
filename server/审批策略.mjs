@@ -127,6 +127,24 @@ export function listPermissionRules() {
   return { mode: config.mode, defaults: DEFAULT_RULES, user: config.rules };
 }
 
+/** 撤销“总是允许”写入的用户规则：按 tool+pattern+action 移除一条并持久化。 */
+export function removeUserRule(rule = {}) {
+  const tool = String(rule.tool || "").trim().toLowerCase();
+  const pattern = String(rule.pattern || "*");
+  const action = String(rule.action || "allow").trim().toLowerCase();
+  if (!tool || !APPROVAL_ACTIONS.includes(action)) return { ok: false, error: "invalid rule" };
+  const config = readPermissionConfig();
+  const index = config.rules.findIndex((item) =>
+    String(item?.tool || "").trim().toLowerCase() === tool
+    && String(item?.pattern || "*") === pattern
+    && String(item?.action || "").trim().toLowerCase() === action);
+  if (index < 0) return { ok: false, error: "rule not found" };
+  const rules = config.rules.filter((_, i) => i !== index);
+  fs.mkdirSync(path.dirname(PERMISSIONS_FILE), { recursive: true });
+  atomicWriteJson(PERMISSIONS_FILE, { rules, mode: config.mode, updatedAt: new Date().toISOString() });
+  return { ok: true, rules };
+}
+
 // 等待中的审批：approvalId -> { resolve, reject, item, timer }
 const pendingApprovals = new Map();
 

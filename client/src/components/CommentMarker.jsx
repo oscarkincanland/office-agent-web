@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import Icon from "./Icon.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
+import { motionScrollBehavior } from "../界面外观.js";
 
 /**
  * 批注组件（Word 风格）
@@ -145,9 +146,9 @@ export default function CommentMarker({ comments, containerRef, activeComment, s
         const rect = el.getBoundingClientRect();
         const baseRect = scroller.getBoundingClientRect();
         const delta = rect.top - baseRect.top - (baseRect.height - rect.height) / 2;
-        scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + delta), behavior: "smooth" });
+        scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + delta), behavior: motionScrollBehavior() });
       } else {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
       }
       // 高亮保持时长（设置面板可调，默认 20 秒）
       const ms = loadSettings().commentHighlightMs || 20000;

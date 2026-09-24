@@ -36,6 +36,21 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
   const [sessions, setSessions] = useState([]);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const inputRef = useRef(null);
+  const listRef = useRef(null);
+  // 打开前记录触发控件，关闭后把焦点还回去，键盘用户不会丢失位置。
+  const restoreFocusRef = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      return undefined;
+    }
+    const target = restoreFocusRef.current;
+    restoreFocusRef.current = null;
+    if (target && typeof target.focus === "function" && document.contains(target)) {
+      requestAnimationFrame(() => target.focus());
+    }
+  }, [open]);
 
   // 打开时重置 + 拉数据
   useEffect(() => {
@@ -173,6 +188,18 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
     setSelectedIdx(0);
   }, [query, flat.length]);
 
+  // 键盘上下移动选择时，把当前项滚进可视区，长列表也不会“选中项在屏幕外”。
+  useEffect(() => {
+    if (!open) return;
+    const el = listRef.current?.querySelector(`[data-cmd-index="${selectedIdx}"]`);
+    el?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedIdx, open]);
+
+  // 关闭时清空防抖中的知识库结果，避免下次打开闪现过期内容
+  useEffect(() => {
+    if (!open) setKbResults([]);
+  }, [open]);
+
   // 键盘处理
   const handleKeyDown = (e) => {
     if (e.key === "Escape") {
@@ -218,33 +245,45 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
 
   return (
     <div className="cmd-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
-      <div className="cmd-panel" role="dialog" aria-label="命令面板">
+      <div className="cmd-panel" role="dialog" aria-modal="true" aria-label="命令面板">
         <input
           ref={inputRef}
           className="cmd-input"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="cmd-results-list"
+          aria-autocomplete="list"
+          aria-activedescendant={totalCount ? `cmd-option-${selectedIdx}` : undefined}
+          aria-label="搜索文件、知识库、模板、地图和会话"
           placeholder="搜索 文件 / 知识库 / 模板 / 地图 / 会话…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
         />
-        <div className="cmd-results">
+        <div className="cmd-results" id="cmd-results-list" role="listbox" aria-label="命令面板结果" ref={listRef}>
           {totalCount === 0 && (
-            <div className="cmd-empty">{query.trim() ? "无匹配结果" : "暂无内容"}</div>
+            <div className="cmd-empty" role="status">{query.trim() ? "无匹配结果" : "暂无内容"}</div>
           )}
           {groups.map((g) => (
-            <div className="cmd-group" key={g.id}>
-              <div className="cmd-group-title">{g.title}</div>
+            <div className="cmd-group" key={g.id} role="group" aria-label={g.title}>
+              <div className="cmd-group-title" aria-hidden="true">{g.title}</div>
               {g.items.map((it) => {
                 const idx = indexMap.get(it.id);
                 const isSelected = idx === selectedIdx;
                 return (
                   <div
                     key={it.id}
+                    id={`cmd-option-${idx}`}
+                    data-cmd-index={idx}
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={isSelected}
+                    aria-label={[it.title, it.subtitle].filter(Boolean).join("，")}
                     className={`cmd-item${isSelected ? " selected" : ""}`}
                     onMouseEnter={() => setSelectedIdx(idx)}
                     onClick={() => { it.action(); onClose?.(); }}
                   >
-                    <span className="cmd-item-icon">{it.icon}</span>
+                    <span className="cmd-item-icon" aria-hidden="true">{it.icon}</span>
                     <div className="cmd-item-main">
                       <div className="cmd-item-title">{it.title}</div>
                       {it.subtitle && <div className="cmd-item-sub">{it.subtitle}</div>}
@@ -258,7 +297,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         <div className="cmd-foot">
           <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
           <span><kbd>Enter</kbd> 打开</span>
-          <span><kbd>Esc</kbd> 关闭</span>
+          <span><kbd>Esc</kbd> 关闭后焦点返回</span>
           <span style={{ marginLeft: "auto" }}>{totalCount} 项</span>
         </div>
       </div>

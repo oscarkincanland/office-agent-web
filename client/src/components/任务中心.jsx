@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
+import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
 
@@ -10,7 +11,7 @@ const statusText = {
   waiting_user: "等待回答",
   recovering: "恢复中",
   cancel_requested: "正在中断",
-  completed: "已完成",
+  completed: "运行结束",
   failed: "失败",
   cancelled: "已取消",
   aborted: "已中断",
@@ -28,15 +29,45 @@ function taskTitle(run) {
     .slice(0, 80);
 }
 
-function progressText(run) {
-  const p = run?.todoProgress?.total ? run.todoProgress : (run?.progress || {});
-  if (!p.total) {
-    if (run?.status === "completed") return "已完成";
-    if (run?.status === "failed") return "执行失败";
-    if (run?.status === "cancelled") return "已取消";
-    return run?.currentStep?.name || "正在处理";
-  }
-  return `${p.completed || 0}/${p.total} 步${run?.currentStep?.name ? ` · ${run.currentStep.name}` : ""}`;
+// 运行生命周期（服务端 run.status）与"任务是否达成"是两回事：
+// 运行结束 ≠ 任务达成，必须分开表达，避免都显示成"已完成"。
+function lifecycleText(run) {
+  const status = run?.status || "completed";
+  return statusText[status] || status;
+}
+
+// 任务达成：模型 complete_task 声明（explicit）或按终态推断（inferred）。
+function completionText(run) {
+  const completion = run?.completion;
+  if (!completion?.status) return "";
+  const base = {
+    success: "任务已达成",
+    partial: "部分达成",
+    blocked: "任务受阻",
+    failed: "任务未达成",
+    cancelled: "任务已取消",
+  }[completion.status] || "已结束";
+  return completion.source === "inferred" ? `${base}（推断）` : base;
+}
+
+// 步骤完成数（待办优先，其次执行步骤）。
+function stepsText(run) {
+  const progress = run?.todoProgress?.total ? run.todoProgress : run?.progress;
+  if (!progress?.total) return "";
+  return `步骤 ${progress.completed || 0}/${progress.total}`;
+}
+
+// 验收/验证结果（成果验收优先，其次产物校验）。
+function verificationText(run) {
+  const acceptance = run?.acceptanceStatus;
+  if (acceptance && acceptance !== "not_checked") return verificationLabel(acceptance);
+  const verification = run?.verificationStatus;
+  if (verification && verification !== "not_checked" && verification !== "pending") return verificationLabel(verification);
+  return "";
+}
+
+function taskMetaParts(run, projectName = "") {
+  return [projectName, modeText(run), lifecycleText(run), completionText(run), stepsText(run), verificationText(run)].filter(Boolean);
 }
 
 function TaskCard({ run, selected, onSelect, projectName = "" }) {
@@ -50,7 +81,7 @@ function TaskCard({ run, selected, onSelect, projectName = "" }) {
           active={ACTIVE.has(status)}
           className="task-center-item-title"
         />
-      <span className="task-center-item-meta">{projectName ? `${projectName} · ` : ""}{modeText(run)} · {statusText[status] || status} · {progressText(run)}</span>
+      <span className="task-center-item-meta">{taskMetaParts(run, projectName).join(" · ")}</span>
       </span>
       <Icon name="chevronRight" size={12} />
     </button>
@@ -203,23 +234,27 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
 
   const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
-  const panel = open && (
+  const trigger = !fullPage && (
+    <button
+      className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
+      onClick={() => { setOpen((value) => !value); setSelectedId(null); setDetail(null); }}
+      title={`任务：执行中 ${counts.running || 0}，恢复中 ${counts.recovering || 0}，运行结束 ${counts.completed || 0}`}
+      aria-expanded={open}
+      aria-haspopup="dialog"
+    >
+      <span className="task-center-trigger-icon"><Icon name="list" size={14} /></span>
+      <span className="task-center-trigger-label">任务</span>
+      {activeCount > 0 && <span className="task-center-badge">{activeCount}</span>}
+      {unreadCount > 0 && <span className="task-center-unread" title="后台会话有新的任务状态">{unreadCount > 99 ? "99+" : unreadCount}</span>}
+    </button>
+  );
+
+  const panel = (fullPage || open) && (
         <div className={`task-center-panel ${fullPage ? "task-center-page-panel" : ""}`}>
           {fullPage && <div className="module-head task-center-page-head">
             <button className="module-back" onClick={onClose} title="返回对话"><Icon name="back" size={15} /></button>
             <div><h2>任务中心</h2><p>并行任务、运行状态与历史会话</p></div>
           </div>}
-          {!fullPage && <button
-        className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
-        onClick={() => { setOpen((value) => !value); setSelectedId(null); setDetail(null); }}
-        title={`任务：执行中 ${counts.running || 0}，恢复中 ${counts.recovering || 0}，已完成 ${counts.completed || 0}`}
-        aria-expanded={open}
-      >
-        <span className="task-center-trigger-icon"><Icon name="list" size={14} /></span>
-        <span className="task-center-trigger-label">任务</span>
-        {activeCount > 0 && <span className="task-center-badge">{activeCount}</span>}
-        {unreadCount > 0 && <span className="task-center-unread" title="后台会话有新的任务状态">{unreadCount > 99 ? "99+" : unreadCount}</span>}
-          </button>}
           <div className="task-center-head">
             <span><Icon name="list" size={13} /> 并行任务</span>
             <button className="btn-xs" onClick={refresh} title="刷新任务状态"><Icon name="refresh" size={11} /></button>
@@ -242,7 +277,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
           <div className="task-center-summary">
             <span>执行中 {counts.running || 0}</span>
             <span>排队中 {counts.queued || 0}</span>
-            <span>已完成 {counts.completed || 0}</span>
+            <span>运行结束 {counts.completed || 0}</span>
           </div>
           {error && <div className="task-center-error">{error}</div>}
           {!detail ? (
@@ -255,7 +290,17 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
             <div className="task-center-detail">
               <button className="task-center-back" onClick={() => { setSelectedId(null); setDetail(null); }}><Icon name="back" size={11} /> 返回任务列表</button>
               <div className="task-center-detail-title">{taskTitle(detail)}</div>
-              <div className="task-center-detail-meta">{projectNameFor(detail) || "当前项目"} · {modeText(detail)} · {statusText[detail.status] || detail.status} · {progressText(detail)}</div>
+              <div className="task-center-detail-meta">{taskMetaParts(detail, projectNameFor(detail) || "当前项目").join(" · ")}</div>
+              <div className="task-center-status">
+                <div className="task-center-status-row"><span>运行状态</span><b>{lifecycleText(detail)}</b></div>
+                <div className="task-center-status-row"><span>任务达成</span><b>{detail.completion ? completionText(detail) : "模型未声明"}</b></div>
+                <div className="task-center-status-row"><span>步骤进度</span><b>{stepsText(detail) || "无步骤记录"}</b></div>
+                <div className="task-center-status-row"><span>验收结果</span><b>{verificationText(detail) || "未验收"}</b></div>
+              </div>
+              {detail.completion?.summary && <div className="task-center-completion-note">完成说明：{detail.completion.summary}</div>}
+              {!!detail.completion?.incomplete?.length && <div className="task-center-completion-note warn">未完成项：{detail.completion.incomplete.join("；")}</div>}
+              {!!detail.completion?.blockers?.length && <div className="task-center-completion-note warn">受阻项：{detail.completion.blockers.join("；")}</div>}
+              {detail.completion?.verification && <div className="task-center-completion-note">验证说明：{detail.completion.verification}</div>}
               <button className="btn-xs task-center-open-chat" onClick={() => openRunConversation(detail)} disabled={opening}>{opening ? "切换中…" : "打开对应对话"}</button>
               <div className="task-center-actions">
                 {detail.actions?.canCancel && <button className="btn-xs danger" onClick={() => runAction("cancel")} disabled={!!action}>{action === "cancel" ? "取消中…" : "取消任务"}</button>}
@@ -300,5 +345,5 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
 
   return fullPage
     ? <div className="module-view task-center-module">{panel}</div>
-    : <div className="task-center-wrap">{panel}</div>;
+    : <div className="task-center-wrap">{trigger}{panel}</div>;
 }

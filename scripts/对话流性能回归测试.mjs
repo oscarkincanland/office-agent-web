@@ -17,18 +17,23 @@ const settingsSource = fs.readFileSync(new URL("../client/src/components/Setting
 const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8");
 const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
 const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8");
+const eventDisplaySource = fs.readFileSync(new URL("../client/src/事件展示.js", import.meta.url), "utf8");
+const piRuntimeSource = fs.readFileSync(new URL("../server/Pi运行时管理.mjs", import.meta.url), "utf8");
 let runId = null;
 let selectiveRunId = null;
 
 try {
   // 对话期间要可见 Runtime 冷启动事件，并在内容增高时继续跟随最新消息。
-  assert.match(chatPanelSource, /const FLOW_EVENT_TYPES = new Set\(\[\s*"runtime_connecting"/);
+  // 事件展示注册表已集中到 事件展示.js；ChatPanel 只负责引用与渲染。
+  assert.match(eventDisplaySource, /export const FLOW_EVENT_TYPES = new Set\(\[\.\.\.Object\.keys\(EVENT_UI\), \.\.\.FLOW_EXTRAS\]\)/, "事件类型注册表应集中在 事件展示.js");
+  assert.match(eventDisplaySource, /runtime_connecting: \{ phase: "planning" \}/, "冷启动事件应在注册表登记为计划阶段");
+  assert.match(chatPanelSource, /import \{ FLOW_EVENT_TYPES[^}]*\} from "\.\.\/事件展示\.js"/, "ChatPanel 应引用集中的事件类型注册表");
   assert.match(chatPanelSource, /case "runtime_connecting":/);
   assert.match(chatPanelSource, /\}, \[messages\]\);/, "自动滚动只应由消息内容变化触发");
   assert.match(chatPanelSource, /className="chat-scroll-latest"/, "用户离开底部后应提供回到底部按钮");
   assert.match(chatPanelSource, /function appendExecutionFlowEvent\(/, "执行流应合并重复的文件/总结事件");
   assert.match(chatPanelSource, /className="chat-topbar"/);
-  assert.match(chatPanelSource, /showExecutionFlow && <ExecutionFlow events=\{executionEvents\} running=\{busy\} onFocusTool=\{focusTool\} \/>/, "执行流应固定在对话顶部而不是插入消息气泡之间");
+  assert.match(chatPanelSource, /showExecutionFlow && \(\s*<ExecutionFlow\s+events=\{executionEvents\}\s+running=\{busy\}\s+onFocusTool=\{focusTool\}/, "执行流应固定在对话顶部而不是插入消息气泡之间");
   assert.doesNotMatch(chatPanelSource, /executionFlowAnchored && m\.id === executionFlowAnchorId && <ExecutionFlow/);
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
@@ -46,7 +51,8 @@ try {
   assert.match(agentSource, /windowInfo\.known && entry\?\.session\?\.autoCompactionEnabled !== false/, "已知模型应交给 Pi SDK 按模型上下文自动压缩");
   assert.match(agentSource, /UNKNOWN_MODEL_AUTO_COMPACT_INPUT_TOKENS = 26000/, "只有未知模型才保留 2.6 万 token 兜底");
   assert.match(agentSource, /compactionMode: compactionPolicy\.mode/, "上下文快照应说明压缩责任归属");
-  assert.match(agentSource, /PI_COMPACTION_RESERVE_TOKENS = 16384/, "Pi 自动压缩应保留输出与工具调用空间");
+  assert.match(piRuntimeSource, /PI_COMPACTION_POLICY = Object\.freeze\(\{ reserveTokens: 16384/, "Pi 自动压缩应保留输出与工具调用空间");
+  assert.match(agentSource, /PI_COMPACTION_RESERVE_TOKENS = PI_COMPACTION_POLICY\.reserveTokens/, "Agent 应复用统一的压缩保留策略而非另写常量");
   assert.match(agentSource, /compactThresholdSource: compactionPolicy\.source/, "上下文快照应暴露压缩阈值来源");
   assert.match(chatPanelSource, /PI_COMPACTION_RESERVE_TOKENS = 16384/, "前端上下文圈应与 Pi 的默认保留空间一致");
   assert.match(chatPanelSource, /compactionMode === "pi-native" \? "Pi 自动"/, "前端应区分 Pi 原生压缩与未知模型兜底");

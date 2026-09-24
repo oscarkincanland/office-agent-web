@@ -207,7 +207,10 @@ export function getConfigStatus({ dir = AGENT_DIR } = {}) {
       requestedDir: APP_DATA_DIR,
       message: AGENT_DIR_USES_PROJECT_FALLBACK ? "默认 AppData 不可写，已使用项目内运行数据目录" : null,
     },
-    configured: modelsConfigured || settings.isFile || credentialCount > 0,
+    // “已配置”只认用户写入的内容（模型配置 / 运行设置 / 凭据）。
+    // 模型目录缓存.json 由 Pi 运行时在启动时自动生成，属于派生缓存，
+    // 不能因为它存在就把全新安装显示成“规聚配置”。
+    configured: models.isFile || settings.isFile || credentialCount > 0,
     modelsConfigured,
     credentialCount,
     files: { models, modelsStore, auth, settings, network: fileStatus(paths.networkPath), migration: fileStatus(paths.migrationPath) },

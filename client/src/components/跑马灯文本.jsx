@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useAppearance } from "../界面外观.js";
+import { useAppearance, useReducedMotion } from "../界面外观.js";
 
 /**
  * 跑马灯文本：运行中的会话 / 项目 / 任务名自动横向滚动，并按外观设置叠加灯效。
@@ -11,23 +11,18 @@ import { useAppearance } from "../界面外观.js";
  *
  * 另外：只有被容器截断（overflow > 4px）且 active 时才滚动，短名字保持静止；
  * `prefers-reduced-motion` 或外观设置里选择"关闭动效"时不滚动，只保留静态高亮。
+ *
+ * P3：滚动层与灯效层分离 —— `.marquee-inner` 只负责位移，`.marquee-text` 负责
+ * 渐变/呼吸/扫描等灯效。旧实现把两条 animation 写在同一个元素上，后声明的灯效
+ * 会覆盖滚动，长名字既被截断又不动（详见 P3 动效清单）。
  */
 export default function 跑马灯文本({ text, active = false, className = "", title }) {
   const wrapRef = useRef(null);
   const measureRef = useRef(null);
   const [overflow, setOverflow] = useState(0);
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const reduceMotion = useReducedMotion();
   const { motionLevel, marqueeStyle } = useAppearance();
   const content = String(text ?? "");
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return undefined;
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const sync = () => setReduceMotion(query.matches);
-    sync();
-    query.addEventListener?.("change", sync);
-    return () => query.removeEventListener?.("change", sync);
-  }, []);
 
   useEffect(() => {
     const measure = () => {
@@ -82,7 +77,9 @@ export default function 跑马灯文本({ text, active = false, className = "", 
       data-marquee-motion={motionLevel}
       title={title ?? content}
     >
-      <span className="marquee-inner">{content}</span>
+      <span className="marquee-inner">
+        <span className="marquee-text">{content}</span>
+      </span>
       {/* 稳定测量：不参与动画、不影响布局，仅供 scrollWidth 读取 */}
       <span className="marquee-measure" ref={measureRef} aria-hidden="true">{content}</span>
     </span>

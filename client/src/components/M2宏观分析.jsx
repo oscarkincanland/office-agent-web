@@ -192,7 +192,7 @@ function ODLinesPanel({ project, mapRef }) {
       <div className="m2-header">
         <Icon name="flow" size={14} />
         <span>OD 期望线</span>
-        <button className="m2-refresh" onClick={loadData}>
+        <button className="m2-refresh" onClick={loadData} title="刷新数据" aria-label="刷新数据">
           <Icon name="refresh" size={12} />
         </button>
       </div>

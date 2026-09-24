@@ -6,7 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
-import { getApprovalMode, listPendingApprovals, listPermissionRules, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
+import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
@@ -3167,6 +3167,12 @@ app.get("/api/agent/approvals", (_req, res) => {
 
 app.get("/api/agent/permissions", (_req, res) => {
   res.json(listPermissionRules());
+});
+
+// 撤销一条“总是允许”规则（应用全局持久化，撤销后立即恢复逐次询问）
+app.delete("/api/agent/permissions/rule", (req, res) => {
+  const result = removeUserRule(req.body || {});
+  res.status(result.ok ? 200 : 409).json(result);
 });
 
 app.get("/api/agent/approval-mode", (_req, res) => {

@@ -356,6 +356,8 @@ export function verificationLabel(status) {
     passed: "验收通过",
     warning: "验收有提示",
     failed: "验收失败",
+    manual_review: "待人工确认",
+    pending: "验证中",
     not_checked: "未验收",
   }[String(status || "not_checked")] || "未验收";
 }

@@ -447,7 +447,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
                   }}
                 >@📁 目录</button>
               )}
-              <button className="btn-sm" onClick={closePreview}><Icon name="close" size={14} /></button>
+              <button className="btn-sm" onClick={closePreview} title="关闭预览" aria-label="关闭预览"><Icon name="close" size={14} /></button>
             </div>
             {renderPreview()}
           </div>
