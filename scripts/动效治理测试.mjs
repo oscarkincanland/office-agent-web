@@ -139,7 +139,7 @@ for (const 宿主 of 宿主清单) {
   assert.ok(样式.slice(0, 闸门起点).includes(宿主), `闸门清单里的 ${宿主} 在样式表里找不到定义（可能是过期条目）`);
 }
 // 装饰性入场也要纳入闸门
-for (const 宿主 of [".comment-anchor-badge", ".oa-anno-toolbar", ".comment-highlight", ".comment-highlight-active", ".ct-pop", ".cmd-panel", ".composer-suggestions", ".task-center-panel", ".run-result", ".run-artifact-row.fresh"]) {
+for (const 宿主 of [".comment-anchor-badge", ".oa-anno-toolbar", ".comment-highlight", ".comment-highlight-active", ".ct-pop", ".cmd-panel", ".composer-suggestions", ".task-center-panel", ".run-result", ".run-artifact-row.fresh", ".file-item.changed", ".app-preview-slot"]) {
   assert.ok(闸门块.includes(宿主), `闸门清单缺少装饰性入场宿主：${宿主}`);
 }
 // 跑马灯静态回退：去掉渐变文字与描边，保留状态色标
@@ -170,13 +170,14 @@ for (const 名称 of 闸门内关键帧) {
 assert.match(闸门块, /\.efp-phase, \.execution-flow-live, \.run-summary-dot, \.task-status-dot \{\s*transition: color 180ms/, "阶段/状态切换应有颜色过渡");
 // 弹层：短位移 + 透明度，仅入场一次
 assert.match(样式, /@keyframes oaw-pop-in \{[\s\S]*?translateY\(4px\)/, "弹层入场应使用短位移 + 透明度");
-assert.match(闸门块, /\.ct-pop,\s*\.cmd-panel,\s*\.composer-suggestions,\s*\.task-center-panel:not\(\.task-center-page-panel\) \{ animation: oaw-pop-in/, "主要弹层/面板共用一次性入场");
+assert.match(闸门块, /\.ct-pop,[\s\S]*?\.task-center-panel:not\(\.task-center-page-panel\),\s*\.app-preview-slot \{ animation: oaw-pop-in/, "主要弹层/面板（含右预览）共用一次性入场");
 // 结果卡一次性淡入（不用庆祝动画）
 assert.match(样式, /@keyframes oaw-result-in/, "结果卡应一次性淡入");
 assert.doesNotMatch(样式, /@keyframes\s+(confetti|fireworks|celebrate)/i, "不应出现庆祝类动画");
 // 文件改动短时高亮，且只在"本轮刚结束"时触发
 assert.match(闸门块, /@keyframes oaw-file-flash/, "被改文件应有短时高亮");
 assert.match(闸门块, /\.run-artifact-row\.fresh:nth-child\(n\+7\) \{ animation: none; \}/, "长产物列表不应整屏闪动");
+assert.match(闸门块, /\.file-item\.changed \{ animation: oaw-file-flash 900ms/, "文件树里被改文件也应短时高亮（同一套 oaw-file-flash）");
 assert.match(对话面板, /flashFiles: data\.fresh === true \|\| previous\?\.flashFiles === true/, "只有本轮刚结束才标记文件高亮");
 assert.match(对话面板, /fresh: Boolean\(data\.runId\) && data\.runId === knownRunId/, "run_finished 只在当前活跃 run 上标记 fresh");
 assert.match(对话面板, /className=\{m\.flashFiles \? "run-artifact-row fresh" : "run-artifact-row"\}/, "结果卡按 fresh 标记文件行");

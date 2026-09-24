@@ -17,6 +17,8 @@ const 对话面板 = read("../client/src/components/ChatPanel.jsx");
 const 命令面板 = read("../client/src/components/CommandPalette.jsx");
 const 图标 = read("../client/src/components/Icon.jsx");
 const 样式 = read("../client/src/styles.css");
+const App = read("../client/src/App.jsx");
+const 侧栏 = read("../client/src/components/SessionSidebar.jsx");
 
 // 1. 空白态按模式给示例，且 Chat 的示例不含写文件动作
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");
@@ -97,5 +99,15 @@ for (const selector of [
   assert.ok(样式.includes(`${selector} {`) || 样式.includes(`${selector} {\n`), `样式应包含 ${selector}`);
 }
 assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{/, "命令面板应有窄屏/矮屏适配");
+
+// 9. 文件树被改文件短时高亮（由本轮 run_finished 驱动，历史回放不重播）
+assert.match(App, /const \[changedFiles, setChangedFiles\] = useState/, "应记录本轮被改文件");
+assert.match(App, /function fileBasename\(value\)/, "应用末段名匹配文件树");
+assert.match(App, /changedFilesTimerRef\.current = window\.setTimeout\(\(\) => setChangedFiles\(new Set\(\)\), 2600\)/, "改文件高亮应短时自动清除");
+assert.match(App, /changedFiles=\{changedFiles\}/, "应把被改文件传给侧栏文件树");
+assert.match(侧栏, /changedFiles = NO_CHANGED_FILES/, "侧栏应接收被改文件");
+assert.match(侧栏, /const isChanged = !f\.isDir && changedFiles\.has\(f\.name\)/, "文件行应按被改文件打标");
+assert.match(侧栏, /\$\{isChanged \? "changed" : ""\}/, "文件行应带 changed 类");
+assert.match(样式, /\.file-item\.changed \{ animation: oaw-file-flash/, "文件树高亮复用一次性 oaw-file-flash");
 
 console.log("主任务流可信度回归：通过");

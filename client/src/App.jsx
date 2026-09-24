@@ -115,6 +115,13 @@ function sameWorkspacePath(a, b) {
   return normalize(a) === normalize(b);
 }
 
+// 取路径末段作为文件树匹配键：Agent 产物路径可能是绝对/相对/带子目录，
+// 文件树只显示当前目录的文件，用末段名做短时高亮匹配最稳（仅用于视觉提示，不参与业务判断）。
+function fileBasename(value) {
+  const parts = String(value || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
 const GLOBAL_EVENT_NOTICES = new Set(["run_finished", "run_recovered", "run_cancel_requested", "agent_error", "ask_user"]);
 // 启动加载分区文案：失败提示与重试按钮按分区说明，避免只报一句笼统错误。
 const LOAD_SCOPE_LABELS = { files: "文件列表", sessions: "会话列表", projects: "项目列表", workspaces: "工作区列表" };
@@ -206,6 +213,7 @@ export default function App() {
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
+  const [changedFiles, setChangedFiles] = useState(() => new Set()); // 本轮刚被改动的文件名（短时高亮文件树）
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
@@ -233,6 +241,8 @@ export default function App() {
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
   const autoOpenedRunRef = useRef(new Set());
+  const changedFilesTimerRef = useRef(null);
+  const previewToggleRef = useRef(null);
   const pendingChatInsertRef = useRef([]);
   const { theme, toggleTheme } = useTheme();
 
@@ -1009,17 +1019,33 @@ export default function App() {
       }
     }
     setArtifactVersion((value) => value + 1);
-    const status = String(result.status || "completed").toLowerCase();
-    if (!["completed", "success"].includes(status)) return;
     const artifacts = (Array.isArray(result.artifacts) ? result.artifacts : [])
       .map((item) => typeof item === "string" ? { path: item } : item)
       .filter((item) => item?.path && item.status !== "deleted");
+    // 文件树的短时高亮：本轮确实改了文件就打标（部分失败也算），
+    // 由上面的 runId 去重保证重连回放不重播；2.6s 后自动清除，不常驻。
+    if (artifacts.length) {
+      const changed = new Set(artifacts.map((item) => fileBasename(item.path)).filter(Boolean));
+      setChangedFiles(changed);
+      if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current);
+      changedFilesTimerRef.current = window.setTimeout(() => setChangedFiles(new Set()), 2600);
+    }
+    const status = String(result.status || "completed").toLowerCase();
+    if (!["completed", "success"].includes(status)) return;
     const firstArtifact = artifacts[0];
     if (!firstArtifact) return;
     setPreviewOpen(true);
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
   }, [currentWorkspace, open, threadId]);
+
+  // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
+  const closePreview = useCallback(() => {
+    setPreviewLayout(0);
+    setPreviewOpen(false);
+    requestAnimationFrame(() => previewToggleRef.current?.focus());
+  }, []);
+  useEffect(() => () => { if (changedFilesTimerRef.current) window.clearTimeout(changedFilesTimerRef.current); }, []);
 
   // ChatPanel 上报 pi 会话 id → 持久化（刷新后恢复当前对话）
   const handleSessionChange = useCallback((id) => {
@@ -1259,6 +1285,8 @@ export default function App() {
               currentDir={currentDir}
               onDirChange={handleDirChange}
               onAtMention={handleAtMention}
+              loadStatus={loadStatus}
+              changedFiles={changedFiles}
               onNewSession={handleNewSession}
               onProjectUpdated={refreshProjects}
               models={models}
@@ -1351,7 +1379,7 @@ export default function App() {
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
-            <button className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"}><Icon name="layers" size={13} /></button>
+            <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
             <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
                 sessions={visibleSessions}
@@ -1392,7 +1420,7 @@ export default function App() {
                   <Icon name={previewLayout === 2 ? "minimize" : "maximize"} size={14} />
                   <span className="preview-layout-label">{previewLayout === 0 ? "默认" : `${previewLayout * 50}%`}</span>
                 </button>
-                <button className="btn-icon" onClick={() => { setPreviewLayout(0); setPreviewOpen(false); }} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
+                <button className="btn-icon" onClick={closePreview} title="隐藏右侧预览" aria-label="隐藏右侧预览"><Icon name="close" size={14} /></button>
               </span>
             </div>
             <div className="preview-panel-tabs">

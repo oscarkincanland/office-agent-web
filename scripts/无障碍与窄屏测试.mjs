@@ -29,6 +29,8 @@ const index = read("client/index.html");
 const CommandPalette = read("client/src/components/CommandPalette.jsx");
 const ChatPanel = read("client/src/components/ChatPanel.jsx");
 const App = read("client/src/App.jsx");
+const SessionSidebar = read("client/src/components/SessionSidebar.jsx");
+const TaskCenter = read("client/src/components/任务中心.jsx");
 const 界面外观 = read("client/src/界面外观.js");
 
 let failed = 0;
@@ -217,6 +219,30 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{\s*\.cmd-overlay \{ padding-top: 4vh; \}/, "小窗口应调整命令面板留白");
   // 顶栏在极窄窗口换行而不是被裁掉
   assert.match(样式, /@media \(max-width: 520px\) \{\s*\.chat-topbar \{ flex-wrap: wrap/, "极窄窗口顶栏应换行");
+});
+
+console.log("\n▶ 启动稳定骨架与焦点归还");
+
+检查("未就绪区域显示稳定骨架而不是空结果", () => {
+  assert.match(样式, /\.oaw-skeleton \{/, "应有骨架样式");
+  assert.match(样式, /\.oaw-skeleton-block/, "骨架应有占位块");
+  const 骨架块 = 样式.slice(样式.indexOf(".oaw-skeleton"), 样式.indexOf(".oaw-skeleton-block.meta") + 200);
+  assert.doesNotMatch(骨架块, /animation/, "稳定骨架不得有动画（否则就是全屏反复闪烁）");
+  assert.match(SessionSidebar, /function SkeletonRows\(/, "侧栏应有骨架组件");
+  assert.match(SessionSidebar, /role="status"[\s\S]{0,80}aria-label=\{label\}/, "骨架应能被读屏播报");
+  assert.match(SessionSidebar, /filesLoading[\s\S]{0,160}正在加载文件列表/, "文件列表未就绪时应显示骨架而非空结果");
+  assert.match(SessionSidebar, /projectsLoading[\s\S]{0,160}正在加载项目列表/, "项目列表未就绪时应显示骨架而非空结果");
+});
+
+检查("弹层/面板关闭后焦点归还触发控件", () => {
+  assert.match(App, /const previewToggleRef = useRef\(null\)/, "右预览应记录触发按钮");
+  assert.match(App, /ref=\{previewToggleRef\}/, "预览开关应绑定引用");
+  assert.match(App, /const closePreview = useCallback/, "应有统一关闭预览逻辑");
+  assert.match(App, /requestAnimationFrame\(\(\) => previewToggleRef\.current\?\.focus\(\)\)/, "关闭预览后应把焦点还给开关");
+  assert.match(TaskCenter, /const triggerRef = useRef\(null\)/, "任务中心应记录触发按钮");
+  assert.match(TaskCenter, /const closePanel = useCallback/, "应有统一关闭弹层逻辑");
+  assert.match(TaskCenter, /event\.key === "Escape"/, "任务中心应支持 Esc 关闭");
+  assert.match(TaskCenter, /requestAnimationFrame\(\(\) => triggerRef\.current\?\.focus\(\)\)/, "关闭任务中心后应把焦点还给触发按钮");
 });
 
 console.log("\n▶ 减少动效（跨端同语义）");

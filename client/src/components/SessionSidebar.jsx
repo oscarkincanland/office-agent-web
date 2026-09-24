@@ -31,6 +31,21 @@ function FileTypeIcon({ file, size = "normal" }) {
   const meta = FILE_TYPE_META[String(file?.ext || "").toLowerCase()] || { label: "•", className: "other", title: "其他文件" };
   return <span className={`file-type-icon ${meta.className} ${size}`} title={meta.title}>{meta.label}</span>;
 }
+// 启动未就绪区域的稳定骨架：静态占位、可被读屏播报，不把"加载中"显示成"空结果"
+const NO_CHANGED_FILES = new Set();
+function SkeletonRows({ rows = 3, label = "正在加载" }) {
+  return (
+    <div className="oaw-skeleton" role="status" aria-live="polite" aria-busy="true" aria-label={label}>
+      {Array.from({ length: rows }).map((_, index) => (
+        <div className="oaw-skeleton-row" key={index} aria-hidden="true">
+          <span className="oaw-skeleton-block icon" />
+          <span className="oaw-skeleton-block name" />
+          <span className="oaw-skeleton-block meta" />
+        </div>
+      ))}
+    </div>
+  );
+}
 const PIN_KEY = "oaw_pinned_sessions";
 
 function getPinnedSet() {
@@ -283,7 +298,7 @@ export function SessionList({ sessions, unreadByThread = {}, onSelect, onDelete,
   );
 }
 
-export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark" }) {
+export default function SessionSidebar({ files, currentName, onOpenFile, onRefreshFiles, onUploaded, projects = [], currentProjectId = "", onProjectChange, onProjectUpdated, models = [], clientId = "", threadId = "", activeModel = "", onModelChange, workspaces = [], currentWorkspace = "", onWorkspaceChange, onWorkspaceRemove, currentDir = "", onDirChange, onAtMention, onNewSession, sessions = [], unreadByThread = {}, onSelectSession, onRefreshSessions, onDeleteSession, onBatchDeleteSession, onRenameSession, onForkSession, onPinSession, onFreezeSession, onOpenSkills, onOpenAgents, onOpenKnowledgeBase, onOpenTemplates, onOpenMap, onOpenTasks, onOpenSettings, onOpenArtifacts, onBeforeOpenModal, onOpenCommandPalette, onToggleTheme, theme = "dark", loadStatus = {}, changedFiles = NO_CHANGED_FILES }) {
   const fileRef = useRef(null);
   const [bottomTab, setBottomTab] = useState("artifacts"); // 底部 tab：产物/记忆/设置
   const [modal, setModal] = useState(null);   // 弹窗：artifacts | settings
@@ -313,6 +328,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [primaryTab, setPrimaryTab] = useState("project");
   const projectTypes = [...new Set(projects.map((project) => project.type || "综合项目"))];
   const currentProject = projects.find((project) => project.id === currentProjectId) || null;
+  const filesLoading = loadStatus?.files === "loading";
+  const projectsLoading = loadStatus?.projects === "loading";
   const projectSessions = (project) => sessions.filter((session) => session.projectId === project.id || samePath(session.cwd, project.rootPath));
   const historyProject = projects.find((project) => project.id === historyProjectId) || currentProject;
   const historySessions = historyProject ? projectSessions(historyProject) : [];
@@ -776,7 +793,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
               )}
             </div>
           ))}
-          {!projects.length && <div className="empty">暂无项目，可在设置中创建</div>}
+          {!projects.length && (projectsLoading
+            ? <SkeletonRows rows={3} label="正在加载项目列表" />
+            : <div className="empty">暂无项目，可在设置中创建</div>)}
         </div>
       )}
 
@@ -818,7 +837,9 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
       </div>
        <div className="sidebar-section files-section">
-         {files.length === 0 && <div className="empty">暂无文件，点击上传</div>}
+         {files.length === 0 && (filesLoading
+           ? <SkeletonRows rows={4} label="正在加载文件列表" />
+           : <div className="empty">暂无文件，点击上传</div>)}
          {currentDir && (
            <div className="crumb-bar">
             <button className="btn-xs" onClick={() => navigateDir(currentDir.split("/").slice(0, -1).join("/"))} title="返回上一级目录">← 上一级</button>
@@ -841,10 +862,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {sortFileList(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
             const filePath = f.relPath || (currentDir ? `${currentDir}/${f.name}` : f.name);
             const isNew = newFiles.has(filePath);
+            const isChanged = !f.isDir && changedFiles.has(f.name);
             return (
               <div
                 key={filePath}
-                className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""}`}
+                className={`file-item ${!f.isDir && f.name === currentName ? "active" : ""} ${isNew ? "new-file" : ""} ${isChanged ? "changed" : ""}`}
                 onClick={() => {
                   if (f.isDir) {
                     navigateDir(filePath);

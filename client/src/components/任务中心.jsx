@@ -102,6 +102,22 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const [opening, setOpening] = useState(false);
   const refreshInFlightRef = useRef(null);
   const refreshQueuedRef = useRef(false);
+  const triggerRef = useRef(null);
+
+  const closePanel = useCallback(({ returnFocus = true } = {}) => {
+    setOpen(false);
+    setSelectedId(null);
+    setDetail(null);
+    // 关闭弹层后把焦点还给触发按钮，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
+    if (returnFocus) requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!open || fullPage) return undefined;
+    const onKeyDown = (event) => { if (event.key === "Escape") closePanel(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, fullPage, closePanel]);
 
   useEffect(() => {
     if (fullPage) setOpen(true);
@@ -222,7 +238,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         throw new Error("任务没有关联的会话");
       }
       if (fullPage) onClose?.();
-      else setOpen(false);
+      else closePanel({ returnFocus: false });
       setSelectedId(null);
       setDetail(null);
     } catch (e) {
@@ -230,14 +246,15 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
     } finally {
       setOpening(false);
     }
-  }, [opening, sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun, onOpenRun]);
+  }, [opening, sessions, currentThreadId, currentSessionId, onSelectSession, onFocusRun, onOpenRun, fullPage, onClose, closePanel]);
 
   const projectNameFor = (run) => projects.find((item) => item.id === run?.projectId)?.name || "";
 
   const trigger = !fullPage && (
     <button
+      ref={triggerRef}
       className={`btn-sm task-center-trigger ${open ? "active" : ""}`}
-      onClick={() => { setOpen((value) => !value); setSelectedId(null); setDetail(null); }}
+      onClick={() => { if (open) { closePanel(); } else { setOpen(true); setSelectedId(null); setDetail(null); } }}
       title={`任务：执行中 ${counts.running || 0}，恢复中 ${counts.recovering || 0}，运行结束 ${counts.completed || 0}`}
       aria-expanded={open}
       aria-haspopup="dialog"

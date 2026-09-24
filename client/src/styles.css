@@ -88,6 +88,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .load-recovery { position: fixed; z-index: 400; top: 10px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; max-width: min(680px, calc(100vw - 32px)); padding: 7px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 7px; background: var(--panel-bg); color: var(--warning); box-shadow: 0 12px 30px rgba(0,0,0,.32); font-size: 11px; }
 .load-recovery > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .load-recovery .btn-xs { flex: 0 0 auto; color: var(--text); }
+/* 启动未就绪区域的稳定骨架：静态占位、不闪烁，只对真正在加载的区域显示，
+   不能把"还没加载完"当成"空结果"（对应计划 4.2 首屏加载）。 */
+.oaw-skeleton { padding: 6px 0; }
+.oaw-skeleton-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; }
+.oaw-skeleton-block { display: block; height: 9px; border-radius: 4px; background: var(--selected); }
+.oaw-skeleton-block.icon { width: 14px; height: 14px; flex: 0 0 auto; }
+.oaw-skeleton-block.name { width: 46%; }
+.oaw-skeleton-block.meta { width: 22%; margin-left: auto; }
 .session-resume-warning { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); background: color-mix(in srgb, var(--warning) 10%, transparent); color: var(--warning); font-size: 11px; }
 .session-resume-warning > span { flex: 1; min-width: 0; }
 .session-resume-warning .btn-xs { flex: 0 0 auto; color: var(--text); }
@@ -9665,7 +9673,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   .composer-suggestions,
   .task-center-panel,
   .run-result,
-  .run-artifact-row.fresh
+  .run-artifact-row.fresh,
+  .file-item.changed,
+  .app-preview-slot
 ) { animation: none !important; }
 :is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active::after {
   animation: none !important;
@@ -9703,7 +9713,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .ct-pop,
 .cmd-panel,
 .composer-suggestions,
-.task-center-panel:not(.task-center-page-panel) { animation: oaw-pop-in 170ms ease-out both; }
+.task-center-panel:not(.task-center-page-panel),
+.app-preview-slot { animation: oaw-pop-in 170ms ease-out both; }
 /* 结果卡：一次性淡入；状态来自事件与验证结果，不用庆祝动画 */
 @keyframes oaw-result-in {
   from { opacity: 0; transform: translateY(2px); }
@@ -9718,6 +9729,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .run-artifact-row.fresh { animation: oaw-file-flash 700ms ease-out both; }
 /* 一张卡里最多闪前 6 个文件，避免长产物列表整屏闪动 */
 .run-artifact-row.fresh:nth-child(n+7) { animation: none; }
+/* 文件树里刚被本轮改动的文件：同一套短时高亮，只在本轮结束时由 App 打标，历史回放不重播 */
+.file-item.changed { animation: oaw-file-flash 900ms ease-out; }
 
 /* ---------- P4 · 无障碍：触屏最小点击目标 ---------- */
 /* 只在粗指针（触摸）设备放大命中区；桌面视觉完全不变，也不是新的动效。
