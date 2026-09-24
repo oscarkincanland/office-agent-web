@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   theme: null, // null = 跟随当前主题按钮
   msgFontSize: "medium", // small | medium | large
   commentHighlightMs: 20000, // 批注高亮时长
-  thinkingDefaultOpen: true, // 思考块默认展开
+  thinkingDefaultOpen: false, // 思考块默认收起（结论优先，证据层按需展开）
   showTimeline: true, // 消息目录栏
 };
 

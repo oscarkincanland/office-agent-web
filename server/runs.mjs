@@ -15,6 +15,7 @@ import {
   withWriteLock,
 } from "./写入协调.mjs";
 import { validateArtifactFile } from "./产物验证.mjs";
+import { applyObjectiveDowngrade } from "./运行轨迹.mjs";
 
 const PROJECT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const RUNS_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
@@ -430,7 +431,51 @@ export function updateRunStep(id, stepId, patch = {}) {
   return saved;
 }
 
+/**
+ * 权威终稿单写入：每个 runId 至多一条用户可见的 assistant_final。
+ * - 相同文本重复写入 → 幂等 no-op（重连 / 回放 / 收尾兜底不追加第二份）
+ * - 文本被修正 → 更新同一条事件（保留 seq 与位置），version 递增，不新增气泡
+ * 所有 assistant_final 写入都必须经过这里，实现“唯一归属”。
+ */
+export function recordRunFinalText(id, text, { source = "agent", messageId = null } = {}) {
+  const run = loadRun(id);
+  if (!run) return null;
+  const value = String(text || "").trim();
+  run.events = Array.isArray(run.events) ? run.events : [];
+  const stableMessageId = messageId || run.finalMessageId || `final_${run.id}`;
+  if (!value) return { changed: false, event: null, run: getRun(id) };
+  const index = run.events.findIndex((item) => item?.type === "assistant_final");
+  if (index >= 0) {
+    const existing = run.events[index];
+    if (String(existing?.data?.text || "").trim() === value) return { changed: false, event: existing, run: getRun(id) };
+    const version = Number(existing?.data?.version || 1) + 1;
+    const data = { ...(existing.data || {}), text: value, source, messageId: stableMessageId, version, updatedAt: new Date().toISOString() };
+    existing.data = data;
+    run.finalText = value;
+    run.finalMessageId = stableMessageId;
+    run.finalTextVersion = version;
+    const saved = saveRun(run);
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "assistant_final", data });
+    return { changed: true, event: existing, run: saved };
+  }
+  const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
+  run.eventSeq = seq;
+  const data = { text: value, source, messageId: stableMessageId, version: 1, at: new Date().toISOString() };
+  const event = { seq, type: "assistant_final", data, at: data.at };
+  if (run.events.length < 800) run.events.push(event);
+  run.finalText = value;
+  run.finalMessageId = stableMessageId;
+  run.finalTextVersion = 1;
+  const saved = saveRun(run);
+  appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "assistant_final", data });
+  return { changed: true, event, run: saved };
+}
+
 export function recordRunEvent(id, type, data = {}) {
+  // 终稿有唯一写入点：任何 assistant_final 都走幂等路径，避免同 Run 双终稿。
+  if (type === "assistant_final") {
+    return recordRunFinalText(id, data?.text, { source: data?.source || "agent", messageId: data?.messageId || null })?.run || null;
+  }
   const run = loadRun(id);
   if (!run) return null;
   run.events = Array.isArray(run.events) ? run.events : [];
@@ -624,7 +669,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
       appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "artifacts_validated", data: validateData });
     }
     // 完成语义：显式声明（complete_task）优先；否则由上层传入的兼容推断结果。
-    if (completion && typeof completion === "object") run.completion = completion;
+    // 完成声明绑定 runId：跨 Run 的旧声明不可串入本轮。
+    if (completion && typeof completion === "object") run.completion = { ...completion, runId: run.id };
     // 计划漂移收口：收尾时仍有未完成待办时，写进 completion.incomplete 并如实降级，
     // 避免"计划没做完"却报告 success。
     const unfinishedTodos = (Array.isArray(run.todos) ? run.todos : [])
@@ -641,6 +687,13 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
         todoNote: `收尾时仍有 ${unfinishedTodos.length} 项待办未完成`,
       };
     }
+    // 客观结果降级：取消/运行失败/验收失败可下调声明结论；模型 success 不可上调客观失败。
+    if (run.completion && typeof run.completion === "object") {
+      run.completion = applyObjectiveDowngrade(run.completion, {
+        runStatus: finalStatus,
+        verificationStatus: run.verificationStatus,
+      });
+    }
     run.finishedAt = new Date().toISOString();
     run.events = Array.isArray(run.events) ? run.events : [];
     run.steps = Array.isArray(run.steps) ? run.steps : [];
@@ -652,9 +705,10 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     }
     const seq = Number(run.eventSeq || run.events[run.events.length - 1]?.seq || run.events.length || 0) + 1;
     run.eventSeq = seq;
-    run.events.push({ seq, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null }, at: run.finishedAt });
+    const finishedData = { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null, finalText: run.finalText || null, finalMessageId: run.finalMessageId || null };
+    run.events.push({ seq, type: "run_finished", data: finishedData, at: run.finishedAt });
     const saved = saveRun(run);
-    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: { status: finalStatus, artifacts: artifacts.length, verificationStatus: run.verificationStatus, completion: run.completion || null } });
+    appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_finished", data: finishedData });
     return saved;
   } finally {
     releaseRunLocks(run.id);

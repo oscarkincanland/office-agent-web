@@ -1356,6 +1356,13 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .tool-icon.run { color: var(--warning); animation: pulse 1s infinite; }
 .tool-icon.ok { color: var(--success); }
 .tool-icon.err { color: var(--error); }
+/* 工具语义图标（P3）：表达能力类别，与状态徽记并列；颜色之外保留文字名称 */
+.tool-identity {
+  flex: 0 0 auto;
+  color: var(--dim);
+  vertical-align: -2px;
+}
+.tool-identity-inline { margin-right: 1px; }
 @keyframes pulse { 50% { opacity: 0.4; } }
 .tool-phrase {
   color: var(--text);
@@ -1431,8 +1438,20 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   padding: 6px 10px;
   color: var(--muted);
+  /* 真按钮：保留行样式，去掉浏览器默认外观，键盘可聚焦 */
+  background: none;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.thinking-header:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 .thinking-icon { font-family: monospace; color: var(--accent); flex-shrink: 0; }
 .thinking-label { color: var(--dim); font-size: 10px; }
@@ -1733,6 +1752,8 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .execution-flow-phase.phase-delivering { border-left-color: color-mix(in srgb, var(--accent) 70%, transparent); }
 .execution-flow-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--warning); }
 .execution-flow-item.success .execution-flow-dot { background: var(--success); }
+/* 部分完成/受阻/取消：客观降级态用 warning，不用 success 色 */
+.execution-flow-item.warning .execution-flow-dot { background: var(--warning); }
 .execution-flow-item.error .execution-flow-dot { background: var(--error); }
 .execution-flow-label { color: var(--text); }
 .execution-flow-detail { min-width: 0; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; }

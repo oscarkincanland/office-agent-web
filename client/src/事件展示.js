@@ -177,7 +177,7 @@ export function flowEventLabel(event) {
     case "agent_summary": return "生成任务总结";
     case "assistant_final": return "收到最终回复";
     case "agent_end": return "Agent 处理结束";
-    case "run_finished": return data.status === "completed" ? "任务完成" : `任务${data.status || "结束"}`;
+    case "run_finished": return runConclusion(event).label;
     case "task_completed": return `任务${completionLabelSafe(data.status)}${data.summary ? `：${String(data.summary).slice(0, 50)}` : ""}`;
     case "aborted": return "任务已中断";
     case "capability_plan": return "能力准备完成";
@@ -210,7 +210,61 @@ export function flowEventTone(event) {
   const type = String(event?.type || "");
   if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync"].includes(type) || event?.data?.isError) return "error";
   if (type === "artifacts_validated") return event?.data?.status === "failed" ? "error" : "success";
-  if (type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "running";
-  if (["run_finished", "agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed"].includes(type)) return "success";
+  if (type === "run_finished") return runConclusion(event).tone;
+  if (type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "warning";
+  if (["agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed"].includes(type)) return "success";
   return "running";
+}
+
+/**
+ * 运行终态（Run 生命周期层）→ { status, label, tone }。
+ * 唯一权威来源是 run_finished 的 status 与 completion；失败/取消/部分完成不得显示成功色。
+ * 供执行流文案与配色共用，避免各写一份。
+ */
+export function runConclusion(event) {
+  const data = event?.data || {};
+  const runStatus = String(data.status || "completed");
+  const completion = data.completion && typeof data.completion === "object" ? data.completion : null;
+  if (runStatus === "cancelled" || runStatus === "aborted") return { status: "cancelled", label: "已取消", tone: "warning" };
+  if (runStatus === "failed") return { status: "failed", label: "运行失败", tone: "error" };
+  const resolved = String(completion?.status || "success");
+  if (resolved === "failed") return { status: "failed", label: "运行失败", tone: "error" };
+  if (resolved === "partial" || resolved === "blocked") {
+    return { status: resolved, label: resolved === "partial" ? "部分完成" : "受阻", tone: "warning" };
+  }
+  if (resolved === "cancelled") return { status: "cancelled", label: "已取消", tone: "warning" };
+  // success：Run 生命周期文案是“运行结束”，不与“任务达成”混为一谈
+  return { status: "success", label: "运行结束", tone: "success" };
+}
+
+/**
+ * 工具语义图标（P3）：工具能力类别 → 图标名。未知工具一律回退通用图标，
+ * 由 tool.name / 事件类型决定，不根据输入的自然语言猜类别。
+ * 语义图标与状态图标（运行中/成功/失败）并列，颜色之外保留文字与可访问名。
+ */
+const TOOL_IDENTITY_RULES = [
+  [/^(browser_|browserOpen|browserClick|browserType|browserScroll|browserScreenshot|browserTabs)/i, "globe"],
+  [/^(web_search|web_fetch|webSearch|webFetch)$/i, "search"],
+  [/^(grep|find|ls|glob)$/i, "search"],
+  [/^(kb_search|kb_read|memory_update|skills_search|skills_read)$/i, "book"],
+  [/^(read|context_read)$/i, "file"],
+  [/^(map_read|map_edit|map_import|map_analyze|map_save_analysis|map_clear_analysis)$/i, "map"],
+  [/^(write|edit|review_source_apply)$/i, "edit"],
+  [/^officecli$/i, "doc"],
+  [/^(bash|terminal|shell)$/i, "terminal"],
+  [/^(todo|taskcreate|taskupdate)$/i, "list"],
+  [/^(tool_approval|approval|review_copy)/i, "shield"],
+  [/^(ask_user)$/i, "comment"],
+  [/^(complete_task)$/i, "check"],
+];
+
+/** 工具名 → { icon, category }；category 仅用于说明与测试，渲染用 icon。 */
+export function toolIdentity(name) {
+  const value = String(name || "").trim();
+  if (!value) return { icon: "tool", category: "generic" };
+  if (value === "__thinking__") return { icon: "brain", category: "thinking" };
+  for (const [pattern, icon] of TOOL_IDENTITY_RULES) {
+    if (pattern.test(value)) return { icon, category: icon };
+  }
+  return { icon: "tool", category: "generic" };
 }

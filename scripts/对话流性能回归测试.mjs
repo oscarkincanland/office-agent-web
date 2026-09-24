@@ -40,8 +40,8 @@ try {
   assert.match(chatPanelSource, /EXECUTION_FLOW_HIDDEN_KEY/, "执行流应支持隐藏并记住用户选择");
   assert.match(stylesSource, /\.msg-blocks \.thinking-block \.thinking-text[\s\S]{0,220}height: auto/, "思考块应按内容自适应高度");
   assert.match(stylesSource, /\.msg-blocks \.thinking-block \.thinking-text[\s\S]{0,260}max-height: 240px/, "思考内容区最多显示 240px 并内部滚动");
-  assert.match(settingsSource, /thinkingDefaultOpen: true/, "思考块默认应展开");
-  assert.match(chatPanelSource, /const \[expanded, setExpanded\] = useState\(true\)/, "思考块首次渲染应默认展开");
+  assert.match(settingsSource, /thinkingDefaultOpen: false/, "思考块默认应收起（结论优先）");
+  assert.match(chatPanelSource, /const \[expanded, setExpanded\] = useState\(\(\) => loadSettings\(\)\.thinkingDefaultOpen === true\)/, "思考块默认收起但尊重设置面板开关");
   assert.match(chatPanelSource, /usage\?\.contextTokens \?\? usage\?\.context/, "上下文圈应优先使用服务端提供的上下文 token 数");
   assert.match(agentSource, /event\?\.message\?\.usage/, "服务端应读取 Pi message.usage 用量事件");
   assert.match(chatPanelSource, /approval-mode-control/, "每次询问/自动批准切换应始终可见");

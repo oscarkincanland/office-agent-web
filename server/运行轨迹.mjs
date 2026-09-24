@@ -45,6 +45,35 @@ export function normalizeCompletion(raw = {}) {
  * 模型未显式声明完成时，用 Run 终态推断。
  * 推断结果统一带 source:"inferred"，前端据此区分展示。
  */
+/**
+ * 客观结果降级：模型的 complete_task 声明可以被客观结果下调，但绝不能被上调。
+ * - 取消 / 运行失败 → 终态即 cancelled / failed；
+ * - 产物验收失败 → success 最多降为 partial，并记录 downgradeReason；
+ * 返回新对象（不改入参），无变化时补齐 verificationStatus。
+ */
+export function applyObjectiveDowngrade(completion, { runStatus = "completed", verificationStatus = "not_checked" } = {}) {
+  if (!completion || typeof completion !== "object" || !completion.status) return completion;
+  let status = String(completion.status);
+  const reasons = [];
+  if (runStatus === "cancelled" || runStatus === "aborted") {
+    if (status !== "cancelled") { status = "cancelled"; reasons.push(runStatus === "aborted" ? "运行已中断" : "运行已取消"); }
+  } else if (runStatus === "failed") {
+    if (status !== "failed") { status = "failed"; reasons.push("运行失败"); }
+  } else if (verificationStatus === "failed" && status === "success") {
+    status = "partial";
+    reasons.push("产物验收失败");
+  }
+  const next = { ...completion, verificationStatus };
+  if (status === completion.status) return next;
+  return {
+    ...next,
+    status,
+    objectiveStatus: runStatus,
+    downgradedFrom: completion.status,
+    downgradeReason: reasons.join("；") || "客观结果下调",
+  };
+}
+
 export function inferCompletion({ runStatus = "completed", artifacts = 0, validations = [] } = {}) {
   const failedValidation = Array.isArray(validations) && validations.some((item) => item?.status === "failed");
   let status = "success";

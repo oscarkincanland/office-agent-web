@@ -2262,10 +2262,10 @@ execute: async (_toolCallId, params) => {
               });
             }
           }
-          if (entry.lastAssistantText) {
+          if (entry.lastAssistantText && !entry.suppressFinalText) {
             // 保留最终权威文本副本，供 run 记录补写 assistant_final（前端断线兜底渲染）
             entry.lastFinalText = entry.lastAssistantText;
-            emit("assistant_final", { text: entry.lastAssistantText });
+            emit("assistant_final", { text: entry.lastAssistantText, runId: entry.activeRunId || null });
           }
           emit("agent_end", {
             turns: Number(entry?.turnCount || 0),
@@ -2517,6 +2517,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.activeRunId = runContext?.runId || null;
     // 每轮独立计数：上一轮的完成声明、轮次预算与提醒标记都不能串到本轮
     entry.pendingCompletion = null;
+    // 终稿缓存按 Run 隔离：新 Run 开始即清空，旧 Run 迟到文本不会串入本轮。
+    entry.lastFinalText = "";
+    entry.suppressFinalText = false;
     entry.turnCount = 0;
     entry.runToolCount = 0;
     entry.runStartedAt = Date.now();
@@ -2838,6 +2841,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           runId: entry.activeRunId,
           message: "本轮工具执行已结束但未声明完成状态，已请求模型补充 complete_task",
         });
+        // 提醒回合只用于补 complete_task：不得覆盖主回合终稿，也不得产生第二份用户终稿。
+        const previousSuppressFinalText = entry.suppressFinalText;
+        entry.suppressFinalText = true;
         try {
           await piRuntimeManager.runPrompt(entry.runtimeId, async () => {
             await promptWithFirstEventTimeout(entry, COMPLETION_NUDGE_PROMPT, {});
@@ -2849,6 +2855,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
             code: "COMPLETION_NUDGE_FAILED",
             retryable: false,
           });
+        } finally {
+          entry.suppressFinalText = previousSuppressFinalText;
         }
       }
     } finally {

@@ -49,7 +49,8 @@
     "test:repeat-guard": "node scripts/重复调用抑制测试.mjs",
     "test:event-registry": "node scripts/事件注册表测试.mjs",
     "test:event-archive": "node scripts/事件流归档测试.mjs",
-    "test:progress-narration": "node scripts/进度播报测试.mjs"
+    "test:progress-narration": "node scripts/进度播报测试.mjs",
+    "test:conclusion": "node scripts/任务结论事件流测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

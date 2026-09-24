@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, u
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
+import ToolIdentityIcon from "./工具语义图标.jsx";
 import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
@@ -3353,7 +3354,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
                     className={`run-trace-tool ${tool.status !== "done" ? "running" : tool.isError ? "error" : "ok"}`}
                     title={tool.result || tool.output || tool.input || ""}
                   >
-                    {tool.name}{tool.startMissing ? "（已恢复）" : ""}
+                    <ToolIdentityIcon name={tool.name} size={11} /> {tool.name}{tool.startMissing ? "（已恢复）" : ""}
                   </span>
                 ))}
               </div>}
@@ -3557,10 +3558,13 @@ function LoadingDots({ label, seconds }) {
   );
 }
 
-// ========== 思考过程块（默认展开，固定高度，超出内容内部滚动） ==========
+// ========== 思考过程块（证据层，默认收起；真按钮 + ARIA，键盘可展开） ==========
 function ThinkingBlock({ text, startTime, streaming }) {
-  const [expanded, setExpanded] = useState(true);
+  // 结论优先：思考属于可展开的证据层，默认收起；默认值尊重设置面板的 thinkingDefaultOpen。
+  const [expanded, setExpanded] = useState(() => loadSettings().thinkingDefaultOpen === true);
   const [duration, setDuration] = useState(null);
+  const idRef = useRef(null);
+  if (idRef.current === null) idRef.current = `thinking-${Math.random().toString(36).slice(2, 9)}`;
 
   // 流式结束时：计算耗时
   useEffect(() => {
@@ -3569,15 +3573,21 @@ function ThinkingBlock({ text, startTime, streaming }) {
   }, [streaming, startTime]);
 
   return (
-    <div className={`thinking-block ${expanded ? "expanded" : ""}`} onClick={() => setExpanded((v) => !v)}>
-      <div className="thinking-header">
-        <span className="thinking-icon">{expanded ? "▾" : "▸"}</span>
-        <span className="thinking-label"><Icon name="info" size={11} /> 思考</span>
+    <div className={`thinking-block ${expanded ? "expanded" : ""}`}>
+      <button
+        type="button"
+        className="thinking-header"
+        aria-expanded={expanded}
+        aria-controls={idRef.current}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="thinking-icon" aria-hidden="true">{expanded ? "▾" : "▸"}</span>
+        <span className="thinking-label"><ToolIdentityIcon name="__thinking__" size={11} /> 思考</span>
         {streaming && <span className="thinking-status">思考中…</span>}
         {!streaming && duration && <span className="thinking-status">思考了 {duration}s</span>}
         {!streaming && !duration && <span className="thinking-status">{text.length} 字</span>}
-      </div>
-      {expanded && <div className="thinking-text">{text}</div>}
+      </button>
+      {expanded && <div className="thinking-text" id={idRef.current}>{text}</div>}
     </div>
   );
 }
@@ -3968,6 +3978,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
                 )}
                 <div className={`execution-flow-item ${flowEventTone(event)}`}>
                   <span className="execution-flow-dot" />
+                  {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
                   <span className="execution-flow-label">{label}</span>
                   {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
                   <time>{new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
@@ -4093,6 +4104,7 @@ function ToolCard({ tool, onToggle }) {
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
           {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
+        <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
         <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}
