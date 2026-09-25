@@ -25,7 +25,7 @@ import {
 } from "./Pi网络代理.mjs";
 
 const RUNTIME_RECORD_FILE = process.env.OAW_RUNTIME_RECORD_FILE || path.join(PROJECT_DIR, ".oaw", "运行时记录.json");
-export const PI_PACKAGE_VERSION = "0.85.1";
+export const PI_PACKAGE_VERSION = "0.87.1";
 /**
  * Pi 原生上下文压缩策略（唯一事实来源）。
  * reserveTokens：接近窗口上限时预留的输出/工具空间，压缩线 = contextWindow − reserveTokens；
