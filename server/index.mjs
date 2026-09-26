@@ -34,6 +34,9 @@ import * as browserModule from "./内置浏览器.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
 import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
+import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
+import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
+import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -1682,10 +1685,11 @@ app.post("/api/search/settings", (req, res) => {
 
 app.post("/api/search/test", async (req, res) => {
   try {
-    const result = await searchModule.testSearchBackend(req.body?.backend || "");
+    // draft 只用于本次测试（可测试尚未保存的新 Key/URL），服务端不会持久化。
+    const result = await searchModule.testSearchBackend(req.body?.backend || "", { draft: req.body?.draft });
     res.json(result);
   } catch (error) {
-    res.status(500).json({ ok: false, message: error.message });
+    res.status(500).json({ ok: false, category: "unknown", message: error.message });
   }
 });
 
@@ -1732,9 +1736,36 @@ app.get("/api/browser/stream", (req, res) => {
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe();
   };
+  // 背压处理：帧是「最新即可」的数据，写不进去时只保留最新一帧，避免无限缓冲；
+  // 状态/标签类事件体积小且需要保序，单独排队。
+  const pendingEvents = [];
+  let pendingFrame = null;
+  let writable = true;
+  const pump = () => {
+    if (closed || !writable) return;
+    for (;;) {
+      const next = pendingEvents.shift() || pendingFrame;
+      if (!next) return;
+      if (next.type === "frame") pendingFrame = null;
+      let ok = false;
+      try {
+        ok = res.write(`data: ${JSON.stringify(next)}\n\n`);
+      } catch {
+        cleanup();
+        return;
+      }
+      if (!ok) {
+        writable = false;
+        res.once("drain", () => { writable = true; pump(); });
+        return;
+      }
+    }
+  };
   const write = (payload) => {
     if (closed) return;
-    try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { cleanup(); }
+    if (payload.type === "frame") pendingFrame = payload;
+    else pendingEvents.push(payload);
+    pump();
   };
   heartbeat = setInterval(() => {
     if (closed) return;
@@ -1753,7 +1784,15 @@ app.get("/api/browser/stream", (req, res) => {
     if (type === "frame" && !withFrames) return;
     write({ type, data });
   });
-  req.on("close", cleanup);
+  if (session) {
+    // 订阅者数量驱动推流：有人看才推流（省 CPU/带宽），并保证面板第一次打开就有一帧。
+    Promise.resolve(session.noteSubscribers(browserModule.browserSubscriberCount(key))).catch(() => {});
+    if (withFrames && !session.frame) session.captureFrame().catch(() => {});
+  }
+  req.on("close", () => {
+    cleanup();
+    if (session) Promise.resolve(session.noteSubscribers(browserModule.browserSubscriberCount(key))).catch(() => {});
+  });
 });
 
 app.post("/api/browser/input", async (req, res) => {
@@ -2027,6 +2066,67 @@ app.post("/api/connectors/:id/status", (req, res) => {
   const result = setConnectorStatus(req.params.id, req.body || {});
   if (!result.ok) return res.status(404).json(result);
   res.json(result);
+});
+
+// ---------- MCP 与 Pi 扩展接入 ----------
+app.get("/api/integrations/mcp/servers", (_req, res) => res.json({ servers: listMcpServers() }));
+app.post("/api/integrations/mcp/servers", (req, res) => {
+  try { res.status(201).json({ server: saveMcpServer(req.body || {}) }); }
+  catch (error) { res.status(400).json({ error: error?.message || String(error) }); }
+});
+app.patch("/api/integrations/mcp/servers/:id", (req, res) => {
+  try {
+    const server = updateMcpServer(req.params.id, req.body || {});
+    if (!server) return res.status(404).json({ error: "MCP 服务不存在" });
+    res.json({ server });
+  } catch (error) { res.status(400).json({ error: error?.message || String(error) }); }
+});
+app.delete("/api/integrations/mcp/servers/:id", async (req, res) => {
+  const deleted = await deleteMcpServer(req.params.id);
+  if (!deleted) return res.status(404).json({ error: "MCP 服务不存在" });
+  res.json({ ok: true });
+});
+app.post("/api/integrations/mcp/servers/:id/test", async (req, res) => {
+  const result = await testMcpServer(req.params.id);
+  res.status(result.ok ? 200 : 502).json(result);
+});
+
+app.get("/api/integrations/pi/extensions", (_req, res) => res.json({ extensions: listPiExtensions() }));
+app.get("/api/integrations/pi/catalog", async (req, res) => {
+  try {
+    res.json(await searchPiPackageCatalog(req.query.q || "", req.query.page || 0));
+  } catch (error) {
+    res.status(502).json({ error: error?.message || "查询 Pi 包目录失败" });
+  }
+});
+app.post("/api/integrations/pi/extensions/from-package", (req, res) => {
+  try {
+    const installed = resolveInstalledPiPackage(req.body?.name);
+    const extension = addPiExtension({ name: installed.name, path: installed.path });
+    res.status(201).json({ extension });
+  } catch (error) {
+    res.status(400).json({ error: error?.message || "登记已安装 Pi 包失败" });
+  }
+});
+app.post("/api/integrations/pi/extensions", (req, res) => {
+  try { res.status(201).json({ extension: addPiExtension(req.body || {}) }); }
+  catch (error) { res.status(400).json({ error: error?.message || String(error) }); }
+});
+app.patch("/api/integrations/pi/extensions/:id", (req, res) => {
+  try {
+    const extension = updatePiExtension(req.params.id, req.body || {});
+    if (!extension) return res.status(404).json({ error: "Pi 扩展不存在" });
+    res.json({ extension });
+  } catch (error) { res.status(400).json({ error: error?.message || String(error) }); }
+});
+app.post("/api/integrations/pi/extensions/:id/check", (req, res) => {
+  const extension = checkPiExtension(req.params.id);
+  if (!extension) return res.status(404).json({ error: "Pi 扩展不存在" });
+  res.json({ extension });
+});
+app.delete("/api/integrations/pi/extensions/:id", (req, res) => {
+  if (!deletePiExtension(req.params.id)) return res.status(404).json({ error: "Pi 扩展不存在" });
+  res.json({ ok: true });
 });
 
 // POST /api/skills/export - 导出 skill（返回 base64 内容）
@@ -4552,12 +4652,29 @@ async function shutdownService(reason, exitCode = 0) {
   shuttingDown = true;
   console.warn(`[service] 正在关闭（${reason}）...`);
   try { await agentManager.disposeAll(); } catch (error) { recordProcessFault("shutdown_dispose_failed", error); }
+  try { await closeMcpConnections(); } catch (error) { recordProcessFault("shutdown_mcp_failed", error); }
   try { stopAllWatches(); } catch (error) { recordProcessFault("shutdown_watch_failed", error); }
-  try { await shutdownBrowsers(); } catch (error) { recordProcessFault("shutdown_browser_failed", error); }
+  try { await browserModule.shutdownBrowsers(); } catch (error) { recordProcessFault("shutdown_browser_failed", error); }
   if (memoryWatcher) { try { memoryWatcher.close(); } catch (error) { recordProcessFault("shutdown_memory_watch_failed", error); } }
   if (httpServer) {
     await new Promise((resolve) => {
-      try { httpServer.close(() => resolve()); } catch { resolve(); }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(closeTimer);
+        resolve();
+      };
+      const closeTimer = setTimeout(() => {
+        console.warn("[service] 等待 HTTP 连接关闭超时，继续退出。");
+        finish();
+      }, 8_000);
+      try {
+        httpServer.close(finish);
+        // EventSource/SSE 是长连接；先停止接受新请求，再主动关闭现有连接，
+        // 否则 server.close() 会一直等到客户端断开，监督器也无法及时重启。
+        httpServer.closeAllConnections?.();
+      } catch { finish(); }
     });
   }
   process.exit(exitCode);
@@ -4594,8 +4711,9 @@ httpServer.on("error", (error) => {
   console.error(`[server] 监听 ${HOST}:${PORT} 失败：`, error?.stack || error);
   if (error?.code === "EADDRINUSE") {
     console.error(`[server] ${HOST}:${PORT} 已被其他 Open Plan 实例占用；本重复实例将退出，请使用现有服务。`);
-    setImmediate(() => process.exit(1));
   }
+  // 所有 listen 错误都应退出干净进程；只记录后继续会留下“进程活着但服务不可用”的假健康状态。
+  setImmediate(() => { void shutdownService("listen_error", 1); });
 });
 
 process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });

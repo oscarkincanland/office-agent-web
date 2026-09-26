@@ -3,6 +3,8 @@ import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } fr
 import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
+import MarkdownBody from "./MarkdownBody.jsx";
+import { artifactAcceptanceText, acceptanceSummaryText } from "./验收状态.js";
 
 const ACTIVE = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 const statusText = {
@@ -20,6 +22,13 @@ const statusText = {
 function modeText(run) {
   const mode = run?.task?.mode;
   return mode === "chat" ? "Chat" : mode === "office" ? "Office" : mode === "agent" ? "Agent" : "未标记";
+}
+
+/** 事件摘要：把 run 级原始事件压成一行可读文本（保留技术细节在 title 里）。 */
+function eventDigest(event) {
+  const data = event?.data || {};
+  const text = data.summary || data.message || data.detail || data.toolName || data.stepName || "";
+  return String(text).replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 function taskTitle(run) {
@@ -314,7 +323,7 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                 <div className="task-center-status-row"><span>步骤进度</span><b>{stepsText(detail) || "无步骤记录"}</b></div>
                 <div className="task-center-status-row"><span>验收结果</span><b>{verificationText(detail) || "未验收"}</b></div>
               </div>
-              {detail.completion?.summary && <div className="task-center-completion-note">完成说明：{detail.completion.summary}</div>}
+              {detail.completion?.summary && <div className="task-center-completion-note task-center-completion-markdown"><div className="task-center-completion-label">完成说明</div><MarkdownBody>{detail.completion.summary}</MarkdownBody></div>}
               {!!detail.completion?.incomplete?.length && <div className="task-center-completion-note warn">未完成项：{detail.completion.incomplete.join("；")}</div>}
               {!!detail.completion?.blockers?.length && <div className="task-center-completion-note warn">受阻项：{detail.completion.blockers.join("；")}</div>}
               {detail.completion?.verification && <div className="task-center-completion-note">验证说明：{detail.completion.verification}</div>}
@@ -349,11 +358,17 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
                 ))}
               </div>
               {!!detail.artifacts?.length && <div className="task-center-artifacts">
-                <div>产物 {detail.artifacts.length} 个 · 成果验收 {detail.acceptanceStatus === "passed" ? "通过" : detail.acceptanceStatus === "manual_review" ? "待人工确认" : detail.acceptanceStatus === "failed" ? "失败" : "未检查"}</div>
-                {detail.acceptance?.artifacts?.map((item) => <div className="task-center-artifact-check" key={item.path}><span>{String(item.path || "").split(/[\\/]/).pop()}</span><small>{item.status === "passed" ? "通过" : item.status === "manual_review" ? "待确认" : item.status === "warning" ? "有提示" : item.status === "failed" ? "失败" : "未检查"}</small></div>)}
+                <div>{acceptanceSummaryText(detail.acceptanceStatus, detail.status)} · 产物 {detail.artifacts.length} 个</div>
+                {detail.acceptance?.artifacts?.map((item) => <div className="task-center-artifact-check" key={item.path}><span>{String(item.path || "").split(/[\\/]/).pop()}</span><small>{artifactAcceptanceText(item.status)}</small></div>)}
               </div>}
               <div className="task-center-events">
-                {(detail.events || []).slice(-8).reverse().map((event, index) => <div key={`${event.seq || "event"}-${index}`}><span>{event.type}</span><small>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</small></div>)}
+                {(detail.events || []).slice(-12).reverse().map((event, index) => (
+                  <div key={`${event.seq || "event"}-${index}`}>
+                    <span>{event.type}</span>
+                    {eventDigest(event) && <small className="task-center-event-digest" title={eventDigest(event)}>{eventDigest(event)}</small>}
+                    <small>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</small>
+                  </div>
+                ))}
               </div>
             </div>
           )}

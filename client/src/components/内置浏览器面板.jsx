@@ -456,6 +456,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         )}
       </div>
       <div className="browser-hint"><Icon name="cursor" size={11} /> 点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交</div>
+      {state.error && <div className="browser-msg">{state.error}</div>}
       {message && <div className="browser-msg">{message}</div>}
     </div>
   );

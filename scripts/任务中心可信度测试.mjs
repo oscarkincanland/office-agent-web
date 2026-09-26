@@ -38,4 +38,12 @@ assert.match(运行轨迹, /pending: "验证中"/, "验收状态应覆盖验证�
 assert.match(样式, /\.task-center-status \{/, "状态分区应有样式");
 assert.match(样式, /\.task-center-completion-note/, "完成说明应有样式");
 
+// 5. 结论要详细且保格式（任务中心不再只给一行纯文本、事件不再只有类型）
+assert.match(任务中心, /import MarkdownBody from "\.\/MarkdownBody\.jsx"/, "任务中心应能渲染 Markdown 结论");
+assert.match(任务中心, /task-center-completion-markdown[\s\S]{0,200}?<MarkdownBody>\{detail\.completion\.summary\}<\/MarkdownBody>/, "完成说明应按 Markdown 渲染");
+assert.match(任务中心, /function eventDigest\(event\)/, "事件应带一行可读摘要");
+assert.match(任务中心, /\(detail\.events \|\| \[\]\)\.slice\(-12\)/, "事件应展示更多（12 条）");
+assert.match(样式, /\.task-center-completion-markdown \.markdown-body/, "Markdown 结论应有排版样式");
+assert.match(样式, /\.task-center-event-digest/, "事件摘要应有样式");
+
 console.log("任务中心可信度回归：通过");

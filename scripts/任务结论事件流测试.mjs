@@ -99,9 +99,11 @@ test("思维 / 搜索 / 读写 / 终端 / 浏览器 / Office / 知识库 / 审�
 });
 
 test("内置工具清单全部映射到确定图标（无遗漏、无异常）", () => {
-  const toolsLine = agent源.match(/tools: \[([^\]]+)\]/);
+  // agent.mjs 里还有子代理等较短的 tools 清单；内置工具清单是最长的那一个，按此取用。
+  const candidates = [...agent源.matchAll(/tools: \[([^\]]+)\]/g)].map((m) => m[1]);
+  const toolsLine = candidates.reduce((longest, item) => (item.length > (longest?.length || 0) ? item : longest), null);
   assert.ok(toolsLine, "应能从 agent.mjs 解析出内置工具清单");
-  const names = [...toolsLine[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  const names = [...toolsLine.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   assert.ok(names.length >= 30, `工具清单应完整（实际 ${names.length} 项）`);
   const expected = {
     read: "file", context_read: "file",
@@ -110,7 +112,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
     map_read: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_save_analysis: "map", map_clear_analysis: "map",
-    review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check",
+    review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
   };
   const unmapped = [];
   for (const name of names) {
@@ -266,6 +268,14 @@ test("finishRun 对完成语义做客观降级并绑定 runId", () => {
 test("run_finished 携带 finalText 与 finalMessageId", () => {
   assert.match(runs源, /finalMessageId: run\.finalMessageId \|\| null/);
   assert.match(index源, /getRun\(run\.id\)\?\.finalMessageId \|\| null/);
+});
+test("结论详细度：提示词允许结构化成果摘要，Run 摘要优先用结论", () => {
+  // 生成端：不再强制「1-3 句、禁止 Markdown」，有成果时允许结构化 Markdown
+  assert.match(agent源, /当本轮产生了文件、报告、数据、代码改动等成果时，用简洁但完整的 Markdown 把成果讲清楚/);
+  assert.match(agent源, /建议 ≤800 字/);
+  assert.match(agent源, /不要逐条复述工具调用流水/);
+  // 落盘端：Run 摘要优先采用结论，历史列表/结果卡标题才能显示真实结论
+  assert.match(runs源, /if \(run\.completion\?\.summary\) run\.summary = String\(run\.completion\.summary\)\.slice\(0, 4000\)/);
 });
 test("index 读取权威终稿优先走 Run 根级投影", () => {
   assert.match(index源, /if \(run && String\(run\.finalText \|\| ""\)\.trim\(\)\) return String\(run\.finalText\);/);

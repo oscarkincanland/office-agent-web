@@ -1666,8 +1666,54 @@ case "runtime_connecting":
         if (!aid) aid = ensureAssistant();
         if (aid) scheduleFlush("thinking", data);
         break;
+      case "subagent_start":
+        flushToolOutput();
+        setAgentPhase("子 Agent 正在处理只读子任务");
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          if (streamBufRef.current) flushNow(aid);
+          const childId = data.childId || data.toolCallId || newId();
+          patch(aid, (m) => m.blocks?.some((block) => block.type === "subagent" && block.id === childId)
+            ? m
+            : ({ ...m, blocks: [...(m.blocks || []), { type: "subagent", id: childId, role: data.role || "scout", task: data.task || "", status: "running", activity: "正在准备隔离的只读会话", preview: "", summary: "", error: "" }] }));
+        }
+        break;
+      case "subagent_update":
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.toolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running", preview: "", summary: "", error: "" };
+              blocks.push(block);
+            }
+            Object.assign(block, { status: data.status || block.status, activity: data.activity || block.activity, preview: data.preview ?? block.preview });
+            return { ...m, blocks };
+          });
+        }
+        break;
+      case "subagent_end":
+        flushToolOutput();
+        if (!aid) aid = ensureAssistant();
+        if (aid) {
+          const childId = data.childId || data.toolCallId;
+          patch(aid, (m) => {
+            const blocks = [...(m.blocks || [])];
+            let block = blocks.find((item) => item.type === "subagent" && item.id === childId);
+            if (!block) {
+              block = { type: "subagent", id: childId || newId(), role: data.role || "scout", task: data.task || "", status: "running" };
+              blocks.push(block);
+            }
+            Object.assign(block, { status: data.status || "completed", activity: data.status === "completed" ? "子任务已完成" : "子任务已结束", summary: data.summary || "", error: data.error || "" });
+            return { ...m, blocks };
+          });
+        }
+        break;
       // 工具调用开始：推入新 tool block（按 toolCallId 去重，重放不产生重复卡片）
       case "tool_start":
+        if (data.name === "run_subagent") break;
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
         if (!aid) aid = ensureAssistant();
@@ -1699,11 +1745,13 @@ case "runtime_connecting":
         break;
       // 工具输出流：更新最后一个 tool block
       case "tool_output":
+        if (data.name === "run_subagent") break;
         if (!aid) aid = ensureAssistant();
         if (aid) queueToolOutput(aid, data);
         break;
       // 工具结束：标记完成；找不到对应 start（历史被截断/重连丢失）时创建恢复卡片
       case "tool_end":
+        if (data.name === "run_subagent") break;
         flushToolOutput();
         if (!aid) aid = ensureAssistant();
         if (aid) patch(aid, (m) => {
@@ -2126,7 +2174,7 @@ case "runtime_connecting":
     if (!runId) return;
     const status = data.status || "completed";
     const statusText = status === "failed" ? "失败" : status === "cancelled" ? "已取消" : status === "aborted" ? "已中断" : status === "running" ? "执行中" : "完成";
-    const summaryText = String(data.summary || `本轮任务${statusText}`).trim();
+    const summaryText = String(data.summary || data.completion?.summary || `本轮任务${statusText}`).trim();
     const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
     const incomingProducts = Array.isArray(data.products) ? data.products : [];
     const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
@@ -3197,6 +3245,27 @@ case "runtime_connecting":
 // ========== 超大消息保护：>100KB 转点击展开，避免 markdown 渲染卡死 ==========
 const MAX_MARKDOWN_CHARS = 100000;
 
+// 流式输出尚未闭合的 Markdown 可能暂时暴露 `##`、`**` 等标记；
+// 进行中先用轻量清理显示可读文本，结束后仍由 SafeMarkdown 完整排版。
+function readableProgressText(value) {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line
+      .replace(/^\s{0,3}#{1,6}\s+/, "")
+      .replace(/^\s*>+\s?/, "")
+      .replace(/^\s*(?:[-+*]|\d+[.)])\s+/, "")
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\*\*|__|~~/g, "")
+      .replace(/(^|[\s\p{P}])\*(?=\S)|(?<=\S)\*(?=$|[\s\p{P}])/gu, "$1")
+      .replace(/(^|[\s\p{P}])_(?=\S)|(?<=\S)_(?=$|[\s\p{P}])/gu, "$1")
+      .replace(/`{1,3}/g, "")
+      .replace(/^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/, "")
+      .replace(/\s*\|\s*/g, " · ")
+      .trimEnd())
+    .join("\n");
+}
+
 function SafeMarkdown({ text }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
@@ -3215,8 +3284,14 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "aborted" ? "已中断" : m.runStatus === "running" ? "执行中" : "运行结束";
   const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "review" ? "Review" : m.runMode === "office" ? "Office" : "Work";
   const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
-  const title = String(m.conclusion || m.text || m.task?.text || m.task?.goal || "本轮任务")
+  // 标题取结论首行（结论可能是多行 Markdown），避免把整段结论塞进标题。
+  const conclusionSource = String(m.completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
+  const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
+  const title = String(m.conclusion || titleLine || "本轮任务")
     .replace(/^\s*#{1,6}\s*/, "")
+    .replace(/^[>*\-+\s]+/, "")
+    .replace(/[*`_]/g, "")
+    .slice(0, 140)
     .trim() || "本轮任务";
   // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
   // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
@@ -3290,7 +3365,12 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
               )}
             </div>
           </div>
-          {completion?.summary && <div className="run-result-note">结论：{completion.summary}</div>}
+          {completion?.summary && (
+            <div className="run-result-conclusion">
+              <div className="run-result-conclusion-label">结论</div>
+              <SafeMarkdown text={completion.summary} />
+            </div>
+          )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
           {completion?.verification && <div className="run-result-note">验证说明：{completion.verification}</div>}
@@ -3321,7 +3401,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
         )}
         <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
           <summary>查看本轮对话与产物</summary>
-          {m.text && m.text.trim() !== title && <div className="run-summary-content">{m.text}</div>}
+          {m.text && m.text.trim() !== title && <div className="run-summary-content"><SafeMarkdown text={m.text} /></div>}
           {m.products?.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
@@ -3463,12 +3543,13 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
               {blocks.map((b, i) => {
                 if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
                 if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool?.(m.id, b.id || i)} />;
+                if (b.type === "subagent") return <SubagentCard key={b.id || i} block={b} />;
                 if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
                 if (b.type === "approval") return <ApprovalBlock key={b.id || i} block={b} />;
                 if (b.type === "text") return (
                   <div className="flow-markdown" key={i}>
                     {streaming
-                      ? <div className="flow-stream-text" aria-live="polite">{b.text}</div>
+                      ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(b.text)}</div>
                       : <SafeMarkdown text={b.text} />}
                   </div>
                 );
@@ -3589,6 +3670,29 @@ function ThinkingBlock({ text, startTime, streaming }) {
       </button>
       {expanded && <div className="thinking-text" id={idRef.current}>{text}</div>}
     </div>
+  );
+}
+
+function SubagentCard({ block }) {
+  const [expanded, setExpanded] = useState(block.status === "running");
+  const statusText = block.status === "completed" ? "已完成" : block.status === "failed" ? "失败" : block.status === "cancelled" ? "已取消" : "执行中";
+  const roleText = { scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[block.role] || "只读任务";
+  const content = block.summary || block.preview || "";
+  return (
+    <section className={`subagent-card ${block.status || "running"}`} aria-label={`子 Agent：${roleText}`}>
+      <button type="button" className="subagent-card-head" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="subagent-card-icon"><Icon name={block.status === "completed" ? "check" : block.status === "failed" ? "x" : "robot"} size={13} /></span>
+        <span className="subagent-card-title"><strong>子 Agent · {roleText}</strong><small>{block.activity || "隔离上下文 · 只读文件"}</small></span>
+        <span className="subagent-card-status">{block.status === "running" && <i />} {statusText}</span>
+        <span className={`subagent-card-chevron ${expanded ? "open" : ""}`}>▸</span>
+      </button>
+      {expanded && <div className="subagent-card-body">
+        {block.task && <div className="subagent-task"><b>子任务</b><span>{block.task}</span></div>}
+        {block.error && <div className="subagent-error" role="alert">{block.error}</div>}
+        {content && <div className={`subagent-result ${block.status === "running" ? "preview" : ""}`}>{block.status === "running" ? readableProgressText(content) : <SafeMarkdown text={content} />}</div>}
+        {!content && !block.error && <div className="subagent-placeholder">子任务只使用当前 Run 授权的文件读取能力，不继承主对话上下文。</div>}
+      </div>}
+    </section>
   );
 }
 

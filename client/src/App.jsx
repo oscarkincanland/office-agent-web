@@ -4,6 +4,7 @@ import ChatPanel, { normalizeHistoryMessages } from "./components/ChatPanel.jsx"
 import Resizer from "./components/Resizer.jsx";
 const SkillsManager = lazy(() => import("./components/SkillsManager.jsx"));
 const AgentMarket = lazy(() => import("./components/AgentMarket.jsx"));
+const IntegrationsCenter = lazy(() => import("./components/IntegrationsCenter.jsx"));
 const KnowledgeBase = lazy(() => import("./components/KnowledgeBase.jsx"));
 const TemplateLibrary = lazy(() => import("./components/TemplateLibrary.jsx"));
 const MapPanel = lazy(() => import("./components/MapPanel.jsx"));
@@ -1310,6 +1311,8 @@ export default function App() {
               onOpenTemplates={() => openExternalModule("templates")}
               onOpenMap={() => openExternalModule("map")}
                onOpenTasks={() => openExternalModule("tasks")}
+               onOpenMcp={() => openExternalModule("mcp")}
+               onOpenPiPlugins={() => openExternalModule("piPlugins")}
                onOpenSettings={(tab = "settings") => { if (tab === "memory") setSettingsModuleTab("memory"); else { setSettingsModuleTab("settings"); setSettingsSection(tab === "project" ? "project" : "model"); } openExternalModule("settings"); }}
                onOpenArtifacts={() => openExternalModule("artifacts")}
               onBeforeOpenModal={closeExternalModules}
@@ -1497,6 +1500,9 @@ export default function App() {
           onAtMention={insertChatText}
           onPromoteToAgent={handlePromoteToAgent}
         />
+        </DeferredModule>
+        <DeferredModule label={activeModule === "mcp" ? "MCP" : "Pi 插件"}>
+        <IntegrationsCenter kind={activeModule === "mcp" ? "mcp" : "pi"} open={activeModule === "mcp" || activeModule === "piPlugins"} onClose={closeExternalModules} />
         </DeferredModule>
         </>
         )}

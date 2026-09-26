@@ -24,19 +24,19 @@ export function completionStatusLabel(status) {
 export function normalizeCompletion(raw = {}) {
   const status = String(raw?.status || "").trim().toLowerCase();
   if (!COMPLETION_STATUSES.includes(status)) return null;
-  const summary = String(raw?.summary || "").trim().slice(0, 600);
+  const summary = String(raw?.summary || "").trim().slice(0, 4000);
   if (!summary) return null;
   const toList = (value) => (Array.isArray(value) ? value : [])
-    .map((item) => String(item || "").trim().slice(0, 200))
+    .map((item) => String(item || "").trim().slice(0, 400))
     .filter(Boolean)
-    .slice(0, 10);
+    .slice(0, 20);
   return {
     status,
     source: "explicit",
     summary,
     incomplete: toList(raw?.incomplete),
     blockers: toList(raw?.blockers),
-    verification: String(raw?.verification || "").trim().slice(0, 300) || null,
+    verification: String(raw?.verification || "").trim().slice(0, 1000) || null,
     at: new Date().toISOString(),
   };
 }

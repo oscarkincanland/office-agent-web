@@ -163,6 +163,6 @@ export function taskSummary(task) {
     task.currentFile ? `当前文件：${task.currentFile}` : "",
     task.mapProject ? `当前地图项目：${task.mapProject}` : "",
     task.references?.length ? `引用：${task.references.length} 项` : "",
-    task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具并汇报来源、修改、产物、假设和下一步。",
+    task.mode === "chat" ? "边界：只读检索，不修改文件。" : "边界：按任务执行工具，面向用户直接给出结论；过程与产物详情留在任务记录中，按需说明。",
   ].filter(Boolean).join("\n");
 }

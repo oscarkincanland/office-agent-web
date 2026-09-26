@@ -299,7 +299,9 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
   const [searchDraft, setSearchDraft] = useState({ backend: "tavily", tavilyKey: "", searxngUrl: "", jinaKey: "", bochaKey: "" });
   const [searchSaving, setSearchSaving] = useState(false);
   const [searchTesting, setSearchTesting] = useState(false);
-  const [searchMsg, setSearchMsg] = useState("");
+  const [searchSaveMsg, setSearchSaveMsg] = useState("");
+  const [searchTestMsg, setSearchTestMsg] = useState("");
+  const [searchTestInfo, setSearchTestInfo] = useState(null);
   const [diagnostics, setDiagnostics] = useState(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [diagnosticsMsg, setDiagnosticsMsg] = useState("");
@@ -385,7 +387,7 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
 
   const saveSearchConfig = useCallback(async () => {
     setSearchSaving(true);
-    setSearchMsg("");
+    setSearchSaveMsg("");
     try {
       const result = await searchSettingsSave({
         backend: searchDraft.backend,
@@ -397,26 +399,69 @@ const [providerConfigMsg, setProviderConfigMsg] = useState("");
       const settings = result?.settings || {};
       setSearchMeta((meta) => ({ ...meta, settings }));
       setSearchDraft((draft) => ({ ...draft, tavilyKey: "", jinaKey: "", bochaKey: "" }));
-      setSearchMsg("联网搜索配置已保存，Agent 新回合即可使用 web_search / web_fetch");
+      // 配置变更后连通性会重置为未验证，旧的测试结果不再可信。
+      setSearchTestInfo(null);
+      setSearchTestMsg("");
+      setSearchSaveMsg("配置已保存。连通性需重新测试；Agent 新回合即可使用 web_search / web_fetch。");
     } catch (error) {
-      setSearchMsg(`保存失败 · ${error.message}`);
+      setSearchSaveMsg(`保存失败 · ${error.message}`);
     } finally {
       setSearchSaving(false);
     }
   }, [searchDraft]);
 
+  const clearSearchCredentials = useCallback(async () => {
+    const backend = searchDraft.backend;
+    const label = searchMeta.backends.find((item) => item.id === backend)?.name || backend;
+    if (!window.confirm(`确定清除「${label}」已保存的凭据/地址？清除后需重新配置才能使用该后端。`)) return;
+    setSearchSaving(true);
+    setSearchSaveMsg("");
+    try {
+      const result = await searchSettingsSave({ backend, clearCredentials: [backend] });
+      const settings = result?.settings || {};
+      setSearchMeta((meta) => ({ ...meta, settings }));
+      setSearchDraft((draft) => ({
+        ...draft,
+        tavilyKey: "",
+        jinaKey: "",
+        bochaKey: "",
+        searxngUrl: backend === "searxng" ? "" : draft.searxngUrl,
+      }));
+      setSearchTestInfo(null);
+      setSearchTestMsg("");
+      setSearchSaveMsg("已清除该后端的已保存凭据。若进程环境变量提供了同名凭据，仍会生效。");
+    } catch (error) {
+      setSearchSaveMsg(`清除失败 · ${error.message}`);
+    } finally {
+      setSearchSaving(false);
+    }
+  }, [searchDraft.backend, searchMeta.backends]);
+
   const runSearchTest = useCallback(async () => {
     setSearchTesting(true);
-    setSearchMsg("");
+    setSearchTestMsg("");
+    setSearchTestInfo(null);
     try {
-      const result = await searchSettingsTest(searchDraft.backend);
-      setSearchMsg(`${result?.ok ? "✓" : "✗"} ${result?.message || "测试完成"}`);
+      // 只把「与已保存值不同」的输入作为草稿测试，避免把未修改的值也当成草稿。
+      const saved = searchMeta.settings || {};
+      const draft = {};
+      if (searchDraft.backend === "tavily" && searchDraft.tavilyKey.trim()) draft.tavilyKey = searchDraft.tavilyKey;
+      if (searchDraft.backend === "jina" && searchDraft.jinaKey.trim()) draft.jinaKey = searchDraft.jinaKey;
+      if (searchDraft.backend === "bocha" && searchDraft.bochaKey.trim()) draft.bochaKey = searchDraft.bochaKey;
+      const draftUrl = searchDraft.searxngUrl.trim().replace(/\/+$/, "");
+      if (searchDraft.backend === "searxng" && draftUrl && draftUrl !== String(saved.searxngUrl || "").replace(/\/+$/, "")) draft.searxngUrl = searchDraft.searxngUrl;
+      const result = await searchSettingsTest(searchDraft.backend, Object.keys(draft).length ? draft : null);
+      setSearchTestInfo(result);
+      setSearchTestMsg(`${result?.ok ? "✓" : "✗"} ${result?.message || "测试完成"}`);
+      // 测试会更新服务端连通性状态（草稿测试除外），刷新徽标。
+      const refreshed = await searchSettings().catch(() => null);
+      if (refreshed?.settings) setSearchMeta((meta) => ({ ...meta, settings: refreshed.settings }));
     } catch (error) {
-      setSearchMsg(`测试失败 · ${error.message}`);
+      setSearchTestMsg(`测试失败 · ${error.message}`);
     } finally {
       setSearchTesting(false);
     }
-  }, [searchDraft.backend]);
+  }, [searchDraft, searchMeta.settings]);
 
   const loadModelConfigs = useCallback(async () => {
     try {
@@ -1087,9 +1132,11 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         <div className="model-credentials-card model-network-card">
           <div className="model-credentials-head">
             <div><strong>联网搜索</strong><p>为 Agent 提供 web_search / web_fetch 工具；只影响联网检索，不改变本地文件能力。</p></div>
-            <span className={`sp-badge ${searchMeta.settings?.hasTavilyKey || searchMeta.settings?.hasBochaKey || searchMeta.settings?.searxngUrl ? "ok" : "warn"}`}>
-              {searchMeta.settings?.hasTavilyKey || searchMeta.settings?.hasBochaKey || searchMeta.settings?.searxngUrl ? "已配置" : "未配置"}
-            </span>
+            {(() => {
+              const state = searchMeta.settings?.state;
+              const tone = state?.tone === "ok" ? "ok" : state?.tone === "error" ? "error" : "warn";
+              return <span className={`sp-badge ${tone}`} title={state?.reason || ""}>{state?.label || "未配置"}</span>;
+            })()}
           </div>
           <div className="model-network-grid">
             <label><span>搜索后端</span>
@@ -1099,8 +1146,9 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
                 ))}
               </select>
             </label>
-            <button className="btn-sm" onClick={runSearchTest} disabled={searchTesting}>{searchTesting ? "测试中…" : "测试连接"}</button>
+            <button className="btn-sm" onClick={runSearchTest} disabled={searchTesting} title="测试当前选中的后端；若输入框里有尚未保存的 Key/地址，会用该草稿测试且不写入配置">{searchTesting ? "测试中…" : "测试连接"}</button>
             <button className="btn-sm primary" onClick={saveSearchConfig} disabled={searchSaving}>{searchSaving ? "保存中…" : "保存搜索配置"}</button>
+            <button className="btn-sm" onClick={clearSearchCredentials} disabled={searchSaving} title="清除当前后端已保存的凭据/地址">清除凭据</button>
           </div>
           {searchDraft.backend === "tavily" && (
             <div className="model-network-grid">
@@ -1126,7 +1174,20 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
             {searchMeta.backends.find((backend) => backend.id === searchDraft.backend)?.hint || "Tavily 免费 1000 次/月；国内网络可切换博查，或自建 SearXNG。"}
             {searchMeta.backends.find((backend) => backend.id === searchDraft.backend)?.keyUrl ? ` 申请地址：${searchMeta.backends.find((backend) => backend.id === searchDraft.backend).keyUrl}` : ""}
           </div>
-          {searchMsg && <div className="model-feedback">{searchMsg}</div>}
+          {searchMeta.settings?.state?.reason && (
+            <div className={`sp-note ${searchMeta.settings.state.tone === "error" ? "sp-note-error" : ""}`} style={{ marginTop: 6 }}>
+              当前状态：{searchMeta.settings.state.reason}
+              {searchMeta.settings.state.credentialSource === "env" ? "（凭据来自进程环境变量，不会写入配置文件）" : ""}
+              {searchMeta.settings.state.connectivityAt ? ` · 最近测试：${new Date(searchMeta.settings.state.connectivityAt).toLocaleTimeString("zh-CN")}` : ""}
+            </div>
+          )}
+          {searchTestMsg && (
+            <div className={`model-feedback ${searchTestInfo?.ok ? "" : "warn"}`}>
+              测试结果：{searchTestMsg}
+              {searchTestInfo?.testedDraft ? "（本次使用未保存的草稿测试，未写入配置）" : ""}
+            </div>
+          )}
+          {searchSaveMsg && <div className="model-feedback">保存状态：{searchSaveMsg}</div>}
         </div>
         <div className="sp-note">模型目录由规聚独立管理，也可从本地 Pi 一次性导入；连接测试只发送最小请求，不写入会话。若出现“已接收信息”长时间无响应，先在这里刷新目录并测试真实连接，再开始 Agent 任务。</div>
       </div>}

@@ -193,6 +193,27 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   console.log(`    实测最低：${最低.主题名} ${最低.名称} = ${最低.值.toFixed(2)}（阈值 ${最低.阈值}）`);
 });
 
+检查("用户气泡正文对比度达标（所有主题/皮肤）", () => {
+  // 每处 --user-bg 都必须紧跟一个针对该底色的 --user-fg。
+  const 配对 = [...样式.matchAll(/--user-bg:\s*([^;]+);\s*\n\s*--user-fg:\s*([^;]+);/g)]
+    .map((m) => ({ bg: m[1].trim(), fg: m[2].trim() }));
+  const bgCount = (样式.match(/--user-bg:/g) || []).length;
+  const fgCount = (样式.match(/--user-fg:/g) || []).length;
+  assert.equal(bgCount, fgCount, `--user-bg(${bgCount}) 与 --user-fg(${fgCount}) 必须成对声明`);
+  assert.ok(配对.length >= 9, `应至少声明 9 组 --user-bg/--user-fg，实际 ${配对.length}`);
+  for (const { bg, fg } of 配对) {
+    // 半透明底色（glass 皮肤）无法在静态样式表内确定叠底，另行人工复核。
+    if (!/^#[0-9a-fA-F]{6}$/.test(bg) || !/^#[0-9a-fA-F]{6}$/.test(fg)) continue;
+    const 值 = 对比度(fg, bg);
+    assert.ok(值 + 0.05 >= 4.5, `用户气泡 ${fg} on ${bg} 对比度 ${值.toFixed(2)} 低于 WCAG AA 4.5`);
+  }
+  // 生效层必须使用语义变量，不得再回退到固定浅色（浅字浅底的历史问题）。
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble \{[^}]*background:\s*var\(--user-bg\)[^}]*color:\s*var\(--user-fg\)/, "用户气泡必须用 --user-bg/--user-fg");
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble \.msg-text \{[^}]*color:\s*var\(--user-fg\)/, "用户气泡正文必须用 --user-fg");
+  assert.doesNotMatch(样式, /\.center-chat-slot \.msg\.user \.bubble \{[^}]*color:\s*#f9fff3/, "不得再使用固定浅色文字");
+  assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble a \{[^}]*color:\s*inherit/, "气泡内链接必须继承高对比字色");
+});
+
 console.log("\n▶ 最小点击目标与窄屏");
 
 检查("触屏设备放大命中区（桌面视觉不变）", () => {

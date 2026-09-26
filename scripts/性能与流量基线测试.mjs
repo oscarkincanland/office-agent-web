@@ -93,7 +93,9 @@ console.log("\n▶ 构建产物体积");
     console.log("    未找到 client/dist（先跑 npm run build），本次跳过体积核对");
     return;
   }
-  const 文件 = fs.readdirSync(产物目录);
+  // 只统计真实构建产物：忽略 macOS 在非 APFS 磁盘上生成的 AppleDouble 元数据（._xxx）
+  // 以及其它隐藏文件，否则会把它们误算进体积预算。
+  const 文件 = fs.readdirSync(产物目录).filter((f) => !f.startsWith("."));
   const 总css = 文件.filter((f) => f.endsWith(".css")).reduce((sum, f) => sum + fs.statSync(path.join(产物目录, f)).size, 0);
   const js = 文件.filter((f) => f.endsWith(".js")).map((f) => ({ f, size: fs.statSync(path.join(产物目录, f)).size }));
   const 最大js = js.reduce((max, item) => (item.size > max.size ? item : max), { f: "-", size: 0 });

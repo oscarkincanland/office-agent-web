@@ -105,17 +105,16 @@ function validateTarget(workspace, targetPath, { allowWorkspaceRoot = true } = {
     error.code = "WORKSPACE_INVALID";
     throw error;
   }
-  const target = path.resolve(String(targetPath || ""));
-  if (!isInside(root, target) || (!allowWorkspaceRoot && target === root)) {
-    const error = new Error(`写入路径必须位于当前工作区内：${target}`);
-    error.code = "WRITE_SCOPE_ERROR";
-    throw error;
-  }
-  const probe = nearestExistingPath(target);
+  const requestedTarget = path.resolve(String(targetPath || ""));
+  // macOS 的 /var、/tmp 等常见路径是指向 /private/... 的符号链接。
+  // normalizeWorkspace 返回 realpath；目标也必须先按最近存在的父目录做同样规范化，
+  // 否则合法的 /var/folders/... 工作区会被误判为逃逸出 /private/var/folders/...。
+  const probe = nearestExistingPath(requestedTarget);
   let realProbe;
   try { realProbe = fs.realpathSync(probe); } catch { realProbe = probe; }
-  if (!isInside(root, realProbe)) {
-    const error = new Error(`写入路径解析后超出当前工作区：${target}`);
+  const target = path.resolve(realProbe, path.relative(probe, requestedTarget));
+  if (!isInside(root, target) || (!allowWorkspaceRoot && target === root)) {
+    const error = new Error(`写入路径必须位于当前工作区内：${target}`);
     error.code = "WRITE_SCOPE_ERROR";
     throw error;
   }

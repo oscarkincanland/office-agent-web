@@ -17,6 +17,8 @@ export const APPROVAL_ACTIONS = Object.freeze(["allow", "ask", "deny"]);
 // 默认规则：catch-all allow 在前，具体 ask/deny 在后（最后匹配生效）。
 const DEFAULT_RULES = [
   { tool: "*", pattern: "*", action: "allow" },
+  // 外部 MCP 工具默认逐次询问；MCP 自身明确标记为只读时由调用端跳过审批。
+  { tool: "mcp", pattern: "*", action: "ask" },
   // Office 写入类命令默认先问，避免 Agent 未经确认就改文档
   { tool: "officecli", pattern: "set *", action: "ask" },
   { tool: "officecli", pattern: "batch *", action: "ask" },

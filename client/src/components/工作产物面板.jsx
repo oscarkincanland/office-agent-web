@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
+import { artifactStatusInfo } from "./验收状态.js";
 
 const statusText = { running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", completed: "已完成", failed: "失败", cancelled: "已取消", aborted: "已中断" };
 
@@ -17,14 +18,6 @@ function eventTime(value) {
 
 function artifactName(path) {
   return String(path || "").split(/[\\/]/).pop() || "未命名产物";
-}
-
-function artifactStatusLabel({ publication, result, resultStatus }) {
-  if (publication) return `v${publication.version} 已固定`;
-  if (resultStatus === "failed") return "验收失败";
-  if (result?.readyToPublish) return "验收通过";
-  if (resultStatus === "accepted") return "已确认";
-  return "待验收";
 }
 
 function EventStream({ clientId, threadId }) {
@@ -156,7 +149,9 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
   const publishedByArtifact = useMemo(() => new Map(published.map((item) => [item.artifactId, item])), [published]);
   const readyCount = entries.filter(({ artifact, run }) => {
     const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
-    return result?.readyToPublish;
+    const resultStatus = result?.status || artifact.acceptanceStatus || "not_checked";
+    const publication = publishedByArtifact.get(artifact.artifactId);
+    return artifactStatusInfo({ publication, result, resultStatus, runStatus: run.status }).canPublish;
   }).length;
   // 只有「尚未回滚且存在上一正式版本」的成果才真正可回滚；首个版本没有历史版本。
   const rollbackableCount = published.filter((item) => item.status !== "rolled_back" && item.rollbackTarget).length;
@@ -170,32 +165,33 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
   return (
     <div className="preview-artifact-panel artifact-workspace">
       <div className="artifact-workspace-head">
-        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果；固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
+        <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果。只有「文件格式验收通过 + 所属任务成功结束 + 尚未固定」的文件才可固定；格式验收通过不等于任务成功，失败任务的文件不能固定。固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
         <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新当前会话产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
       <div className="artifact-summary-grid">
         <div><strong>{entries.length}</strong><span>本轮产物</span></div>
-        <div><strong>{readyCount}</strong><span>待固定</span></div>
+        <div title="仅统计：格式验收通过、所属任务成功结束、且尚未固定的文件"><strong>{readyCount}</strong><span>待固定</span></div>
         <div><strong>{published.length}</strong><span>正式版本</span></div>
       </div>
       <div className="artifact-list-card">
         <div className="artifact-list-head"><span>本轮文件</span><small>{currentSessionId ? "已按当前会话筛选" : "当前工作区"}</small></div>
         {loading && <div className="preview-empty">正在读取产物清单…</div>}
-        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />本轮暂未生成产物</div>}
+        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />本轮暂未生成产物{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
         {entries.map(({ artifact, run }, index) => {
         const name = artifactName(artifact.path);
         const publication = publishedByArtifact.get(artifact.artifactId);
         const result = acceptance[run.id]?.artifacts?.find((item) => item.path === artifact.path) || artifact.acceptance;
         const resultStatus = result?.status || artifact.acceptanceStatus || "not_checked";
+        const info = artifactStatusInfo({ publication, result, resultStatus, runStatus: run.status });
         const canConfirm = run.status === "completed" && !publication && result && !result.readyToPublish && resultStatus !== "failed";
-        const canPublish = run.status === "completed" && !publication && result?.readyToPublish;
+        const canPublish = info.canPublish;
         return (
           <div className="preview-artifact" key={`${artifact.artifactId || artifact.path}-${index}`}>
             <button className="preview-artifact-main" onClick={() => onOpenFile?.(artifact.path, undefined, run.cwd)} title={artifact.path}>
               <Icon name="file" size={14} />
               <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
             </button>
-            <span className={`preview-artifact-status ${publication ? "published" : resultStatus === "failed" ? "failed" : result?.readyToPublish ? "ready" : ""}`}>{artifactStatusLabel({ publication, result, resultStatus })}</span>
+            <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>
             {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
             {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}
           </div>

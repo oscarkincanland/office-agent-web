@@ -42,8 +42,8 @@ export const agentNetworkSettingsSave = (settings = {}) =>
 export const searchSettings = () => api("/api/search/settings");
 export const searchSettingsSave = (settings = {}) =>
   api("/api/search/settings", { method: "POST", body: JSON.stringify(settings) });
-export const searchSettingsTest = (backend = "") =>
-  api("/api/search/test", { method: "POST", body: JSON.stringify({ backend }) });
+export const searchSettingsTest = (backend = "", draft = null) =>
+  api("/api/search/test", { method: "POST", body: JSON.stringify(draft ? { backend, draft } : { backend }) });
 
 // ---------- 内置浏览器 ----------
 export const browserState = (client, thread) =>
@@ -185,6 +185,18 @@ export const rollbackRun = (id, paths) => api(`/api/runs/${encodeURIComponent(id
 export const updateRunStep = (id, stepId, patch) => api(`/api/runs/${encodeURIComponent(id)}/steps/${encodeURIComponent(stepId)}`, { method: "POST", body: JSON.stringify(patch || {}) });
 export const listConnectors = () => api("/api/connectors");
 export const beginConnectorAuth = (id, redirectUri) => api(`/api/connectors/${encodeURIComponent(id)}/auth/start`, { method: "POST", body: JSON.stringify({ redirectUri }) });
+export const listMcpServers = () => api("/api/integrations/mcp/servers");
+export const saveMcpServer = (payload) => api("/api/integrations/mcp/servers", { method: "POST", body: JSON.stringify(payload || {}) });
+export const updateMcpServer = (id, payload) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const deleteMcpServer = (id) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const testMcpServer = (id) => api(`/api/integrations/mcp/servers/${encodeURIComponent(id)}/test`, { method: "POST", body: JSON.stringify({}) });
+export const listPiExtensions = () => api("/api/integrations/pi/extensions");
+export const searchPiPackageCatalog = (query = "", page = 0) => api(`/api/integrations/pi/catalog?q=${encodeURIComponent(query)}&page=${encodeURIComponent(page)}`);
+export const registerInstalledPiPackage = (name) => api("/api/integrations/pi/extensions/from-package", { method: "POST", body: JSON.stringify({ name }) });
+export const addPiExtension = (payload) => api("/api/integrations/pi/extensions", { method: "POST", body: JSON.stringify(payload || {}) });
+export const updatePiExtension = (id, payload) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
+export const checkPiExtension = (id) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}/check`, { method: "POST", body: JSON.stringify({}) });
+export const deletePiExtension = (id) => api(`/api/integrations/pi/extensions/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const approveMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}/approve`, { method: "POST", body: JSON.stringify(payload || {}) });
 export const editMemoryProposal = (id, payload = {}) => api(`/api/memory/proposals/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload || {}) });
 export const rejectMemoryProposal = (id, reason = "用户拒绝该记忆建议") => api(`/api/memory/proposals/${encodeURIComponent(id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });

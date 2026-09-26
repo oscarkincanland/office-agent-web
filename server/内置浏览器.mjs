@@ -25,9 +25,25 @@ const MAX_CAPTURE = { width: 2400, height: 1600 };
 // 后续 browser_snapshot/browser_wait 类操作可以继续观察加载结果。
 const NAV_TIMEOUT_MS = 8000;
 const FRAME_BROADCAST_INTERVAL_MS = 90;
+// 帧流预算：以「面板可读」为先，限制质量/采样/最大边长，并给单帧设字节上限，
+// 避免每帧几百 KB 的 JPEG 把 SSE、React 和浏览器主线程一起拖垮。
+const FRAME_QUALITY = Math.min(100, Math.max(40, Number(process.env.OAW_BROWSER_FRAME_QUALITY) || 70));
+const FRAME_EVERY_NTH = Math.max(1, Number(process.env.OAW_BROWSER_FRAME_EVERY_NTH) || 2);
+const FRAME_MAX_WIDTH = Math.max(640, Number(process.env.OAW_BROWSER_FRAME_MAX_WIDTH) || 1600);
+const FRAME_MAX_HEIGHT = Math.max(480, Number(process.env.OAW_BROWSER_FRAME_MAX_HEIGHT) || 1000);
+const MAX_FRAME_BYTES = Math.max(120_000, Number(process.env.OAW_BROWSER_FRAME_MAX_BYTES) || 900_000);
+const SUBSCRIBER_WATCHDOG_MS = 1500; // 面板空白时的恢复巡检间隔
+const SCREENCAST_RETRY_MS = 4000; // 推流恢复的最小重试间隔
+const FIRST_FRAME_GRACE_MS = 1200; // 启动推流后等待首帧的宽限期
 
 const sessions = new Map(); // key -> BrowserSession
 const subscribers = new Map(); // key -> Set<fn(type, data)>
+
+/** 某会话当前的帧流订阅者数量（前端“浏览器”面板打开时通常为 1）。 */
+export function browserSubscriberCount(key) {
+  const set = subscribers.get(key);
+  return set ? set.size : 0;
+}
 
 /**
  * 会话键（client::thread）。
@@ -77,10 +93,22 @@ export function broadcast(key, type, data) {
 function findBrowserExecutable() {
   const candidates = [
     process.env.OAW_BROWSER_PATH,
+    // Windows
     "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
     "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    // macOS / Linux：Edge、Chrome 等以 .app 包分发，可执行文件在 Contents/MacOS 下
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    path.join(process.env.HOME || "", "Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+    path.join(process.env.HOME || "", "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+    "/usr/bin/microsoft-edge",
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
   ].filter(Boolean);
   return candidates.find((item) => { try { return fs.existsSync(item); } catch { return false; } }) || null;
 }
@@ -126,19 +154,131 @@ function sleep(ms) {
 /** 清理占用指定 profile 的孤儿浏览器进程（服务被强杀/启动失败后常见）。 */
 function killBrowserProcessesForProfile(profileDir) {
   return new Promise((resolve) => {
-    if (process.platform !== "win32") return resolve(0);
-    const target = path.resolve(profileDir).replace(/'/g, "''");
-    const script = [
-      `$p='${target}';`,
-      "$procs = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($p) };",
-      "$n = 0;",
-      "foreach ($proc in $procs) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; $n++ } catch {} }",
-      "Write-Output $n",
-    ].join(" ");
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 20000 }, (error, stdout) => {
-      resolve(Number(String(stdout || "").trim()) || 0);
+    const target = path.resolve(profileDir);
+    if (process.platform === "win32") {
+      const escaped = target.replace(/'/g, "''");
+      const script = [
+        `$p='${escaped}';`,
+        "$procs = Get-CimInstance Win32_Process -Filter \"Name='msedge.exe' or Name='chrome.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($p) };",
+        "$n = 0;",
+        "foreach ($proc in $procs) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue; $n++ } catch {} }",
+        "Write-Output $n",
+      ].join(" ");
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 20000 }, (error, stdout) => {
+        resolve(Number(String(stdout || "").trim()) || 0);
+      });
+      return;
+    }
+    // macOS/Linux：只清理命令行里出现「本会话专属 profile 目录」的浏览器进程，
+    // 不会影响用户自己开的其他浏览器实例。
+    const pattern = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    execFile("pgrep", ["-f", pattern], { timeout: 8000 }, (error, stdout) => {
+      const pids = String(stdout || "")
+        .split(/\s+/)
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0 && value !== process.pid);
+      if (!pids.length) return resolve(0);
+      execFile("kill", ["-9", ...pids.map(String)], { timeout: 8000 }, () => resolve(pids.length));
     });
   });
+}
+
+/** 是否存在仍在运行的、使用该 profile 的浏览器进程。 */
+function hasLiveProfileProcess(profileDir) {
+  return new Promise((resolve) => {
+    const target = path.resolve(profileDir);
+    if (process.platform === "win32") {
+      const escaped = target.replace(/'/g, "''");
+      const script = `@(Get-CimInstance Win32_Process -Filter "Name='msedge.exe' or Name='chrome.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') }).Count`;
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 15000 }, (error, stdout) => {
+        resolve(Number(String(stdout || "").trim()) > 0);
+      });
+      return;
+    }
+    const pattern = target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    execFile("pgrep", ["-f", pattern], { timeout: 8000 }, (error, stdout) => {
+      const pids = String(stdout || "").split(/\s+/).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0 && value !== process.pid);
+      resolve(pids.length > 0);
+    });
+  });
+}
+
+/** 读取某个进程的命令行（用于确认 CDP 端口属于本 profile 的进程）。 */
+function processCommandLine(pid) {
+  return new Promise((resolve) => {
+    const value = Number(pid);
+    if (!Number.isFinite(value) || value <= 0) return resolve("");
+    if (process.platform === "win32") {
+      const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${value}").CommandLine`;
+      execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true, timeout: 8000 }, (error, stdout) => resolve(String(stdout || "").trim()));
+      return;
+    }
+    execFile("ps", ["-p", String(value), "-o", "command="], { timeout: 5000 }, (error, stdout) => resolve(String(stdout || "").trim()));
+  });
+}
+
+/**
+ * Chromium 沙箱策略：默认开启系统沙箱。
+ * 仅在受控开发环境通过 OAW_BROWSER_NO_SANDBOX=1 显式关闭（会打印告警，安全性下降）。
+ */
+function sandboxArgs() {
+  const raw = String(process.env.OAW_BROWSER_NO_SANDBOX ?? "").trim().toLowerCase();
+  if (!["1", "true", "yes", "on"].includes(raw)) return [];
+  console.warn("[browser] ⚠ 已通过 OAW_BROWSER_NO_SANDBOX 关闭 Chromium 沙箱；仅限受控开发环境，不要在生产或浏览开放网页时使用。");
+  return ["--no-sandbox", "--disable-setuid-sandbox"];
+}
+
+/** Chromium 写入 profile 的 DevToolsActivePort：第一行是端口，第二行是浏览器级 ws 路径。 */
+function readDevToolsActivePort(profileDir) {
+  try {
+    const raw = fs.readFileSync(path.join(profileDir, "DevToolsActivePort"), "utf8");
+    const [portLine, wsPath] = String(raw).split(/\r?\n/);
+    const port = Number(String(portLine || "").trim());
+    if (!Number.isFinite(port) || port <= 0) return null;
+    return { port, wsPath: String(wsPath || "").trim() };
+  } catch {
+    return null;
+  }
+}
+
+function readPortFile(portFile) {
+  try {
+    const raw = String(fs.readFileSync(portFile, "utf8")).trim();
+    if (!raw) return null;
+    if (raw.startsWith("{")) {
+      const parsed = JSON.parse(raw);
+      const port = Number(parsed.port);
+      if (!Number.isFinite(port) || port <= 0) return null;
+      return { port, pid: Number(parsed.pid) || 0, profileDir: String(parsed.profileDir || ""), startedAt: parsed.startedAt || null };
+    }
+    const port = Number(raw); // 兼容旧格式（纯端口号）
+    return Number.isFinite(port) && port > 0 ? { port, pid: 0, profileDir: "", startedAt: null } : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePortFile(portFile, info) {
+  try { fs.writeFileSync(portFile, JSON.stringify(info)); } catch {}
+}
+
+/**
+ * 校验一个 CDP 端口确实属于「本会话的 profile」：
+ *   1. profile 目录内的 DevToolsActivePort 必须指向同一端口（该文件只可能由使用本 profile 的浏览器写入）；
+ *   2. 若记录了 pid，则该进程仍存活且命令行包含本 profile 目录。
+ * 这样即使端口文件被残留/冒名，也不会接入别人的浏览器进程。
+ */
+export async function verifyCdpOwnership({ port, pid, profileDir }) {
+  if (!Number.isFinite(Number(port)) || Number(port) <= 0) return { ok: false, reason: "端口记录无效" };
+  const marker = readDevToolsActivePort(profileDir);
+  if (!marker) return { ok: false, reason: "profile 内缺少 DevToolsActivePort，无法确认 CDP 归属" };
+  if (Number(marker.port) !== Number(port)) return { ok: false, reason: `DevToolsActivePort(${marker.port}) 与端口记录(${port}) 不一致` };
+  if (pid) {
+    const cmdline = await processCommandLine(pid);
+    if (!cmdline) return { ok: false, reason: `记录的进程 ${pid} 已不存在` };
+    if (!cmdline.includes(path.resolve(profileDir))) return { ok: false, reason: `进程 ${pid} 的命令行不属于本 profile` };
+  }
+  return { ok: true, marker };
 }
 
 /** 清掉 profile 里的 Chromium 单例锁（异常退出后残留会让新实例以退出码 21 退出）。 */
@@ -345,6 +485,15 @@ class BrowserSession {
     this.frame = null;
     this.pendingFrame = null;
     this.frameBroadcastTimer = null;
+    this.lastFrameAt = 0; // 最近一次成功产生画面的时间
+    this.capturing = false; // 防止兜底截图并发堆积
+    this.screencastOn = false;
+    this.screencastError = "";
+    this.screencastStartedAt = 0;
+    this.lastScreencastAttemptAt = 0;
+    this.subscriberCount = 0;
+    this.watchdogTimer = null;
+    this.firstFrameTimer = null;
     this.lastUserInputAt = 0;
     this.activeTargetId = null;
     this.tabs = [];
@@ -353,6 +502,9 @@ class BrowserSession {
   }
 
   queueFrameBroadcast(frame) {
+    if (!frame?.data) return;
+    // 单帧过大直接丢弃：宁可少一帧，也不要把 SSE 和前端一起拖死；下一帧/watchdog 会补上。
+    if (frame.data.length > MAX_FRAME_BYTES) return;
     this.pendingFrame = frame;
     if (this.frameBroadcastTimer) return;
     this.frameBroadcastTimer = setTimeout(() => {
@@ -367,6 +519,104 @@ class BrowserSession {
     if (this.frameBroadcastTimer) clearTimeout(this.frameBroadcastTimer);
     this.frameBroadcastTimer = null;
     this.pendingFrame = null;
+  }
+
+  /**
+   * 启动 CDP 推流。失败不再被静默吞掉：记录原因并交给 watchdog 重试，
+   * 同时安排一次兜底截图，保证面板不会一直停在“正在获取画面…”。
+   */
+  async startScreencast() {
+    if (!this.cdp || !this.state.active) return false;
+    this.lastScreencastAttemptAt = Date.now();
+    try { await this.cdp.send("Page.stopScreencast"); } catch {}
+    try {
+      await this.cdp.send("Page.startScreencast", {
+        format: "jpeg",
+        quality: FRAME_QUALITY,
+        maxWidth: FRAME_MAX_WIDTH,
+        maxHeight: FRAME_MAX_HEIGHT,
+        everyNthFrame: FRAME_EVERY_NTH,
+        maxFramesInFlight: 2,
+      });
+      this.screencastOn = true;
+      this.screencastStartedAt = Date.now();
+      this.screencastError = "";
+      if (typeof this.state.error === "string" && this.state.error.startsWith("画面推流启动失败")) this.state.error = null;
+      if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = setTimeout(() => {
+        this.firstFrameTimer = null;
+        // 宽限期内没有任何新帧（页面静态 / 推流被静默停掉）：主动截一帧兜底。
+        if (this.state.active && (this.lastFrameAt || 0) < this.screencastStartedAt) this.captureFrame().catch(() => {});
+      }, FIRST_FRAME_GRACE_MS);
+      return true;
+    } catch (error) {
+      this.screencastOn = false;
+      this.screencastError = String(error?.message || error).slice(0, 200);
+      this.state.error = `画面推流启动失败，已改用定时截图兜底：${this.screencastError}`;
+      this.emitState();
+      return false;
+    }
+  }
+
+  async stopScreencast() {
+    this.screencastOn = false;
+    if (this.firstFrameTimer) { clearTimeout(this.firstFrameTimer); this.firstFrameTimer = null; }
+    if (!this.cdp) return;
+    try { await this.cdp.send("Page.stopScreencast"); } catch {}
+  }
+
+  /** 截取当前画面（兜底与首帧）。系统繁忙时同一时刻只允许一个截图在途。 */
+  async captureFrame() {
+    if (!this.cdp || !this.state.active || this.capturing) return null;
+    this.capturing = true;
+    try {
+      const result = await this.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: FRAME_QUALITY });
+      const data = result?.data || "";
+      if (!data) return null;
+      this.lastFrameAt = Date.now();
+      this.frame = { data, at: this.lastFrameAt, width: this.state.viewport.width, height: this.state.viewport.height };
+      this.queueFrameBroadcast({ data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
+      return this.frame;
+    } catch {
+      return null;
+    } finally {
+      this.capturing = false;
+    }
+  }
+
+  /** 面板订阅者增减时调整推流：有人看才推流，没人看就停，省 CPU 与带宽。 */
+  async noteSubscribers(count) {
+    this.subscriberCount = Number(count) || 0;
+    if (this.subscriberCount > 0) {
+      this.ensureWatching();
+      if (!this.screencastOn) this.startScreencast().catch(() => {});
+      if (!this.frame) this.captureFrame().catch(() => {});
+      return;
+    }
+    this.stopWatching();
+    await this.stopScreencast();
+  }
+
+  /** 空白画面巡检：只要面板还开着且没有画面，就持续尝试恢复，确保一定会渲染。 */
+  ensureWatching() {
+    if (this.watchdogTimer) return;
+    this.watchdogTimer = setInterval(() => {
+      if (!this.state.active || this.subscriberCount <= 0) return;
+      const now = Date.now();
+      if (!this.frame) {
+        if (!this.screencastOn && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
+        this.captureFrame().catch(() => {});
+        return;
+      }
+      if (!this.screencastOn && now - this.lastScreencastAttemptAt > SCREENCAST_RETRY_MS) this.startScreencast().catch(() => {});
+    }, SUBSCRIBER_WATCHDOG_MS);
+  }
+
+  stopWatching() {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = null;
+    if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
+    this.firstFrameTimer = null;
   }
 
   /** 列出所有页面标签（id/标题/URL/是否激活）。 */
@@ -584,7 +834,8 @@ class BrowserSession {
     }
     const executable = findBrowserExecutable();
     if (!executable) throw new Error("未找到 Edge/Chrome，无法启动内置浏览器（可设置环境变量 OAW_BROWSER_PATH 指定浏览器路径）");
-    fs.mkdirSync(this.profileDir, { recursive: true });
+    fs.mkdirSync(this.profileDir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(this.profileDir, 0o700); } catch {}
     // 1) 尝试复用上次启动且仍在运行的实例（服务重启后浏览器不中断）
     if (await this.tryReuse()) return;
 
@@ -596,7 +847,8 @@ class BrowserSession {
         const killed = await killBrowserProcessesForProfile(this.profileDir);
         const cleared = clearProfileLocks(this.profileDir);
         console.warn(`[browser] 启动失败后清理 profile 占用：进程 ${killed} 个、锁文件 ${cleared} 个`);
-      } else {
+      } else if (!(await hasLiveProfileProcess(this.profileDir))) {
+        // 只有在确认没有存活实例时才清锁：避免把正在运行浏览器的单例锁删掉。
         clearProfileLocks(this.profileDir);
       }
       try {
@@ -616,6 +868,8 @@ class BrowserSession {
     const headless = process.env.OAW_BROWSER_HEADLESS !== "0";
     const args = [
       `--remote-debugging-port=${this.port}`,
+      // 只在本机回环地址上开放 CDP，避免调试端口暴露到局域网。
+      "--remote-debugging-address=127.0.0.1",
       `--user-data-dir=${this.profileDir}`,
       "--no-first-run",
       "--no-default-browser-check",
@@ -628,9 +882,9 @@ class BrowserSession {
       // 部分 Chromium 版本即使带 --disable-gpu 仍会启动独立 GPU 进程，
       // 而当前环境会让该子进程崩溃；内置 GPU 进程可避免 CDP 随浏览器退出。
       "--in-process-gpu",
-      // 服务可能运行在受限账户下，Chromium 沙箱会再次触发 renderer 崩溃；
-      // 浏览器已经使用独立临时 profile，并且只接受本地 CDP 连接。
-      "--no-sandbox",
+      // 沙箱默认开启（见 sandboxArgs）：只有显式设置 OAW_BROWSER_NO_SANDBOX=1
+      // 才降级关闭，且届时会打印告警。
+      ...sandboxArgs(),
       "--disable-extensions",
       `--window-size=${VIEWPORT.width},${VIEWPORT.height}`,
       "about:blank",
@@ -666,33 +920,56 @@ class BrowserSession {
     if (!target?.webSocketDebuggerUrl) {
       const exited = this.child?.exitCode;
       const detail = this.browserStderr.trim().replace(/\s+/g, " ");
-      const hint = exited === 21 ? "（用户数据目录被其他浏览器进程占用，已尝试清理）" : "";
-      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）${hint}` : "（进程仍在运行但未监听调试端口）"}${detail ? `：${detail.slice(0, 800)}` : ""}`);
+      const hints = [];
+      if (exited === 21) hints.push("用户数据目录被其他浏览器进程占用（已尝试清理 profile 锁与孤儿进程）");
+      if (/sandbox/i.test(detail)) {
+        hints.push(
+          process.platform === "darwin"
+            ? "疑似沙箱启动失败：请确认浏览器来自官方渠道且未被隔离（可尝试 xattr -dr com.apple.quarantine），不要直接关闭沙箱"
+            : "疑似沙箱启动失败：优先使用官方浏览器；仅在受控开发环境才考虑 OAW_BROWSER_NO_SANDBOX=1（会降低安全性）"
+        );
+      }
+      if (process.platform === "win32") hints.push("Windows 可检查是否有残留 msedge/chrome 进程占用该 profile");
+      if (process.platform === "darwin") hints.push("macOS 可用 OAW_BROWSER_PATH 指定 Edge/Chrome 路径");
+      const hintText = hints.length ? `。诊断建议：${hints.join("；")}` : "";
+      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : "（进程仍在运行但未监听调试端口）"}${hintText}${detail ? `。原始输出：${detail.slice(0, 800)}` : ""}`);
     }
-    try { fs.writeFileSync(this.portFile, String(this.port)); } catch {}
+    // 归属校验：Chromium 必须把本会话 profile 的 DevToolsActivePort 写成我们分配的端口。
+    const marker = readDevToolsActivePort(this.profileDir);
+    if (!marker || Number(marker.port) !== Number(this.port)) {
+      throw new Error(`浏览器启动异常：DevToolsActivePort(${marker ? marker.port : "缺失"}) 与分配端口(${this.port}) 不一致，已拒绝接入以避免连到非本会话的浏览器`);
+    }
+    writePortFile(this.portFile, { port: this.port, pid: Number(this.child?.pid) || 0, profileDir: this.profileDir, startedAt: new Date().toISOString() });
     await this.connectToTarget(target);
+    // connectToTarget 成功后按键路径权限再收紧一次（Chromium 可能在启动时重建目录）。
+    try { fs.chmodSync(this.profileDir, 0o700); } catch {}
   }
 
-  /** 复用上次记录的浏览器实例（同 profile）。 */
+  /** 复用上次记录的浏览器实例（同 profile），复用前必须校验 CDP 归属。 */
   async tryReuse() {
+    if (!fs.existsSync(this.portFile)) return false;
+    const record = readPortFile(this.portFile);
+    const discard = async (reason, cleanLocks = true) => {
+      if (reason) console.warn(`[browser] 不复用旧实例：${reason}`);
+      try { fs.rmSync(this.portFile, { force: true }); } catch {}
+      // 只有确认没有存活实例时才清锁，避免破坏正在运行的浏览器单例。
+      if (cleanLocks && !(await hasLiveProfileProcess(this.profileDir))) clearProfileLocks(this.profileDir);
+      return false;
+    };
+    if (!record) return discard("端口文件无效");
+    const ownership = await verifyCdpOwnership({ port: record.port, pid: record.pid, profileDir: this.profileDir });
+    if (!ownership.ok) return discard(ownership.reason);
     try {
-      if (!fs.existsSync(this.portFile)) return false;
-      const port = Number(String(fs.readFileSync(this.portFile, "utf8")).trim());
-      if (!Number.isFinite(port) || port <= 0) return false;
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
+      const response = await fetch(`http://127.0.0.1:${record.port}/json/list`, { signal: AbortSignal.timeout(1500) });
       const list = await response.json();
       const target = list.find((item) => item.type === "page") || null;
-      if (!target?.webSocketDebuggerUrl) return false;
-      this.port = port;
+      if (!target?.webSocketDebuggerUrl) return discard("CDP 未返回可用标签页", false);
+      this.port = record.port;
       this.child = null; // 复用实例不持有子进程
       await this.connectToTarget(target);
       return true;
-    } catch {
-      // 端口文件还在但端口不可达：说明上次启动的进程已死，清掉端口文件与锁，
-      // 否则新实例会因用户数据目录被占用（退出码 21）起不来。
-      try { fs.rmSync(this.portFile, { force: true }); } catch {}
-      clearProfileLocks(this.profileDir);
-      return false;
+    } catch (error) {
+      return discard(`CDP 不可达：${String(error?.message || error).slice(0, 120)}`);
     }
   }
 
@@ -715,9 +992,10 @@ class BrowserSession {
     await this.cdp.send("Page.enable");
     await this.cdp.send("Runtime.enable");
     this.cdp.on("Page.screencastFrame", (params) => {
+      this.lastFrameAt = Date.now();
       this.frame = {
         data: params.data,
-        at: Date.now(),
+        at: this.lastFrameAt,
         // deviceWidth/deviceHeight 是 Chromium 的屏幕元数据，不一定是截图 JPEG 的像素尺寸；
         // 交互坐标和前端显示都应以当前 CSS viewport 为准。
         width: this.state.viewport.width,
@@ -738,10 +1016,12 @@ class BrowserSession {
       this.refreshTitle().catch(() => {});
       this.emitState();
       this.scheduleTabsRefresh();
+      // 新文档加载完成后主动补一帧：有些情况下推流对新页面不会及时产生首帧，
+      // 面板会停在旧画面/空白，这里保证加载完成后一定刷新。
+      this.captureFrame().catch(() => {});
     });
-    // 保持高质量和完整视口；服务端以约 11fps 推送最新帧，避免每个 CDP 帧
-    // 都挤占 SSE、React 和浏览器主线程。
-    await this.cdp.send("Page.startScreencast", { format: "jpeg", quality: 90, maxWidth: MAX_CAPTURE.width, maxHeight: MAX_CAPTURE.height, everyNthFrame: 1 }).catch(() => {});
+    // 帧流参数见上方常量；服务端以约 11fps 广播最新帧，避免每个 CDP 帧都挤占 SSE 与 React。
+    await this.startScreencast();
     if (target.id) this.activeTargetId = target.id;
     this.state.active = true;
     this.state.startedAt = this.state.startedAt || new Date().toISOString();
@@ -893,7 +1173,8 @@ class BrowserSession {
     fs.mkdirSync(SHOT_DIR, { recursive: true });
     const file = path.join(SHOT_DIR, `shot-${Date.now()}.jpg`);
     try { fs.writeFileSync(file, Buffer.from(data, "base64")); } catch {}
-    this.frame = { data, at: Date.now(), width: this.state.viewport.width, height: this.state.viewport.height };
+    this.lastFrameAt = Date.now();
+    this.frame = { data, at: this.lastFrameAt, width: this.state.viewport.width, height: this.state.viewport.height };
     this.queueFrameBroadcast({ data, at: this.frame.at, width: this.frame.width, height: this.frame.height });
     return { file, bytes: Buffer.byteLength(data, "base64"), url: this.state.url };
   }
@@ -912,8 +1193,12 @@ class BrowserSession {
     const child = this.child;
     const port = this.port;
     this.state.active = false;
+    this.stopWatching();
+    this.subscriberCount = 0;
+    await this.stopScreencast();
     this.clearFrameBroadcast();
     this.frame = null;
+    this.lastFrameAt = 0;
     this.emitState();
     broadcast(this.key, "closed", {});
     try { this.cdp?.close(); } catch {}
@@ -1003,20 +1288,43 @@ export async function browserSnapshot(key) {
   return session.snapshot();
 }
 
+/** 交互后补一帧：保证面板与页面同步，不依赖 CDP 推流是否健康（推流静默失效时也能刷新）。 */
+function syncFrameSoon(session, delay = 60) {
+  if (!session || session.subscriberCount <= 0) return;
+  setTimeout(() => { session.captureFrame().catch(() => {}); }, delay);
+}
+
+function shouldSyncFrame(action, payload = {}) {
+  if (action === "pointer") return String(payload.phase || "") === "up";
+  return ["click", "wheel", "type", "key", "scroll", "navigate", "back", "reload", "tab_new", "tab_switch", "tab_close"].includes(action);
+}
+
 export async function browserClick(key, ref) {
-  return (await requireActiveSession(key)).click(ref);
+  const session = await requireActiveSession(key);
+  const result = await session.click(ref);
+  syncFrameSoon(session);
+  return result;
 }
 
 export async function browserType(key, ref, text, options = {}) {
-  return (await requireActiveSession(key)).type(ref, text, options);
+  const session = await requireActiveSession(key);
+  const result = await session.type(ref, text, options);
+  syncFrameSoon(session);
+  return result;
 }
 
 export async function browserPress(key, pressKey) {
-  return (await requireActiveSession(key)).press(pressKey);
+  const session = await requireActiveSession(key);
+  const result = await session.press(pressKey);
+  syncFrameSoon(session);
+  return result;
 }
 
 export async function browserScroll(key, direction, amount) {
-  return (await requireActiveSession(key)).scroll(direction, amount);
+  const session = await requireActiveSession(key);
+  const result = await session.scroll(direction, amount);
+  syncFrameSoon(session);
+  return result;
 }
 
 export async function browserScreenshot(key) {
@@ -1024,14 +1332,14 @@ export async function browserScreenshot(key) {
 }
 
 export async function browserBack(key) {
-  return (await requireActiveSession(key)).back();
+  const session = await requireActiveSession(key);
+  const result = await session.back();
+  syncFrameSoon(session);
+  return result;
 }
 
 /** 用户接管：把面板上的点击/输入/导航/滚轮转发到页面。 */
-export async function browserUserInput(key, payload = {}) {
-  const session = await requireActiveSession(key);
-  session.lastUserInputAt = Date.now();
-  const action = String(payload.action || "");
+async function dispatchBrowserUserInput(session, action, payload = {}) {
   if (action === "navigate") return session.navigate(payload.url);
   if (action === "click") {
     const point = await session.resolvePoint(payload);
@@ -1077,14 +1385,26 @@ export async function browserUserInput(key, payload = {}) {
   throw new Error(`不支持的操作：${action}`);
 }
 
+/** 面板输入入口：派发完成后立刻补一帧，保证画面与交互同步。 */
+export async function browserUserInput(key, payload = {}) {
+  const session = await requireActiveSession(key);
+  session.lastUserInputAt = Date.now();
+  const action = String(payload.action || "");
+  const result = await dispatchBrowserUserInput(session, action, payload);
+  if (shouldSyncFrame(action, payload)) syncFrameSoon(session);
+  return result;
+}
+
 /** Agent 侧标签页管理：list / new / switch / close。 */
 export async function browserTabs(key, action = "list", tabId = "", url = "") {
   const session = await requireActiveSession(key);
   if (action === "list") return { tabs: await session.refreshTabs() };
-  if (action === "new") return session.newTab(url || "about:blank");
-  if (action === "switch") return session.switchToTarget(String(tabId || ""));
-  if (action === "close") return session.closeTab(String(tabId || ""));
-  throw new Error(`不支持的标签页操作：${action}`);
+  const result = action === "new" ? await session.newTab(url || "about:blank")
+    : action === "switch" ? await session.switchToTarget(String(tabId || ""))
+      : action === "close" ? await session.closeTab(String(tabId || ""))
+        : (() => { throw new Error(`不支持的标签页操作：${action}`); })();
+  syncFrameSoon(session);
+  return result;
 }
 
 /**

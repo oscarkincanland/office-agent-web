@@ -55,6 +55,9 @@ export const EVENT_UI = Object.freeze({
   // 执行
   tool_start: { phase: "executing" },
   tool_end: { phase: "executing" },
+  subagent_start: { phase: "executing" },
+  subagent_update: { phase: "executing" },
+  subagent_end: { phase: "executing" },
   write_started: { phase: "executing" },
   write_locked: { phase: "executing" },
   write_rejected: { phase: "executing" },
@@ -158,6 +161,9 @@ export function flowEventLabel(event) {
     case "completion_nudge": return "补充完成状态";
     case "tool_start": return `调用 ${toolLabel}`;
     case "tool_end": return `${toolLabel}${data.isError ? "失败" : "完成"}`;
+    case "subagent_start": return `启动子 Agent：${{ scout: "资料探索", reviewer: "审阅", planner: "方案拆解" }[data.role] || "只读任务"}`;
+    case "subagent_update": return data.activity || "子 Agent 正在处理";
+    case "subagent_end": return `子 Agent${data.status === "completed" ? "已完成" : data.status === "cancelled" ? "已取消" : "失败"}`;
     case "todo_updated": return `任务清单已更新${data.todoProgress ? `（${data.todoProgress.completed || 0}/${data.todoProgress.total || 0}）` : ""}`;
     case "officecli_failed": return `Office CLI 失败${data.message ? `：${String(data.message).slice(0, 60)}` : ""}`;
     case "ask_user": return "等待用户回答";
@@ -208,7 +214,7 @@ function completionLabelSafe(status) {
 /** 事件 → 语气（error / success / running），用于执行流配色 */
 export function flowEventTone(event) {
   const type = String(event?.type || "");
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync"].includes(type) || event?.data?.isError) return "error";
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync"].includes(type) || event?.data?.isError || (type === "subagent_end" && ["failed", "cancelled"].includes(event?.data?.status))) return "error";
   if (type === "artifacts_validated") return event?.data?.status === "failed" ? "error" : "success";
   if (type === "run_finished") return runConclusion(event).tone;
   if (type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "warning";
@@ -253,6 +259,7 @@ const TOOL_IDENTITY_RULES = [
   [/^officecli$/i, "doc"],
   [/^(bash|terminal|shell)$/i, "terminal"],
   [/^(todo|taskcreate|taskupdate)$/i, "list"],
+  [/^(run_subagent|subagent)$/i, "flow"],
   [/^(tool_approval|approval|review_copy)/i, "shield"],
   [/^(ask_user)$/i, "comment"],
   [/^(complete_task)$/i, "check"],

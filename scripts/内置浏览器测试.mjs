@@ -70,6 +70,81 @@ await test("点击非法编号被拒绝", async () => {
   await assert.rejects(() => browserType(key, "javascript:1", "x"), /尚未启动/);
 });
 
+console.log("\n▶ 沙箱与 CDP 归属（P0）");
+
+await test("默认开启沙箱：--no-sandbox 仅在显式开关函数中出现", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.equal((src.match(/"--no-sandbox"/g) || []).length, 1, "--no-sandbox 只应出现在 sandboxArgs 中，不得无条件启用");
+  assert.match(src, /OAW_BROWSER_NO_SANDBOX/, "应有显式的沙箱降级开关");
+  assert.match(src, /--remote-debugging-address=127\.0\.0\.1/, "CDP 应只绑定回环地址");
+  assert.match(src, /DevToolsActivePort/, "复用前应校验 CDP 归属");
+  assert.match(src, /hasLiveProfileProcess/, "清锁前应确认没有存活实例");
+});
+
+await test("CDP 归属校验拒绝无标记/不一致/进程不存在的情形", async () => {
+  const { verifyCdpOwnership } = await import("../server/内置浏览器.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-cdp-own-"));
+  try {
+    let verdict = await verifyCdpOwnership({ port: 9333, pid: 0, profileDir: dir });
+    assert.equal(verdict.ok, false, "缺少 DevToolsActivePort 时应拒绝");
+    assert.match(verdict.reason, /DevToolsActivePort/);
+
+    fs.writeFileSync(path.join(dir, "DevToolsActivePort"), "9444\n/devtools/browser/abc");
+    verdict = await verifyCdpOwnership({ port: 9333, pid: 0, profileDir: dir });
+    assert.equal(verdict.ok, false, "端口不一致时应拒绝");
+    assert.match(verdict.reason, /不一致/);
+
+    verdict = await verifyCdpOwnership({ port: 9444, pid: 0, profileDir: dir });
+    assert.equal(verdict.ok, true, "端口一致且无 pid 记录时应通过");
+
+    verdict = await verifyCdpOwnership({ port: 9444, pid: 999999, profileDir: dir });
+    assert.equal(verdict.ok, false, "pid 已不存在时应拒绝");
+    assert.match(verdict.reason, /已不存在|不属于/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+console.log("\n▶ 帧流与恢复（P1）");
+
+await test("订阅者计数随订阅/取消变化", async () => {
+  const { browserSubscriberCount, subscribeBrowser } = await import("../server/内置浏览器.mjs");
+  const key = browserSessionKey("frames", "count");
+  assert.equal(browserSubscriberCount(key), 0, "初始应为 0");
+  const off = subscribeBrowser(key, () => {});
+  assert.equal(browserSubscriberCount(key), 1, "订阅后应为 1");
+  off();
+  assert.equal(browserSubscriberCount(key), 0, "取消后应回到 0");
+});
+
+await test("推流不再被静默吞掉，且有恢复与兜底机制", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  // 推流启动失败必须记录并进入兜底，而不是 .catch(()=>{})
+  assert.match(src, /async startScreencast\(\)/, "应有独立的推流启动方法");
+  assert.match(src, /this\.screencastError/, "推流失败原因应被记录");
+  assert.match(src, /画面推流启动失败，已改用定时截图兜底/, "失败时应给出兜底说明");
+  assert.match(src, /async captureFrame\(\)/, "应能主动截图兜底");
+  assert.match(src, /ensureWatching\(\)/, "应有空白画面巡检");
+  assert.match(src, /noteSubscribers\(/, "应按订阅者数量启停推流");
+  assert.doesNotMatch(src, /Page\.startScreencast",\s*\{[^}]*\}\)\.catch\(\(\) => \{\}\)/, "不得静默吞掉推流启动失败");
+  // 帧预算与超帧丢弃
+  assert.match(src, /MAX_FRAME_BYTES/, "应有单帧字节上限");
+  assert.match(src, /frame\.data\.length > MAX_FRAME_BYTES/, "超限帧应被丢弃");
+  assert.match(src, /everyNthFrame: FRAME_EVERY_NTH/, "推流应使用采样预算");
+  // 交互后补帧，保证推流失效时画面也会更新
+  assert.match(src, /syncFrameSoon\(/, "交互后应补一帧");
+  assert.match(src, /Page\.loadEventFired[\s\S]{0,400}?this\.captureFrame\(\)/, "页面加载完成后应补一帧");
+});
+
+await test("SSE 帧流有背压处理（保留最新帧）", () => {
+  const index = fs.readFileSync(path.join(ROOT, "server", "index.mjs"), "utf8");
+  const stream = index.slice(index.indexOf('app.get("/api/browser/stream"'), index.indexOf('app.post("/api/browser/input"'));
+  assert.match(stream, /pendingFrame/, "应只保留最新一帧");
+  assert.match(stream, /res\.once\("drain"/, "应在 drain 后继续发送");
+  assert.match(stream, /noteSubscribers/, "连接建立/断开应通知会话调整推流");
+  assert.match(stream, /session\.captureFrame\(\)/, "无缓存帧时应先截一帧，避免空白面板");
+});
+
 console.log("\n▶ 服务端与前端接入点");
 
 await test("agent / task / index / 前端已接入浏览器能力", () => {
@@ -91,7 +166,7 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   assert.match(panel, /browser-control-toggle/, "浏览器面板需要提供明确的用户接管入口");
   assert.match(panel, /onToggleFullscreen/, "浏览器面板需要支持铺满工作区");
   assert.match(app, /browser-fullscreen/, "工作台需要支持浏览器专注模式");
-  assert.match(fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8"), /quality: 90/);
+  assert.match(fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8"), /FRAME_QUALITY/, "推流应受帧预算约束（质量/采样）");
   assert.match(panel, /queueBrowserInput/, "浏览器输入事件必须经过串行队列");
   assert.match(panel, /action: "resize"/, "浏览器面板尺寸变化需要同步给 CDP viewport");
   assert.match(fs.readFileSync(path.join(ROOT, "client", "src", "styles.css"), "utf8"), /object-fit: contain/);

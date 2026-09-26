@@ -198,6 +198,15 @@ test("normalizeCompletion 校验状态与摘要", () => {
   assert.equal(value.verification, "read 回读通过");
 });
 
+test("结论可承载详细 Markdown（上限放宽，不再截到 600 字）", () => {
+  const long = "## 成果\n" + "- 要点一\n".repeat(200); // 约 1000+ 字
+  const value = normalizeCompletion({ status: "success", summary: long, incomplete: Array.from({ length: 15 }, (_, i) => `未完成项 ${i + 1}`) });
+  assert.ok(value, "长结论应被接受");
+  assert.ok(value.summary.length > 600, `长结论不应被截到 600 字，实际 ${value.summary.length}`);
+  assert.match(value.summary, /## 成果/, "Markdown 结构应保留");
+  assert.equal(value.incomplete.length, 15, "未完成项上限应放宽到 20");
+});
+
 test("inferCompletion 区分失败/取消/部分完成", () => {
   assert.equal(inferCompletion({ runStatus: "completed" }).status, "success");
   assert.equal(inferCompletion({ runStatus: "failed" }).status, "failed");

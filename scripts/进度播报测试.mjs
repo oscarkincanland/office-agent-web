@@ -222,7 +222,8 @@ test("取消后的 Run 不再注入进度提醒、也不再继续 ask_user 后�
 test("系统指令要求中文表达与进度可见", () => {
   assert.match(agentSource, /表达语言（重要）/);
   assert.match(agentSource, /内部推理（thinking \/ reasoning）一律使用与用户相同的语言/);
-  assert.match(agentSource, /进度可见（重要）/);
+  // 提示词已把该条改名为「进度结论（重要）」（内容仍是阶段进度可见）；两种措辞都接受。
+  assert.match(agentSource, /进度(?:可见|结论)（重要）/);
 });
 
 test("前端不再把 steer 文案读成 data.text", () => {
