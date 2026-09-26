@@ -105,6 +105,71 @@ await test("CDP 归属校验拒绝无标记/不一致/进程不存在的情形",
   }
 });
 
+console.log("\n▶ 用户接管仲裁与恢复（P1）");
+
+await test("归属逻辑：用户 lease 生效/过期/Agent 放行", async () => {
+  const { normalizeBrowserOwnership, browserAgentWriteBlocked } = await import("../server/内置浏览器.mjs");
+  const now = 1_000_000;
+  assert.equal(normalizeBrowserOwnership({ owner: "agent" }, now).owner, "agent");
+  const user = { owner: "user", leaseExpiresAt: now + 30_000, reason: "用户正在操作（click）" };
+  const blocked = browserAgentWriteBlocked(user, now);
+  assert.ok(blocked, "用户接管期间 Agent 写操作应被阻塞");
+  assert.equal(blocked.code, "BROWSER_USER_TAKEOVER");
+  assert.match(blocked.message, /用户操作|暂停/);
+  assert.ok(blocked.retryAfterMs > 0 && blocked.retryAfterMs <= 30_000);
+  // lease 过期 → 自动回到 Agent，避免用户断线后永久锁死
+  const expired = normalizeBrowserOwnership({ owner: "user", leaseExpiresAt: now - 1 }, now);
+  assert.equal(expired.owner, "agent");
+  assert.equal(expired.expiredFrom, "user");
+  assert.equal(browserAgentWriteBlocked({ owner: "user", leaseExpiresAt: now - 1 }, now), null, "过期后应放行");
+});
+
+await test("只有真正的交互才算接管（resize/tabs 列表不算）", async () => {
+  const { BROWSER_USER_ACTION_SET } = await import("../server/内置浏览器.mjs");
+  for (const action of ["click", "pointer", "type", "key", "scroll", "wheel", "navigate", "back", "reload", "tab_switch"]) {
+    assert.ok(BROWSER_USER_ACTION_SET.has(action), `${action} 应算作用户接管`);
+  }
+  for (const action of ["resize", "tabs", "release", "takeover"]) {
+    assert.ok(!BROWSER_USER_ACTION_SET.has(action), `${action} 不应算作用户接管输入`);
+  }
+});
+
+await test("服务端持有归属，Agent 写操作被守卫拦截", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /this\.ownership = \{ owner: "agent"/, "会话应持有归属状态");
+  assert.match(src, /USER_TAKEOVER_LEASE_MS/, "应有短期 lease");
+  assert.match(src, /releaseToAgent\(/, "应支持交还 Agent");
+  assert.match(src, /assertAgentWrite\(/, "应提供 Agent 写操作守卫");
+  // 写操作必须带守卫；只读操作不得被阻断
+  for (const fn of ["browserOpen", "browserClick", "browserType", "browserPress", "browserScroll", "browserBack"]) {
+    const body = src.slice(src.indexOf(`export async function ${fn}(`), src.indexOf(`export async function ${fn}(`) + 420);
+    assert.match(body, /assertAgentWrite\(/, `${fn} 缺少写操作守卫`);
+  }
+  assert.doesNotMatch(src.slice(src.indexOf("export async function browserSnapshot("), src.indexOf("export async function browserSnapshot(") + 200), /assertAgentWrite/, "只读 snapshot 不应被拦截");
+  assert.match(src, /ownership: this\.ownershipView\(\)/, "stateView 应暴露归属状态");
+  // 用户输入入口支持 release/takeover，且不再对 resize 计接管
+  assert.match(src, /action === "release"\) return session\.releaseToAgent/, "应支持 release");
+  assert.match(src, /action === "takeover"\) return session\.takeover/, "应支持 takeover");
+  assert.doesNotMatch(src, /browserUserInput[\s\S]{0,220}?session\.lastUserInputAt = Date\.now\(\);\s*\n\s*const action/, "不应无条件刷新用户输入时间");
+});
+
+await test("前端接管按钮走服务端，且只在可恢复错误时重置浏览器", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client", "src", "components", "内置浏览器面板.jsx"), "utf8");
+  assert.doesNotMatch(panel, /setTakeover\(/, "不应再只改本地布尔值");
+  assert.match(panel, /const userOwns = ownership\.owner === "user"/, "应由服务端归属驱动 UI");
+  assert.match(panel, /action, reason: action === "release"/, "接管/交回应调用服务端");
+  assert.match(panel, /isRecoverableBrowserError\(error\)/, "只应对可识别的启动异常做重置");
+  assert.match(panel, /BROWSER_LAUNCH_FAILED/, "应识别启动失败错误码");
+  assert.match(panel, /RECOVERABLE_BROWSER_PATTERN/, "应识别 profile 锁/退出码 21 文案");
+});
+
+await test("Agent 侧错误文案解释接管原因", () => {
+  const agent = fs.readFileSync(path.join(ROOT, "server", "agent.mjs"), "utf8");
+  assert.match(agent, /BROWSER_USER_TAKEOVER/, "Agent 工具应识别接管错误码");
+  assert.match(agent, /请等待用户点击「交还 Agent」/, "应给出可执行指引");
+  assert.match(agent, /接管仲裁/, "系统提示应说明接管仲裁");
+});
+
 console.log("\n▶ 帧流与恢复（P1）");
 
 await test("订阅者计数随订阅/取消变化", async () => {

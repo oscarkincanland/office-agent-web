@@ -31,6 +31,8 @@ const ChatPanel = read("client/src/components/ChatPanel.jsx");
 const App = read("client/src/App.jsx");
 const SessionSidebar = read("client/src/components/SessionSidebar.jsx");
 const TaskCenter = read("client/src/components/任务中心.jsx");
+const DocViewer = read("client/src/components/DocViewer.jsx");
+const DocxViewer = read("client/src/components/DocxViewer.jsx");
 const 界面外观 = read("client/src/界面外观.js");
 
 let failed = 0;
@@ -214,6 +216,24 @@ console.log("\n▶ 对比度（按主题变量实际计算）");
   assert.match(样式, /\.center-chat-slot \.msg\.user \.bubble a \{[^}]*color:\s*inherit/, "气泡内链接必须继承高对比字色");
 });
 
+检查("文档预览自适应：不裁切正文且标签可键盘操作", () => {
+  // 窄栏 + 高倍缩放时宁可横向滚动，也不能把正文裁掉
+  assert.match(样式, /\.oaw-docx-host \{[\s\S]{0,200}?overflow-x: auto/, "Word 预览容器应允许横向滚动");
+  assert.doesNotMatch(样式, /\.oaw-docx-host \{[\s\S]{0,200}?overflow-x: hidden/, "不得再用 overflow-x: hidden 裁切正文");
+  // 默认适应宽度（按真实页宽与面板宽算档位）
+  assert.match(DocxViewer, /const applyFitWidth = useCallback/, "应提供适应宽度");
+  assert.match(DocxViewer, /applyFitWidth\(\{ silent: true \}\)/, "打开文档时应默认适应宽度");
+  assert.match(DocxViewer, /docx-fit-width/, "工具栏应有适应宽度入口");
+  // 缩放用 CSS zoom 保证编辑命中/光标精度，老浏览器才回退 transform
+  assert.match(DocxViewer, /CSS\.supports\("zoom"/, "应优先使用 CSS zoom");
+  assert.match(DocxViewer, /host\.style\.zoom = String\(next \/ 100\)/, "zoom 应作用在宿主容器上");
+  // 标签与关闭按钮：可键盘操作 + 可见焦点
+  assert.match(DocViewer, /role="tab"[\s\S]{0,160}?tabIndex=\{0\}/, "文档标签应可聚焦");
+  assert.match(DocViewer, /onKeyDown=\{\(event\) => \{[\s\S]{0,120}?onSwitchTab/, "标签应支持键盘切换");
+  assert.match(DocViewer, /aria-label=\{`关闭 \$\{t\.name\}`\}/, "关闭按钮应有可访问名");
+  assert.match(样式, /\.doc-tab-close:focus-visible/, "关闭按钮应有可见焦点");
+});
+
 console.log("\n▶ 最小点击目标与窄屏");
 
 检查("触屏设备放大命中区（桌面视觉不变）", () => {
@@ -240,6 +260,28 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{\s*\.cmd-overlay \{ padding-top: 4vh; \}/, "小窗口应调整命令面板留白");
   // 顶栏在极窄窗口换行而不是被裁掉
   assert.match(样式, /@media \(max-width: 520px\) \{\s*\.chat-topbar \{ flex-wrap: wrap/, "极窄窗口顶栏应换行");
+});
+
+检查("窄屏不再强挤三栏，任务中心与地图可用（P1）", () => {
+  // 中等窗口：降低各栏最小宽度
+  assert.match(样式, /@media \(max-width: 1280px\) \{[\s\S]{0,200}?--sidebar-min: 180px/, "中等窗口应降低侧栏最小宽度");
+  // 窄窗口：最多两栏（浏览器栏/预览栏让位，对话列保底可读）
+  assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.app-browser-slot \{ --browser-w: [^}]*min-width: 0/, "窄窗口浏览器栏应可收缩");
+  assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.center-area \{ min-width: 300px/, "窄窗口对话列应保底可读");
+  // 极窄：右侧面板铺满
+  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,260}?\.app-preview-slot, \.app-browser-slot \{[\s\S]{0,200}?flex-basis: 100vw/, "极窄窗口右侧面板应铺满");
+  // 任务中心：窄屏全宽 + 换行，无横向穿模
+  assert.match(样式, /@media \(max-width: 560px\) \{[\s\S]{0,260}?\.task-center-panel,?\s*\n?\s*\.mp-topbar \.task-center-panel \{[\s\S]{0,220}?position: fixed/, "任务中心窄屏应贴边全宽");
+  assert.match(样式, /\.task-center-filters \{ flex-wrap: wrap; \}/, "任务中心筛选应换行");
+  assert.match(样式, /\.task-center-events > div \{ overflow-wrap: anywhere; \}/, "任务中心事件不应横向溢出");
+  // 地图：画布最小宽度 + 工具栏进入文档流不遮盖
+  assert.match(样式, /\.map-canvas \{ min-width: 480px; \}/, "地图画布应有合理最小宽度");
+  assert.match(样式, /\.map-toolbar \{\n?\s*position: static;/, "窄屏地图工具栏应进入文档流，不遮盖图面");
+  assert.match(样式, /\.map-toolbar \{ flex-wrap: wrap;/, "地图工具栏应可换行");
+  // App 层自动折叠：窄屏或打开浏览器栏时收起预览
+  assert.match(App, /const enforceNarrowLayout = \(\) => \{/, "应有窄屏自动折叠逻辑");
+  assert.match(App, /if \(window\.innerWidth > 1024\) return;/, "窄屏阈值应为 1024");
+  assert.match(App, /window\.addEventListener\("resize", enforceNarrowLayout\)/, "窗口变化时应重新收口");
 });
 
 console.log("\n▶ 启动稳定骨架与焦点归还");

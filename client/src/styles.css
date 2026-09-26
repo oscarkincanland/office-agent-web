@@ -2031,8 +2031,16 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
   cursor: pointer;
   padding: 0 2px;
   border-radius: 3px;
+  border: 0;
+  background: transparent;
+  line-height: 1.2;
 }
 .doc-tab-close:hover { color: var(--error); background: var(--tool-error); }
+/* 标签与关闭按钮都必须有可见键盘焦点（窄屏/键盘用户可操作） */
+.doc-tab:focus-visible,
+.doc-tab-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.oaw-docx-fit-width,
+.docx-fit-width { white-space: nowrap; }
 
 /* ===== 对话总结条 ===== */
 .summary-products {
@@ -3043,7 +3051,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  overflow-x: hidden;
+  /* 横向允许滚动：窄栏 + 高倍缩放时正文宁可可滚动，也不能被裁掉 */
+  overflow-x: auto;
   padding: 20px;
   display: flex;
   justify-content: center;
@@ -9917,3 +9926,95 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
     min-width: 32px;
   }
 }
+
+/* ==========================================================================
+   P1 窄屏布局收口：三栏不再互相挤压；任务中心与地图在窄屏可用
+   —— 只改断点与最小宽度，不改变桌面端观感。
+   ========================================================================== */
+/* 1) 中等窗口：降低各栏最小宽度，避免“最小宽度之和 > 视口” */
+@media (max-width: 1280px) {
+  :root { --sidebar-min: 180px; --preview-w: 320px; --browser-w: min(44vw, 620px); }
+  .app-preview-slot { min-width: 260px; }
+  .app-browser-slot { min-width: 300px; }
+}
+/* 2) 窄窗口：最多两栏；预览/浏览器栏让位，对话列保底可读 */
+@media (max-width: 1024px) {
+  .app { --sidebar-w: 210px; }
+  .center-area { min-width: 300px; }
+  .app-preview-slot { --preview-w: 300px; min-width: 0; }
+  .app-browser-slot { --browser-w: min(50vw, 520px); min-width: 0; }
+}
+/* 3) 极窄：右侧面板铺满，不再与对话抢宽度 */
+@media (max-width: 768px) {
+  .app-preview-slot, .app-browser-slot {
+    --preview-w: 100vw;
+    --browser-w: 100vw;
+    flex-basis: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+  }
+}
+/* 4) 任务中心：窄屏改为贴边全宽，筛选与事件不再横向“穿模” */
+@media (max-width: 560px) {
+  .task-center-panel,
+  .mp-topbar .task-center-panel {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    top: 64px;
+    width: auto;
+    max-height: calc(100vh - 96px);
+  }
+  .task-center-module .task-center-panel { position: static; left: auto; right: auto; top: auto; width: auto; max-height: none; }
+  .task-center-filters { flex-wrap: wrap; }
+  .task-center-filters > * { flex: 1 1 46%; min-width: 0; }
+  .task-center-summary { flex-wrap: wrap; }
+  .task-center-detail-meta,
+  .task-center-completion-note,
+  .task-center-artifact-check,
+  .task-center-events > div { overflow-wrap: anywhere; }
+  .task-center-events > div { flex-wrap: wrap; }
+  .task-center-list { max-height: none; }
+}
+/* 5) 地图：画布有合理最小宽度，工具栏在窄屏进入文档流，不遮盖图面 */
+.map-toolbar { flex-wrap: wrap; max-width: calc(100% - 20px); row-gap: 6px; }
+@media (max-width: 1024px) {
+  .map-viewer { overflow-x: auto; }
+  .map-canvas { min-width: 480px; }
+  .map-toolbar {
+    position: static;
+    margin: 8px 10px 0;
+    max-width: none;
+    box-shadow: none;
+  }
+}
+
+/* 智能体广场：带入对话前的知情信息（所需输入 / 预计产物 / 工作区） */
+.agent-brief { margin-top: 6px; }
+.agent-brief > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 10px;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-brief > summary::-webkit-details-marker { display: none; }
+.agent-brief > summary::before { content: "▸"; color: var(--accent); font-family: monospace; }
+.agent-brief[open] > summary::before { content: "▾"; }
+.agent-brief > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--border) 24%, transparent);
+}
+.agent-brief-grid > div > span { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.agent-brief-grid ul { margin: 0; padding-left: 16px; color: var(--text); font-size: 10.5px; line-height: 1.6; }
+.agent-brief-grid p { margin: 0; color: var(--text); font-size: 10.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.agent-brief-note { margin-top: 6px; color: var(--dim); font-size: 10px; line-height: 1.5; }

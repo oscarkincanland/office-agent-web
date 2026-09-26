@@ -1699,7 +1699,7 @@ app.get("/api/browser/state", (req, res) => {
   const thread = String(req.query.thread || "");
   const key = browserModule.browserSessionKey(client, thread);
   const session = browserModule.getBrowserSession(key);
-  res.json({ ok: true, state: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
+  res.json({ ok: true, state: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false, ownership: { owner: "agent", reason: "", leaseExpiresAt: 0, secondsRemaining: 0 } } });
 });
 
 app.post("/api/browser/open", async (req, res) => {
@@ -1772,7 +1772,7 @@ app.get("/api/browser/stream", (req, res) => {
     try { res.write(`event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`); } catch { cleanup(); }
   }, 15000);
   const session = browserModule.getBrowserSession(key);
-  write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false } });
+  write({ type: "state", data: session ? session.stateView() : { active: false, url: "", title: "", loading: false, hasFrame: false, ownership: { owner: "agent", reason: "", leaseExpiresAt: 0, secondsRemaining: 0 } } });
   if (session?.state?.active) session.refreshTabs().catch(() => {});
   if (withFrames && session?.frame?.data) write({ type: "frame", data: {
     data: session.frame.data,

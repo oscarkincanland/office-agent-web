@@ -707,16 +707,25 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
           {tabs.map((t) => (
             <div
               key={t.name}
+              role="tab"
+              tabIndex={0}
+              aria-selected={t.name === activeTab}
               className={`doc-tab ${t.name === activeTab ? "active" : ""}`}
               onClick={() => onSwitchTab && onSwitchTab(t.name)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSwitchTab && onSwitchTab(t.name); }
+              }}
               title={t.name}
             >
               <span className="doc-tab-icon"><Icon name={ICONS[t.ext] || "file"} size={12} /></span>
               <span className="doc-tab-name">{t.name}</span>
-              <span
+              <button
+                type="button"
                 className="doc-tab-close"
+                aria-label={`关闭 ${t.name}`}
+                title={`关闭 ${t.name}`}
                 onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(t.name); }}
-              >×</span>
+              >×</button>
             </div>
           ))}
         </div>

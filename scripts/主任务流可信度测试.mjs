@@ -19,6 +19,25 @@ const 图标 = read("../client/src/components/Icon.jsx");
 const 样式 = read("../client/src/styles.css");
 const App = read("../client/src/App.jsx");
 const 侧栏 = read("../client/src/components/SessionSidebar.jsx");
+const 智能体广场 = read("../client/src/components/AgentMarket.jsx");
+const 智能体管理 = read("../server/智能体管理.mjs");
+
+// 0. 智能体广场入口语义（P1）：动作名与真实行为一致，且展示所需输入/预计产物/工作区
+assert.match(智能体广场, /带入对话<\/button>/, "入口动作应叫「带入对话」，而不是“调用”");
+assert.doesNotMatch(智能体广场, /> 调用<\/button>/, "不应再把预填草稿称为“调用/启动”");
+assert.match(智能体广场, /只会把角色指令与依赖技能填成草稿，<b>发送后才会开始执行<\/b>/, "入口应说明发送后才执行");
+assert.match(智能体广场, /className="agent-brief"/, "卡片应提供带入前的知情信息");
+assert.match(智能体广场, /所需输入/, "应展示所需输入");
+assert.match(智能体广场, /预计产物/, "应展示预计产物");
+assert.match(智能体广场, /执行工作区/, "应展示执行工作区");
+assert.match(智能体广场, /workspace = ""/, "应接受当前工作区");
+assert.match(App, /workspace=\{currentWorkspace\}/, "App 应把当前工作区传给智能体广场");
+assert.match(智能体广场, /不会自动执行，确认并发送后才开始/, "按钮提示应明确不会自动执行");
+// 内置 Agent 的所需输入/预计产物在服务端与前端默认值里都要有（避免只在前端“装样子”）
+assert.match(智能体管理, /inputs: \["主题\/事由"/, "服务端内置 Agent 应声明所需输入");
+assert.match(智能体管理, /outputs: \["规范 \.docx 公文或报告"\]/, "服务端内置 Agent 应声明预计产物");
+assert.match(智能体广场, /inputs: \["OD\/站点\/客流数据（表格或 GeoJSON）"/, "前端默认 Agent 应同步所需输入");
+assert.match(样式, /\.agent-brief-grid/, "知情信息应有样式");
 
 // 1. 空白态按模式给示例，且 Chat 的示例不含写文件动作
 assert.match(对话面板, /const EMPTY_EXAMPLES = \{/, "应有按模式划分的空白态示例");

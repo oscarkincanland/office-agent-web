@@ -2,6 +2,22 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Icon from "./Icon.jsx";
 import { browserClose, browserInput, browserOpen, browserReset, browserState } from "../api.js";
 
+// 只有「启动 / profile 锁 / CDP 归属」这类异常才值得重置浏览器；
+// 导航失败、URL 无效、用户接管都不应销毁标签与登录态。
+const RECOVERABLE_BROWSER_CODES = new Set(["BROWSER_LAUNCH_FAILED", "BROWSER_NOT_FOUND", "BROWSER_OWNERSHIP_MISMATCH", "BROWSER_CDP_UNAVAILABLE"]);
+const RECOVERABLE_BROWSER_PATTERN = /退出码 21|单例锁|用户数据目录被其他浏览器进程占用|CDP 端点不可用|DevToolsActivePort/;
+
+function openError(result, fallback) {
+  const error = new Error(result?.error || fallback);
+  error.code = result?.code || "";
+  return error;
+}
+
+function isRecoverableBrowserError(error) {
+  if (RECOVERABLE_BROWSER_CODES.has(String(error?.code || ""))) return true;
+  return RECOVERABLE_BROWSER_PATTERN.test(String(error?.message || ""));
+}
+
 /**
  * 内置浏览器面板（工作产物 → 浏览器）
  *
@@ -10,7 +26,7 @@ import { browserClose, browserInput, browserOpen, browserReset, browserState } f
  * - 只在有活动会话时建立帧流连接，避免空跑。
  */
 export default function BrowserPanel({ clientId, threadId, fullscreen = false, onToggleFullscreen }) {
-  const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false });
+  const [state, setState] = useState({ active: false, url: "", title: "", loading: false, viewport: { width: 1280, height: 800 }, hasFrame: false, ownership: null });
   const [tabs, setTabs] = useState([]);
   const [frame, setFrame] = useState(null);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
@@ -19,7 +35,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [connected, setConnected] = useState(false);
-  const [takeover, setTakeover] = useState(false);
   const imgRef = useRef(null);
   const viewRef = useRef(null);
   const keyboardRef = useRef(null);
@@ -76,7 +91,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
             setFrame(null);
             setFrameSize({ width: 0, height: 0 });
             setTabs([]);
-            setTakeover(false);
             setState((previous) => ({ ...previous, active: false, hasFrame: false }));
           }
         } catch {}
@@ -112,7 +126,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     try {
       const result = await queueBrowserInput(payload);
       if (result?.ok === false) setMessage(result.error || "操作失败");
-      if (["click", "pointer", "wheel", "type", "key", "scroll", "back", "reload", "tab_new", "tab_switch", "tab_close"].includes(payload.action)) setTakeover(true);
     } catch (error) {
       setMessage(String(error.message || error));
     } finally {
@@ -130,20 +143,23 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       setOpenDraft(target);
       addressEditingRef.current = false;
       setUrlDraft(target);
-      setTakeover(false);
     };
     try {
       const result = await browserOpen(clientId, threadId || "", target);
-      if (result?.ok === false) throw new Error(result.error || "打开网页失败");
+      if (result?.ok === false) throw openError(result, "打开网页失败");
       applyState(result);
     } catch (error) {
-      // 启动失败（常见：孤儿进程占用用户数据目录 → 退出码 21）：先强制释放该会话的
-      // 浏览器（杀孤儿 + 清锁），再重试一次，避免用户必须重启服务。
+      // 只在「已识别的启动/profile 锁异常」时重置浏览器（杀孤儿 + 清锁 + 重试一次）。
+      // 普通导航失败、URL 无效、用户接管等情况必须保留当前标签与登录态，不能销毁会话。
+      if (!isRecoverableBrowserError(error)) {
+        setMessage(String(error?.message || error));
+        return;
+      }
       try {
         setMessage("正在修复浏览器环境…");
         await browserReset(clientId, threadId || "");
         const retry = await browserOpen(clientId, threadId || "", target);
-        if (retry?.ok === false) throw new Error(retry.error || "打开网页失败");
+        if (retry?.ok === false) throw openError(retry, "打开网页失败");
         applyState(retry);
       } catch (retryError) {
         setMessage(String(retryError?.message || retryError || error?.message || error));
@@ -205,7 +221,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
   // 鼠标接管：按下 → 拖动 → 抬起（支持滑块验证码/画布/文本选择；单击即按下+抬起）
   const dragRef = useRef({ active: false, lastSentAt: 0 });
   const sendPointer = useCallback((phase, point) => {
-    setTakeover(true);
     return queueBrowserInput({ action: "pointer", phase, nx: point.nx, ny: point.ny });
   }, [queueBrowserInput]);
   useEffect(() => {
@@ -272,7 +287,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       pending.point = point;
       pending.deltaX += event.deltaX;
       pending.deltaY += event.deltaY;
-      setTakeover(true);
       if (!pending.timer) pending.timer = window.setTimeout(flush, 130);
     };
     img.addEventListener("wheel", onWheel, { passive: false });
@@ -284,10 +298,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
 
   // 键盘直输：点击画面后把本地键盘焦点交给不可见捕获层，再通过 CDP
   // Input.insertText/dispatchKeyEvent 转发到真实网页，支持中文输入法。
-  const sendQuiet = useCallback((payload) => {
-    setTakeover(true);
-    return queueBrowserInput(payload);
-  }, [queueBrowserInput]);
+  const sendQuiet = useCallback((payload) => queueBrowserInput(payload), [queueBrowserInput]);
   const flushKeyboardText = useCallback((target) => {
     if (composingRef.current) return;
     const text = target.value;
@@ -311,7 +322,6 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       const result = await browserClose(clientId, threadId || "", { force: true });
       setFrame(null);
       setState((previous) => ({ ...previous, active: false }));
-      setTakeover(false);
       setMessage(result?.closed ? "浏览器已关闭" : result?.message || "浏览器未关闭");
     } catch (error) {
       setMessage(String(error.message || error));
@@ -320,13 +330,23 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     }
   }, [clientId, threadId]);
 
-  const toggleTakeover = useCallback(() => {
-    setTakeover((value) => {
-      const next = !value;
-      setMessage(next ? "已切换为手动操作，点击画面即可操作网页" : "已交还 Agent，Agent 可以继续编排网页");
-      return next;
-    });
-  }, []);
+  // 接管/交还都走服务端：前端不再只改本地布尔值，Agent 写操作由服务端仲裁。
+  const ownership = state.ownership || { owner: "agent", secondsRemaining: 0 };
+  const userOwns = ownership.owner === "user";
+  const toggleOwnership = useCallback(async () => {
+    const action = userOwns ? "release" : "takeover";
+    setBusy(true);
+    try {
+      const response = await queueBrowserInput({ action, reason: action === "release" ? "用户交还" : "用户主动接管" });
+      const nextState = response?.result || response?.state;
+      if (nextState) setState((previous) => ({ ...previous, ...nextState }));
+      setMessage(action === "release" ? "已交还 Agent，Agent 可以继续编排网页" : "已接管：Agent 写操作会暂停，点击画面即可操作网页");
+    } catch (error) {
+      setMessage(String(error.message || error));
+    } finally {
+      setBusy(false);
+    }
+  }, [queueBrowserInput, userOwns]);
 
   const statusText = useMemo(() => {
     if (!state.active) return "未启动";
@@ -406,16 +426,17 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <i /> {statusText}
         </span>
         <span className={`browser-connection ${connected ? "online" : "offline"}`}><i />{connected ? "同步中" : "重连中"}</span>
-        <span className={`browser-takeover ${takeover ? "is-user" : "is-agent"}`} title={takeover ? "最近一次操作来自你，Agent 仍可继续使用此浏览器" : "Agent 可继续使用此浏览器"}>
-          <i />{takeover ? "你在操作" : "Agent 可用"}
+        <span className={`browser-takeover ${userOwns ? "is-user" : "is-agent"}`} title={userOwns ? `${ownership.reason || "你正在操作"}；Agent 写操作已暂停，交还或等待 ${ownership.secondsRemaining || 0}s 后自动恢复` : "Agent 可继续使用此浏览器"}>
+          <i />{userOwns ? `你在操作${ownership.secondsRemaining ? ` · ${ownership.secondsRemaining}s` : ""}` : "Agent 可用"}
         </span>
         <button
           type="button"
-          className={`browser-control-toggle ${takeover ? "active" : ""}`}
-          onClick={toggleTakeover}
-          title={takeover ? "交还 Agent 继续操作" : "切换为手动操作"}
+          className={`browser-control-toggle ${userOwns ? "active" : ""}`}
+          onClick={toggleOwnership}
+          disabled={busy}
+          title={userOwns ? "交还 Agent 继续操作（Agent 写操作恢复）" : "接管操作：Agent 写操作会暂停，避免与你抢焦点/误提交"}
         >
-          <Icon name="cursor" size={12} />{takeover ? "交还 Agent" : "接管操作"}
+          <Icon name="cursor" size={12} />{userOwns ? "交还 Agent" : "接管操作"}
         </button>
         <button
           type="button"
@@ -455,7 +476,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
           <div className="browser-placeholder"><span>{state.loading ? "正在加载网页…" : "正在获取画面…"}</span><button className="btn-sm" onClick={() => send({ action: "reload" })} disabled={busy}>重新连接</button></div>
         )}
       </div>
-      <div className="browser-hint"><Icon name="cursor" size={11} /> 点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交</div>
+      <div className="browser-hint"><Icon name="cursor" size={11} /> {userOwns ? "你正在接管：Agent 写操作已暂停，点击「交还 Agent」后恢复" : "点击网页控件后直接键盘输入 · 滚轮滚动 · 按住拖动滑块/验证码 · 回车提交"}</div>
       {state.error && <div className="browser-msg">{state.error}</div>}
       {message && <div className="browser-msg">{message}</div>}
     </div>

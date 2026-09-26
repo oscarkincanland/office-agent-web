@@ -135,6 +135,46 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
   };
 
   // 渲染 docx
+  // 缩放：优先用 CSS zoom（布局尺寸随之变化，编辑命中与光标位置精确）；
+  // 老浏览器回退到 transform（带宽度补偿，保证横向仍可滚动）。zoomRef 供适应宽度读取，
+  // 避免把 zoom 放进回调依赖导致每次缩放都重渲染整篇文档。
+  const zoomRef = useRef(100);
+  const applyZoom = useCallback((level) => {
+    const next = Math.max(30, Math.min(300, Number(level) || 100));
+    zoomRef.current = next;
+    setZoom(next);
+    const host = hostRef.current;
+    if (!host) return;
+    const supportsZoom = typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("zoom", "1");
+    if (supportsZoom) {
+      host.style.zoom = String(next / 100);
+      host.style.transform = "";
+      host.style.transformOrigin = "";
+      host.style.width = "";
+    } else {
+      host.style.zoom = "";
+      host.style.transform = `scale(${next / 100})`;
+      host.style.transformOrigin = "top left";
+      host.style.width = `${10000 / next}%`;
+    }
+  }, []);
+
+  /** 适应宽度：按真实页宽与面板可用宽度算档位，避免右侧栏把 Word 正文裁掉。 */
+  const applyFitWidth = useCallback((options = {}) => {
+    const host = hostRef.current;
+    if (!host) return 0;
+    const page = host.querySelector(".oaw-docx-wrapper > section.oaw-docx") || host.querySelector("section.oaw-docx");
+    const pageWidth = Number(page?.offsetWidth) || 0;
+    const available = Math.max(0, host.clientWidth - 40);
+    if (!pageWidth || !available) return 0;
+    const ratio = Math.max(0.3, Math.min(3, available / pageWidth));
+    const level = Math.max(30, Math.min(300, Math.round((ratio * 100) / 5) * 5));
+    // 自动模式只缩小以适应，不主动放大（100% 已是舒适阅读尺寸）
+    if (options.silent && level >= zoomRef.current) return level;
+    applyZoom(level);
+    return level;
+  }, [applyZoom]);
+
   const renderDoc = useCallback(async () => {
     const host = hostRef.current;
     if (!host) return;
@@ -192,6 +232,8 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       setPageCount(pages.length || 1);
       setCurrentPage(1);
       setDirty(false);
+      // 右侧栏可能比页面窄：默认适应宽度，保证 Word 正文不被裁切。
+      applyFitWidth({ silent: true });
       // 加载批注数据
       loadComments();
     } catch (e) {
@@ -199,7 +241,7 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
     } finally {
       setLoading(false);
     }
-  }, [name, revision, showComments, showChanges]);
+  }, [name, revision, showComments, showChanges, applyFitWidth]);
 
   const loadComments = async () => {
     try {
@@ -401,17 +443,6 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
     hostRef.current?.focus();
   };
 
-  // 缩放
-  const applyZoom = (level) => {
-    setZoom(level);
-    const host = hostRef.current;
-    if (host) {
-      host.style.transform = `scale(${level / 100})`;
-      host.style.transformOrigin = "top left";
-      host.style.width = `${10000 / level}%`;
-    }
-  };
-
   // ===== 保存：docx 库重打包 =====
   const handleSave = async () => {
     if (!dirty) { setSaveMsg("没有需要保存的修改"); setTimeout(() => setSaveMsg(""), 2000); return; }
@@ -560,6 +591,7 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
         <select className="edit-select zoom-select" value={zoom} onChange={(e) => applyZoom(Number(e.target.value))} title="缩放比例">
           {ZOOM_LEVELS.map((z) => <option key={z} value={z}>{z}%</option>)}
         </select>
+        <button className="toolbar-btn docx-fit-width" onClick={() => applyFitWidth()} title="适应宽度：让页面宽度匹配当前面板，避免正文被裁切">适应宽度</button>
         {mode === "edit" && (
           <>
             <span className="toolbar-sep" />

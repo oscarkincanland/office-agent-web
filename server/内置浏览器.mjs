@@ -45,6 +45,39 @@ export function browserSubscriberCount(key) {
   return set ? set.size : 0;
 }
 
+// ---------- 用户接管仲裁（P1） ----------
+// 用户操作浏览器时服务端持有短期 lease：期间 Agent 的写操作被拒绝并给出可解释原因，
+// 用户显式交还或 lease 过期后自动恢复。前端按钮因此不再是“只改本地布尔值”。
+const USER_TAKEOVER_LEASE_MS = Math.max(30_000, Number(process.env.OAW_BROWSER_USER_LEASE_MS) || 3 * 60 * 1000);
+
+/** 真正的用户操作才算接管：布局同步(resize)、列表查询(tabs) 不算。 */
+export const BROWSER_USER_ACTION_SET = new Set([
+  "click", "pointer", "wheel", "type", "key", "scroll", "navigate", "back", "reload", "tab_new", "tab_switch", "tab_close",
+]);
+
+/** 归一化归属状态：lease 过期即自动回到 Agent，避免用户断线后永久锁死。 */
+export function normalizeBrowserOwnership(ownership, nowMs = Date.now()) {
+  const owner = ownership?.owner === "user" ? "user" : "agent";
+  const leaseExpiresAt = Number(ownership?.leaseExpiresAt) || 0;
+  const reason = String(ownership?.reason || "");
+  if (owner === "user" && leaseExpiresAt <= nowMs) {
+    return { owner: "agent", leaseExpiresAt: 0, reason: "用户接管已超时，自动交还 Agent", expiredFrom: "user" };
+  }
+  return { owner, leaseExpiresAt, reason, expiredFrom: null };
+}
+
+/** Agent 写操作是否被用户接管阻塞；返回 null 表示放行。 */
+export function browserAgentWriteBlocked(ownership, nowMs = Date.now()) {
+  const current = normalizeBrowserOwnership(ownership, nowMs);
+  if (current.owner !== "user") return null;
+  const remainingMs = Math.max(0, current.leaseExpiresAt - nowMs);
+  return {
+    code: "BROWSER_USER_TAKEOVER",
+    message: `浏览器正在由用户操作（约 ${Math.ceil(remainingMs / 1000)} 秒后自动交还），Agent 的写操作已暂停`,
+    retryAfterMs: remainingMs,
+  };
+}
+
 /**
  * 会话键（client::thread）。
  * 注意：Agent 工具上下文里的 clientId 实际是复合 agentKey（client::thread），
@@ -495,6 +528,8 @@ class BrowserSession {
     this.watchdogTimer = null;
     this.firstFrameTimer = null;
     this.lastUserInputAt = 0;
+    // 接管仲裁：owner = agent | user，user 时带短期 lease
+    this.ownership = { owner: "agent", leaseExpiresAt: 0, reason: "", updatedAt: new Date().toISOString() };
     this.activeTargetId = null;
     this.tabs = [];
     this.tabsTimer = null;
@@ -617,6 +652,51 @@ class BrowserSession {
     this.watchdogTimer = null;
     if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
     this.firstFrameTimer = null;
+  }
+
+  /** 当前归属（lease 过期自动回到 Agent）。 */
+  ownershipView() {
+    const current = normalizeBrowserOwnership(this.ownership);
+    return {
+      owner: current.owner,
+      reason: current.reason || "",
+      leaseExpiresAt: current.leaseExpiresAt || 0,
+      secondsRemaining: current.owner === "user" ? Math.max(0, Math.ceil((current.leaseExpiresAt - Date.now()) / 1000)) : 0,
+      expiredFrom: current.expiredFrom || null,
+    };
+  }
+
+  /** 用户接管（真实操作或显式点击「接管操作」）。 */
+  takeover(reason = "用户接管") {
+    this.ownership = { owner: "user", leaseExpiresAt: Date.now() + USER_TAKEOVER_LEASE_MS, reason: String(reason || "用户接管"), updatedAt: new Date().toISOString() };
+    this.lastUserInputAt = Date.now();
+    this.emitState();
+    return this.stateView();
+  }
+
+  /** 用户输入：只有真正的交互才算接管，resize/tabs 等同步动作不算。 */
+  markUserActivity(action) {
+    const value = String(action || "");
+    if (!BROWSER_USER_ACTION_SET.has(value)) return;
+    this.takeover(`用户正在操作（${value}）`);
+  }
+
+  /** 交还 Agent：恢复 Agent 的写权限。 */
+  releaseToAgent(reason = "用户交还") {
+    this.ownership = { owner: "agent", leaseExpiresAt: 0, reason: String(reason || "用户交还"), updatedAt: new Date().toISOString() };
+    this.emitState();
+    return this.stateView();
+  }
+
+  /** Agent 写操作守卫：用户接管期间拒绝，并给出可解释原因与剩余等待时间。 */
+  assertAgentWrite(action = "") {
+    const blocked = browserAgentWriteBlocked(this.ownership, Date.now());
+    if (!blocked) return;
+    const error = new Error(blocked.message);
+    error.code = blocked.code;
+    error.retryAfterMs = blocked.retryAfterMs;
+    error.action = String(action || "");
+    throw error;
   }
 
   /** 列出所有页面标签（id/标题/URL/是否激活）。 */
@@ -793,6 +873,8 @@ class BrowserSession {
       frameSize: this.frame ? { width: this.frame.width || null, height: this.frame.height || null } : null,
       error: this.state.error,
       hasFrame: Boolean(this.frame),
+      // 接管仲裁状态：前端据此显示“你在操作/等待交还”，而不是本地布尔值
+      ownership: this.ownershipView(),
     };
   }
 
@@ -833,7 +915,7 @@ class BrowserSession {
       this.emitState();
     }
     const executable = findBrowserExecutable();
-    if (!executable) throw new Error("未找到 Edge/Chrome，无法启动内置浏览器（可设置环境变量 OAW_BROWSER_PATH 指定浏览器路径）");
+    if (!executable) { const error = new Error("未找到 Edge/Chrome，无法启动内置浏览器（可设置环境变量 OAW_BROWSER_PATH 指定浏览器路径）"); error.code = "BROWSER_NOT_FOUND"; throw error; }
     fs.mkdirSync(this.profileDir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(this.profileDir, 0o700); } catch {}
     // 1) 尝试复用上次启动且仍在运行的实例（服务重启后浏览器不中断）
@@ -859,7 +941,8 @@ class BrowserSession {
         await this.close().catch(() => {});
       }
     }
-    throw lastError || new Error("浏览器启动失败");
+    if (lastError && !lastError.code) lastError.code = "BROWSER_LAUNCH_FAILED";
+    throw lastError || Object.assign(new Error("浏览器启动失败"), { code: "BROWSER_LAUNCH_FAILED" });
   }
 
   /** 真正拉起 Edge/Chrome 并等待 CDP 就绪（由 start 负责重试与清理）。 */
@@ -932,12 +1015,16 @@ class BrowserSession {
       if (process.platform === "win32") hints.push("Windows 可检查是否有残留 msedge/chrome 进程占用该 profile");
       if (process.platform === "darwin") hints.push("macOS 可用 OAW_BROWSER_PATH 指定 Edge/Chrome 路径");
       const hintText = hints.length ? `。诊断建议：${hints.join("；")}` : "";
-      throw new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : "（进程仍在运行但未监听调试端口）"}${hintText}${detail ? `。原始输出：${detail.slice(0, 800)}` : ""}`);
+      const launchError = new Error(`浏览器启动失败：CDP 端点不可用${exited !== null && exited !== undefined ? `（进程退出码 ${exited}）` : "（进程仍在运行但未监听调试端口）"}${hintText}${detail ? `。原始输出：${detail.slice(0, 800)}` : ""}`);
+      launchError.code = exited === 21 ? "BROWSER_LAUNCH_FAILED" : "BROWSER_CDP_UNAVAILABLE";
+      throw launchError;
     }
     // 归属校验：Chromium 必须把本会话 profile 的 DevToolsActivePort 写成我们分配的端口。
     const marker = readDevToolsActivePort(this.profileDir);
     if (!marker || Number(marker.port) !== Number(this.port)) {
-      throw new Error(`浏览器启动异常：DevToolsActivePort(${marker ? marker.port : "缺失"}) 与分配端口(${this.port}) 不一致，已拒绝接入以避免连到非本会话的浏览器`);
+      const ownershipError = new Error(`浏览器启动异常：DevToolsActivePort(${marker ? marker.port : "缺失"}) 与分配端口(${this.port}) 不一致，已拒绝接入以避免连到非本会话的浏览器`);
+      ownershipError.code = "BROWSER_OWNERSHIP_MISMATCH";
+      throw ownershipError;
     }
     writePortFile(this.portFile, { port: this.port, pid: Number(this.child?.pid) || 0, profileDir: this.profileDir, startedAt: new Date().toISOString() });
     await this.connectToTarget(target);
@@ -1278,6 +1365,7 @@ async function sessionFor(key) {
 export async function browserOpen(key, url) {
   const target = normalizeNavUrl(url); // 先校验，避免为无效地址启动浏览器
   const session = await sessionFor(key);
+  session.assertAgentWrite("open");
   await session.ensureStarted();
   return session.navigate(target);
 }
@@ -1301,6 +1389,7 @@ function shouldSyncFrame(action, payload = {}) {
 
 export async function browserClick(key, ref) {
   const session = await requireActiveSession(key);
+  session.assertAgentWrite("click");
   const result = await session.click(ref);
   syncFrameSoon(session);
   return result;
@@ -1308,6 +1397,7 @@ export async function browserClick(key, ref) {
 
 export async function browserType(key, ref, text, options = {}) {
   const session = await requireActiveSession(key);
+  session.assertAgentWrite("type");
   const result = await session.type(ref, text, options);
   syncFrameSoon(session);
   return result;
@@ -1315,6 +1405,7 @@ export async function browserType(key, ref, text, options = {}) {
 
 export async function browserPress(key, pressKey) {
   const session = await requireActiveSession(key);
+  session.assertAgentWrite("press");
   const result = await session.press(pressKey);
   syncFrameSoon(session);
   return result;
@@ -1322,6 +1413,7 @@ export async function browserPress(key, pressKey) {
 
 export async function browserScroll(key, direction, amount) {
   const session = await requireActiveSession(key);
+  session.assertAgentWrite("scroll");
   const result = await session.scroll(direction, amount);
   syncFrameSoon(session);
   return result;
@@ -1333,6 +1425,7 @@ export async function browserScreenshot(key) {
 
 export async function browserBack(key) {
   const session = await requireActiveSession(key);
+  session.assertAgentWrite("back");
   const result = await session.back();
   syncFrameSoon(session);
   return result;
@@ -1385,11 +1478,15 @@ async function dispatchBrowserUserInput(session, action, payload = {}) {
   throw new Error(`不支持的操作：${action}`);
 }
 
-/** 面板输入入口：派发完成后立刻补一帧，保证画面与交互同步。 */
+/** 面板输入入口：先处理归属（接管/交还），再派发；派发完成后补一帧。 */
 export async function browserUserInput(key, payload = {}) {
   const session = await requireActiveSession(key);
-  session.lastUserInputAt = Date.now();
   const action = String(payload.action || "");
+  // 显式交还 / 主动接管：服务端持有归属，前端不再是“只改本地布尔值”
+  if (action === "release") return session.releaseToAgent(payload.reason || "用户交还");
+  if (action === "takeover") return session.takeover(payload.reason || "用户主动接管");
+  // 只有真正的交互才算接管（resize / tabs 列表不再被误算）
+  session.markUserActivity(action);
   const result = await dispatchBrowserUserInput(session, action, payload);
   if (shouldSyncFrame(action, payload)) syncFrameSoon(session);
   return result;
@@ -1399,6 +1496,7 @@ export async function browserUserInput(key, payload = {}) {
 export async function browserTabs(key, action = "list", tabId = "", url = "") {
   const session = await requireActiveSession(key);
   if (action === "list") return { tabs: await session.refreshTabs() };
+  session.assertAgentWrite(`tab_${action}`); // 新建/切换/关闭属于写操作，用户接管期间应等待
   const result = action === "new" ? await session.newTab(url || "about:blank")
     : action === "switch" ? await session.switchToTarget(String(tabId || ""))
       : action === "close" ? await session.closeTab(String(tabId || ""))

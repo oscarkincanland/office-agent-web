@@ -151,6 +151,19 @@ export default function App() {
   useEffect(() => {
     if (!browserPanelOpen) setBrowserFullscreen(false);
   }, [browserPanelOpen]);
+
+  // 窄屏防挤压（P1）：右侧只保留一列面板。窗口变窄或打开浏览器栏时自动收起预览，
+  // 避免「侧栏 + 对话 + 预览 + 浏览器」四条最小宽度之和超过视口把对话挤成细条。
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const enforceNarrowLayout = () => {
+      if (window.innerWidth > 1024) return;
+      setPreviewOpen((open) => (open && browserPanelOpen ? false : open));
+    };
+    enforceNarrowLayout();
+    window.addEventListener("resize", enforceNarrowLayout);
+    return () => window.removeEventListener("resize", enforceNarrowLayout);
+  }, [browserPanelOpen]);
   const [conversationMode, setConversationMode] = useState("chat");
   const [conversationPhase, setConversationPhase] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false); // 命令面板（Ctrl/Cmd+K）
@@ -1499,6 +1512,7 @@ export default function App() {
           onClose={closeExternalModules}
           onAtMention={insertChatText}
           onPromoteToAgent={handlePromoteToAgent}
+          workspace={currentWorkspace}
         />
         </DeferredModule>
         <DeferredModule label={activeModule === "mcp" ? "MCP" : "Pi 插件"}>
