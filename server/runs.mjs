@@ -142,6 +142,54 @@ function copyBeforeBlobs(runId, snapshot) {
 const RUN_CACHE_LIMIT = 500;
 const runCache = new Map();
 
+// Run 列表元数据索引：列表/会话/项目只依赖少量字段，没必要每次都把
+// 全部 Run（含 events/steps/快照）重新 JSON.parse。索引按文件指纹增量维护，
+// 写入时用内存里的最新 Run 直接刷新，外部改动/删除则按指纹自动回退重建。
+const runIndex = new Map();
+
+// 与 listRuns 的 query 过滤保持一致的检索文本（小写）。
+function runSearchText(run) {
+  const steps = Array.isArray(run.steps) ? run.steps : [];
+  const todos = Array.isArray(run.todos) ? run.todos : [];
+  return [run.error, run.summary, run.task?.goal, run.currentStep?.error, ...steps.map((step) => step.error), ...todos.map((item) => `${item.title} ${item.note || ""}`)]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function buildRunMeta(run) {
+  return {
+    id: run.id,
+    threadId: run.threadId,
+    sessionId: run.sessionId,
+    cwd: run.cwd,
+    projectId: run.projectId,
+    status: run.status,
+    mode: run.task?.mode,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    artifactCount: Array.isArray(run.artifacts) ? run.artifacts.length : 0,
+    search: runSearchText(run),
+  };
+}
+
+function runIndexEntry(id) {
+  const file = runFile(id);
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    runIndex.delete(id);
+    return null;
+  }
+  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  const cached = runIndex.get(id);
+  if (cached?.fingerprint === fingerprint) return cached.meta;
+  const run = loadRun(id);
+  if (!run) return null;
+  return runIndex.get(id)?.meta || buildRunMeta(run);
+}
+
 function loadRun(id) {
   const file = runFile(id);
   let stat;
@@ -149,6 +197,7 @@ function loadRun(id) {
     stat = fs.statSync(file);
   } catch {
     runCache.delete(id);
+    runIndex.delete(id);
     return null;
   }
   const fingerprint = `${stat.mtimeMs}:${stat.size}`;
@@ -158,9 +207,11 @@ function loadRun(id) {
   try {
     data = JSON.parse(fs.readFileSync(file, "utf8"));
   } catch {
+    runIndex.delete(id);
     return null;
   }
   runCache.set(id, { fingerprint, data });
+  runIndex.set(id, { fingerprint, meta: buildRunMeta(data) });
   while (runCache.size > RUN_CACHE_LIMIT) {
     const oldest = runCache.keys().next().value;
     if (oldest === undefined) break;
@@ -174,6 +225,13 @@ function saveRun(run) {
   safeJsonWrite(runFile(run.id), run);
   // 写后失效缓存：下次读取以磁盘为准，避免缓存与持久化状态分叉
   runCache.delete(run.id);
+  // 列表索引直接用内存里的最新 Run 刷新，列表无需等到下次全量解析才更新。
+  try {
+    const st = fs.statSync(runFile(run.id));
+    runIndex.set(run.id, { fingerprint: `${st.mtimeMs}:${st.size}`, meta: buildRunMeta(run) });
+  } catch {
+    runIndex.delete(run.id);
+  }
   return run;
 }
 
@@ -914,24 +972,50 @@ function sameRunWorkspace(a, b) {
     : left === right;
 }
 
+// 只读 Run 元数据索引，供会话列表/项目统计等只依赖状态字段的场景使用：
+// 这些接口过去为了几个状态字段也要解析全部 Run（含 events/快照），是首屏慢的主因。
+export function listRunSummaries({ limit = 200 } = {}) {
+  ensureDir(RUNS_DIR);
+  const ids = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => path.basename(n, ".json"));
+  pruneRunIndex(ids);
+  return ids
+    .map((id) => runIndexEntry(id))
+    .filter(Boolean)
+    .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
+    .slice(0, Math.max(1, Math.min(500, limit)));
+}
+
+// 已删除的 Run 文件要顺带从索引里清掉（外部清理或删除会话时会产生）；
+// 只有索引明显大于当前文件数时才全量比对，避免每次列表都做 O(n) 删除扫描。
+function pruneRunIndex(ids) {
+  if (runIndex.size <= ids.length) return;
+  const current = new Set(ids);
+  for (const key of runIndex.keys()) {
+    if (!current.has(key)) runIndex.delete(key);
+  }
+}
+
 export function listRuns({ threadId = "", sessionId = "", cwd = "", projectId = "", status = "", mode = "", query = "", limit = 50, includeEvents = "latest" } = {}) {
   ensureDir(RUNS_DIR);
   const textQuery = String(query || "").trim().toLowerCase();
-  const sliced = fs.readdirSync(RUNS_DIR)
-    .filter((n) => n.endsWith(".json"))
-    .map((n) => loadRun(path.basename(n, ".json")))
+  const ids = fs.readdirSync(RUNS_DIR).filter((n) => n.endsWith(".json")).map((n) => path.basename(n, ".json"));
+  pruneRunIndex(ids);
+  const sliced = ids
+    .map((id) => runIndexEntry(id))
     .filter(Boolean)
-    .filter((r) => (!threadId || r.threadId === threadId) && (!sessionId || r.sessionId === sessionId) && (!cwd || sameRunWorkspace(r.cwd, cwd)))
+    .filter((meta) => (!threadId || meta.threadId === threadId) && (!sessionId || meta.sessionId === sessionId) && (!cwd || sameRunWorkspace(meta.cwd, cwd)))
     // 当前项目同时按 ID 和工作区查询；老 Run 可能还没有 projectId，
     // 但只要其工作区相同仍应出现在任务中心，避免升级后历史任务消失。
-    .filter((r) => (!projectId || r.projectId === projectId || (cwd && !r.projectId && sameRunWorkspace(r.cwd, cwd))) && (!status || status === "all" || r.status === status))
-    .filter((r) => (!mode || mode === "all" || r.task?.mode === mode))
-    .filter((r) => !textQuery || [r.error, r.summary, r.task?.goal, r.currentStep?.error, ...(r.steps || []).map((step) => step.error), ...(r.todos || []).map((item) => `${item.title} ${item.note || ""}`)].filter(Boolean).join(" ").toLowerCase().includes(textQuery))
+    .filter((meta) => (!projectId || meta.projectId === projectId || (cwd && !meta.projectId && sameRunWorkspace(meta.cwd, cwd))) && (!status || status === "all" || meta.status === status))
+    .filter((meta) => (!mode || mode === "all" || meta.mode === mode))
+    .filter((meta) => !textQuery || meta.search.includes(textQuery))
     .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))
     .slice(0, Math.max(1, Math.min(200, limit)));
   const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_user", "cancel_requested", "finishing"]);
   return sliced
-    .map((run, index) => {
+    .map((meta, index) => {
+      const run = loadRun(meta.id);
+      if (!run) return null;
       // 默认只为「运行中的 Run」和「最新 1 条」保留事件（最新一轮的轨迹展示够用），
       // 其余用 eventCount 代替：单个 Run 事件可达数百 KB，列表接口必须瘦身。
       // recovering 的旧 Run 不算运行中（它没有新事件，恢复视图按需单条加载）。

@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
@@ -2623,7 +2623,7 @@ app.get("/api/projects", (req, res) => {
   try {
     // 只自动登记当前工作区。历史 Pi 会话可能指向临时目录或用户目录，不能把它们批量污染项目列表。
     projectManager.ensureProjectForWorkspace(getWorkspace());
-    const runs = listRuns({ limit: 200 });
+    const runs = listRunSummaries({ limit: 200 });
     const proposals = agentManager.memoryProposals();
     const sessions = listSessionFiles().map((file) => {
       const header = readSessionHeader(file);
@@ -2639,7 +2639,7 @@ app.get("/api/projects", (req, res) => {
       ...project,
       sessionCount: sessions.filter((session) => session.projectId === project.id || session.cwd === project.rootPath).length,
       runCount: runs.filter((run) => run.cwd === project.rootPath).length,
-      artifactCount: runs.filter((run) => run.cwd === project.rootPath).reduce((count, run) => count + (run.artifacts?.length || 0), 0),
+      artifactCount: runs.filter((run) => run.cwd === project.rootPath).reduce((count, run) => count + (run.artifactCount || 0), 0),
       unresolvedRunCount: runs.filter((run) => run.cwd === project.rootPath && ["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(run.status)).length,
       pendingMemoryCount: proposals.filter((item) => item.workspace === project.rootPath && item.status === "pending").length,
       approvedMemoryCount: proposals.filter((item) => item.workspace === project.rootPath && item.status === "approved").length,
@@ -2938,7 +2938,7 @@ app.get("/api/sessions", (req, res) => {
   const frozenFilter = req.query.frozen === undefined ? null : req.query.frozen === "true";
   try {
     const files = listSessionFiles();
-    const recentRuns = listRuns({ limit: 200 });
+    const recentRuns = listRunSummaries({ limit: 200 });
     // 每个会话只取最新一条 Run；避免 N×M 查找
     const latestRunBySession = new Map();
     for (const run of recentRuns) {
@@ -2970,7 +2970,7 @@ app.get("/api/sessions", (req, res) => {
         const latestRun = latestRunBySession.get(id);
         const project = projectManager.getProject(meta.projectId) || projectForCwd(meta.cwd);
         if (projectFilter && project?.id !== projectFilter) continue;
-        if (modeFilter && (latestRun?.task?.mode || "") !== modeFilter) continue;
+        if (modeFilter && (latestRun?.mode || "") !== modeFilter) continue;
         if (runStatusFilter && (latestRun?.status || "idle") !== runStatusFilter) continue;
         if (pinnedFilter !== null && meta.pinned !== pinnedFilter) continue;
         if (frozenFilter !== null && meta.frozen !== frozenFilter) continue;
@@ -2996,9 +2996,9 @@ app.get("/api/sessions", (req, res) => {
           title,
           runStatus: latestRun?.status || "idle",
           runId: latestRun?.id || null,
-          mode: latestRun?.task?.mode || "",
+          mode: latestRun?.mode || "",
           lastRunAt: latestRun?.finishedAt || latestRun?.startedAt || null,
-          artifactCount: latestRun?.artifacts?.length || 0,
+          artifactCount: latestRun?.artifactCount || 0,
         });
       } catch {}
     }
@@ -3150,7 +3150,7 @@ app.post("/api/sessions/batch-delete", (req, res) => {
     .map((id) => String(id || "").trim())
     .filter(Boolean))].slice(0, 200);
   if (!ids.length) return res.status(400).json({ error: "ids required" });
-  const activeSessionIds = new Set(listRuns({ limit: 500 })
+  const activeSessionIds = new Set(listRunSummaries({ limit: 500 })
     .filter((run) => ["running", "queued", "waiting_user", "recovering", "cancel_requested"].includes(run?.status))
     .map((run) => String(run.sessionId || ""))
     .filter(Boolean));
@@ -4441,9 +4441,13 @@ app.get("/api/bus/stats", (req, res) => {
   app.use(express.static(dist, {
     setHeaders: (res, filePath) => {
       // index.html 负责引用当前构建的资源；不缓存它，避免前端继续运行旧的
-      // SSE 事件过滤逻辑。带 hash 的 assets 仍由 Vite 自己长期缓存。
-      if (path.basename(filePath).toLowerCase() === "index.html") {
+      // SSE 事件过滤逻辑。assets 下的文件名带内容 hash，随构建变化，可长期强缓存，
+      // 重复打开页面时不再重复校验/重传这些 1MB 级 bundle。
+      const name = path.basename(filePath).toLowerCase();
+      if (name === "index.html") {
         res.setHeader("Cache-Control", "no-store, max-age=0");
+      } else if (/[\\/]assets[\\/]/.test(filePath)) {
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       }
     },
   }));
