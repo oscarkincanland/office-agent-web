@@ -113,6 +113,14 @@ export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
 export const pickWorkspace = () =>
   api("/api/workspace/pick", { method: "POST", body: JSON.stringify({}) });
+
+// 本机原生能力（macOS Finder / Windows 资源管理器）
+export const pickNativeFiles = (options = {}) =>
+  api("/api/system/pick-files", { method: "POST", body: JSON.stringify(options) });
+export const openInSystem = (path) =>
+  api("/api/system/open", { method: "POST", body: JSON.stringify({ path }) });
+export const revealInSystem = (path) =>
+  api("/api/system/reveal", { method: "POST", body: JSON.stringify({ path }) });
 export const deleteWorkspace = (path) =>
   api("/api/workspace/delete", { method: "POST", body: JSON.stringify({ path }) });
 export const listFileRoots = () => api("/api/file-roots");

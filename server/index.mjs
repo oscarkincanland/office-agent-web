@@ -4,7 +4,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace } from "./workspace.mjs";
+import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
 import { agentManager, classifyAgentError, getCredentialErrors, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
@@ -30,6 +30,7 @@ import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
+import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager } from "./原生文件.mjs";
 import * as browserModule from "./内置浏览器.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
@@ -314,6 +315,8 @@ app.get("/api/status", (req, res) => {
     piPackageVersion: PI_PACKAGE_VERSION,
     host: HOST,
     authRequired: Boolean(API_TOKEN),
+    platform: process.platform,
+    native: nativeCapabilities(),
     service: {
       pid: process.pid,
       startedAt: SERVICE_STARTED_AT,
@@ -2804,30 +2807,12 @@ app.post("/api/workspace/switch", (req, res) => {
   res.json({ ok: true, workspace: getWorkspace(), files: listWorkspace() });
 });
 
-// POST /api/workspace/pick - 调用 Windows 原生文件夹选择器，再复用同一套可写探针。
+// POST /api/workspace/pick - 调用系统原生文件夹选择器（macOS Finder / Windows 资源管理器 / Linux），再复用同一套可写探针。
 app.post("/api/workspace/pick", async (_req, res) => {
-  if (process.platform !== "win32") {
-    return res.status(501).json({ error: "当前平台没有可用的原生文件夹选择器", code: "FOLDER_PICKER_UNAVAILABLE" });
-  }
   try {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-    const pickerScript = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
-      "$dialog.Description = '选择 Open Plan 可写工作区'",
-      "$dialog.ShowNewFolderButton = $true",
-      "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath }",
-    ].join("; ");
-    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-STA", "-Command", pickerScript], {
-      windowsHide: false,
-      timeout: 120000,
-      maxBuffer: 64 * 1024,
-      encoding: "utf8",
-    });
-    const selected = String(stdout || "").replace(/^\uFEFF/, "").trim();
-    if (!selected) return res.json({ ok: false, canceled: true });
+    const picked = await pickFolder({ prompt: "选择 Open Plan 可写工作区" });
+    if (picked.canceled) return res.json({ ok: false, canceled: true });
+    const selected = picked.path;
     const workspace = normalizeWorkspace(selected);
     if (!workspace) return res.json({ ok: false, workspace: selected, code: "WORKSPACE_INVALID", error: "路径不存在或不是可访问的文件夹" });
     const write = evaluateWorkspaceWrite(workspace);
@@ -2836,8 +2821,9 @@ app.post("/api/workspace/pick", async (_req, res) => {
     }
     res.json({ ok: true, workspace, writeAccess: write });
   } catch (error) {
-    const code = error?.killed ? "FOLDER_PICKER_TIMEOUT" : "FOLDER_PICKER_FAILED";
-    res.status(500).json({ error: `文件夹选择器启动失败：${error?.message || error}`, code });
+    const unsupported = ["PICKER_UNSUPPORTED", "PICKER_UNAVAILABLE"].includes(error?.code);
+    const code = unsupported ? "FOLDER_PICKER_UNAVAILABLE" : error?.code === "PICKER_TIMEOUT" ? "FOLDER_PICKER_TIMEOUT" : "FOLDER_PICKER_FAILED";
+    res.status(unsupported ? 501 : 500).json({ error: `文件夹选择器不可用：${error?.message || error}`, code });
   }
 });
 
@@ -4412,6 +4398,127 @@ app.get("/api/m3/network-stats", (_req, res) => {
 // ---------- static ----------
 const dist = CLIENT_DIST;
 // 未知 API 必须返回 JSON 404，避免前端把 index.html 当作接口响应解析。
+// ---------- 本机原生能力：选择文件 / 用默认应用打开 / 在文件管理器中显示 ----------
+// 安全约定：
+//   1. 原生操作只允许「工作区内的路径」或「用户刚刚通过原生选择器选中的路径」；
+//   2. 所有命令都走 execFile + 参数数组（不经 shell），文件名不会被解释成命令；
+//   3. 只接受绝对路径（绝对路径不会被当成命令行选项）。
+const recentNativePicks = new Map();
+const NATIVE_PICK_TTL_MS = 10 * 60 * 1000;
+
+function rememberNativePick(absPath) {
+  const now = Date.now();
+  recentNativePicks.set(absPath, now + NATIVE_PICK_TTL_MS);
+  if (recentNativePicks.size > 200) {
+    for (const [key, expiry] of recentNativePicks) if (expiry <= now) recentNativePicks.delete(key);
+  }
+}
+
+function nativeAllowedRoots() {
+  const roots = [];
+  try { roots.push(getWorkspace()); } catch {}
+  try { for (const root of listFileRoots()) roots.push(root.path); } catch {}
+  try { for (const project of projectManager.listProjects({})) roots.push(project.rootPath); } catch {}
+  return roots
+    .filter(Boolean)
+    .map((item) => { try { return fs.realpathSync(item); } catch { return null; } })
+    .filter(Boolean);
+}
+
+/** 「工作区相对路径」或「绝对路径」→ 真实绝对路径；不存在返回 null。 */
+function resolveNativeTarget(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return null;
+  if (path.isAbsolute(raw)) {
+    try { return fs.realpathSync(raw); } catch { return null; }
+  }
+  return resolvePath(raw);
+}
+
+/** 校验并返回可操作的真实路径；不在白名单时抛 PATH_OUTSIDE_WORKSPACE。 */
+function assertNativeTargetAllowed(input) {
+  const target = resolveNativeTarget(input);
+  if (!target) {
+    const error = new Error("文件不存在或无法解析路径");
+    error.code = "FILE_NOT_FOUND";
+    throw error;
+  }
+  if ((recentNativePicks.get(target) || 0) > Date.now()) return target;
+  if (nativeAllowedRoots().some((root) => isInside(root, target))) return target;
+  const error = new Error("该路径不在任何工作区内，也不在本机选择器的最近选择中");
+  error.code = "PATH_OUTSIDE_WORKSPACE";
+  throw error;
+}
+
+function nativeHttpStatus(code) {
+  if (code === "FILE_NOT_FOUND") return 404;
+  if (code === "PATH_OUTSIDE_WORKSPACE") return 403;
+  if (code === "PICKER_UNSUPPORTED" || code === "PICKER_UNAVAILABLE") return 501;
+  return 500;
+}
+
+function sendNativeError(res, error, fallbackCode) {
+  res.status(nativeHttpStatus(error?.code)).json({ ok: false, error: String(error?.message || error), code: error?.code || fallbackCode });
+}
+
+// POST /api/system/reveal - 在文件管理器中显示（macOS 为 Finder 中选中该文件）
+async function handleRevealInFileManager(req, res) {
+  try {
+    const target = assertNativeTargetAllowed(req.body?.path ?? req.body?.name);
+    const result = await revealInFileManager(target);
+    res.json({ ok: true, ...result, fileManager: nativeCapabilities().fileManagerName });
+  } catch (error) {
+    sendNativeError(res, error, "REVEAL_FAILED");
+  }
+}
+app.post("/api/system/reveal", handleRevealInFileManager);
+// 兼容旧入口：/api/open-in-explorer 语义就是「在文件管理器中显示」
+app.post("/api/open-in-explorer", handleRevealInFileManager);
+
+// POST /api/system/open - 用系统默认应用打开文件（目录则退化为在文件管理器中显示）
+app.post("/api/system/open", async (req, res) => {
+  try {
+    const target = assertNativeTargetAllowed(req.body?.path ?? req.body?.name);
+    let stat = null;
+    try { stat = fs.statSync(target); } catch {}
+    if (stat?.isDirectory()) {
+      const result = await revealInFileManager(target);
+      return res.json({ ok: true, ...result, opened: "reveal", fileManager: nativeCapabilities().fileManagerName });
+    }
+    const result = await openWithDefaultApp(target);
+    res.json({ ok: true, ...result, opened: "default-app" });
+  } catch (error) {
+    sendNativeError(res, error, "OPEN_FAILED");
+  }
+});
+
+// POST /api/system/pick-files - 原生文件选择器；返回绝对路径，工作区内额外给出相对路径
+app.post("/api/system/pick-files", async (req, res) => {
+  try {
+    const extensions = Array.isArray(req.body?.extensions) ? req.body.extensions : null;
+    const result = await pickFiles({
+      prompt: String(req.body?.prompt || "选择要打开的文件"),
+      multiple: req.body?.multiple !== false,
+      extensions: extensions || [],
+    });
+    if (result.canceled) return res.json({ ok: false, canceled: true, files: [] });
+    let workspace = "";
+    try { workspace = fs.realpathSync(getWorkspace()); } catch {}
+    const files = result.paths.map((abs) => {
+      rememberNativePick(abs);
+      const insideWorkspace = Boolean(workspace) && isInside(workspace, abs);
+      return {
+        path: abs,
+        name: insideWorkspace ? path.relative(workspace, abs).replace(/\\/g, "/") : null,
+        insideWorkspace,
+      };
+    });
+    res.json({ ok: true, canceled: false, files, fileManager: nativeCapabilities().fileManagerName });
+  } catch (error) {
+    sendNativeError(res, error, "PICKER_FAILED");
+  }
+});
+
 app.use("/api", (_req, res) => res.status(404).json({ error: "api endpoint not found" }));
 if (fs.existsSync(path.join(dist, "index.html"))) {
 
@@ -4547,55 +4654,6 @@ function emitChannel(entry, type, data) {
   }
 }
 
-// 在文件管理器中打开文件/文件夹
-app.post("/api/open-in-explorer", async (req, res) => {
-  const { path: filePath } = req.body || {};
-  if (!filePath) return res.status(400).json({ error: "path required" });
-  
-  const { exec } = await import("child_process");
-  const { statSync } = await import("fs");
-  const path = await import("path");
-  
-  const fullPath = resolvePath(filePath);
-  
-  if (!fullPath) {
-    return res.status(404).json({ error: "file not found" });
-  }
-  
-  // Windows: 使用 explorer 打开文件夹或选中文件
-  const isWindows = process.platform === "win32";
-  let cmd;
-  
-  try {
-    if (isWindows) {
-      const stat = statSync(fullPath, { throwOnError: false });
-      if (stat && stat.isDirectory()) {
-        cmd = `explorer "${fullPath}"`;
-      } else {
-        // 选中文件 - 使用 explorer /select 命令
-        const dir = path.dirname(fullPath);
-        const file = path.basename(fullPath);
-        cmd = `cmd /c explorer /select,"${fullPath}"`;
-      }
-    } else if (process.platform === "darwin") {
-      cmd = `open "${fullPath}"`;
-    } else {
-      cmd = `xdg-open "${path.dirname(fullPath)}"`;
-    }
-    
-    exec(cmd, (err) => {
-      if (err) {
-        console.error("打开文件管理器失败:", err);
-        // 即使失败也返回成功，因为explorer可能已经打开
-        res.json({ ok: true, warning: err.message });
-      } else {
-        res.json({ ok: true });
-      }
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
 
 // ---------- M3 公交数据分析 API ----------

@@ -10018,3 +10018,31 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .agent-brief-grid ul { margin: 0; padding-left: 16px; color: var(--text); font-size: 10.5px; line-height: 1.6; }
 .agent-brief-grid p { margin: 0; color: var(--text); font-size: 10.5px; line-height: 1.6; overflow-wrap: anywhere; }
 .agent-brief-note { margin-top: 6px; color: var(--dim); font-size: 10px; line-height: 1.5; }
+
+/* 本机原生操作条（预览面板）：与预览器无关，任何格式都能用系统应用打开 */
+.doc-native-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+  flex-shrink: 0;
+  min-width: 0;
+}
+.doc-native-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-native-spacer { flex: 1; }
+.doc-native-actions .btn-xs { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+@media (max-width: 560px) {
+  .doc-native-name { display: none; }
+}

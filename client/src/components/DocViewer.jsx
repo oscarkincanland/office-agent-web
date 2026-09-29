@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
+import { openInSystem, revealInSystem } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
@@ -699,6 +700,18 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
 
 export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
   const doc = tabs.find((t) => t.name === activeTab) || null;
+
+  // 本机原生操作：用系统默认应用打开 / 在文件管理器中显示（服务端做路径白名单校验）
+  const handleNative = async (action) => {
+    if (!doc?.name) return;
+    try {
+      if (action === "reveal") await revealInSystem(doc.name);
+      else await openInSystem(doc.name);
+    } catch (error) {
+      alert(`${action === "reveal" ? "在文件管理器中显示" : "用系统应用打开"}失败：${error.message}`);
+    }
+  };
+
   return (
     <div className="docview">
       {/* 文件 tab 栏（类似浏览器标签页） */}
@@ -728,6 +741,19 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
               >×</button>
             </div>
           ))}
+        </div>
+      )}
+      {/* 本机原生操作条：与预览器无关，任何格式都可用（图片/Excel/PDF 等用系统应用打开） */}
+      {doc && (
+        <div className="doc-native-actions">
+          <span className="doc-native-name" title={doc.name}><Icon name={ICONS[doc.ext] || "file"} size={11} /> {doc.name}</span>
+          <span className="doc-native-spacer" />
+          <button type="button" className="btn-xs" onClick={() => handleNative("open")} title="用系统默认应用打开（例如 WPS/Word/预览/浏览器）">
+            <Icon name="externalLink" size={11} /> 用系统应用打开
+          </button>
+          <button type="button" className="btn-xs" onClick={() => handleNative("reveal")} title="在文件管理器中显示该文件">
+            <Icon name="folderOpen" size={11} /> 在文件管理器中显示
+          </button>
         </div>
       )}
       {!doc ? (

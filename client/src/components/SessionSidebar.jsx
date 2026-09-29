@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
 import { sortFiles } from "./文件排序.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
@@ -494,17 +494,52 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
   };
 
-  // 在文件管理器中打开
-  const handleOpenInExplorer = (filePath) => {
-    fetch("/api/open-in-explorer", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath })
-    }).catch(() => {
-      navigator.clipboard.writeText(filePath).then(() => {
-        alert("路径已复制到剪贴板: " + filePath);
-      });
-    });
+  // 在文件管理器中显示（macOS 为 Finder 中选中该文件）
+  const handleRevealInFileManager = async (filePath) => {
+    try {
+      await revealInSystem(filePath);
+    } catch (error) {
+      try {
+        await navigator.clipboard.writeText(filePath);
+        alert(`无法打开文件管理器（${error.message}），路径已复制到剪贴板：${filePath}`);
+      } catch {
+        alert(`无法打开文件管理器：${error.message}`);
+      }
+    }
+  };
+
+  // 用系统默认应用打开（不做 shell 拼接，服务端只接受工作区内/刚选中的路径）
+  const handleOpenWithDefaultApp = async (filePath) => {
+    try {
+      const result = await openInSystem(filePath);
+      if (result?.opened === "reveal") onRefreshFiles?.();
+    } catch (error) {
+      alert(`用系统应用打开失败：${error.message}`);
+    }
+  };
+
+  // 原生文件选择器：工作区内 → 应用内打开；工作区外 → 用系统默认应用打开
+  const handlePickNativeFiles = async () => {
+    try {
+      const result = await pickNativeFiles({ multiple: true, prompt: "选择要打开的文件" });
+      if (!result?.ok) {
+        if (!result?.canceled) alert("选择文件失败");
+        return;
+      }
+      const files = Array.isArray(result.files) ? result.files : [];
+      if (!files.length) return;
+      const first = files[0];
+      if (first.insideWorkspace && first.name) {
+        onOpenFile?.(first.name);
+      } else {
+        await openInSystem(first.path);
+      }
+      if (files.length > 1) {
+        alert(`已选中 ${files.length} 个文件，先处理了第 1 个：${first.name || first.path}`);
+      }
+    } catch (error) {
+      alert(`原生文件选择器不可用：${error.message}`);
+    }
   };
 
   // 存入知识库：docx → 服务端转 md 并注册为 kb 根
@@ -530,10 +565,15 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     e.stopPropagation();
     const filePath = currentDir ? `${currentDir}/${file.name}` : file.name;
     const menuItems = [
+      ...(file.isDir ? [] : [{
+        icon: "externalLink",
+        label: "用系统默认应用打开",
+        onClick: () => handleOpenWithDefaultApp(filePath)
+      }]),
       {
         icon: "folderOpen",
-        label: "在文件管理器中打开",
-        onClick: () => handleOpenInExplorer(filePath)
+        label: "在文件管理器中显示",
+        onClick: () => handleRevealInFileManager(filePath)
       },
       {
         icon: "copy",
@@ -833,7 +873,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
         <button className="btn-xs section-new" onClick={handleNewWord} disabled={creatingWord} title="新建空白 Word 文档">
           <Icon name="plus" size={11} />
         </button>
-        <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件">
+        <button className="btn-xs section-pick-native" onClick={handlePickNativeFiles} title="用系统原生选择器打开本机文件（macOS Finder / Windows 资源管理器）">
+          <Icon name="folderOpen" size={11} />
+        </button>
+        <button className="btn-xs section-upload" onClick={() => fileRef.current?.click()} title="上传文件（复制进当前工作区）">
           <Icon name="upload" size={11} />
         </button>
         <input ref={fileRef} type="file" accept=".docx,.xlsx,.pptx,.pdf,.csv,.json,.md,.markdown,.txt,.html,.htm" hidden onChange={handleUpload} />
