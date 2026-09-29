@@ -81,28 +81,43 @@ await test("默认开启沙箱：--no-sandbox 仅在显式开关函数中出现"
   assert.match(src, /hasLiveProfileProcess/, "清锁前应确认没有存活实例");
 });
 
-await test("CDP 归属校验拒绝无标记/不一致/进程不存在的情形", async () => {
+await test("CDP 归属校验：标记/进程双重证明，缺失标记不误判", async () => {
   const { verifyCdpOwnership } = await import("../server/内置浏览器.mjs");
+  const { spawn } = await import("node:child_process");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oaw-cdp-own-"));
+  const child = spawn(process.execPath, ["-e", "setTimeout(()=>{},8000)", dir], { stdio: "ignore" });
   try {
+    // 1) 无标记 + 无 pid → 无法证明归属，拒绝
     let verdict = await verifyCdpOwnership({ port: 9333, pid: 0, profileDir: dir });
-    assert.equal(verdict.ok, false, "缺少 DevToolsActivePort 时应拒绝");
-    assert.match(verdict.reason, /DevToolsActivePort/);
-
+    assert.equal(verdict.ok, false, "既无标记也无进程时应拒绝");
+    assert.match(verdict.reason, /DevToolsActivePort|归属/);
+    // 2) 标记存在但端口不一致 → 拒绝
     fs.writeFileSync(path.join(dir, "DevToolsActivePort"), "9444\n/devtools/browser/abc");
     verdict = await verifyCdpOwnership({ port: 9333, pid: 0, profileDir: dir });
     assert.equal(verdict.ok, false, "端口不一致时应拒绝");
     assert.match(verdict.reason, /不一致/);
-
+    // 3) 标记一致 → 通过
     verdict = await verifyCdpOwnership({ port: 9444, pid: 0, profileDir: dir });
-    assert.equal(verdict.ok, true, "端口一致且无 pid 记录时应通过");
-
+    assert.equal(verdict.ok, true, "标记端口一致时应通过");
+    // 4) pid 不存在 → 拒绝
     verdict = await verifyCdpOwnership({ port: 9444, pid: 999999, profileDir: dir });
     assert.equal(verdict.ok, false, "pid 已不存在时应拒绝");
     assert.match(verdict.reason, /已不存在|不属于/);
+    // 5) 关键回归：真实平台可能不生成 DevToolsActivePort，此时靠「进程存活 + 命令行含本 profile」证明归属
+    fs.rmSync(path.join(dir, "DevToolsActivePort"), { force: true });
+    verdict = await verifyCdpOwnership({ port: 9444, pid: child.pid, profileDir: dir });
+    assert.equal(verdict.ok, true, "无标记但有本 profile 的进程时应通过（否则内置浏览器会打不开）");
   } finally {
+    try { child.kill("SIGKILL"); } catch {}
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+await test("启动期不再因缺少 DevToolsActivePort 而拒绝启动", () => {
+  const src = fs.readFileSync(path.join(ROOT, "server", "内置浏览器.mjs"), "utf8");
+  assert.match(src, /if \(!marker\) console\.warn\("\[browser\] profile 内未生成 DevToolsActivePort/, "缺少标记时应只告警");
+  assert.doesNotMatch(src, /if \(!marker \|\| Number\(marker\.port\) !== Number\(this\.port\)\)/, "不得再因缺少标记而抛错");
+  assert.match(src, /if \(marker && Number\(marker\.port\) !== Number\(this\.port\)\)/, "标记存在且不一致时才拒绝");
 });
 
 console.log("\n▶ 用户接管仲裁与恢复（P1）");

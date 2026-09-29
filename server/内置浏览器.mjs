@@ -304,14 +304,18 @@ function writePortFile(portFile, info) {
 export async function verifyCdpOwnership({ port, pid, profileDir }) {
   if (!Number.isFinite(Number(port)) || Number(port) <= 0) return { ok: false, reason: "端口记录无效" };
   const marker = readDevToolsActivePort(profileDir);
-  if (!marker) return { ok: false, reason: "profile 内缺少 DevToolsActivePort，无法确认 CDP 归属" };
-  if (Number(marker.port) !== Number(port)) return { ok: false, reason: `DevToolsActivePort(${marker.port}) 与端口记录(${port}) 不一致` };
+  // 标记存在时必须与端口一致（存在即权威）。
+  if (marker && Number(marker.port) !== Number(port)) return { ok: false, reason: `DevToolsActivePort(${marker.port}) 与端口记录(${port}) 不一致` };
+  // 进程归属是跨平台可靠的主要证明：记录的进程仍存活，且命令行包含本 profile 目录。
   if (pid) {
     const cmdline = await processCommandLine(pid);
     if (!cmdline) return { ok: false, reason: `记录的进程 ${pid} 已不存在` };
     if (!cmdline.includes(path.resolve(profileDir))) return { ok: false, reason: `进程 ${pid} 的命令行不属于本 profile` };
+    return { ok: true, marker };
   }
-  return { ok: true, marker };
+  // 没有 pid 时只能依赖标记；两者都没有则拒绝，避免接入别人的进程。
+  if (marker) return { ok: true, marker };
+  return { ok: false, reason: "既无 DevToolsActivePort 也无进程记录，无法确认 CDP 归属" };
 }
 
 /** 清掉 profile 里的 Chromium 单例锁（异常退出后残留会让新实例以退出码 21 退出）。 */
@@ -1019,13 +1023,17 @@ class BrowserSession {
       launchError.code = exited === 21 ? "BROWSER_LAUNCH_FAILED" : "BROWSER_CDP_UNAVAILABLE";
       throw launchError;
     }
-    // 归属校验：Chromium 必须把本会话 profile 的 DevToolsActivePort 写成我们分配的端口。
+    // 归属校验：进程由我们自己拉起、端口是本次分配的，因此这里只做「交叉验证」——
+    // profile 内的 DevToolsActivePort 存在且端口一致最好；该文件在部分平台/启动方式下
+    // 根本不会生成（实测 macOS + 显式 --remote-debugging-port 即如此），缺失时只告警，
+    // 不能因此拒绝启动，否则内置浏览器会直接打不开。严格的归属校验留给复用路径。
     const marker = readDevToolsActivePort(this.profileDir);
-    if (!marker || Number(marker.port) !== Number(this.port)) {
-      const ownershipError = new Error(`浏览器启动异常：DevToolsActivePort(${marker ? marker.port : "缺失"}) 与分配端口(${this.port}) 不一致，已拒绝接入以避免连到非本会话的浏览器`);
+    if (marker && Number(marker.port) !== Number(this.port)) {
+      const ownershipError = new Error(`浏览器启动异常：DevToolsActivePort(${marker.port}) 与分配端口(${this.port}) 不一致，已拒绝接入以避免连到非本会话的浏览器`);
       ownershipError.code = "BROWSER_OWNERSHIP_MISMATCH";
       throw ownershipError;
     }
+    if (!marker) console.warn("[browser] profile 内未生成 DevToolsActivePort，跳过启动期标记校验（复用时会用进程归属二次校验）");
     writePortFile(this.portFile, { port: this.port, pid: Number(this.child?.pid) || 0, profileDir: this.profileDir, startedAt: new Date().toISOString() });
     await this.connectToTarget(target);
     // connectToTarget 成功后按键路径权限再收紧一次（Chromium 可能在启动时重建目录）。
