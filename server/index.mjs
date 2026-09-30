@@ -3420,7 +3420,8 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
         products: changed,
-        summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+        // A02-3：总结正文只给数量，文件清单走 products/artifacts，不再把全部文件名塞进正文
+        summary: `对话异常结束，仍处理了 ${changed.length} 个文件`,
         runId: run?.id || null,
         artifacts: [],
       });
@@ -3464,7 +3465,8 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
       emitChannel(entry, "agent_summary", {
         products: productPaths,
-        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
+        // A02-3：同上，正文只保留数量
+        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件`,
         runId: run?.id || null,
         artifacts: completed?.artifacts || [],
         references: resolved,
@@ -3712,7 +3714,8 @@ app.post("/api/agent/prompt", async (req, res) => {
         emitChannel(entry, "file_changed", { files: changed, runId: run?.id || null });
         emitChannel(entry, "agent_summary", {
           products: changed,
-          summary: `对话异常结束，仍处理了 ${changed.length} 个文件：${changed.join(", ")}`,
+          // A02-3：总结正文只给数量，文件清单走 products/artifacts，不再把全部文件名塞进正文
+        summary: `对话异常结束，仍处理了 ${changed.length} 个文件`,
           runId: run?.id || null,
           artifacts: [],
         });
@@ -3791,7 +3794,8 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       emitChannel(entry, "file_changed", { files: productPaths, runId: run.id });
       emitChannel(entry, "agent_summary", {
         products: productPaths,
-        summary: `恢复任务完成，共处理 ${productPaths.length} 个文件：${productPaths.join(", ")}`,
+        // A02-3：恢复路径同样只保留数量
+        summary: `恢复任务完成，共处理 ${productPaths.length} 个文件`,
         runId: run.id,
         artifacts: finished?.artifacts || [],
         references,

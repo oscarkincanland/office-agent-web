@@ -268,6 +268,14 @@ test("记忆建议不插主消息流，改挂结果卡入口", () => {
   }
 }
 
+test("服务端不再把全部文件名塞进总结正文（A02-3）", () => {
+  const index = fs.readFileSync(path.join(ROOT, "server/index.mjs"), "utf8");
+  assert.doesNotMatch(index, /个文件：\$\{[^}]*\.join\(", "\)\}/, "agent_summary 不应再拼接全部文件名");
+  assert.match(index, /summary: `本轮对话完成，共处理 \$\{productPaths\.length\} 个文件`/, "应只保留数量，清单走 products/artifacts");
+  assert.match(index, /summary: `对话异常结束，仍处理了 \$\{changed\.length\} 个文件`/, "异常路径同样只保留数量");
+  assert.match(index, /summary: `恢复任务完成，共处理 \$\{productPaths\.length\} 个文件`/, "恢复路径同样只保留数量");
+});
+
 console.log("\n▶ 真实样本");
 
 test("真实 Run 样本投影不抛错且字段自洽", () => {
