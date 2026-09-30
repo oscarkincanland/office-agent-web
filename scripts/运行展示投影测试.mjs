@@ -237,6 +237,37 @@ test("ChatPanel 不再默认 completed，缺失状态显示“状态待同步”
   assert.match(panel, /runStatus: status \|\| "unknown"/, "结果卡应以 unknown 表达待同步");
 });
 
+console.log("\n▶ A03 输出与记忆策略契约");
+
+test("记忆建议不插主消息流，改挂结果卡入口", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client/src/components/ChatPanel.jsx"), "utf8");
+  assert.doesNotMatch(panel, /text: "Agent 提出了一条长期记忆建议，请确认后写入。"/, "不得再把记忆建议当正文气泡插入");
+  assert.match(panel, /memoryProposalIds: \[\.\.\.new Set\(\[\.\.\.\(item\.memoryProposalIds \|\| \[\]\), proposalId\]\)\]/, "应把建议挂到本轮结果卡");
+  assert.match(panel, /在「设置 → 记忆」中确认或拒绝/, "入口应指向记忆审核位置");
+  assert.match(panel, /memoryProposalIds\.filter\(\(id\) => id !== resolvedId\)/, "审核完成后应移除入口");
+});
+
+{
+  const { buildOutputPolicyLines } = await import("../server/agent.mjs");
+  try {
+    const chat = buildOutputPolicyLines({ mode: "chat" }).join("\n");
+    const review = buildOutputPolicyLines({ mode: "review" }).join("\n");
+    const work = buildOutputPolicyLines({ mode: "work" }).join("\n");
+    assert.match(chat, /1-3 句/, "Chat 模式应为短结论");
+    assert.doesNotMatch(chat, /简洁但完整的 Markdown/, "Chat 模式不要求结构化成果");
+    assert.doesNotMatch(review, /简洁但完整的 Markdown/, "Review 模式同样短结论");
+    assert.match(work, /简洁但完整的 Markdown/, "Work 模式应要求结构化成果");
+    for (const [name, text] of [["chat", chat], ["review", review], ["work", work]]) {
+      assert.match(text, /进度结论（重要）/, `${name} 模式应共享同一条进度策略`);
+    }
+    // 默认（未知模式）按 work 处理
+    assert.match(buildOutputPolicyLines().join("\n"), /简洁但完整的 Markdown/, "未指定模式应退化为 Work 策略");
+    ok("输出策略按模式统一（单一来源，Chat/Review 短结论 / Work 结构化成果）");
+  } catch (error) {
+    bad(`输出策略按模式统一: ${error.message}`);
+  }
+}
+
 console.log("\n▶ 真实样本");
 
 test("真实 Run 样本投影不抛错且字段自洽", () => {

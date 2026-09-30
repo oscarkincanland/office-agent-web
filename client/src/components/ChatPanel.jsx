@@ -2135,14 +2135,36 @@ case "runtime_connecting":
         onRunFinished?.(data);
         if (data.runId && !["cancelled", "aborted"].includes(data.status)) flushQueued(true);
         break;
-      case "memory_proposal":
-        if (data.proposal && acceptSystemEvent(`memory_proposal:${data.proposal.id || JSON.stringify(data.proposal)}`)) {
-          setMessages((ms) => [...ms, { id: newId(), role: "system", text: "Agent 提出了一条长期记忆建议，请确认后写入。", memoryProposal: data.proposal, status: "done", createdAt: Date.now() }]);
+      case "memory_proposal": {
+        // A03：记忆建议不再插入主消息流（会与任务结论争注意力），只挂到本轮结果卡的待审核入口；
+        // 审核与状态在「设置 → 记忆」的待审核列表里进行。
+        const proposalId = String(data.proposal?.id || "");
+        if (proposalId && acceptSystemEvent(`memory_proposal:${proposalId}`)) {
+          const targetRunId = activeRunIdRef.current || runState.runId || null;
+          setMessages((ms) => {
+            for (let i = ms.length - 1; i >= 0; i -= 1) {
+              const item = ms[i];
+              if (!item?.summary) continue;
+              if (targetRunId && item.runId !== targetRunId) continue;
+              const next = [...ms];
+              next[i] = { ...item, memoryProposalIds: [...new Set([...(item.memoryProposalIds || []), proposalId])] };
+              return next;
+            }
+            return ms;
+          });
         }
         break;
-      case "memory_proposal_resolved":
-        setMessages((ms) => ms.map((m) => m.memoryProposal?.id === data.proposal?.id ? { ...m, memoryProposal: data.proposal, text: "长期记忆建议已写入。" } : m));
+      }
+      case "memory_proposal_resolved": {
+        // 审核完成后从结果卡入口移除，不再追加“第二篇任务总结”
+        const resolvedId = String(data.proposal?.id || "");
+        if (resolvedId) {
+          setMessages((ms) => ms.map((m) => Array.isArray(m.memoryProposalIds) && m.memoryProposalIds.includes(resolvedId)
+            ? { ...m, memoryProposalIds: m.memoryProposalIds.filter((id) => id !== resolvedId) }
+            : m));
+        }
         break;
+      }
       default:
         break;
     }
@@ -3318,6 +3340,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const changes = view.changes || [];
   const fileChanges = useMemo(() => changes.filter((change) => change.role !== "internal"), [changes]);
   const deliverables = view.deliverables || [];
+  // A03：待审核记忆建议的入口（实时挂在消息上，历史从事件投影得到）
+  const memoryProposalIds = useMemo(() => [...new Set([
+    ...(view.memoryProposalIds || []),
+    ...(Array.isArray(m.memoryProposalIds) ? m.memoryProposalIds : []),
+  ])], [view.memoryProposalIds, m.memoryProposalIds]);
   const rollbackableCount = fileChanges.filter((change) => change.before?.reversible).length;
   // 只有真实需要用户行动时才提示（计划 A02-4：删除通用“下一步”）
   const actionNeeded = view.lifecycle === "waiting_approval"
@@ -3404,7 +3431,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
           {/* 交付入口：文件改动 / 交付产物 / 待审核记忆建议（单一来源，不再重复列文件）
               右侧面板切换（B03/W6）接入后由 onOpenChanges / onOpenArtifacts 提供，未接入时为信息标签 */}
-          {(fileChanges.length > 0 || deliverables.length > 0 || view.memoryProposalIds.length > 0) && (
+          {(fileChanges.length > 0 || deliverables.length > 0 || memoryProposalIds.length > 0) && (
             <div className="run-result-links">
               {fileChanges.length > 0 && (onOpenChanges
                 ? <button type="button" className="run-result-chip" onClick={() => onOpenChanges()} title="在右侧“改动”面板查看本轮真实文件改动"><Icon name="edit" size={11} /> 文件改动 {fileChanges.length}</button>
@@ -3412,8 +3439,8 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               {deliverables.length > 0 && (onOpenArtifacts
                 ? <button type="button" className="run-result-chip" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看交付产物与版本"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</button>
                 : <span className="run-result-chip" title="交付产物可在右侧“产物”面板查看与固定"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</span>)}
-              {view.memoryProposalIds.length > 0 && (
-                <span className="run-result-chip muted" title="待审核记忆建议在设置/侧栏处理，不再插入主回答"><Icon name="book" size={11} /> 记忆建议 {view.memoryProposalIds.length}</span>
+              {memoryProposalIds.length > 0 && (
+                <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>
               )}
             </div>
           )}
