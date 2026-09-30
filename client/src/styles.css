@@ -9803,131 +9803,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 
 /* ==========================================================================
-   P3 · 统一动效闸门与一次性反馈（动效治理）
-   命中条件（二者任一，属性写在 <html> 上）：
-     - data-reduce-motion="1"   系统 prefers-reduced-motion: reduce
-       （index.html 内联脚本负责首帧前同步，界面外观.js 负责运行时同步）
-     - data-motion-level="off"  产品"关闭动效"
-   原则：
-     - 只关闭"持续动画"与"装饰性入场"；颜色、文字、边框、图标等静态等价信息全部保留。
-     - 清单刻意不含地图/浏览器模块的交互过渡，避免一条全局规则误杀必要过渡。
-     - 新增持续动画时必须同步本清单，scripts/动效治理测试.mjs 会校验覆盖。
-   ========================================================================== */
-
-/* 1) 持续动画：旋转 / blink / 呼吸 / 脉冲 */
-:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
-  .loading-spinner,
-  .typing,
-  .run-summary-dot.running,
-  .streaming-dot,
-  .ldot,
-  .tool-icon.run,
-  .brain-core.running .brain-core-dot,
-  .browser-status.loading i,
-  .browser-connection.offline i,
-  .conversation-status.working i,
-  .execution-flow-live i,
-  .efp-pulse,
-  .todo-item.running .todo-num,
-  .mp-spin,
-  .session-item .session-indicator,
-  .project-session-open > i,
-  .marquee-inner,
-  .marquee-text
-) { animation: none !important; }
-
-/* 2) 装饰性入场：弹层/面板/批注徽标/结果卡/文件高亮 */
-:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
-  .comment-anchor-badge,
-  .oa-anno-toolbar,
-  .comment-highlight,
-  .comment-highlight-active,
-  .ct-pop,
-  .cmd-panel,
-  .composer-suggestions,
-  .task-center-panel,
-  .run-result,
-  .run-artifact-row.fresh,
-  .file-item.changed,
-  .app-preview-slot
-) { animation: none !important; }
-:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active::after {
-  animation: none !important;
-  display: none;
-}
-
-/* 3) 跑马灯静态回退：去掉渐变文字与描边，只留状态色标；
-      完整名字仍可从 title 与无障碍树读取（组件始终写入 title） */
-:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active .marquee-text {
-  background-image: none !important;
-  -webkit-text-fill-color: currentColor !important;
-  text-shadow: none !important;
-}
-
-/* 4) 滚动与压感反馈立即落定（不做平滑滚动、不做出场缩放） */
-:is([data-reduce-motion="1"], [data-motion-level="off"]) .chat-body { scroll-behavior: auto; }
-:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
-  .send-btn, .pending-send-btn, .stop-btn, .chat-empty-example, .session-item, .ct-pop, .cmd-panel,
-  .efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot
-) { transition: none !important; }
-:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(.send-btn, .pending-send-btn, .stop-btn):active {
-  transform: none !important;
-}
-
-/* ---------- 一次性反馈（都由真实状态驱动，可中断、不阻塞交互） ---------- */
-/* 阶段/状态切换：只过渡颜色，不做位移，避免把用户正在读的内容顶走 */
-.efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot {
-  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
-}
-/* 弹层/面板：短位移 + 透明度，仅入场一次；关闭不做退场动画，焦点直接归还触发控件 */
-@keyframes oaw-pop-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: none; }
-}
-.ct-pop,
-.cmd-panel,
-.composer-suggestions,
-.task-center-panel:not(.task-center-page-panel),
-.app-preview-slot { animation: oaw-pop-in 170ms ease-out both; }
-/* 结果卡：一次性淡入；状态来自事件与验证结果，不用庆祝动画 */
-@keyframes oaw-result-in {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: none; }
-}
-.run-result { animation: oaw-result-in 160ms ease-out both; }
-/* 文件改动：只在"本轮刚结束"的结果卡短时高亮；历史回放不重播（由 ChatPanel 的 fresh 标记控制） */
-@keyframes oaw-file-flash {
-  0% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
-  100% { background: transparent; }
-}
-.run-artifact-row.fresh { animation: oaw-file-flash 700ms ease-out both; }
-/* 一张卡里最多闪前 6 个文件，避免长产物列表整屏闪动 */
-.run-artifact-row.fresh:nth-child(n+7) { animation: none; }
-/* 文件树里刚被本轮改动的文件：同一套短时高亮，只在本轮结束时由 App 打标，历史回放不重播 */
-.file-item.changed { animation: oaw-file-flash 900ms ease-out; }
-
-/* ---------- P4 · 无障碍：触屏最小点击目标 ---------- */
-/* 只在粗指针（触摸）设备放大命中区；桌面视觉完全不变，也不是新的动效。
-   小尺寸按钮（.btn-xs 约 18px、.btn-icon 约 20px）在手指上难以点中，
-   统一抬到 32px，键盘与读屏行为不受影响。 */
-@media (pointer: coarse) {
-  .btn-xs,
-  .btn-sm,
-  .btn-icon,
-  .msg-action,
-  .file-search-clear,
-  .att-remove,
-  .composer-suggestions [role="option"] {
-    min-height: 32px;
-  }
-  .btn-icon,
-  .file-search-clear,
-  .att-remove {
-    min-width: 32px;
-  }
-}
-
-/* ==========================================================================
    P1 窄屏布局收口：三栏不再互相挤压；任务中心与地图在窄屏可用
    —— 只改断点与最小宽度，不改变桌面端观感。
    ========================================================================== */
@@ -10046,3 +9921,171 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 @media (max-width: 560px) {
   .doc-native-name { display: none; }
 }
+
+/* W1：结果卡的交付入口与真实行动提示（通用“下一步”已删除） */
+.run-result-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.run-result-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel2-bg) 70%, transparent);
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.6;
+}
+button.run-result-chip { cursor: pointer; }
+button.run-result-chip:hover { border-color: var(--accent); color: var(--accent); }
+.run-result-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.run-result-chip.muted { color: var(--muted); }
+.run-result-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  font-size: 11px;
+  color: var(--warning);
+}
+.run-result-action.failed { color: var(--error); }
+.run-result-action.approval,
+.run-result-action.ask { color: var(--accent); }
+/* 内部文件在清单里弱化，不与交付物争夺注意力 */
+.summary-product.role-internal { opacity: .6; }
+.summary-product.role-deliverable { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+
+/* ==========================================================================
+   P3 · 统一动效闸门与一次性反馈（动效治理）
+   命中条件（二者任一，属性写在 <html> 上）：
+     - data-reduce-motion="1"   系统 prefers-reduced-motion: reduce
+       （index.html 内联脚本负责首帧前同步，界面外观.js 负责运行时同步）
+     - data-motion-level="off"  产品"关闭动效"
+   原则：
+     - 只关闭"持续动画"与"装饰性入场"；颜色、文字、边框、图标等静态等价信息全部保留。
+     - 清单刻意不含地图/浏览器模块的交互过渡，避免一条全局规则误杀必要过渡。
+     - 新增持续动画时必须同步本清单，scripts/动效治理测试.mjs 会校验覆盖。
+   ========================================================================== */
+
+/* 1) 持续动画：旋转 / blink / 呼吸 / 脉冲 */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .loading-spinner,
+  .typing,
+  .run-summary-dot.running,
+  .streaming-dot,
+  .ldot,
+  .tool-icon.run,
+  .brain-core.running .brain-core-dot,
+  .browser-status.loading i,
+  .browser-connection.offline i,
+  .conversation-status.working i,
+  .execution-flow-live i,
+  .efp-pulse,
+  .todo-item.running .todo-num,
+  .mp-spin,
+  .session-item .session-indicator,
+  .project-session-open > i,
+  .marquee-inner,
+  .marquee-text
+) { animation: none !important; }
+
+/* 2) 装饰性入场：弹层/面板/批注徽标/结果卡/文件高亮 */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .comment-anchor-badge,
+  .oa-anno-toolbar,
+  .comment-highlight,
+  .comment-highlight-active,
+  .ct-pop,
+  .cmd-panel,
+  .composer-suggestions,
+  .task-center-panel,
+  .run-result,
+  .run-artifact-row.fresh,
+  .summary-product.fresh,
+  .file-item.changed,
+  .app-preview-slot
+) { animation: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active::after {
+  animation: none !important;
+  display: none;
+}
+
+/* 3) 跑马灯静态回退：去掉渐变文字与描边，只留状态色标；
+      完整名字仍可从 title 与无障碍树读取（组件始终写入 title） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active .marquee-text {
+  background-image: none !important;
+  -webkit-text-fill-color: currentColor !important;
+  text-shadow: none !important;
+}
+
+/* 4) 滚动与压感反馈立即落定（不做平滑滚动、不做出场缩放） */
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .chat-body { scroll-behavior: auto; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
+  .send-btn, .pending-send-btn, .stop-btn, .chat-empty-example, .session-item, .ct-pop, .cmd-panel,
+  .efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot
+) { transition: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) :is(.send-btn, .pending-send-btn, .stop-btn):active {
+  transform: none !important;
+}
+
+/* ---------- 一次性反馈（都由真实状态驱动，可中断、不阻塞交互） ---------- */
+/* 阶段/状态切换：只过渡颜色，不做位移，避免把用户正在读的内容顶走 */
+.efp-phase, .execution-flow-live, .run-summary-dot, .task-status-dot {
+  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+/* 弹层/面板：短位移 + 透明度，仅入场一次；关闭不做退场动画，焦点直接归还触发控件 */
+@keyframes oaw-pop-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.ct-pop,
+.cmd-panel,
+.composer-suggestions,
+.task-center-panel:not(.task-center-page-panel),
+.app-preview-slot { animation: oaw-pop-in 170ms ease-out both; }
+/* 结果卡：一次性淡入；状态来自事件与验证结果，不用庆祝动画 */
+@keyframes oaw-result-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+.run-result { animation: oaw-result-in 160ms ease-out both; }
+/* 文件改动：只在"本轮刚结束"的结果卡短时高亮；历史回放不重播（由 ChatPanel 的 fresh 标记控制） */
+@keyframes oaw-file-flash {
+  0% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+  100% { background: transparent; }
+}
+.run-artifact-row.fresh { animation: oaw-file-flash 700ms ease-out both; }
+/* 一张卡里最多闪前 6 个文件，避免长产物列表整屏闪动 */
+.run-artifact-row.fresh:nth-child(n+7) { animation: none; }
+/* W1：结果卡改为单一文件清单，短时高亮迁移到 .summary-product.fresh（同一套 oaw-file-flash） */
+.summary-product.fresh { animation: oaw-file-flash 700ms ease-out both; }
+.summary-product.fresh:nth-child(n+7) { animation: none; }
+/* 文件树里刚被本轮改动的文件：同一套短时高亮，只在本轮结束时由 App 打标，历史回放不重播 */
+.file-item.changed { animation: oaw-file-flash 900ms ease-out; }
+
+/* ---------- P4 · 无障碍：触屏最小点击目标 ---------- */
+/* 只在粗指针（触摸）设备放大命中区；桌面视觉完全不变，也不是新的动效。
+   小尺寸按钮（.btn-xs 约 18px、.btn-icon 约 20px）在手指上难以点中，
+   统一抬到 32px，键盘与读屏行为不受影响。 */
+@media (pointer: coarse) {
+  .btn-xs,
+  .btn-sm,
+  .btn-icon,
+  .msg-action,
+  .file-search-clear,
+  .att-remove,
+  .composer-suggestions [role="option"] {
+    min-height: 32px;
+  }
+  .btn-icon,
+  .file-search-clear,
+  .att-remove {
+    min-width: 32px;
+  }
+}
+

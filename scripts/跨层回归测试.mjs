@@ -176,7 +176,11 @@ function 查询无限动画(匹配) {
   // 文案层：结果卡能查到失败细节、未完成/受阻项与验收口径
   assert.match(源码.ChatPanel, /className="run-result-note warn">未完成：/, "部分完成应列出未完成项");
   assert.match(源码.ChatPanel, /className="run-result-note warn">受阻：/, "受阻项应单独呈现");
-  assert.match(源码.ChatPanel, /先处理未完成\/受阻项，再重新发起一轮。/, "失败/部分完成应给可操作下一步");
+  // A02-4（W1）：通用“下一步”已删除，改为“仅有真实行动需求时才给行动提示”
+  assert.doesNotMatch(源码.ChatPanel, /className="run-result-next"/, "通用“下一步”应已删除");
+  assert.match(源码.ChatPanel, /className=\{`run-result-action \$\{actionNeeded\.kind\}`\}/, "失败/部分完成应给真实行动提示");
+  assert.match(源码.ChatPanel, /completion\?\.status === "partial"/, "部分完成应给出行动提示分支");
+  assert.match(源码.ChatPanel, /view\.lifecycle === "failed"/, "失败应给出行动提示分支");
   assert.match(源码.ChatPanel, /className="run-result-tech"/, "应提供可展开的技术细节");
   assert.match(源码.ChatPanel, /verificationLabel\(trace\?\.verification \|\| "not_checked"\)/, "验收结果应独立表达");
 

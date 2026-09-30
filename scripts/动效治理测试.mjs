@@ -180,7 +180,10 @@ assert.match(闸门块, /\.run-artifact-row\.fresh:nth-child\(n\+7\) \{ animatio
 assert.match(闸门块, /\.file-item\.changed \{ animation: oaw-file-flash 900ms/, "文件树里被改文件也应短时高亮（同一套 oaw-file-flash）");
 assert.match(对话面板, /flashFiles: data\.fresh === true \|\| previous\?\.flashFiles === true/, "只有本轮刚结束才标记文件高亮");
 assert.match(对话面板, /fresh: Boolean\(data\.runId\) && data\.runId === knownRunId/, "run_finished 只在当前活跃 run 上标记 fresh");
-assert.match(对话面板, /className=\{m\.flashFiles \? "run-artifact-row fresh" : "run-artifact-row"\}/, "结果卡按 fresh 标记文件行");
+assert.match(对话面板, /const changeClass = \(change\) => `summary-product clickable role-\$\{change\.role\}/, "结果卡单一份文件清单应带角色类名");
+assert.match(对话面板, /m\.flashFiles \? " fresh" : ""/, "结果卡按 fresh 标记文件行（迁移到单一清单）");
+assert.match(闸门块, /\.summary-product\.fresh \{ animation: oaw-file-flash/, "单一文件清单应有同一套短时高亮");
+assert.match(闸门块, /\.summary-product\.fresh:nth-child\(n\+7\) \{ animation: none; \}/, "长文件清单不应整屏闪动");
 
 // ============================ 4. 立即落定（连续事件/重连/回放） ============================
 // 流式揭示：闸门命中时一帧落定，不逐字重打

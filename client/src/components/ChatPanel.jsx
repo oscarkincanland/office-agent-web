@@ -8,6 +8,7 @@ import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
+import { projectLegacyRunSummary } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -3290,13 +3291,16 @@ function SafeMarkdown({ text }) {
   return <pre className="large-msg-raw">{text}</pre>;
 }
 
-function RunSummary({ m, onOpenFile, onRollbackRun }) {
-  // R04：状态缺失/未知显示“状态待同步”，不默认“运行结束”
-  const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "aborted" ? "已中断" : m.runStatus === "running" ? "执行中" : (!m.runStatus || m.runStatus === "unknown") ? "状态待同步" : "运行结束";
+function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts }) {
+  // W1/A01：结果卡只消费「统一展示投影」，实时构建的消息与旧历史走同一条路径，
+  // 不再各自拼装状态 / 产物 / 文件清单（R01/R02 的重复展示即源于此）。
+  const view = useMemo(() => projectLegacyRunSummary(m, Array.isArray(m.events) ? m.events : []), [m]);
+  const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "review" ? "Review" : m.runMode === "office" ? "Office" : "Work";
   const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
-  // 标题取结论首行（结论可能是多行 Markdown），避免把整段结论塞进标题。
-  const conclusionSource = String(m.completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
+  const completion = view.outcome || m.completion || null;
+  // 标题取结论/答案首行（结论可能是多行 Markdown），避免把整段结论塞进标题。
+  const conclusionSource = String(completion?.summary || view.answer?.text || m.text || m.task?.text || m.task?.goal || "").trim();
   const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
   const title = String(m.conclusion || titleLine || "本轮任务")
     .replace(/^\s*#{1,6}\s*/, "")
@@ -3307,10 +3311,28 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
   // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
   // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
   const [open, setOpen] = useState(m.expanded !== false);
-  // 历史 Run 的工具聚合：从 run.events 归约，不必依赖实时事件流
+  // 工具明细与折叠摘要：沿用轨迹归约（投影已含 trace，这里只需摘要文案）
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
   const traceSummary = trace ? runTraceSummaryText(trace) : "";
-  const completion = m.completion || trace?.completion || null;
+  // 单一份文件集合：投影已按 runId 归并、去重并按语义标角色
+  const changes = view.changes || [];
+  const fileChanges = useMemo(() => changes.filter((change) => change.role !== "internal"), [changes]);
+  const deliverables = view.deliverables || [];
+  const rollbackableCount = fileChanges.filter((change) => change.before?.reversible).length;
+  // 只有真实需要用户行动时才提示（计划 A02-4：删除通用“下一步”）
+  const actionNeeded = view.lifecycle === "waiting_approval"
+    ? { kind: "approval", text: view.progress.waitingReason || "等待你审批后继续" }
+    : view.lifecycle === "waiting_user"
+      ? { kind: "ask", text: view.progress.waitingReason || "等待你回答后继续" }
+      : completion?.status === "blocked"
+        ? { kind: "blocked", text: "有受阻项需要你先处理" }
+        : completion?.status === "partial"
+          ? { kind: "partial", text: "有未完成项，需要你决定是否继续" }
+          : view.lifecycle === "failed"
+            ? { kind: "failed", text: "本轮失败，可重试或调整要求" }
+            : null;
+  // 结果卡只对"有交付物的任务"或非只读模式展示；纯 Chat 问答不弹一张"文件变更 0 项"的卡。
+  const showResultCard = m.runMode !== "chat" || fileChanges.length > 0 || deliverables.length > 0;
   const reviewSources = useMemo(() => {
     const sourceMap = new Map((Array.isArray(m.reviewSources) ? m.reviewSources : []).map((item) => [item.sourceId, { ...item }]));
     for (const event of Array.isArray(m.events) ? m.events : []) {
@@ -3323,8 +3345,8 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
     return [...sourceMap.values()].filter((item) => item.sourceId);
   }, [m.events, m.reviewSources]);
   const [toolsOpen, setToolsOpen] = useState(false);
-  // 结果卡只对"有交付物的任务"或非只读模式展示；纯 Chat 问答不弹一张"文件变更 0 项"的卡。
-  const showResultCard = m.runMode !== "chat" || (m.artifacts?.length || m.products?.length);
+  // 单一文件清单的行类名：角色 + 内部弱化 + “本轮刚结束”的短时高亮（历史回放不重播）
+  const changeClass = (change) => `summary-product clickable role-${change.role}${change.role === "internal" ? " internal" : ""}${m.flashFiles ? " fresh" : ""}`;
   return (
     <div className="msg system summary-msg">
       <div className="bubble run-summary-bubble">
@@ -3359,13 +3381,9 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
             </div>
             <div className="run-result-cell">
               <span className="run-result-label">文件变更</span>
-              <b className="run-result-value">
-                {(m.artifacts?.length || m.products?.length || 0)} 项
-              </b>
-              {(m.artifacts?.length || 0) > 0 && (
-                <small className="run-result-flag" title="其中可回滚的变更数量">
-                  可回滚 {m.artifacts.filter((a) => a.before?.reversible).length}
-                </small>
+              <b className="run-result-value">{fileChanges.length} 项</b>
+              {rollbackableCount > 0 && (
+                <small className="run-result-flag" title="其中可回滚的变更数量">可回滚 {rollbackableCount}</small>
               )}
             </div>
             <div className="run-result-cell">
@@ -3384,15 +3402,27 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
-          {completion?.verification && <div className="run-result-note">验证说明：{completion.verification}</div>}
-          <div className="run-result-next">
-            <Icon name="arrowRight" size={11} /> 下一步：
-            {completion?.status === "success"
-              ? "按上方产物验收，或继续追加需求。"
-              : completion?.status === "cancelled"
-                ? "本轮已取消；如需继续请重新发起。"
-                : "先处理未完成/受阻项，再重新发起一轮。"}
-          </div>
+          {/* 交付入口：文件改动 / 交付产物 / 待审核记忆建议（单一来源，不再重复列文件）
+              右侧面板切换（B03/W6）接入后由 onOpenChanges / onOpenArtifacts 提供，未接入时为信息标签 */}
+          {(fileChanges.length > 0 || deliverables.length > 0 || view.memoryProposalIds.length > 0) && (
+            <div className="run-result-links">
+              {fileChanges.length > 0 && (onOpenChanges
+                ? <button type="button" className="run-result-chip" onClick={() => onOpenChanges()} title="在右侧“改动”面板查看本轮真实文件改动"><Icon name="edit" size={11} /> 文件改动 {fileChanges.length}</button>
+                : <span className="run-result-chip" title="文件改动将在右侧“改动”面板中查看（差异面板随 W3 提供）"><Icon name="edit" size={11} /> 文件改动 {fileChanges.length}</span>)}
+              {deliverables.length > 0 && (onOpenArtifacts
+                ? <button type="button" className="run-result-chip" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看交付产物与版本"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</button>
+                : <span className="run-result-chip" title="交付产物可在右侧“产物”面板查看与固定"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</span>)}
+              {view.memoryProposalIds.length > 0 && (
+                <span className="run-result-chip muted" title="待审核记忆建议在设置/侧栏处理，不再插入主回答"><Icon name="book" size={11} /> 记忆建议 {view.memoryProposalIds.length}</span>
+              )}
+            </div>
+          )}
+          {/* A02-4：删除通用“下一步”，只在真的需要用户行动时出现 */}
+          {actionNeeded && (
+            <div className={`run-result-action ${actionNeeded.kind}`}>
+              <Icon name="arrowRight" size={11} /> {actionNeeded.text}
+            </div>
+          )}
           <details className="run-result-tech">
             <summary>技术详情（运行 ID、事件与原始错误）</summary>
             <pre>{JSON.stringify({
@@ -3411,25 +3441,33 @@ function RunSummary({ m, onOpenFile, onRollbackRun }) {
         </div>
         )}
         <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-          <summary>查看本轮对话与产物</summary>
-          {m.text && m.text.trim() !== title && <div className="run-summary-content"><SafeMarkdown text={m.text} /></div>}
-          {m.products?.length > 0 && (
+          <summary>本轮文件与工具</summary>
+          {/* A02-3：不再把 agent_summary 的“共处理 N 个文件：…”当正文重复渲染；结论已在结果卡 */}
+          {changes.length > 0 && (
             <div className="file-change-summary">
-              <span className="file-change-label"><Icon name="folder" size={11} /> 本轮产物（{m.products.length}）</span>
+              <span className="file-change-label">
+                <Icon name="folder" size={11} /> 本轮文件（{changes.length}）
+                {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
+              </span>
               {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
               <div className="summary-products">
-                {m.products.map((p) => (
-                  <span key={p} className="summary-product clickable" onClick={() => onOpenFile?.(p)} title={`点击打开 ${p}`}>
-                    <Icon name="file" size={11} /> {p}
+                {changes.map((change) => (
+                  <span
+                    key={change.relativePath}
+                    className={changeClass(change)}
+                    onClick={() => onOpenFile?.(change.relativePath)}
+                    title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
+                  >
+                    <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
                   </span>
                 ))}
               </div>
             </div>
           )}
-          {m.artifacts?.length > 0 && (
+          {/* 单一份文件清单：不再与 m.artifacts 各行重复；只保留“回滚本轮”这个真实动作 */}
+          {m.runId && rollbackableCount > 0 && (
             <div className="run-artifacts">
-              {m.artifacts.map((a) => <div key={a.path} className={m.flashFiles ? "run-artifact-row fresh" : "run-artifact-row"}><span>{a.status === "added" ? "新增" : a.status === "deleted" ? "删除" : "修改"}</span> <code>{a.path}</code>{a.before?.reversible && <span className="artifact-reversible">可回滚</span>}</div>)}
-              {m.runId && m.artifacts.some((a) => a.before?.reversible) && <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, m.artifacts.map((a) => a.path))}>回滚本轮</button>}
+              <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
             </div>
           )}
           {trace?.tools?.length > 0 && (
