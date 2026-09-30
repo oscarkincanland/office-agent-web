@@ -2083,12 +2083,14 @@ case "runtime_connecting":
         }
         break;
       case "agent_summary":
-        // 对话结束总结条
+        // 对话结束总结条。
+        // R04：agent_summary 在权威终态之前发出且可能不带 status，绝不能据此宣告完成——
+        // 状态缺失时由 upsertRunSummary 显示“状态待同步”，等 run_finished 再定终态。
         {
           const key = `agent_summary:${data.runId || "unknown"}:${(data.products || []).join("|")}:${data.summary || ""}`;
           if (!acceptSystemEvent(key)) break;
         }
-        upsertRunSummary({ ...data, status: data.status || "completed" });
+        upsertRunSummary({ ...data });
         break;
       case "run_finished":
         flushToolOutput();
@@ -2107,7 +2109,9 @@ case "runtime_connecting":
         }
         if (data.runId && activeRunIdRef.current === data.runId) activeRunIdRef.current = null;
         {
-          const finalStatus = data.status || "completed";
+          // R04：run_finished 是终态信号，但缺失 status 时不得谎报“完成”——显示“状态待同步”，
+          // 同时照常释放 busy（运行确实已结束，不能永久卡在运行态）。
+          const finalStatus = data.status || "unknown";
           setRunState((s) => ({
             ...s,
             status: finalStatus,
@@ -2172,8 +2176,14 @@ case "runtime_connecting":
   const upsertRunSummary = useCallback((data = {}) => {
     const runId = data.runId || null;
     if (!runId) return;
-    const status = data.status || "completed";
-    const statusText = status === "failed" ? "失败" : status === "cancelled" ? "已取消" : status === "aborted" ? "已中断" : status === "running" ? "执行中" : "完成";
+    const status = data.status || previous?.runStatus || "";
+    // R04：不得默认 completed。缺失状态显示“状态待同步”，收到权威终态再更新。
+    const statusText = status === "failed" ? "失败"
+      : status === "cancelled" ? "已取消"
+        : status === "aborted" ? "已中断"
+          : status === "running" ? "执行中"
+            : status === "completed" ? "完成"
+              : "状态待同步";
     const summaryText = String(data.summary || data.completion?.summary || `本轮任务${statusText}`).trim();
     const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
     const incomingProducts = Array.isArray(data.products) ? data.products : [];
@@ -2194,7 +2204,7 @@ case "runtime_connecting":
         products: nextProducts,
         artifacts: nextArtifacts,
         runId,
-        runStatus: status,
+        runStatus: status || "unknown",
         references: data.references || previous?.references || [],
         task: data.task || previous?.task || null,
         workspace: data.workspace || previous?.workspace || workspace || "",
@@ -3281,7 +3291,8 @@ function SafeMarkdown({ text }) {
 }
 
 function RunSummary({ m, onOpenFile, onRollbackRun }) {
-  const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "aborted" ? "已中断" : m.runStatus === "running" ? "执行中" : "运行结束";
+  // R04：状态缺失/未知显示“状态待同步”，不默认“运行结束”
+  const statusLabel = m.runStatus === "failed" ? "失败" : m.runStatus === "cancelled" ? "已取消" : m.runStatus === "aborted" ? "已中断" : m.runStatus === "running" ? "执行中" : (!m.runStatus || m.runStatus === "unknown") ? "状态待同步" : "运行结束";
   const modeLabel = m.runMode === "chat" ? "Chat" : m.runMode === "review" ? "Review" : m.runMode === "office" ? "Office" : "Work";
   const time = m.createdAt ? formatMsgTime(m.createdAt) : "";
   // 标题取结论首行（结论可能是多行 Markdown），避免把整段结论塞进标题。

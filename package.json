@@ -52,7 +52,8 @@
     "test:progress-narration": "node scripts/进度播报测试.mjs",
     "test:conclusion": "node scripts/任务结论事件流测试.mjs",
     "test:service-supervisor": "node scripts/服务监督回归测试.mjs",
-    "test:native-files": "node scripts/原生文件测试.mjs"
+    "test:native-files": "node scripts/原生文件测试.mjs",
+    "test:run-view": "node scripts/运行展示投影测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",
