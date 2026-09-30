@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { renderAsync } from "docx-preview";
 import { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel } from "docx";
 import Icon from "./Icon.jsx";
@@ -6,6 +6,7 @@ import CommentMarker from "./CommentMarker.jsx";
 import { repaginateDocx } from "./文档分页.js";
 import { extractDocxOutline } from "./文档目录.js";
 import { motionScrollBehavior } from "../界面外观.js";
+import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
 
 /**
  * Word 文档查看器（增强版）
@@ -44,7 +45,7 @@ const HEADING_OPTIONS = [
 ];
 const ZOOM_LEVELS = [50, 75, 100, 125, 150, 200];
 
-export default function DocxViewer({ name, revision = 0, onInsertContext, onSendToAgent }) {
+export default function DocxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError, onInsertContext, onSendToAgent }) {
   const hostRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -58,6 +59,14 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
   const [outline, setOutline] = useState([]);
   const [outlineW, setOutlineW] = useState(220); // 目录宽度（可拖拽）
   const outlineDragRef = useRef(null);
+  // 文件身份 + 渲染 generation：切文件/刷新时旧渲染结果不得写入新预览。
+  const fileIdentity = useMemo(
+    () => identity || makeFileIdentity({ relativePath: name, revision }),
+    [identity, name, revision],
+  );
+  const urls = useMemo(() => buildDocUrls(fileIdentity), [fileIdentity.workspaceId, fileIdentity.relativePath, fileIdentity.revision]);
+  const renderSeqRef = useRef(0);
+  const renderAbortRef = useRef(null);
 
   // 目录宽度拖拽（可缩放导航栏）
   const startOutlineDrag = (e) => {
@@ -175,16 +184,25 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
     return level;
   }, [applyZoom]);
 
-  const renderDoc = useCallback(async () => {
+  const renderDoc = useCallback(async (options = {}) => {
+    const { signal, isCurrent } = options;
+    const live = () => (typeof isCurrent === "function" ? isCurrent() : true);
     const host = hostRef.current;
     if (!host) return;
     setLoading(true);
     setError("");
     setImageNotice("");
+    onPreviewState?.(PREVIEW_STATE.LOADING);
     try {
-      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
+      const res = await fetch(urls.raw, { cache: "no-store", signal });
       if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
+      // 服务端返回文件身份：与当前文件不符则拒绝渲染，避免同名跨工作区串内容。
+      const serverIdentity = readIdentityHeader(res);
+      if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
+        throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
+      }
       const buf = await res.arrayBuffer();
+      if (!live()) return;
 
       // docx-preview 的图片是异步取回的，渲染完成后要给它一点时间；个别文档在
       // blob 链路下拿不到图片（src 落空 / 解码失败），这里改用 base64 数据链重渲染一次。
@@ -215,10 +233,14 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       };
 
       await paint(buf);
+      if (!live()) return;
       let broken = await brokenImages(6000);
+      if (!live()) return;
       if (broken.length) {
         await paint(buf, { base64URL: true });
+        if (!live()) return;
         broken = await brokenImages(8000);
+        if (!live()) return;
       }
       if (broken.length) setImageNotice(`有 ${broken.length} 张图片未能加载`);
 
@@ -228,6 +250,7 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       const pages = host.querySelectorAll("section.oaw-docx");
       // 目录用 docx 内部样式解析（heading N/标题 N），页号取二次分页后的真实页码
       const parsedOutline = await extractDocxOutline(buf);
+      if (!live()) return;
       buildOutline(host, parsedOutline);
       setPageCount(pages.length || 1);
       setCurrentPage(1);
@@ -235,25 +258,44 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       // 右侧栏可能比页面窄：默认适应宽度，保证 Word 正文不被裁切。
       applyFitWidth({ silent: true });
       // 加载批注数据
-      loadComments();
+      loadComments({ signal, isCurrent });
+      // 有图片未加载 → partial（页面可读但内容不完整）；否则 ready。
+      onPreviewState?.(broken.length ? PREVIEW_STATE.PARTIAL : PREVIEW_STATE.READY);
     } catch (e) {
+      if (e?.name === "AbortError") return;
+      if (!live()) return;
       setError(e.message);
+      onPreviewError?.(e.message);
+      onPreviewState?.(previewStateFromError(e));
     } finally {
-      setLoading(false);
+      if (live()) setLoading(false);
     }
-  }, [name, revision, showComments, showChanges, applyFitWidth]);
+  }, [urls, fileIdentity, showComments, showChanges, applyFitWidth, onPreviewState, onPreviewError]);
 
-  const loadComments = async () => {
+  const loadComments = async (options = {}) => {
+    const { signal, isCurrent } = options;
+    const live = () => (typeof isCurrent === "function" ? isCurrent() : true);
     try {
-      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/comments?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
+      const res = await fetch(urls.comments, { cache: "no-store", signal });
+      const serverIdentity = readIdentityHeader(res);
+      if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) return;
       const d = await res.json();
+      if (!live()) return;
+      if (d.identity && !identityMatches(fileIdentity, d.identity)) return;
       if (d.comments) setComments(d.comments);
     } catch (e) {
-      console.error("加载批注失败:", e);
+      if (e?.name !== "AbortError") console.error("加载批注失败:", e);
     }
   };
 
-  useEffect(() => { renderDoc(); }, [renderDoc, renderKey]);
+  useEffect(() => {
+    const seq = ++renderSeqRef.current;
+    renderAbortRef.current?.abort();
+    const controller = new AbortController();
+    renderAbortRef.current = controller;
+    renderDoc({ signal: controller.signal, isCurrent: () => seq === renderSeqRef.current });
+    return () => { try { controller.abort(); } catch {} };
+  }, [renderDoc, renderKey]);
 
   // 提取标题大纲：优先使用 docx 内部样式（heading N / 标题 N）解析出的真实层级；
   // 解析不到时才退回"编号开头的短段落"启发式，且不再把加粗正文全部列进来。
@@ -532,8 +574,8 @@ export default function DocxViewer({ name, revision = 0, onInsertContext, onSend
       const doc = new Document({ sections: [{ children: paras.length ? paras : [new Paragraph({ text: "(空文档)" })] }] });
       const buffer = await Packer.toBuffer(doc);
 
-      // 上传保存
-      const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw-save`, {
+      // 上传保存（携带同一份文件身份，避免写错工作区的同名文件）
+      const res = await fetch(urls.rawSave, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ base64: buffer.toString("base64") }),

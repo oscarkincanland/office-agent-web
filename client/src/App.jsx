@@ -21,6 +21,7 @@ import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
 import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 
 function historyReferences(text = "") {
   const refs = [];
@@ -133,9 +134,9 @@ export default function App() {
   const [unreadByThread, setUnreadByThread] = useState({});
   const [eventVersion, setEventVersion] = useState(0);
   const [artifactVersion, setArtifactVersion] = useState(0);
-  const [tabs, setTabs] = useState([]); // [{ name, kind, url?, sheets?, grids?, content? }]
-  const [activeTab, setActiveTab] = useState(null); // 当前激活的文件名
-  const current = activeTab ? tabs.find((t) => t.name === activeTab) || null : null;
+  const [tabs, setTabs] = useState([]); // [{ id, name, identity, kind, url?, sheets?, grids?, content? }]
+  const [activeTab, setActiveTab] = useState(null); // 当前激活标签的 id（工作区 + 相对路径）
+  const current = activeTab ? tabs.find((t) => (t.id || t.name) === activeTab) || null : null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
@@ -251,6 +252,7 @@ export default function App() {
   const workspaceSwitchSeqRef = useRef(0);
   const filesRequestSeqRef = useRef(0);
   const docRequestSeqRef = useRef(0);
+  const docAbortRef = useRef(null); // 打开文件请求的中止器：切文件/关标签/切工作区时取消旧请求
   const currentThreadRef = useRef(threadId);
   const eventCursorRef = useRef(Number(localStorage.getItem("oaw_event_cursor") || 0));
   const eventNoticeKeysRef = useRef(new Set());
@@ -337,6 +339,9 @@ export default function App() {
     setHistoryThreadId(null);
     setHistoryWindow(null);
     setSessionResumeError(null);
+    // 切会话时丢弃在途的文件打开请求与已打开标签，避免旧结果写入新会话预览。
+    docRequestSeqRef.current += 1;
+    if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
     setTabs([]);
     setActiveTab(null);
     currentDirRef.current = "";
@@ -594,6 +599,9 @@ export default function App() {
     currentDirRef.current = "";
     setCurrentDir("");
     setFiles([]);
+    // 切工作区时中止在途打开请求并清空标签，旧工作区的预览结果不得写入。
+    docRequestSeqRef.current += 1;
+    if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
     setTabs([]);
     setActiveTab(null);
     setHistoryMessages(null);
@@ -658,35 +666,54 @@ export default function App() {
 
   const open = useCallback(async (name, thread = threadId, cwd = currentWorkspace) => {
     const requestSeq = ++docRequestSeqRef.current;
+    // 中止上一次未完成的打开请求：旧响应（可能来自另一个工作区的同名文件）不得写入新预览。
+    docAbortRef.current?.abort();
+    const controller = new AbortController();
+    docAbortRef.current = controller;
     setDocLoading(true);
     // 容错：调用方可能只传了工作区（例如产物跨工作区打开），thread 缺失时回退到当前会话
     const effectiveThread = thread || threadId;
     const effectiveCwd = cwd || currentWorkspace;
+    // 打开前先构造本地身份（workspaceId + relativePath），后续所有预览请求都用它。
+    const localIdentity = makeFileIdentity({ workspaceId: effectiveCwd, cwd: effectiveCwd, relativePath: name });
     try {
-      const revision = Date.now();
-      // 携带 cwd：产物可能属于其他工作区，不能依赖服务端全局当前工作区
-      const cwdQuery = effectiveCwd ? `&cwd=${encodeURIComponent(effectiveCwd)}` : "";
-      const response = await fetch(`/api/doc/${encodeURIComponent(name)}?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(effectiveThread)}${cwdQuery}&v=${revision}`, { cache: "no-store" });
+      const urls = buildDocUrls(localIdentity);
+      const params = new URLSearchParams({ client: clientId, thread: effectiveThread || "" });
+      const response = await fetch(`${urls.open}&${params.toString()}`, { cache: "no-store", signal: controller.signal });
       const doc = await response.json();
       if (!response.ok || doc?.error) throw new Error(doc?.error || `加载失败 HTTP ${response.status}`);
-      if (requestSeq !== docRequestSeqRef.current) return;
-      const previewUrl = doc.url ? `${doc.url}${doc.url.includes("?") ? "&" : "?"}v=${revision}` : doc.url;
-      const nextDoc = { ...doc, url: previewUrl, previewRevision: revision };
+      if (requestSeq !== docRequestSeqRef.current) return null;
+      // 服务端返回的文件身份（含真实 version/hash）优先；前端核对一致后才使用，不一致则标记 failed。
+      const identity = mergeFileIdentity(localIdentity, doc?.identity);
+      const identityVerified = doc?.identity ? identityMatches(localIdentity, doc.identity) : true;
+      const resolvedUrls = buildDocUrls(identity);
+      // 预览地址一律由本地身份重建（带上 cwd + revision），不直接信任 doc.url。
+      const previewUrl = doc.kind === "pdf" ? resolvedUrls.raw : doc.kind === "html" ? resolvedUrls.html : (doc.url || "");
+      const id = fileIdentityKey(identity);
+      const nextDoc = {
+        ...doc,
+        identity,
+        id,
+        url: previewUrl,
+        previewRevision: identity.revision,
+        identityVerified,
+      };
       // 文件从“本轮产物”或 Agent 自动产出打开时，直接切到文档预览，
       // 避免用户还停留在产物列表而误以为文件没有打开。
       setPreviewOpen(true);
       setPreviewTab("document");
-      // 单次 setTabs：避免 React 批处理导致重复 tab
+      // 单次 setTabs：按「工作区 + 相对路径」去重，不同工作区的同名文件是不同标签。
       setTabs((prev) => {
-        const exists = prev.find((t) => t.name === name);
-        if (exists) {
-          return prev.map((t) => (t.name === name ? { ...t, ...nextDoc } : t));
-        }
+        const exists = prev.find((t) => (t.id || t.name) === id);
+        if (exists) return prev.map((t) => ((t.id || t.name) === id ? { ...t, ...nextDoc, name } : t));
         return [...prev, { name, ...nextDoc }];
       });
-      setActiveTab(name);
+      setActiveTab(id);
       setDocLoading(false);
+      return id;
     } catch (e) {
+      // 被更新请求取代：静默丢弃，不弹窗、不清 loading（由新请求负责）。
+      if (e?.name === "AbortError") return null;
       const message = String(e?.message || "");
       // 文件被移动/删除，或文件列表还是切换工作区之前的旧数据时，不弹生硬的 "not found"，
       // 而是刷新列表并提示重新选择。
@@ -697,6 +724,7 @@ export default function App() {
         alert("打开失败: " + message);
       }
       setDocLoading(false);
+      return null;
     }
   }, [clientId, threadId, currentWorkspace]);
 
@@ -705,19 +733,23 @@ export default function App() {
     else open(name);
   }, [activeModule, open]);
 
-  // 关闭 tab
-  const closeTab = useCallback((name) => {
+  // 关闭 tab（按标签 id；关闭当前标签时中止在途打开请求，避免旧结果写入已关闭的预览）
+  const closeTab = useCallback((id) => {
     setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.name === name);
+      const idx = prev.findIndex((t) => (t.id || t.name) === id);
       if (idx === -1) return prev;
-      const next = prev.filter((t) => t.name !== name);
-      if (activeTab === name) {
+      const next = prev.filter((t) => (t.id || t.name) !== id);
+      if (activeTab === id) {
         // 激活相邻 tab
         const neighbor = next[Math.min(idx, next.length - 1)];
-        setActiveTab(neighbor ? neighbor.name : null);
+        setActiveTab(neighbor ? (neighbor.id || neighbor.name) : null);
       }
       return next;
     });
+    if (activeTab === id) {
+      if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
+      docRequestSeqRef.current += 1;
+    }
   }, [activeTab]);
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
@@ -735,6 +767,8 @@ export default function App() {
         currentDirRef.current = "";
         setCurrentDir("");
         setFiles(switched.files || []);
+        docRequestSeqRef.current += 1;
+        if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
         setTabs([]);
         setActiveTab(null);
       } catch (e) {
@@ -1004,13 +1038,14 @@ export default function App() {
   const handleFileChanged = useCallback((changed) => {
     const changedPaths = new Set((Array.isArray(changed) ? changed : []).map((item) => String(item || "").replace(/\\/g, "/")));
     refreshFiles();
-    if (activeTab && changedPaths.has(String(activeTab).replace(/\\/g, "/"))) {
+    const active = tabs.find((t) => (t.id || t.name) === activeTab);
+    if (active && changedPaths.has(String(active.name).replace(/\\/g, "/"))) {
       // 添加延迟避免与 agent_end 竞态
       setTimeout(() => {
-        open(activeTab);
+        open(active.name, undefined, active.identity?.cwd || active.identity?.workspaceId || currentWorkspace);
       }, 100);
     }
-  }, [activeTab, refreshFiles, open]);
+  }, [activeTab, tabs, currentWorkspace, refreshFiles, open]);
 
   // 暴露 refreshSessions 给 ChatPanel（agent_end 时刷新）
   const handleAgentEnd = useCallback(() => {
@@ -1091,13 +1126,20 @@ export default function App() {
           setFiles(switched.files || []);
         }
       } catch {}
+      const opened = [];
       for (const t of saved.tabs || []) {
         if (!t?.name) continue;
         // 防御：过滤非法/脏文件名（历史遗留的 URL 编码或正则片段），避免打开失败
         if (!/^(?![\\/])[^:*?"<>|\[\]]{1,300}$/.test(t.name) || t.name.split(/[\\/]/).includes("..")) continue;
-        try { await open(t.name); } catch {}
+        try {
+          const openedId = await open(t.name, undefined, t.cwd);
+          opened.push({ name: t.name, id: openedId || "" });
+        } catch {}
       }
-      if (saved.activeTab) setActiveTab(saved.activeTab);
+      // 兼容旧状态：activeTab 可能是标签 id，也可能仍是文件名。
+      const wanted = saved.activeTab;
+      const match = opened.find((o) => o.id && o.id === wanted) || opened.find((o) => o.name === wanted);
+      if (match) setActiveTab(match.id || match.name);
       if (saved.currentDir) {
         currentDirRef.current = saved.currentDir;
         setCurrentDir(saved.currentDir);
@@ -1129,7 +1171,7 @@ export default function App() {
     if (!uiRestored) return;
     if (currentSessionId) lastSessionIdRef.current = currentSessionId;
     saveUIState({
-      tabs: tabs.map((t) => ({ name: t.name, kind: t.kind || "" })),
+      tabs: tabs.map((t) => ({ id: t.id || t.name, name: t.name, kind: t.kind || "", cwd: t.identity?.cwd || t.identity?.workspaceId || "" })),
       activeTab,
       activeModule,
       workspace: currentWorkspace,

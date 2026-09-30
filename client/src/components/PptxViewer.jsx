@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PPTXViewJS from "pptxviewjs";
 import Icon from "./Icon.jsx";
+import { buildDocUrls, makeFileIdentity, identityMatches, readIdentityHeader, previewStateFromError, PREVIEW_STATE } from "../文件地址.js";
 
 const LARGE_PPT_BYTES = 100 * 1024 * 1024;
 
@@ -8,10 +9,11 @@ const LARGE_PPT_BYTES = 100 * 1024 * 1024;
  * PPT 预览：普通文件使用 Canvas，超大文件自动切换 OfficeCLI 高保真 HTML。
  * 关键点是给 pptxviewjs 传入明确的 px 尺寸；传入 100% 会被库解析为 100px，导致整页内容缩成一点。
  */
-export default function PptxViewer({ name, revision = 0 }) {
+export default function PptxViewer({ name, revision = 0, identity, onPreviewState, onPreviewError }) {
   const hostRef = useRef(null);
   const canvasRef = useRef(null);
   const viewerRef = useRef(null);
+  const officeFrameRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [total, setTotal] = useState(0);
@@ -21,6 +23,33 @@ export default function PptxViewer({ name, revision = 0 }) {
   const [largeFile, setLargeFile] = useState(false);
   const [fitWidth, setFitWidth] = useState(960);
   const [slideRatio, setSlideRatio] = useState(16 / 9);
+  // 统一文件身份 + 渲染 generation：切文件后旧请求结果不得写入。
+  const fileIdentity = useMemo(
+    () => identity || makeFileIdentity({ relativePath: name, revision }),
+    [identity, name, revision],
+  );
+  const urls = useMemo(() => buildDocUrls(fileIdentity), [fileIdentity.workspaceId, fileIdentity.relativePath, fileIdentity.revision]);
+  const generationRef = useRef(0);
+
+  // 高保真 iframe 也会上报带身份的就绪/失败消息；onload 本身不代表内容成功。
+  useEffect(() => {
+    const onMessage = (event) => {
+      const data = event?.data;
+      if (!data || data.__oawPreview !== true) return;
+      if (officeFrameRef.current && event.source && event.source !== officeFrameRef.current.contentWindow) return;
+      if (data.identity && !identityMatches(fileIdentity, data.identity)) {
+        setError("预览内容与当前文件身份不一致，已停止展示");
+        onPreviewState?.(PREVIEW_STATE.FAILED);
+        onPreviewError?.("预览内容与当前文件身份不一致");
+        return;
+      }
+      if (data.type === "unsupported") onPreviewState?.(PREVIEW_STATE.UNSUPPORTED);
+      else if (data.type === "error") { onPreviewState?.(PREVIEW_STATE.FAILED); onPreviewError?.(data.message || "高保真预览失败"); }
+      else if (data.type === "ready") onPreviewState?.(PREVIEW_STATE.READY);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [fileIdentity, onPreviewState, onPreviewError]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -54,32 +83,46 @@ export default function PptxViewer({ name, revision = 0 }) {
 
   useEffect(() => {
     if (renderer === "canvas" && viewerRef.current && current > 0) {
-      renderCurrent().catch((e) => setError(e.message));
+      renderCurrent().catch((e) => { setError(e.message); onPreviewState?.(PREVIEW_STATE.FAILED); onPreviewError?.(e.message); });
     }
-  }, [renderer, current, fitWidth, slideRatio, zoom, renderCurrent]);
+  }, [renderer, current, fitWidth, slideRatio, zoom, renderCurrent, onPreviewState, onPreviewError]);
 
   useEffect(() => {
-    let cancelled = false;
+    const generation = ++generationRef.current;
+    const controller = new AbortController();
+    const live = () => generation === generationRef.current;
     setLoading(true);
     setError("");
     setRenderer("canvas");
     setLargeFile(false);
     viewerRef.current = null;
+    onPreviewState?.(PREVIEW_STATE.LOADING);
     const load = async () => {
       try {
-        const res = await fetch(`/api/doc/${encodeURIComponent(name)}/raw?v=${encodeURIComponent(revision || Date.now())}`, { cache: "no-store" });
+        const res = await fetch(urls.raw, { cache: "no-store", signal: controller.signal });
         if (!res.ok) throw new Error(`加载失败 HTTP ${res.status}`);
+        // 文件身份核对：不符则拒绝渲染，避免同名跨工作区串内容。
+        const serverIdentity = readIdentityHeader(res);
+        if (serverIdentity && !identityMatches(fileIdentity, serverIdentity)) {
+          throw new Error("预览内容与打开的文件不一致（文件身份不匹配），已停止渲染");
+        }
         const fileSize = Number(res.headers.get("content-length") || 0);
         if (fileSize > LARGE_PPT_BYTES) {
           try { await res.body?.cancel(); } catch {}
-          if (!cancelled) { setLargeFile(true); setRenderer("office"); setLoading(false); }
+          if (live()) {
+            setLargeFile(true);
+            setRenderer("office");
+            setLoading(false);
+            // 超大文件交给 OfficeCLI 高保真预览，等待其身份消息再判定 ready。
+            onPreviewState?.(PREVIEW_STATE.PARTIAL);
+          }
           return;
         }
         const data = new Uint8Array(await res.arrayBuffer());
-        if (cancelled) return;
+        if (!live()) return;
         const viewer = new PPTXViewJS.PPTXViewer({ canvas: canvasRef.current, renderMode: "canvas", lazyLoad: true });
         await viewer.loadFile(data);
-        if (cancelled) return;
+        if (!live()) return;
         viewerRef.current = viewer;
         const dims = viewer.processor?.getSlideDimensions?.() || viewer.presentation?.slideSize;
         const ratio = dims?.cx && dims?.cy ? dims.cx / dims.cy : 16 / 9;
@@ -88,27 +131,31 @@ export default function PptxViewer({ name, revision = 0 }) {
         setCurrent(1);
         applyCanvasSize();
         await viewer.renderSlide(0, canvasRef.current);
+        if (live()) onPreviewState?.(PREVIEW_STATE.READY);
       } catch (e) {
-        if (!cancelled) setError(e.message);
+        if (e?.name === "AbortError" || !live()) return;
+        setError(e.message);
+        onPreviewError?.(e.message);
+        onPreviewState?.(previewStateFromError(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (live()) setLoading(false);
       }
     };
     load();
-    return () => { cancelled = true; };
-  }, [name, revision]);
+    return () => { controller.abort(); };
+  }, [urls, fileIdentity, applyCanvasSize, onPreviewState, onPreviewError]);
 
   const go = async (dir) => {
     const viewer = viewerRef.current;
     if (!viewer) return;
     const next = Math.min(total - 1, Math.max(0, current - 1 + dir));
     if (next === current - 1) return;
-    try { await renderCurrent(next); setCurrent(next + 1); } catch (e) { setError(e.message); }
+    try { await renderCurrent(next); setCurrent(next + 1); } catch (e) { setError(e.message); onPreviewState?.(PREVIEW_STATE.FAILED); onPreviewError?.(e.message); }
   };
 
   const jump = async (page) => {
     if (!viewerRef.current) return;
-    try { await renderCurrent(page - 1); setCurrent(page); } catch (e) { setError(e.message); }
+    try { await renderCurrent(page - 1); setCurrent(page); } catch (e) { setError(e.message); onPreviewState?.(PREVIEW_STATE.FAILED); onPreviewError?.(e.message); }
   };
 
   return (
@@ -128,7 +175,7 @@ export default function PptxViewer({ name, revision = 0 }) {
           <button className="btn-xs" onClick={() => setZoom(100)} title="适合窗口">适合窗口</button>
         </>}
         {renderer === "canvas" ? (
-          <button className="btn-xs" onClick={() => setRenderer("office")} title="切换到 OfficeCLI 高保真预览">高保真预览</button>
+          <button className="btn-xs" onClick={() => { setRenderer("office"); onPreviewState?.(PREVIEW_STATE.LOADING); }} title="切换到 OfficeCLI 高保真预览">高保真预览</button>
         ) : (
           <>
             <span className="oaw-pptx-high-fidelity">OfficeCLI 高保真渲染（适合超大 PPT）</span>
@@ -143,7 +190,14 @@ export default function PptxViewer({ name, revision = 0 }) {
         {renderer === "canvas" ? (
           <div className="oaw-pptx-stage"><canvas ref={canvasRef} /></div>
         ) : (
-          <iframe className="oaw-pptx-frame" title={`${name} 高保真预览`} src={`/api/doc/${encodeURIComponent(name)}/html?v=${encodeURIComponent(revision || Date.now())}`} onLoad={() => setLoading(false)} onError={() => { setLoading(false); setError("OfficeCLI 高保真预览加载失败，请切回浏览器渲染"); }} />
+          <iframe
+            ref={officeFrameRef}
+            className="oaw-pptx-frame"
+            title={`${name} 高保真预览`}
+            src={urls.html}
+            onLoad={() => { setLoading(false); onPreviewState?.(PREVIEW_STATE.PARTIAL); }}
+            onError={() => { setLoading(false); setError("OfficeCLI 高保真预览加载失败，请切回浏览器渲染"); onPreviewState?.(PREVIEW_STATE.FAILED); onPreviewError?.("OfficeCLI 高保真预览加载失败"); }}
+          />
         )}
       </div>
     </div>

@@ -199,6 +199,13 @@ body.resizing .map-chat-resizer {
 .badge { font-size: 10px; color: var(--dim); background: var(--surface); padding: 1px 6px; border-radius: 3px; }
 .badge.err-badge { color: var(--error); border: 1px solid var(--error); }
 .badge.ws-hint { color: var(--success); border: 1px solid var(--success); }
+/* 统一预览状态徽标（D01）：loading | ready | partial | unsupported | failed */
+.badge.preview-state { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--border); }
+.badge.preview-state-loading { color: var(--dim); }
+.badge.preview-state-ready { color: var(--success); border-color: var(--success); }
+.badge.preview-state-partial { color: var(--warn, var(--accent)); border-color: var(--warn, var(--accent)); }
+.badge.preview-state-unsupported { color: var(--dim); border-style: dashed; }
+.badge.preview-state-failed { color: var(--error); border-color: var(--error); }
 select, input[type="text"], textarea {
   font-family: inherit; font-size: 12px;
   background: var(--panel2-bg); color: var(--text);

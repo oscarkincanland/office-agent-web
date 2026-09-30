@@ -1,3 +1,19 @@
+// 统一文件身份与预览地址（D01）：预览相关调用从 api.js 统一出口取用，
+// 便于后续把 comments/annotations/outline/watch 全部收敛到同一契约。
+export {
+  PREVIEW_STATE,
+  PREVIEW_STATE_LABEL,
+  buildDocUrls,
+  makeFileIdentity,
+  mergeFileIdentity,
+  fileIdentityKey,
+  identityMatches,
+  readIdentityHeader,
+  withRevision,
+  looksUnsupported,
+  previewStateFromError,
+} from "./文件地址.js";
+
 export async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },

@@ -438,32 +438,83 @@ app.post("/api/kb/export-docx", async (req, res) => {
   }
 });
 
-// ---------- HTML 标注持久化（跟随当前工作区） ----------
-function annotationsPath(fileName) {
-  const safe = path.basename(String(fileName || ""));
-  if (!safe || safe.includes("..")) return null;
-  return path.join(getWorkspace(), ".annotations", safe + ".json");
+// ---------- 预览文件身份（D01） ----------
+// 预览相关路由统一用「工作区根 + 相对路径 + 文件版本」表达文件身份，
+// 前端据此核对响应，避免不同工作区的同名文件串内容。
+function previewWorkspaceRoot(requestedCwd) {
+  return (requestedCwd ? normalizeWorkspace(requestedCwd) : null) || getWorkspace() || "";
 }
 
-app.get(/^\/api\/doc\/([^\/]+)\/annotations$/, (_req, res) => {
-  const fileName = decodeURIComponent(_req.params[0]);
-  const p = annotationsPath(fileName);
-  if (!p || !fs.existsSync(p)) return res.json({ annotations: [] });
+// 请求方显式指定的工作区（仍经过 normalizeWorkspace 校验，禁止任意绝对路径越界）。
+function requestedPreviewWorkspace(req) {
+  return normalizeWorkspace(String(req.query?.cwd || "")) || undefined;
+}
+
+// 文件版本：以文件系统状态派生的 sha1 作为「服务端 version」，不用前端时间戳。
+function previewFileRevision(absPath) {
   try {
-    res.json({ annotations: JSON.parse(fs.readFileSync(p, "utf8")) });
+    const st = fs.statSync(absPath);
+    return crypto.createHash("sha1").update(`${st.size}:${Math.floor(st.mtimeMs)}`).digest("hex").slice(0, 16);
   } catch {
-    res.json({ annotations: [] });
+    return "";
+  }
+}
+
+function previewFileIdentity(relativePath, requestedCwd, absPath = null) {
+  const ws = previewWorkspaceRoot(requestedCwd);
+  return {
+    workspaceId: ws,
+    cwd: ws,
+    relativePath: String(relativePath || "").replace(/\\/g, "/"),
+    revision: absPath ? previewFileRevision(absPath) : "",
+  };
+}
+
+function setPreviewIdentityHeader(res, identity) {
+  try { res.setHeader("X-OA-File-Identity", encodeURIComponent(JSON.stringify(identity))); } catch {}
+}
+
+// 在预览 HTML 中注入一条受控消息：只在同源父窗口可用，携带文件身份。
+// iframe 的 onload 只代表「页面已加载」，宿主仍需收到这条 ready/unsupported/error
+// 消息、且身份一致时才认为内容成功。
+function injectPreviewIdentityMessage(html, identity, type = "ready", detail = "") {
+  const payload = JSON.stringify({ __oawPreview: true, type, identity, message: detail ? String(detail).slice(0, 300) : "" });
+  const script = `<script>(function(){try{var d=${payload};if(window.parent&&window.parent!==window){window.parent.postMessage(d,"*");}}catch(e){}})();<\/script>`;
+  const src = String(html || "");
+  const idx = src.toLowerCase().lastIndexOf("</body>");
+  if (idx >= 0) return src.slice(0, idx) + script + src.slice(idx);
+  return src + script;
+}
+
+// ---------- HTML 标注持久化（跟随当前工作区，支持显式 cwd） ----------
+function annotationsPath(fileName, workspace) {
+  const safe = path.basename(String(fileName || ""));
+  if (!safe || safe.includes("..")) return null;
+  return path.join(workspace || getWorkspace(), ".annotations", safe + ".json");
+}
+
+app.get(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
+  const fileName = decodeURIComponent(req.params[0]);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = annotationsPath(fileName, requestedCwd);
+  const identity = previewFileIdentity(fileName, requestedCwd);
+  if (!p || !fs.existsSync(p)) return res.json({ annotations: [], identity });
+  try {
+    res.json({ annotations: JSON.parse(fs.readFileSync(p, "utf8")), identity });
+  } catch {
+    res.json({ annotations: [], identity });
   }
 });
 
 app.post(/^\/api\/doc\/([^\/]+)\/annotations$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = annotationsPath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = annotationsPath(fileName, requestedCwd);
   if (!p) return res.status(400).json({ error: "invalid name" });
   try {
     const list = Array.isArray(req.body?.annotations) ? req.body.annotations : [];
-    const result = writeWorkspaceFile({ workspace: getWorkspace(), targetPath: p, content: JSON.stringify(list, null, 2), kind: "ui_annotations" });
-    res.json({ ...result, count: list.length });
+    const result = writeWorkspaceFile({ workspace: requestedCwd || getWorkspace(), targetPath: p, content: JSON.stringify(list, null, 2), kind: "ui_annotations" });
+    res.json({ ...result, count: list.length, identity: previewFileIdentity(fileName, requestedCwd) });
   } catch (e) {
     respondWorkspaceFileError(req, res, e);
   }
@@ -877,7 +928,7 @@ app.post("/api/files/delete", async (req, res) => {
 // 原始文件流（供前端 docx-preview/pptxviewjs 渲染，正则路由避免吞参数）
 app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const requestedCwd = requestedPreviewWorkspace(req);
   const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
@@ -886,6 +937,8 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
+    // 文件身份随响应返回，前端核对一致后才渲染，避免同名跨工作区串内容。
+    setPreviewIdentityHeader(res, previewFileIdentity(fileName, requestedCwd, p));
     res.sendFile(p);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -895,7 +948,8 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
 // docx → 纯文本（供 agent 在无 officecli 环境读取 docx 内容）
 app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (!p || !/\.docx$/i.test(p)) return res.status(404).json({ error: "not found" });
   try {
     const JSZip = (await import("jszip")).default;
@@ -907,7 +961,7 @@ app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
       const text = [...m[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g)].map((t) => t[1]).join("").trim();
       if (text) paras.push(text);
     }
-    res.json({ name: fileName, text: paras.join("\n") });
+    res.json({ name: fileName, text: paras.join("\n"), identity: previewFileIdentity(fileName, requestedCwd, p) });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -916,13 +970,14 @@ app.get(/^\/api\/doc\/(.+)\/text$/, async (req, res) => {
 // open document
 app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
   const fileName = decodeURIComponent(req.params[0]);
-  if (/(?:^|\/)(?:raw|text|html|comments|watch)(?:\/stop)?$/.test(fileName)) return next();
+  if (/(?:^|\/)(?:raw|text|html|comments|watch|outline)(?:\/stop)?$/.test(fileName)) return next();
   // 支持按调用方指定的工作区解析（产物可能属于其他工作区，不能只看全局当前工作区）
-  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const requestedCwd = requestedPreviewWorkspace(req);
   const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
   const cwdQuery = requestedCwd ? `?cwd=${encodeURIComponent(requestedCwd)}` : "";
+  const identity = previewFileIdentity(fileName, requestedCwd, p);
   // 记录当前工作文件（前端传 client 参数）
   const client = req.query.client;
   const thread = req.query.thread;
@@ -933,21 +988,21 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     if (ext === "xlsx" || ext === "xls") {
       const wb = await readWorkbook(p);
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "xlsx", name: fileName, ...wb });
+      res.json({ kind: "xlsx", name: fileName, identity, ...wb });
     } else if (["md", "markdown", "txt", "csv", "json"].includes(ext)) {
       const content = fs.readFileSync(p, "utf8");
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "text", name: fileName, content, ext });
+      res.json({ kind: "text", name: fileName, content, ext, identity });
     } else if (ext === "html" || ext === "htm") {
       const content = fs.readFileSync(p, "utf8");
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "htmlfile", name: fileName, content });
+      res.json({ kind: "htmlfile", name: fileName, content, identity });
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "pdf", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+      res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else {
       res.setHeader("Cache-Control", "no-store, max-age=0");
-      res.json({ kind: "html", name: fileName, ext, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
+      res.json({ kind: "html", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
     }
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -956,13 +1011,13 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
 
 // OfficeCLI 只能渲染 docx/xlsx/pptx。老式 .doc/.wps 或渲染失败时返回占位页，
 // 避免 iframe 一片空白让用户以为"预览坏了"。
-function previewUnsupportedPage(fileName, ext, detail) {
+function previewUnsupportedPage(fileName, ext, detail, identity, type = "unsupported") {
   const safeName = String(fileName || "").replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
   const tips = {
     doc: "老式 .doc 二进制格式不被预览引擎支持。请用 WPS/Word 打开后另存为 .docx，即可在规聚中正常预览。",
     wps: "WPS 专有格式不被预览引擎支持。请用 WPS 打开后另存为 .docx。",
   }[String(ext || "").toLowerCase()] || "该格式暂不支持内嵌预览。";
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${safeName}</title>
+  const page = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>${safeName}</title>
 <style>body{margin:0;font:14px/1.7 -apple-system,"Microsoft YaHei",sans-serif;background:#f5f6f8;color:#2b2f36;display:flex;align-items:center;justify-content:center;height:100vh}
 .card{max-width:520px;background:#fff;border:1px solid #e3e6eb;border-radius:12px;padding:28px 32px;box-shadow:0 6px 20px rgba(15,23,42,.06)}
 h1{font-size:16px;margin:0 0 10px}.ext{display:inline-block;font-size:12px;color:#7a8291;border:1px solid #e3e6eb;border-radius:6px;padding:1px 6px;margin-left:6px}
@@ -973,24 +1028,30 @@ p{margin:8px 0;color:#4b5563}.file{font-weight:600;color:#111827;word-break:brea
 <p>也可以让 Agent 直接读取或转换该文件（例如另存为 .docx 后再预览）。</p>
 ${detail ? `<div class="err">渲染引擎信息：${String(detail).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))}</div>` : ""}
 </div></body></html>`;
+  return injectPreviewIdentityMessage(page, identity || {}, type, detail);
 }
 
 // rendered html for docx/pptx (iframe target)
 app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const requestedCwd = normalizeWorkspace(String(req.query.cwd || "")) || undefined;
+  const requestedCwd = requestedPreviewWorkspace(req);
   const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).send("not found");
+  const identity = previewFileIdentity(fileName, requestedCwd, p);
   try {
     const html = await renderHtml(p);
     // 老式 .doc/.wps 会被渲染成空字符串；直接 send("") 就是一片空白。
-    if (!html || !String(html).trim()) return res.send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase()));
+    if (!html || !String(html).trim()) {
+      return res.send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase(), "", identity));
+    }
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("X-Frame-Options", "SAMEORIGIN");
-    res.send(html);
+    setPreviewIdentityHeader(res, identity);
+    // onload ≠ 内容成功：注入带身份的同源消息，宿主核对后才标记 ready。
+    res.send(injectPreviewIdentityMessage(html, identity, "ready"));
   } catch (e) {
-    res.status(500).send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase(), e.message));
+    res.status(500).send(previewUnsupportedPage(fileName, path.extname(p).slice(1).toLowerCase(), e.message, identity, "error"));
   }
 });
 
@@ -998,9 +1059,11 @@ app.get(/^\/api\/doc\/(.+)\/html$/, async (req, res) => {
 // 获取批注列表：docx/pptx 用 officecli；md/txt 从 agent 会话提取修订记录
 app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   res.setHeader("Cache-Control", "no-store, max-age=0");
+  const identity = previewFileIdentity(fileName, requestedCwd, p);
   const ext = path.extname(p).slice(1).toLowerCase();
   try {
     if (ext === "md" || ext === "markdown" || ext === "txt") {
@@ -1035,7 +1098,7 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
       // 去重 + 最新 20 条
       const seen = new Set();
       const unique = comments.filter((c) => { if (seen.has(c.text)) return false; seen.add(c.text); return true; });
-      return res.json({ comments: unique.slice(0, 20) });
+      return res.json({ comments: unique.slice(0, 20), identity });
     }
     const r = await queryComments(p);
     const results = r.json?.data?.results || [];
@@ -1045,20 +1108,21 @@ app.get(/^\/api\/doc\/(.+)\/comments$/, async (req, res) => {
       text: c.text || c.preview || "",
       date: c.format?.date || c.date || "",
     }));
-    res.json({ comments });
+    res.json({ comments, identity });
   } catch (e) {
-    res.json({ comments: [] });
+    res.json({ comments: [], identity });
   }
 });
 
 app.get(/^\/api\/doc\/(.+)\/watch$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   try {
     const entry = await startWatch(p);
     if (entry.error) return res.status(500).json({ ok: false, error: entry.error });
-    res.json({ ok: true, url: `http://localhost:${entry.port}`, port: entry.port });
+    res.json({ ok: true, url: `http://localhost:${entry.port}`, port: entry.port, identity: previewFileIdentity(fileName, requestedCwd, p) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1067,7 +1131,8 @@ app.get(/^\/api\/doc\/(.+)\/watch$/, async (req, res) => {
 // 停止某文件的 watch
 app.post(/^\/api\/doc\/(.+)\/watch\/stop$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (p) stopWatch(p);
   res.json({ ok: true });
 });
@@ -1167,7 +1232,8 @@ app.post("/api/doc/edit", async (req, res) => {
 // 保存前端编辑后的 docx（base64 内容直接写回文件）
 app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const { base64 } = req.body || {};
   if (!base64) return res.status(400).json({ error: "base64 required" });
@@ -1177,8 +1243,8 @@ app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
     if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) {
       return res.status(400).json({ error: "不是有效的 docx 文件" });
     }
-    const result = writeWorkspaceFile({ workspace: getWorkspace(), targetPath: p, content: buf, kind: "ui_docx_save" });
-    res.json({ ...result, size: buf.length });
+    const result = writeWorkspaceFile({ workspace: requestedCwd || getWorkspace(), targetPath: p, content: buf, kind: "ui_docx_save" });
+    res.json({ ...result, size: buf.length, identity: previewFileIdentity(fileName, requestedCwd, p) });
   } catch (e) {
     respondWorkspaceFileError(req, res, e);
   }
@@ -1187,8 +1253,10 @@ app.post(/^\/api\/doc\/([^\/]+)\/raw-save$/, (req, res) => {
 // 获取 docx 标题大纲（供目录导航栏；前端优先用渲染后 DOM 提取，此接口为兜底）
 app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
   const fileName = decodeURIComponent(req.params[0]);
-  const p = resolvePath(fileName);
+  const requestedCwd = requestedPreviewWorkspace(req);
+  const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
+  const identity = previewFileIdentity(fileName, requestedCwd, p);
   try {
     // 遍历文档段落，按样式名启发式识别标题（Heading* / 常见标题样式 / 短文本+大字号）
     const r = await runOfficecli(["get", p, "/", "--depth", "3", "--json"]);
@@ -1208,9 +1276,9 @@ app.get(/^\/api\/doc\/([^\/]+)\/outline$/, async (req, res) => {
       }
     };
     walk(results);
-    res.json({ outline });
+    res.json({ outline, identity });
   } catch (e) {
-    res.json({ outline: [] });
+    res.json({ outline: [], identity });
   }
 });
 

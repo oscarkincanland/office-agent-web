@@ -1,5 +1,6 @@
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { openInSystem, revealInSystem } from "../api.js";
+import { buildDocUrls, makeFileIdentity, identityMatches, PREVIEW_STATE, PREVIEW_STATE_LABEL } from "../文件地址.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
@@ -88,6 +89,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const [commentsOpen, setCommentsOpen] = useState(false);
   const [commentsLoading, setCommentsLoading] = useState(false);
 
+  // 统一预览状态：loading | ready | partial | unsupported | failed（子查看器一致消费）
+  const [previewState, setPreviewState] = useState(PREVIEW_STATE.LOADING);
+  const [previewErr, setPreviewErr] = useState("");
+
   // 标注模式相关状态
   const [annoMode, setAnnoMode] = useState(false);
   const [annotations, setAnnotations] = useState([]);
@@ -100,25 +105,94 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
   const saveTimerRef = useRef(null);
   const lastSavedJsonRef = useRef("[]");
 
+  // 文件身份：所有预览请求都显式带同一份 { cwd, relativePath, revision }。
+  const identity = useMemo(
+    () => doc?.identity || makeFileIdentity({ relativePath: doc?.name }),
+    [doc?.identity, doc?.name],
+  );
+  const docKey = `${identity.workspaceId}::${identity.relativePath}`;
+  const urls = useMemo(() => buildDocUrls(identity), [identity.workspaceId, identity.relativePath, identity.revision]);
+  // 渲染 generation：切文件时递增，旧请求（即使已完成）的结果直接丢弃。
+  const generationRef = useRef(0);
+  const abortMapRef = useRef(new Map());
+  const docKeyRef = useRef(docKey);
+  docKeyRef.current = docKey;
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+
+  // 按通道取消旧请求并发起新请求，返回的 controller 供调用方 abort。
+  const scopedFetch = useCallback((channel, url, options = {}) => {
+    abortMapRef.current.get(channel)?.abort();
+    const controller = new AbortController();
+    abortMapRef.current.set(channel, controller);
+    return fetch(url, { cache: "no-store", ...options, signal: controller.signal });
+  }, []);
+
+  // 响应身份核对：服务端返回 identity 与当前文件不符则丢弃（防止串内容）。
+  const identityOk = useCallback((serverIdentity) => {
+    if (!serverIdentity) return true;
+    return identityMatches(identityRef.current, serverIdentity);
+  }, []);
+
   const isHtmlKind = doc?.kind === "html" || doc?.kind === "htmlfile";
   // DOCX/PPTX 使用各自的专用查看器；通用 HTML 工具栏对这两类文件不生效。
   const isOfficePreview = doc?.kind === "html" && (doc.ext === "docx" || doc.ext === "pptx");
 
+  // iframe 内容通过 postMessage 上报身份与就绪状态：onload 只代表页面已加载。
+  useEffect(() => {
+    const onMessage = (event) => {
+      const data = event?.data;
+      if (!data || data.__oawPreview !== true) return;
+      // 只接受来自当前预览 iframe 的消息，忽略其它来源。
+      if (htmlFrameRef.current && event.source && event.source !== htmlFrameRef.current.contentWindow) return;
+      // 身份不符：内容来自别的文件/工作区，直接判定失败，不展示。
+      if (data.identity && !identityMatches(identityRef.current, data.identity)) {
+        setPreviewState(PREVIEW_STATE.FAILED);
+        setPreviewErr("预览内容与当前文件身份不一致，已停止展示");
+        return;
+      }
+      if (data.type === "unsupported") { setPreviewState(PREVIEW_STATE.UNSUPPORTED); setPreviewErr(""); }
+      else if (data.type === "error") { setPreviewState(PREVIEW_STATE.FAILED); setPreviewErr(data.message || "预览渲染失败"); }
+      else if (data.type === "ready") { setPreviewState(PREVIEW_STATE.READY); setPreviewErr(""); }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [docKey]);
+
   const fetchComments = useCallback(async () => {
     if (!doc) return;
+    const gen = generationRef.current;
+    const key = docKeyRef.current;
     setCommentsLoading(true);
     try {
-      const r = await fetch(`/api/doc/${encodeURIComponent(doc.name)}/comments`);
+      const r = await scopedFetch("comments", urls.comments);
+      if (gen !== generationRef.current || key !== docKeyRef.current) return;
       const d = await r.json();
+      if (gen !== generationRef.current || key !== docKeyRef.current) return;
+      if (!identityOk(d?.identity)) {
+        setPreviewState(PREVIEW_STATE.FAILED);
+        setPreviewErr("批注响应与当前文件身份不一致，已丢弃");
+        return;
+      }
       setComments(d.comments || []);
     } catch (e) {
-      console.error("获取批注失败:", e);
+      if (e?.name !== "AbortError") console.error("获取批注失败:", e);
+    } finally {
+      if (gen === generationRef.current && key === docKeyRef.current) setCommentsLoading(false);
     }
-    setCommentsLoading(false);
-  }, [doc]);
+  }, [doc, urls, scopedFetch, identityOk]);
 
   // 切换/打开文件时重置标注状态 + 加载服务端 annotations
   useEffect(() => {
+    // 进入新文件：递增 generation 并取消所有在途预览请求，旧结果不得写入。
+    generationRef.current += 1;
+    for (const controller of abortMapRef.current.values()) { try { controller.abort(); } catch {} }
+    abortMapRef.current.clear();
+    // text / xlsx / htmlfile 的内容已随 open 响应返回并经身份核对，可直接 ready；
+    // 其余格式（docx/pptx/pdf/html）还要经过渲染或 iframe 加载，先置 loading。
+    const localReady = doc?.kind === "text" || doc?.kind === "xlsx" || doc?.kind === "htmlfile";
+    setPreviewState(localReady ? PREVIEW_STATE.READY : PREVIEW_STATE.LOADING);
+    setPreviewErr("");
     setWatchUrl(null);
     setWatchLoading(false);
     setWatchErr("");
@@ -139,63 +213,87 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       fetchComments();
     }
     if (isHtmlKind && !isOfficePreview) {
-      fetch(`/api/doc/${encodeURIComponent(doc.name)}/annotations`)
-        .then((r) => r.json())
+      const gen = generationRef.current;
+      scopedFetch("annotations", urls.annotations)
+        .then((r) => {
+          if (gen !== generationRef.current) return null;
+          return r.json();
+        })
         .then((d) => {
+          if (!d || gen !== generationRef.current) return;
+          if (!identityOk(d.identity)) {
+            setPreviewState(PREVIEW_STATE.FAILED);
+            setPreviewErr("标注响应与当前文件身份不一致，已丢弃");
+            return;
+          }
           const list = d.annotations || [];
           setAnnotations(list);
           setAnnoLoaded(true);
           lastSavedJsonRef.current = JSON.stringify(list);
         })
-        .catch((e) => console.error("加载标注失败:", e));
+        .catch((e) => { if (e?.name !== "AbortError") console.error("加载标注失败:", e); });
     } else {
       setAnnotations([]);
       setAnnoLoaded(true);
     }
-  }, [doc?.name, doc?.kind, fetchComments, isHtmlKind, isOfficePreview]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docKey, doc?.kind, isOfficePreview, isHtmlKind]);
 
   const startLive = useCallback(async () => {
     if (!doc) return;
+    const gen = generationRef.current;
+    const key = docKeyRef.current;
     setWatchLoading(true);
     setWatchErr("");
     try {
-      const r = await fetch(`/api/doc/${encodeURIComponent(doc.name)}/watch`).then((x) => x.json());
+      const r = await scopedFetch("watch", urls.watch).then((x) => x.json());
+      if (gen !== generationRef.current || key !== docKeyRef.current) return;
       if (r.ok) {
         setWatchUrl(r.url);
       } else {
         setWatchErr(r.error || "启动实时预览失败");
       }
     } catch (e) {
-      setWatchErr("网络错误: " + e.message);
+      if (e?.name !== "AbortError") setWatchErr("网络错误: " + e.message);
+    } finally {
+      if (gen === generationRef.current && key === docKeyRef.current) setWatchLoading(false);
     }
-    setWatchLoading(false);
-  }, [doc]);
+  }, [doc, urls, scopedFetch]);
+
+  const stopLive = useCallback(() => {
+    setWatchUrl(null);
+    // 通知服务端停止该文件的 watch，避免切换静态预览后进程长期驻留。
+    try { scopedFetch("watch", urls.watchStop, { method: "POST" }).catch(() => {}); } catch {}
+  }, [urls, scopedFetch]);
 
   const mdContentRef = useRef(null);
   const htmlFrameRef = useRef(null);
   const [showComments, setShowComments] = useState(false);
   const [activeComment, setActiveComment] = useState(null);
 
-  // annotations 变化 → 防抖保存
+  // annotations 变化 → 防抖保存（带文件身份，切文件后不再写回旧文件）
   useEffect(() => {
     if (!isHtmlKind || !annoLoaded) return;
     const json = JSON.stringify(annotations);
     if (json === lastSavedJsonRef.current) return;
+    const key = docKey;
     clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
+      if (key !== docKeyRef.current) return;
       lastSavedJsonRef.current = json;
-      fetch(`/api/doc/${encodeURIComponent(doc.name)}/annotations`, {
+      fetch(urls.annotations, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ annotations }),
       }).catch((e) => console.error("保存标注失败:", e));
     }, ANNO_SAVE_DEBOUNCE);
-  }, [annotations, doc, isHtmlKind, annoLoaded]);
+  }, [annotations, docKey, urls, isHtmlKind, annoLoaded]);
 
-  // iframe onload → 标记 ready → 触发恢复（若 annotations 已加载）
+  // iframe onload → 只代表页面已加载（partial）；内容身份由 postMessage 确认后才 ready。
   const handleIframeLoad = useCallback(() => {
     iframeReadyRef.current = true;
     setIframeReady(true);
+    setPreviewState((prev) => (prev === PREVIEW_STATE.FAILED ? prev : PREVIEW_STATE.PARTIAL));
   }, []);
 
   // ready + annotations 变化都触发恢复（首次 + 新增项）
@@ -427,6 +525,11 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
     <>
       <div className="docview-head">
         <span className="doc-title">{doc.name}</span>
+        <span className={`badge preview-state preview-state-${previewState}`} title={previewErr || ""}>
+          {previewState === PREVIEW_STATE.LOADING && <Icon name="loading" size={11} />}
+          {previewState === PREVIEW_STATE.FAILED && <Icon name="warning" size={11} />}
+          {PREVIEW_STATE_LABEL[previewState] || previewState}
+        </span>
         {doc.kind === "html" && !isOfficePreview && (
           <>
             <span className="badge">{watchUrl ? "实时预览" : "静态预览"}</span>
@@ -436,7 +539,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
               </button>
             )}
             {watchUrl && (
-              <button className="btn-sm" onClick={() => setWatchUrl(null)}>静态预览</button>
+              <button className="btn-sm" onClick={stopLive}>静态预览</button>
             )}
           </>
         )}
@@ -474,6 +577,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
           </>
         )}
         {watchErr && <span className="badge err-badge"><Icon name="warning" size={11} /> {watchErr}</span>}
+        {previewErr && <span className="badge err-badge"><Icon name="warning" size={11} /> {previewErr}</span>}
         {watchUrl && <span className="badge ws-hint">可点选元素，配合右侧 agent 修改</span>}
       </div>
       {commentsOpen && comments.length > 0 && !showComments && (
@@ -493,10 +597,10 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
       )}
       <div className="docview-body">
         {doc.kind === "html" && doc.ext === "docx" && (
-          <DocxViewer name={doc.name} revision={doc.previewRevision} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
+          <DocxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} onSendToAgent={onSendToAgent} onInsertContext={onInsertContext} />
         )}
         {doc.kind === "html" && doc.ext === "pptx" && (
-          <PptxViewer name={doc.name} revision={doc.previewRevision} />
+          <PptxViewer name={doc.name} revision={doc.previewRevision} identity={identity} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
         )}
         {doc.kind === "html" && doc.ext !== "docx" && doc.ext !== "pptx" && (
           <div className="docframe-container">
@@ -585,7 +689,13 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
         )}
         {doc.kind === "pdf" && (
           <div className="docframe-container">
-            <iframe title={doc.name} src={doc.url} className="docframe" />
+            <iframe
+              title={doc.name}
+              src={doc.url}
+              className="docframe"
+              onLoad={() => setPreviewState((prev) => (prev === PREVIEW_STATE.FAILED ? prev : PREVIEW_STATE.PARTIAL))}
+              onError={() => { setPreviewState(PREVIEW_STATE.FAILED); setPreviewErr("PDF 预览加载失败，可用系统应用打开"); }}
+            />
           </div>
         )}
         {doc.kind === "xlsx" && <ExcelGrid name={doc.name} sheets={doc.sheets} grids={doc.grids} />}
@@ -597,7 +707,7 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
               srcDoc={doc.content || ""}
               className="docframe"
               sandbox="allow-scripts allow-same-origin"
-              onLoad={handleIframeLoad}
+              onLoad={() => { handleIframeLoad(); setPreviewState(PREVIEW_STATE.READY); }}
             />
             {annoMode && annoToolbar && !annoInput && (
               <div
@@ -699,7 +809,15 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
 }
 
 export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTab, onOpenFile, loading, onSendToAgent, onInsertContext }) {
-  const doc = tabs.find((t) => t.name === activeTab) || null;
+  // activeTab 是标签 id（工作区 + 相对路径），兼容旧数据仍可能传文件名。
+  const doc = tabs.find((t) => (t.id || t.name) === activeTab) || null;
+  const tabId = (t) => t.id || t.name;
+  // 标签副标题：不同工作区的同名文件用工作区末段提示，便于区分。
+  const workspaceHint = (t) => {
+    const ws = t.identity?.workspaceId || t.identity?.cwd || "";
+    const parts = String(ws).replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  };
 
   // 本机原生操作：用系统默认应用打开 / 在文件管理器中显示（服务端做路径白名单校验）
   const handleNative = async (action) => {
@@ -719,16 +837,16 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
         <div className="doc-tabs">
           {tabs.map((t) => (
             <div
-              key={t.name}
+              key={tabId(t)}
               role="tab"
               tabIndex={0}
-              aria-selected={t.name === activeTab}
-              className={`doc-tab ${t.name === activeTab ? "active" : ""}`}
-              onClick={() => onSwitchTab && onSwitchTab(t.name)}
+              aria-selected={tabId(t) === activeTab}
+              className={`doc-tab ${tabId(t) === activeTab ? "active" : ""}`}
+              onClick={() => onSwitchTab && onSwitchTab(tabId(t))}
               onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSwitchTab && onSwitchTab(t.name); }
+                if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSwitchTab && onSwitchTab(tabId(t)); }
               }}
-              title={t.name}
+              title={workspaceHint(t) ? `${t.name} — ${workspaceHint(t)}` : t.name}
             >
               <span className="doc-tab-icon"><Icon name={ICONS[t.ext] || "file"} size={12} /></span>
               <span className="doc-tab-name">{t.name}</span>
@@ -737,7 +855,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
                 className="doc-tab-close"
                 aria-label={`关闭 ${t.name}`}
                 title={`关闭 ${t.name}`}
-                onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(t.name); }}
+                onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(tabId(t)); }}
               >×</button>
             </div>
           ))}
