@@ -97,6 +97,7 @@ export function normalizeFileChange(input = {}, { runId = null } = {}) {
       : "unclassified";
   return {
     runId: input.runId || runId || null,
+    changeId: input.changeId || null,
     workspaceId: input.workspaceId || null,
     cwd: input.cwd || null,
     relativePath,

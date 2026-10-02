@@ -9968,6 +9968,58 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .summary-product.role-deliverable { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
 
 /* ==========================================================================
+   W3：本轮文件改动面板（单一文件集合 + 按需内容差异）
+   —— 只做列表与差异展示，不做整屏动画；差异按需加载、分页。
+   ========================================================================== */
+.file-changes-panel { display: flex; flex-direction: column; min-height: 0; gap: 6px; padding: 8px 10px; }
+.file-changes-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.file-changes-title { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text); font-weight: 600; }
+.file-changes-flag { padding: 1px 7px; border-radius: 999px; font-size: 10px; }
+.file-changes-flag.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.file-changes-flag.danger { color: var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); }
+.file-changes-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+.file-change-row { border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--panel2-bg) 55%, transparent); }
+.file-change-row.warn { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+.file-change-row.danger { border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
+.file-change-row.muted { opacity: .72; }
+.file-change-main { display: flex; align-items: center; gap: 6px; padding: 5px 8px; min-width: 0; }
+.file-change-name { flex: 1; display: inline-flex; align-items: center; gap: 6px; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: 11px; cursor: pointer; text-align: left; }
+.file-change-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.file-change-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-change-type { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; font-size: 9px; color: var(--muted); border: 1px solid var(--border); }
+.file-change-type.added { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.file-change-type.deleted { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--border)); }
+.file-change-type.modified { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.file-change-role { flex: 0 0 auto; padding: 1px 6px; border-radius: 999px; font-size: 9px; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.file-change-role.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.file-change-meta { flex: 0 0 auto; font-size: 9px; color: var(--dim); }
+.file-change-actions { flex: 0 0 auto; display: inline-flex; gap: 4px; }
+.file-change-detail { border-top: 1px solid var(--border); padding: 6px 8px; }
+.file-diff-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
+.file-diff-kind { padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); }
+.file-diff-kind.kind-office { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.file-diff-kind.kind-binary, .file-diff-kind.kind-image, .file-diff-kind.kind-pdf { color: var(--muted); }
+.file-diff-summary .diff-added { color: var(--success); }
+.file-diff-summary .diff-removed { color: var(--error); }
+.file-diff-flag { padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--border) 35%, transparent); }
+.file-diff-flag.warn { color: var(--warning); }
+.file-diff-size { color: var(--text); }
+.file-diff-note { margin-top: 4px; font-size: 10px; color: var(--dim); line-height: 1.55; }
+.file-diff-note.warn { color: var(--warning); }
+.file-diff-hunks { margin-top: 5px; display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow: auto; }
+.file-diff-hunk { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.file-diff-hunk-head { padding: 2px 7px; background: color-mix(in srgb, var(--border) 30%, transparent); color: var(--dim); font-size: 9px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.file-diff-line { display: flex; align-items: baseline; gap: 6px; padding: 0 7px; font-size: 10.5px; line-height: 1.6; white-space: pre; }
+.file-diff-line code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--text); }
+.file-diff-line.insert { background: color-mix(in srgb, var(--success) 12%, transparent); }
+.file-diff-line.delete { background: color-mix(in srgb, var(--error) 12%, transparent); }
+.file-diff-gutter { flex: 0 0 8px; color: var(--dim); }
+.file-diff-lineno { flex: 0 0 34px; text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+.file-diff-pager { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 10px; color: var(--muted); }
+
+.artifact-changes-card { border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--panel2-bg) 45%, transparent); margin: 8px 0; }
+
+/* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
      - data-reduce-motion="1"   系统 prefers-reduced-motion: reduce

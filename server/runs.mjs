@@ -591,6 +591,72 @@ export function updateRunCheckpoint(id, patch = {}) {
   return getRun(saved.id);
 }
 
+/** 变更稳定标识：同一 Run 内同一路径恒定，供差异接口按 id 解析（不接受任意路径）。 */
+export function changeIdForPath(relativePath) {
+  return `change_${crypto.createHash("sha1").update(String(relativePath || "").replace(/\\/g, "/")).digest("hex").slice(0, 12)}`;
+}
+
+function normalizeChangeTypeOf(change) {
+  const status = String(change?.status || "").toLowerCase();
+  if (change?.from) return "renamed";
+  if (["added", "created", "new"].includes(status)) return "added";
+  if (["deleted", "removed"].includes(status)) return "deleted";
+  if (status === "renamed") return "renamed";
+  if (["modified", "changed", "updated"].includes(status)) return "modified";
+  return "unclassified";
+}
+
+/**
+ * C01：把变更补全为可审计的 FileChange，并剔除“没有内容差异”的疑似变更。
+ *   - 来源优先级：工具写入记录（write-ledger）> 前后快照 diff（confirmed）> 运行窗口 mtime（suspected）
+ *   - 只有 before blob 可用、且当前内容与 Run.after 一致时才可回滚（blobs 字段交给前端判断）
+ */
+function finalizeFileChanges(run, changes, after) {
+  const touched = new Set((run.touchedPaths || [])
+    .map((value) => normalizeTrackedPath(run, value))
+    .filter((value) => value && value !== "."));
+  const toolCallIdByPath = new Map();
+  for (const event of Array.isArray(run.events) ? run.events : []) {
+    if (event?.type !== "write_started") continue;
+    const path = normalizeTrackedPath(run, event?.data?.path);
+    const callId = event?.data?.toolCallId || event?.data?.callId || null;
+    if (path && path !== "." && callId && !toolCallIdByPath.has(path)) toolCallIdByPath.set(path, String(callId));
+  }
+  const out = [];
+  for (const change of Array.isArray(changes) ? changes : []) {
+    const relativePath = String(change?.path || change?.relativePath || "").replace(/\\/g, "/");
+    if (!relativePath) continue;
+    const changeType = normalizeChangeTypeOf(change);
+    const viaLedger = touched.has(relativePath);
+    const source = viaLedger ? "write-ledger" : (change.detectedBy === "recent-mtime" ? "recent-mtime" : "snapshot");
+    const confidence = source === "recent-mtime" ? "suspected" : "confirmed";
+    // 疑似变更再核对一次：大小与修改时间都一致时视为“只是被 touch”，不算修改
+    if (confidence === "suspected" && changeType === "modified") {
+      const beforeItem = run.before?.files?.[relativePath];
+      const afterItem = after?.files?.[relativePath];
+      if (beforeItem && afterItem && beforeItem.size === afterItem.size
+        && Math.abs(Number(beforeItem.mtime || 0) - Number(afterItem.mtime || 0)) < 1) continue;
+    }
+    const beforeReversible = Boolean(change.before?.reversible);
+    const afterAvailable = Boolean(change.after?.reversible) || Boolean(after?.files?.[relativePath]);
+    out.push({
+      ...change,
+      changeId: changeIdForPath(relativePath),
+      relativePath,
+      changeType,
+      workspaceId: run.projectId || null,
+      cwd: run.cwd || null,
+      source,
+      confidence,
+      toolCallId: toolCallIdByPath.get(relativePath) || change.toolCallId || null,
+      detectedBy: source,
+      detectable: changeType !== "deleted" || beforeReversible,
+      blobs: { before: beforeReversible, after: afterAvailable },
+    });
+  }
+  return out;
+}
+
 function changedFiles(before, after) {
   const a = before?.files || {};
   const b = after?.files || {};
@@ -763,10 +829,12 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
       }));
       if (recentChanges.length) run.changeDetection = { source: "recent-mtime", scanned: recentChanges.length, snapshotTruncated: Boolean(run.before?.truncated || after.truncated) };
     }
-    const artifacts = shouldTrackWorkspace ? filterRunChanges(run, mergeChangeLists(snapshotChanges, recentChanges)) : [];
-    if (shouldTrackWorkspace) copyAfterBlobs(run, artifacts, after);
+    const rawChanges = shouldTrackWorkspace ? filterRunChanges(run, mergeChangeLists(snapshotChanges, recentChanges)) : [];
+    if (shouldTrackWorkspace) copyAfterBlobs(run, rawChanges, after);
     run.after = after;
-    run.artifacts = artifacts;
+    // C01：补全审计字段 + 剔除“没有内容差异”的疑似变更（必须在 after blob 复制之后判定）
+    run.artifacts = shouldTrackWorkspace ? finalizeFileChanges(run, rawChanges, after) : [];
+    const artifacts = run.artifacts;
     run.snapshotTruncated = Boolean(run.before?.truncated || after.truncated);
     run.status = finalStatus;
     run.error = finalError;

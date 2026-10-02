@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { confirmArtifactAcceptance, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
+import FileChangesPanel from "./FileChangesPanel.jsx";
+import { projectRunView } from "../运行展示投影.js";
 
 const statusText = { running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", completed: "已完成", failed: "失败", cancelled: "已取消", aborted: "已中断" };
 
@@ -155,6 +157,17 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
   }).length;
   // 只有「尚未回滚且存在上一正式版本」的成果才真正可回滚；首个版本没有历史版本。
   const rollbackableCount = published.filter((item) => item.status !== "rolled_back" && item.rollbackTarget).length;
+  // W3/C02：本轮（最新 Run）的文件改动与内容差异。B03 会把“改动”做成独立右栏页签，
+  // 这里先接到产物面板，让用户今天就能打开差异；仍按 runId 归属，不做跨轮聚合。
+  const latestRun = useMemo(() => {
+    const scoped = (runs || []).filter((run) => !currentSessionId || run.sessionId === currentSessionId);
+    return scoped[0] || null;
+  }, [runs, currentSessionId]);
+  const latestChanges = useMemo(() => {
+    if (!latestRun) return [];
+    const view = projectRunView(latestRun, Array.isArray(latestRun.events) ? latestRun.events : []);
+    return view.changes || [];
+  }, [latestRun]);
 
   const runAction = async (key, callback) => {
     setAction(key);
@@ -173,6 +186,16 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
         <div title="仅统计：格式验收通过、所属任务成功结束、且尚未固定的文件"><strong>{readyCount}</strong><span>待固定</span></div>
         <div><strong>{published.length}</strong><span>正式版本</span></div>
       </div>
+      {latestRun && latestChanges.length > 0 && (
+        <div className="artifact-changes-card">
+          <FileChangesPanel
+            runId={latestRun.id}
+            changes={latestChanges}
+            detection={{ truncated: Boolean(latestRun.snapshotTruncated) }}
+            onOpenFile={(relative) => onOpenFile?.(relative)}
+          />
+        </div>
+      )}
       <div className="artifact-list-card">
         <div className="artifact-list-head"><span>本轮文件</span><small>{currentSessionId ? "已按当前会话筛选" : "当前工作区"}</small></div>
         {loading && <div className="preview-empty">正在读取产物清单…</div>}

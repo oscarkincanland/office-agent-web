@@ -31,6 +31,7 @@ import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHtt
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
 import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager } from "./原生文件.mjs";
+import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
 import * as browserModule from "./内置浏览器.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
 import { PI_PACKAGE_VERSION, piRuntimeManager } from "./Pi运行时管理.mjs";
@@ -2687,6 +2688,89 @@ app.get("/api/runs/:id/acceptance", async (req, res) => {
   const result = await inspectRunAcceptance(req.params.id, rules);
   if (!result.ok) return res.status(result.status || 400).json(result);
   res.json(result);
+});
+
+// ---------- 本轮文件改动的内容差异（W3/C02，只读） ----------
+// 安全：changeId 必须能在服务端 Run 记录里解析到合法文件；不接受任意路径参数。
+const RUN_CHANGES_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
+
+/** 读文件前 N 字节（大文件不整读，避免阻塞 Node 主线程）。 */
+function readCappedBuffer(file, maxBytes) {
+  let fd = null;
+  try {
+    const stat = fs.statSync(file);
+    const size = Number(stat.size) || 0;
+    const toRead = Math.min(size, Math.max(0, Number(maxBytes) || 0));
+    fd = fs.openSync(file, "r");
+    const buffer = Buffer.allocUnsafe(toRead);
+    const read = toRead > 0 ? fs.readSync(fd, buffer, 0, toRead, 0) : 0;
+    return { buffer: buffer.subarray(0, read), size, truncated: size > toRead };
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
+function runChangeById(run, changeId) {
+  const wanted = String(changeId || "");
+  return (Array.isArray(run?.artifacts) ? run.artifacts : [])
+    .find((item) => item.changeId === wanted || item.artifactId === wanted) || null;
+}
+
+app.get("/api/runs/:id/changes/:changeId/diff", (req, res) => {
+  const run = getRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: "run not found", code: "RUN_NOT_FOUND" });
+  const change = runChangeById(run, req.params.changeId);
+  if (!change) return res.status(404).json({ ok: false, error: "该 Run 记录里没有这个变更", code: "CHANGE_NOT_FOUND" });
+  const relativePath = String(change.relativePath || change.path || "").replace(/\\/g, "/");
+  const cwd = String(change.cwd || run.cwd || "");
+  const page = Math.max(0, Number.parseInt(String(req.query.page || "0"), 10) || 0);
+
+  // before：Run 的 before blob（只有明确标记可用时才读）
+  let before = null;
+  if (change.blobs?.before) {
+    const file = path.join(RUN_CHANGES_DIR, run.id, "before", relativePath);
+    before = readCappedBuffer(file, DIFF_LIMITS.maxInputBytes + 1);
+  }
+  // after：优先 Run 的 after blob，其次当前工作区文件（必须仍在工作区内）
+  let after = null;
+  if (change.blobs?.after) {
+    const file = path.join(RUN_CHANGES_DIR, run.id, "after", relativePath);
+    after = readCappedBuffer(file, DIFF_LIMITS.maxInputBytes + 1);
+  }
+  if (!after && cwd && relativePath) {
+    const target = path.resolve(cwd, relativePath);
+    if (isInside(cwd, target)) after = readCappedBuffer(target, DIFF_LIMITS.maxInputBytes + 1);
+  }
+
+  const diff = diffFileContents({
+    relativePath,
+    beforeBuffer: before?.buffer ?? null,
+    afterBuffer: after?.buffer ?? null,
+    before: { size: before?.size ?? change.before?.size ?? null, hash: change.before?.hash ?? null },
+    after: { size: after?.size ?? change.after?.size ?? null, hash: change.after?.hash ?? null },
+    page,
+  });
+  res.json({
+    ok: true,
+    change: {
+      changeId: change.changeId || null,
+      relativePath,
+      changeType: change.changeType || change.status || null,
+      confidence: change.confidence || null,
+      source: change.source || null,
+      blobs: change.blobs || { before: false, after: false },
+      acceptanceStatus: change.acceptanceStatus || null,
+      verificationStatus: change.verificationStatus || null,
+    },
+    diff,
+    limits: {
+      maxInputBytes: DIFF_LIMITS.maxInputBytes,
+      maxHunksPerPage: DIFF_LIMITS.maxHunksPerPage,
+      inputTruncated: Boolean(before?.truncated || after?.truncated),
+    },
+  });
 });
 
 // ---------- 项目管理：兼容现有 workspace，并为会话/Run 提供统一归属 ----------

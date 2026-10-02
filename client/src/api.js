@@ -137,6 +137,10 @@ export const openInSystem = (path) =>
   api("/api/system/open", { method: "POST", body: JSON.stringify({ path }) });
 export const revealInSystem = (path) =>
   api("/api/system/reveal", { method: "POST", body: JSON.stringify({ path }) });
+
+// 本轮文件改动的内容差异（W3/C02，只读；changeId 由服务端 Run 记录解析）
+export const getRunChangeDiff = (runId, changeId, page = 0) =>
+  api(`/api/runs/${encodeURIComponent(runId)}/changes/${encodeURIComponent(changeId)}/diff${page ? `?page=${page}` : ""}`);
 export const deleteWorkspace = (path) =>
   api("/api/workspace/delete", { method: "POST", body: JSON.stringify({ path }) });
 export const listFileRoots = () => api("/api/file-roots");
