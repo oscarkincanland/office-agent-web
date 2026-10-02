@@ -289,6 +289,9 @@ assert.match(workspaceSource, /png\|jpg\|jpeg\|gif\|webp/, "文件列表应支�
 const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
 assert.match(serverSource, /kind: "image"/, "打开接口应返回 kind:image");
 assert.match(serverSource, /IMAGE_EXTENSIONS/, "应集中声明图片扩展名");
+assert.match(serverSource, /png: "image\/png"/, "raw 应给图片正确 MIME");
+assert.match(serverSource, /svg: "image\/svg\+xml"/, "SVG 应使用 image/svg+xml");
+assert.match(serverSource, /Content-Security-Policy", "sandbox/, "SVG 应带沙箱响应头，受控展示");
 console.log("  ✓ D04 图片查看器与 PDF 状态契约");
 console.log(failed ? "\n预览身份测试：失败" : "\n预览身份测试：通过");
 process.exit(failed ? 1 : 0);

@@ -933,11 +933,32 @@ app.get(/^\/api\/doc\/(.+)\/raw$/, (req, res) => {
   const p = resolvePath(fileName, requestedCwd);
   if (!p) return res.status(404).json({ error: "not found" });
   const ext = path.extname(p).slice(1).toLowerCase();
-  const mimeMap = { docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xls: "application/vnd.ms-excel", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation", pdf: "application/pdf" };
+  const mimeMap = {
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    pdf: "application/pdf",
+    // D04：图片按真实类型返回，避免 application/octet-stream 让预览/下载行为不确定
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    avif: "image/avif",
+    ico: "image/x-icon",
+    svg: "image/svg+xml",
+  };
   try {
     res.setHeader("Cache-Control", "no-store, max-age=0");
     res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
     res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(fileName)}"`);
+    if (ext === "svg") {
+      // SVG 可携带脚本：以沙箱响应头受控展示（img 通道本就不执行脚本，这里再兜一层）
+      res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    }
     // 文件身份随响应返回，前端核对一致后才渲染，避免同名跨工作区串内容。
     setPreviewIdentityHeader(res, previewFileIdentity(fileName, requestedCwd, p));
     res.sendFile(p);
