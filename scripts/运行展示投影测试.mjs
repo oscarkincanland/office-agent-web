@@ -18,6 +18,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   adaptLegacyRunSummary,
+  deriveTimeline,
+  deriveWorkPhase,
   isInternalChangePath,
   lifecycleLabel,
   normalizeFileChange,
@@ -274,6 +276,54 @@ test("服务端不再把全部文件名塞进总结正文（A02-3）", () => {
   assert.match(index, /summary: `本轮对话完成，共处理 \$\{productPaths\.length\} 个文件`/, "应只保留数量，清单走 products/artifacts");
   assert.match(index, /summary: `对话异常结束，仍处理了 \$\{changed\.length\} 个文件`/, "异常路径同样只保留数量");
   assert.match(index, /summary: `恢复任务完成，共处理 \$\{productPaths\.length\} 个文件`/, "恢复路径同样只保留数量");
+});
+
+console.log("\n▶ W7/E01+E03 工作阶段与时间线");
+
+test("工作阶段允许“验证→再执行”回退并计数重试", () => {
+  const events = [
+    { type: "run_started", at: "2026-10-02T01:00:00.000Z" },
+    { type: "capability_plan", at: "2026-10-02T01:00:01.000Z" },
+    { type: "tool_start", data: { name: "write", toolCallId: "t1" }, at: "2026-10-02T01:00:02.000Z" },
+    { type: "artifacts_validated", data: { status: "failed" }, at: "2026-10-02T01:00:03.000Z" },
+    { type: "tool_start", data: { name: "edit", toolCallId: "t2" }, at: "2026-10-02T01:00:04.000Z" },
+    { type: "run_finished", data: { status: "completed" }, at: "2026-10-02T01:00:09.000Z" },
+  ];
+  const trail = deriveWorkPhase(events);
+  assert.equal(trail.phase, "delivering", "最终应进入交付阶段");
+  assert.equal(trail.retries, 1, "验证失败后再次执行应记为一次重试");
+  const phases = trail.trail.map((item) => item.phase);
+  assert.ok(phases.includes("verifying") && phases.indexOf("verifying") < phases.lastIndexOf("executing"), "轨迹应出现 verifying → executing 的回退");
+});
+
+test("结构化时间线区分首事件/模型执行/后台收尾", () => {
+  const events = [
+    { type: "run_started", at: "2026-10-02T01:00:00.000Z" },
+    { type: "model_request_started", at: "2026-10-02T01:00:02.000Z" },
+    { type: "token", at: "2026-10-02T01:00:03.000Z" },
+    { type: "agent_end", at: "2026-10-02T01:00:10.000Z" },
+    { type: "artifacts_validated", at: "2026-10-02T01:00:11.000Z" },
+    { type: "run_finished", at: "2026-10-02T01:00:12.000Z" },
+  ];
+  const t = deriveTimeline(events, {});
+  assert.equal(t.admitted, "2026-10-02T01:00:00.000Z");
+  assert.equal(t.firstVisibleText, "2026-10-02T01:00:03.000Z");
+  assert.equal(t.verificationEnd, "2026-10-02T01:00:11.000Z");
+  assert.equal(t.finished, "2026-10-02T01:00:12.000Z");
+  assert.equal(t.latencyToFirstEventMs, 2000, "首事件延迟 = 受理 → 首次模型事件");
+  assert.equal(t.modelDurationMs, 8000, "模型执行时长");
+  assert.equal(t.tailLatencyMs, 2000, "后台收尾延迟（模型结束 → 终态）");
+});
+
+test("E03：进度文本只来自结构化事件，不再正则猜正文", () => {
+  const panel = fs.readFileSync(path.join(ROOT, "client/src/components/ChatPanel.jsx"), "utf8");
+  assert.doesNotMatch(panel, /PROGRESS_WORDS/, "不得再用进度词正则从模型正文里猜进度");
+  assert.doesNotMatch(panel, /const recentNarration = useMemo\(\(\) => \{\s*\n\s*const PROGRESS_WORDS/, "应移除旧的正文猜测实现");
+  assert.match(panel, /find\(\(item\) => \["in_progress", "running"\]\.includes\(String\(item\?\.status \|\| ""\)\)\)/, "进度优先取进行中的待办（结构化）");
+  assert.match(panel, /flowEventLabel\(event\)/, "退化为最近一条结构化事件的文案");
+  const view = projectRunView({ id: "run_e03" }, [{ type: "tool_start", data: { name: "read", toolCallId: "t1" } }]);
+  assert.ok(view.progress.timeline, "投影应带结构化时间线");
+  assert.equal(typeof view.progress.workPhase, "string", "投影应带工作阶段");
 });
 
 console.log("\n▶ 真实样本");

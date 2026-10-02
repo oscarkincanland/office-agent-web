@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { cancelRun, getRun, getRunAcceptance, listRuns, resumeRun, retryRun } from "../api.js";
 import { verificationLabel } from "../运行轨迹.js";
 import Icon from "./Icon.jsx";
@@ -112,6 +113,31 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
   const refreshInFlightRef = useRef(null);
   const refreshQueuedRef = useRef(false);
   const triggerRef = useRef(null);
+  // B04：弹层通过 Portal 挂到应用浮层根（body），固定定位并随触发按钮/视口边缘更新，
+  // 不再受祖先堆叠上下文或 overflow 影响。窄屏（≤560px）仍交给 CSS 的贴边抽屉。
+  const [floatingRect, setFloatingRect] = useState(null);
+
+  const updateFloatingRect = useCallback(() => {
+    if (typeof window === "undefined") return;
+    if (window.innerWidth <= 560) { setFloatingRect(null); return; }
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 344;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const top = Math.max(8, Math.min(rect.bottom + 8, window.innerHeight - 160));
+    setFloatingRect({ left, top, width });
+  }, []);
+
+  useEffect(() => {
+    if (!open || fullPage) return undefined;
+    updateFloatingRect();
+    window.addEventListener("resize", updateFloatingRect);
+    window.addEventListener("scroll", updateFloatingRect, true);
+    return () => {
+      window.removeEventListener("resize", updateFloatingRect);
+      window.removeEventListener("scroll", updateFloatingRect, true);
+    };
+  }, [open, fullPage, updateFloatingRect]);
 
   const closePanel = useCallback(({ returnFocus = true } = {}) => {
     setOpen(false);
@@ -375,7 +401,13 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         </div>
       );
 
-  return fullPage
-    ? <div className="module-view task-center-module">{panel}</div>
-    : <div className="task-center-wrap">{trigger}{panel}</div>;
+  if (fullPage) return <div className="module-view task-center-module">{panel}</div>;
+  // 浮层走 Portal：trigger 留在原位负责定位与焦点归还，面板挂到 body
+  const floatingPanel = floatingRect && open && typeof document !== "undefined"
+    ? createPortal(
+      <div className="task-center-float" style={{ left: floatingRect.left, top: floatingRect.top, width: floatingRect.width }}>{panel}</div>,
+      document.body,
+    )
+    : (open ? panel : null);
+  return <div className="task-center-wrap">{trigger}{floatingPanel}</div>;
 }

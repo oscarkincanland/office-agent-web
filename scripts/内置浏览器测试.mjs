@@ -256,7 +256,10 @@ await test("agent / task / index / 前端已接入浏览器能力", () => {
   // 标签页 UI 与文档按 cwd 打开（产物跨工作区）
   assert.match(panel, /action: "tab_switch"/);
   assert.match(panel, /action: "tab_new"/);
-  assert.match(app, /cwdQuery/, "打开文档必须携带 cwd");
+  // W4/D01：打开文档改为携带“文件身份”（含 cwd/wsid），由 文件地址.js 统一生成地址
+  assert.match(app, /makeFileIdentity\(\{ workspaceId: effectiveCwd, cwd: effectiveCwd, relativePath: name \}\)/, "打开文档应构造含 cwd 的文件身份");
+  assert.match(app, /buildDocUrls\(/, "预览地址应由统一文件身份生成");
+  assert.match(fs.readFileSync(path.join(ROOT, "client/src/文件地址.js"), "utf8"), /cwd/, "文件身份应包含工作区 cwd");
   assert.match(index, /resolvePath\(fileName, requestedCwd\)/, "文档接口需支持 cwd 解析");
 });
 

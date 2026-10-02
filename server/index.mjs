@@ -1001,6 +1001,9 @@ app.get(/^\/api\/doc\/(.+)$/, async (req, res, next) => {
     } else if (ext === "pdf") {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "pdf", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
+    } else if (IMAGE_EXTENSIONS.has(ext)) {
+      // D04：独立图片格式走专用查看器（raw 已按扩展名给正确 MIME）
+      res.json({ kind: "image", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/raw${cwdQuery}` });
     } else {
       res.setHeader("Cache-Control", "no-store, max-age=0");
       res.json({ kind: "html", name: fileName, ext, identity, url: `/api/doc/${encodeURIComponent(fileName)}/html${cwdQuery}` });
@@ -2692,6 +2695,8 @@ app.get("/api/runs/:id/acceptance", async (req, res) => {
 
 // ---------- 本轮文件改动的内容差异（W3/C02，只读） ----------
 // 安全：changeId 必须能在服务端 Run 记录里解析到合法文件；不接受任意路径参数。
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"]);
+
 const RUN_CHANGES_DIR = process.env.OAW_RUNS_DIR || path.join(PROJECT_DIR, ".oaw", "runs");
 
 /** 读文件前 N 字节（大文件不整读，避免阻塞 Node 主线程）。 */

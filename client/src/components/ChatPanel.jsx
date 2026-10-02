@@ -7,7 +7,7 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
 import { projectLegacyRunSummary } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
@@ -2787,22 +2787,21 @@ case "runtime_connecting":
   ].filter(Boolean);
   // 最近一段"像进度小结"的模型正文：进度行右侧展示"最近小结"，
   // 只在正文出现进度关键词时摘取首行，避免把普通正文误当小结。
+  // E03：进度文本只来自结构化事件（待办 / 工具边界 / 阶段），
+  // 不再用正则从模型正文里猜“进度句”，避免把结论误当进度、也避免每轮重复叙述。
   const recentNarration = useMemo(() => {
-    const PROGRESS_WORDS = /(已完成|已更新|下一步|接下来|当前|正在|进度|阶段|首先|然后)/;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message?.role !== "assistant") continue;
-      const blocks = Array.isArray(message.blocks) ? message.blocks : [];
-      const text = (blocks.filter((block) => block?.type === "text").map((block) => String(block.text || "")).join("\n") || String(message.text || "")).trim();
-      if (!text) continue;
-      const firstLine = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
-      if (!firstLine) continue;
-      const normalized = firstLine.replace(/^[#>*\-\s]+/, "").trim();
-      if (!PROGRESS_WORDS.test(normalized)) continue;
-      return normalized.length > 68 ? `${normalized.slice(0, 68)}…` : normalized;
+    const active = (Array.isArray(todoItems) ? todoItems : [])
+      .find((item) => ["in_progress", "running"].includes(String(item?.status || "")));
+    if (active?.title) return String(active.title).slice(0, 68);
+    for (let index = executionEvents.length - 1; index >= 0; index -= 1) {
+      const event = executionEvents[index];
+      const type = String(event?.type || "");
+      if (!type || STAGE_ONLY_EVENTS.has(type) || type === "stats" || type === "token") continue;
+      const label = String(flowEventLabel(event) || "").trim();
+      if (label) return label.length > 68 ? `${label.slice(0, 68)}…` : label;
     }
     return "";
-  }, [messages]);
+  }, [executionEvents, todoItems]);
 
   return (
     <ErrorBoundary>
@@ -3354,6 +3353,9 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     ...(Array.isArray(m.memoryProposalIds) ? m.memoryProposalIds : []),
   ])], [view.memoryProposalIds, m.memoryProposalIds]);
   const rollbackableCount = fileChanges.filter((change) => change.before?.reversible).length;
+  // B01 过程行：优先用轨迹摘要（含成功/失败/待办），退化到投影计数
+  const processSummary = traceSummary
+    || (view.progress.toolTotal ? `已调用 ${view.progress.toolTotal} 个工具${view.progress.toolFailed ? `（${view.progress.toolFailed} 失败）` : ""}` : "");
   // 只有真实需要用户行动时才提示（计划 A02-4：删除通用“下一步”）
   const actionNeeded = view.lifecycle === "waiting_approval"
     ? { kind: "approval", text: view.progress.waitingReason || "等待你审批后继续" }
@@ -3508,11 +3510,17 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
             </div>
           )}
-          {trace?.tools?.length > 0 && (
-            <div className="run-trace-tools">
-              <button type="button" className="run-trace-tools-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
-                <span className="file-change-label"><Icon name="flow" size={11} /> 本轮工具（{trace.tools.length}）</span>
-                <span className="run-trace-tools-chevron">{toolsOpen ? "▾" : "▸"}</span>
+          {/* B01：每个 Run 内联一条过程（一行摘要 + 展开工具/输出）；顶部执行流只服务于“当前正在跑”的那一轮 */}
+          {(trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
+            <div className="run-process-row">
+              <button type="button" className="run-process-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
+                <Icon name="flow" size={11} />
+                <span className="run-process-text">
+                  {processSummary}
+                  {view.progress.durationMs ? ` · 用时 ${formatDuration(view.progress.durationMs)}` : ""}
+                  {view.progress.waitingReason ? ` · ${view.progress.waitingReason}` : ""}
+                </span>
+                <span className="run-process-chevron">{toolsOpen ? "▾" : "▸"}</span>
               </button>
               {toolsOpen && <div className="run-trace-tool-list">
                 {trace.tools.map((tool) => (

@@ -34,7 +34,9 @@ try {
   assert.match(chatPanelSource, /className="chat-scroll-latest"/, "用户离开底部后应提供回到底部按钮");
   assert.match(chatPanelSource, /function appendExecutionFlowEvent\(/, "执行流应合并重复的文件/总结事件");
   assert.match(chatPanelSource, /className="chat-topbar"/);
-  assert.match(chatPanelSource, /showExecutionFlow && \(\s*<ExecutionFlow\s+events=\{executionEvents\}\s+running=\{busy\}\s+onFocusTool=\{focusTool\}/, "执行流应固定在对话顶部而不是插入消息气泡之间");
+  assert.match(chatPanelSource, /showExecutionFlow && \(\s*<ExecutionFlow\s+events=\{executionEvents\}\s+running=\{busy\}\s+onFocusTool=\{focusTool\}/, "当前运行的过程固定在对话顶部（B01 后仍保留）");
+  assert.match(chatPanelSource, /className="run-process-toggle"/, "每个已结束的 Run 应有一行内联过程（B01）");
+  assert.match(chatPanelSource, /const processSummary = traceSummary/, "过程行摘要来自轨迹归约，不重数原始事件");
   assert.doesNotMatch(chatPanelSource, /executionFlowAnchored && m\.id === executionFlowAnchorId && <ExecutionFlow/);
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
@@ -91,8 +93,8 @@ try {
   assert.match(appSource, /onRunFinished=\{handleRunFinished\}/, "本轮完成后应把权威产物交给预览层");
   assert.match(appSource, /void open\(firstArtifact\.path/, "本轮完成后应自动打开首个产物");
   assert.match(chatPanelSource, /onRunFinished\?\.\(data\)/, "前端应在 run_finished 后通知产物预览");
-  assert.match(chatPanelSource, /run-trace-tools-toggle/, "本轮工具应提供独立折叠交互");
-  assert.match(chatPanelSource, /const \[toolsOpen, setToolsOpen\] = useState\(false\)/, "本轮工具默认应折叠");
+  assert.match(chatPanelSource, /run-process-toggle/, "过程行应提供独立折叠交互（展开工具）");
+  assert.match(chatPanelSource, /const \[toolsOpen, setToolsOpen\] = useState\(false\)/, "过程展开默认折叠");
   assert.match(serverSource, /function officeResults\(response\)/, "Excel 解析应兼容 Office CLI 结果结构");
   assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
   assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");

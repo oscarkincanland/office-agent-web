@@ -274,5 +274,21 @@ await test("禁改文件未被本工作包改动（基线可读）", () => {
   }
 });
 
+// D04：独立图片查看器与 PDF 状态
+const imageViewer = fs.readFileSync(new URL("../client/src/components/ImageViewer.jsx", import.meta.url), "utf8");
+assert.match(imageViewer, /PREVIEW_STATE/, "图片查看器应使用统一预览状态");
+assert.match(imageViewer, /scale-fit|scale-\$\{/, "图片查看器应支持适应窗口与固定比例");
+assert.match(imageViewer, /打开原图/, "图片查看器应提供用系统应用打开原图");
+assert.match(imageViewer, /onError=\{markFailed\}/, "图片加载失败应有明确失败态");
+const docViewerSource = fs.readFileSync(new URL("../client/src/components/DocViewer.jsx", import.meta.url), "utf8");
+assert.match(docViewerSource, /doc\.kind === "image" && \(/, "DocViewer 应分派图片查看器");
+assert.match(docViewerSource, /import ImageViewer from "\.\/ImageViewer\.jsx"/, "应引入 ImageViewer");
+assert.match(docViewerSource, /doc\.kind === "pdf" && \([\s\S]{0,400}?onError=/, "PDF 分支应有加载失败处理");
+const workspaceSource = fs.readFileSync(new URL("../server/workspace.mjs", import.meta.url), "utf8");
+assert.match(workspaceSource, /png\|jpg\|jpeg\|gif\|webp/, "文件列表应支持图片扩展名");
+const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
+assert.match(serverSource, /kind: "image"/, "打开接口应返回 kind:image");
+assert.match(serverSource, /IMAGE_EXTENSIONS/, "应集中声明图片扩展名");
+console.log("  ✓ D04 图片查看器与 PDF 状态契约");
 console.log(failed ? "\n预览身份测试：失败" : "\n预览身份测试：通过");
 process.exit(failed ? 1 : 0);

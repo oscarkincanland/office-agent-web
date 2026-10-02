@@ -1,5 +1,5 @@
 import { reduceRunTrace, summarizeRunTrace, verificationLabel } from "./运行轨迹.js";
-import { flowEventLabel } from "./事件展示.js";
+import { flowEventLabel, phaseForEvent } from "./事件展示.js";
 
 /**
  * 运行展示投影（W1/A01）
@@ -153,6 +153,77 @@ function waitingReasonOf(events) {
   return null;
 }
 
+/* ------------------------------ 工作阶段与时间线（W7/E01、E03） ------------------------------ */
+
+/** 工作阶段：与生命周期分开；允许“验证 → 再执行”的回退（失败重试），只有生命周期终态不可倒退。 */
+export const WORK_PHASE_ORDER = Object.freeze(["idle", "planning", "executing", "verifying", "delivering"]);
+
+function workPhaseOfEvent(event) {
+  const phase = phaseForEvent(event);
+  if (!phase) return null;
+  if (phase === "done" || phase === "finishing") return "delivering";
+  if (phase === "preparing") return "planning";
+  return WORK_PHASE_ORDER.includes(phase) ? phase : null;
+}
+
+/**
+ * 从事件序列推导工作阶段轨迹：
+ *   - 前进即推进；「验证 → 执行」视为一次重试（attempt+1）；
+ *   - 其余回退忽略（后到的早期事件不把阶段拉回去）。
+ */
+export function deriveWorkPhase(events = []) {
+  let phase = "idle";
+  const attempts = { planning: 0, executing: 0, verifying: 0, delivering: 0 };
+  const trail = [];
+  for (const event of events) {
+    const next = workPhaseOfEvent(event);
+    if (!next || next === phase) continue;
+    const from = WORK_PHASE_ORDER.indexOf(phase);
+    const to = WORK_PHASE_ORDER.indexOf(next);
+    const retry = phase === "verifying" && next === "executing";
+    if (!(to > from || retry)) continue;
+    phase = next;
+    attempts[next] = (attempts[next] || 0) + 1;
+    trail.push({ phase: next, at: event?.at || event?.timestamp || null, attempt: attempts[next], retry });
+  }
+  return { phase, attempts, trail, retries: trail.filter((item) => item.retry).length };
+}
+
+function eventTime(event) {
+  return event?.at || event?.timestamp || event?.createdAt || null;
+}
+
+/** 结构化时间线（E03）：首事件 / 首个模型事件 / 首可见文本 / 模型结束 / 验证结束 / 终态。 */
+export function deriveTimeline(events = [], run = {}) {
+  const firstOf = (types) => {
+    for (const event of events) if (types.includes(String(event?.type || ""))) return eventTime(event);
+    return null;
+  };
+  const lastOf = (types) => {
+    for (let i = events.length - 1; i >= 0; i -= 1) if (types.includes(String(events[i]?.type || ""))) return eventTime(events[i]);
+    return null;
+  };
+  const admitted = firstOf(["run_admitted", "run_admitting", "run_started"]);
+  const firstModelEvent = firstOf(["model_request_started", "thinking", "message_start", "token"]);
+  const firstVisibleText = firstOf(["token", "assistant_final"]);
+  const modelEnd = lastOf(["agent_end", "turn_ended"]);
+  const verificationEnd = lastOf(["artifacts_validated"]);
+  const finished = run.finishedAt || lastOf(["run_finished"]) || null;
+  const ms = (from, to) => (from && to ? Math.max(0, new Date(to).getTime() - new Date(from).getTime()) : null);
+  return {
+    admitted,
+    firstModelEvent,
+    firstVisibleText,
+    modelEnd,
+    verificationEnd,
+    finished,
+    // 分延迟：首事件延迟 / 模型执行 / 后台收尾
+    latencyToFirstEventMs: ms(admitted, firstModelEvent),
+    modelDurationMs: ms(firstModelEvent, modelEnd),
+    tailLatencyMs: ms(modelEnd, finished),
+  };
+}
+
 /* ------------------------------ 主投影 ------------------------------ */
 
 /**
@@ -218,6 +289,8 @@ export function projectRunView(run = {}, events = [], { now = Date.now() } = {})
     }
   }
   const changes = [...artifactChanges, ...suspected];
+  const workPhase = deriveWorkPhase(allEvents);
+  const timeline = deriveTimeline(allEvents, source);
   const deliverables = changes.filter((change) => change.role === "deliverable");
 
   // 记忆建议：只给待审核入口，不插进主回答
@@ -245,6 +318,11 @@ export function projectRunView(run = {}, events = [], { now = Date.now() } = {})
     answer,
     progress: {
       phase: stats.phase || "idle",
+      workPhase: workPhase.phase,
+      attempts: workPhase.attempts,
+      retries: workPhase.retries,
+      phaseTrail: workPhase.trail,
+      timeline,
       currentAction,
       waitingReason: waiting ? waiting.text : null,
       waitingKind: waiting ? waiting.kind : null,

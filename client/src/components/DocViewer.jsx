@@ -6,10 +6,11 @@ import MarkdownToc from "./MarkdownToc.jsx";
 import ExcelGrid from "./ExcelGrid.jsx";
 import DocxViewer from "./DocxViewer.jsx";
 import PptxViewer from "./PptxViewer.jsx";
+import ImageViewer from "./ImageViewer.jsx";
 import CommentMarker from "./CommentMarker.jsx";
 import Icon from "./Icon.jsx";
 
-const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf" };
+const ICONS = { docx: "doc", xlsx: "xls", xls: "xls", pptx: "ppt", md: "md", html: "html", htm: "html", txt: "txt", pdf: "pdf", png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image", svg: "image", avif: "image" };
 const ANNO_SAVE_DEBOUNCE = 800;
 
 // 在 iframe 文档的 body 中查找首个匹配 text 的文本节点并按 wrapType 包裹
@@ -686,6 +687,9 @@ function DocContent({ doc, loading, onRefresh, onSendToAgent, onInsertContext })
               />
             )}
           </div>
+        )}
+        {doc.kind === "image" && (
+          <ImageViewer doc={doc} onPreviewState={setPreviewState} onPreviewError={setPreviewErr} />
         )}
         {doc.kind === "pdf" && (
           <div className="docframe-container">
