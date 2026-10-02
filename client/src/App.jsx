@@ -146,6 +146,9 @@ export default function App() {
   const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
+  // B03：右栏三页签（预览 / 改动 / 产物）；改动与产物默认看“本轮”，可切回“会话”
+  const [changesRunId, setChangesRunId] = useState("");
+  const [artifactScope, setArtifactScope] = useState("session");
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const browserActiveRef = useRef(false);
@@ -1062,6 +1065,19 @@ export default function App() {
   const appearance = useAppearance();
   const previewAutoOpen = appearance.previewAutoOpen;
 
+  // B03：结果卡的交付入口 → 右栏对应页签（带 runId，保证“本轮”语义）
+  const openChangesForRun = useCallback((runId = "") => {
+    setChangesRunId(String(runId || ""));
+    setPreviewOpen(true);
+    setPreviewTab("changes");
+  }, []);
+  const openArtifactsForRun = useCallback((runId = "") => {
+    setChangesRunId(String(runId || ""));
+    setArtifactScope(runId ? "run" : "session");
+    setPreviewOpen(true);
+    setPreviewTab("artifacts");
+  }, []);
+
   const handleRunFinished = useCallback((result = {}) => {
     const runId = String(result.runId || "");
     if (runId && autoOpenedRunRef.current.has(runId)) return;
@@ -1217,6 +1233,8 @@ export default function App() {
         mapBridgeRef.current?.onAgentEnd?.();
       }}
       onRunFinished={handleRunFinished}
+      onOpenRunChanges={openChangesForRun}
+      onOpenRunArtifacts={openArtifactsForRun}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
       historyMessages={historyMessages}
@@ -1493,17 +1511,20 @@ export default function App() {
               </span>
             </div>
             <div className="preview-panel-tabs">
-              {[['document', '文档预览'], ['artifacts', '产物']].map(([id, label]) => (
+              {[['document', '预览'], ['changes', '改动'], ['artifacts', '产物']].map(([id, label]) => (
                 <button key={id} className={previewTab === id ? "active" : ""} onClick={() => setPreviewTab(id)}>{label}</button>
               ))}
             </div>
             <WorkProductPanel
-              tab={previewTab}
+              tab={previewTab === "document" ? "document" : previewTab}
               clientId={clientId}
               threadId={threadId}
               workspace={currentWorkspace}
               projectId={currentProject?.id || ""}
               currentSessionId={currentSessionId}
+              selectedRunId={changesRunId}
+              artifactScope={artifactScope}
+              onArtifactScopeChange={setArtifactScope}
               refreshToken={artifactVersion}
               onOpenFile={open}
             >

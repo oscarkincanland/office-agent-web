@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { confirmArtifactAcceptance, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
+import { confirmArtifactAcceptance, getRun, getRunAcceptance, listPublishedArtifacts, listRuns, publishArtifact, rollbackPublishedArtifact } from "../api.js";
 import Icon from "./Icon.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
@@ -114,7 +114,7 @@ function EventStream({ clientId, threadId }) {
   );
 }
 
-function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 0, onOpenFile }) {
+function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile }) {
   const [runs, setRuns] = useState([]);
   const [published, setPublished] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -131,7 +131,11 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
         listPublishedArtifacts(workspace, projectId),
       ]);
       if (requestSeq !== refreshSeqRef.current) return;
-      const nextRuns = (runData.runs || []).filter((run) => run?.artifacts?.length && (!currentSessionId || run.sessionId === currentSessionId));
+      // C03：本轮按 runId 归属；会话范围再按 sessionId 过滤（两者都只保留有产物的 Run）
+      const scopeRunId = artifactScope === "run" ? selectedRunId : "";
+      const nextRuns = (runData.runs || []).filter((run) => run?.artifacts?.length
+        && (!currentSessionId || run.sessionId === currentSessionId)
+        && (!scopeRunId || run.id === scopeRunId));
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
       const acceptanceEntries = await Promise.all(nextRuns.slice(0, 12).map(async (run) => {
@@ -179,7 +183,11 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
     <div className="preview-artifact-panel artifact-workspace">
       <div className="artifact-workspace-head">
         <div><span className="artifact-eyebrow">工作产物 · 当前会话</span><h3>产物验收与固定</h3><p>先打开预览确认内容，再固定为正式成果。只有「文件格式验收通过 + 所属任务成功结束 + 尚未固定」的文件才可固定；格式验收通过不等于任务成功，失败任务的文件不能固定。固定后若存在上一正式版本可一键回滚，首个版本没有历史版本，需手动恢复。</p></div>
-        <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新当前会话产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
+        <div className="artifact-scope-switch" role="tablist" aria-label="产物范围">
+          <button type="button" className={artifactScope === "run" ? "active" : ""} onClick={() => onArtifactScopeChange?.("run")} role="tab" aria-selected={artifactScope === "run"} title="只看本轮（选中的这一次运行）">本轮</button>
+          <button type="button" className={artifactScope === "session" ? "active" : ""} onClick={() => onArtifactScopeChange?.("session")} role="tab" aria-selected={artifactScope === "session"} title="当前会话的全部产出">会话</button>
+        </div>
+        <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
       <div className="artifact-summary-grid">
         <div><strong>{entries.length}</strong><span>本轮产物</span></div>
@@ -230,8 +238,92 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, refreshToken = 
   );
 }
 
-export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, refreshToken = 0, onOpenFile, children }) {
+
+/**
+ * 改动页签（W3/C02 + C03）：“本轮”指一次 Run，不再跨轮聚合。
+ * 默认看最新一轮；可在同一会话的运行列表里切换（会话历史独立展示）。
+ */
+function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId = "", refreshToken = 0, onOpenFile }) {
+  const [pickedRunId, setPickedRunId] = useState(selectedRunId || "");
+  const [runs, setRuns] = useState([]);
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => { setPickedRunId(selectedRunId || ""); }, [selectedRunId]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const listed = await listRuns("", 60, { cwd: workspace, projectId });
+      const scoped = (listed.runs || []).filter((run) => run?.artifacts?.length
+        && (!currentSessionId || run.sessionId === currentSessionId));
+      const wanted = pickedRunId || scoped[0]?.id || "";
+      const fetched = wanted ? await getRun(wanted).catch(() => null) : null;
+      setRuns(scoped);
+      setDetail(fetched?.run || scoped[0] || null);
+    } catch (err) {
+      setError(err.message || String(err));
+      setRuns([]);
+      setDetail(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [workspace, projectId, currentSessionId, pickedRunId]);
+
+  useEffect(() => { load(); }, [load, refreshToken]);
+
+  const changes = useMemo(() => {
+    if (!detail) return [];
+    const view = projectRunView(detail, Array.isArray(detail.events) ? detail.events : []);
+    return view.changes || [];
+  }, [detail]);
+
+  const isLatest = !pickedRunId || (runs[0]?.id && runs[0].id === (detail?.id || ""));
+
+  return (
+    <div className="preview-artifact-panel artifact-workspace run-changes-workspace">
+      <div className="artifact-workspace-head">
+        <div>
+          <span className="artifact-eyebrow">文件改动 · {isLatest ? "最新一轮" : "历史某一轮"}</span>
+          <h3>本轮文件改动</h3>
+          <p>按 Run 归属列出真实改动；点文件名查看内容差异（文本给出行级增删，Office/PDF/图片只给大小与哈希摘要）。</p>
+        </div>
+        <button className="btn-sm" onClick={load} disabled={loading} title="刷新改动"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
+      </div>
+      {runs.length > 1 && (
+        <div className="run-changes-picker">
+          <label>
+            <span>查看哪一轮</span>
+            <select className="sp-select" value={detail?.id || ""} onChange={(event) => setPickedRunId(event.target.value)}>
+              {runs.map((run) => (
+                <option key={run.id} value={run.id}>
+                  {`${(run.finishedAt || run.startedAt || "").slice(5, 16).replace("T", " ")} · ${run.status || "?"} · ${(run.artifacts || []).length} 个文件`}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+      {error && <div className="model-feedback warn">读取改动失败：{error}</div>}
+      {loading && <div className="preview-empty">正在读取本轮改动…</div>}
+      {!loading && !error && (
+        <FileChangesPanel
+          runId={detail?.id || ""}
+          changes={changes}
+          detection={{ truncated: Boolean(detail?.snapshotTruncated) }}
+          onOpenFile={onOpenFile}
+        />
+      )}
+    </div>
+  );
+}
+
+export default function WorkProductPanel({ tab, clientId, threadId, workspace, projectId, currentSessionId, selectedRunId = "", artifactScope = "session", onArtifactScopeChange, refreshToken = 0, onOpenFile, children }) {
+  // B03：右栏三页签 —— 预览 / 改动 / 产物
   if (tab === "events") return <EventStream clientId={clientId} threadId={threadId} />;
-  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "changes") return <RunChangesPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
+  if (tab === "artifacts") return <ArtifactPanel workspace={workspace} projectId={projectId} currentSessionId={currentSessionId} selectedRunId={selectedRunId} artifactScope={artifactScope} onArtifactScopeChange={onArtifactScopeChange} refreshToken={refreshToken} onOpenFile={onOpenFile} />;
   return children;
 }

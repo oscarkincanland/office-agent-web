@@ -432,7 +432,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   const [input, setInput] = useState("");
@@ -2964,7 +2964,7 @@ case "runtime_connecting":
           )}
            {visibleMessages.map((m, i) => (
             <React.Fragment key={m.id}>
-              <MemoMessage m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} />
+              <MemoMessage m={m} index={visibleStart + i} prevRole={visibleMessages[i - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} />
             </React.Fragment>
            ))}
           </div>
@@ -3548,9 +3548,20 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
 }
 
 // ========== 消息组件（Proma 风格：头部 + 无气泡长文 AI / 淡色气泡用户） ==========
-function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onAskAnswered, onResend, index, prevRole, clientId, threadId }) {
+function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryApprove, onMemoryReject, onRollbackRun, onOpenRunChanges, onOpenRunArtifacts, onAskAnswered, onResend, index, prevRole, clientId, threadId }) {
   if (m.role === "system") {
-    if (m.summary) return <RunSummary m={m} onOpenFile={onOpenFile} onRollbackRun={onRollbackRun} />;
+    if (m.summary) {
+      const runId = m.runId || null;
+      return (
+        <RunSummary
+          m={m}
+          onOpenFile={onOpenFile}
+          onRollbackRun={onRollbackRun}
+          onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runId) : undefined}
+          onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runId) : undefined}
+        />
+      );
+    }
     return (
       <div className="msg system">
         <div className="bubble">
