@@ -104,7 +104,8 @@ assert.match(对话面板, /errors: \(Array\.isArray\(m\.events\)/, "技术详�
 // 结论要「详细且保格式」：结果卡用 Markdown 渲染结论，而不是抹平成一行
 assert.match(对话面板, /className="run-result-conclusion"/, "结果卡应有独立结论区");
 assert.match(对话面板, /run-result-conclusion-label/, "结论区应有标签");
-assert.match(对话面板, /<SafeMarkdown text=\{completion\.summary\}/, "结论必须按 Markdown 渲染，保留标题/列表");
+assert.match(对话面板, /<SafeMarkdown text=\{conclusionText\} \/>/, "结论必须按 Markdown 渲染，保留标题/列表");
+assert.match(对话面板, /const conclusionText = answerBriefClamped/, "结论文本来自投影结论，并按回答详细程度收窄");
 assert.doesNotMatch(对话面板, /结论：\{readableProgressText\(completion\.summary\)\}/, "不得再把结论抹平为纯文本");
 assert.match(对话面板, /data\.summary \|\| data\.completion\?\.summary/, "run_finished 缺 summary 时应回退到 completion.summary");
 assert.match(运行展示投影, /completed: "运行结束"/, "运行结束不应写成已完成（文案单一来源：运行展示投影）");

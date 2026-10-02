@@ -12,6 +12,7 @@ const CommandPalette = lazy(() => import("./components/CommandPalette.jsx"));
 // 文档预览依赖 docx-preview / pptxviewjs / x-data-spreadsheet 等重库，按需加载
 const DocViewer = lazy(() => import("./components/DocViewer.jsx"));
 import Icon from "./components/Icon.jsx";
+import { useAppearance } from "./界面外观.js";
 import Logo from "./components/Logo.jsx";
 import TaskCenter from "./components/任务中心.jsx";
 import WorkProductPanel from "./components/工作产物面板.jsx";
@@ -1057,6 +1058,10 @@ export default function App() {
 
   // 一轮任务以 run_finished 为权威结束点：刷新产物列表，并自动打开本轮首个产物。
   // 用 runId 去重，避免 SSE 重连回放导致同一个文件重复打开或反复刷新。
+  // B02：自动打开预览的策略来自外观设置（共享订阅，改设置立即生效）
+  const appearance = useAppearance();
+  const previewAutoOpen = appearance.previewAutoOpen;
+
   const handleRunFinished = useCallback((result = {}) => {
     const runId = String(result.runId || "");
     if (runId && autoOpenedRunRef.current.has(runId)) return;
@@ -1083,10 +1088,16 @@ export default function App() {
     if (!["completed", "success"].includes(status)) return;
     const firstArtifact = artifacts[0];
     if (!firstArtifact) return;
+    // B02 自动打开预览：never 从不；deliverable 仅通过验收的交付文件；requested 本轮有产物就打开
+    if (previewAutoOpen === "never") return;
+    if (previewAutoOpen === "deliverable") {
+      const acceptanceStatus = String(firstArtifact.acceptanceStatus || firstArtifact.acceptance?.status || "");
+      if (!["passed", "warning", "manual_review"].includes(acceptanceStatus)) return;
+    }
     setPreviewOpen(true);
     setPreviewTab("document");
     void open(firstArtifact.path, result.threadId || threadId, result.cwd || currentWorkspace);
-  }, [currentWorkspace, open, threadId]);
+  }, [currentWorkspace, open, previewAutoOpen, threadId]);
 
   // 关闭右预览后把焦点还给顶栏的预览开关，键盘用户不丢位置（对应计划 4.2 面板/命令入口）
   const closePreview = useCallback(() => {

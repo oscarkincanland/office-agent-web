@@ -711,9 +711,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .memory-proposal-state { color: var(--success); margin-left: auto; white-space: nowrap; }
 .workflow-warning { color: var(--warning, #d19a66); font-size: 10px; margin-top: 5px; }
 .run-artifacts { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 10px; }
-.run-artifact-row { display: flex; align-items: center; gap: 5px; line-height: 1.7; }
-.run-artifact-row code { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.artifact-reversible { color: var(--success); margin-left: auto; }
 .run-artifacts > .btn-xs { margin-top: 5px; }
 /* 历史 Run 的工具聚合列表 */
 .run-trace-tools { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 10px; }
@@ -758,7 +755,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .run-summary-meta { flex-shrink: 0; color: var(--dim); font-size: 10px; }
 .run-summary-details { margin-top: 7px; border-top: 1px dashed var(--border); padding-top: 6px; font-size: 11px; }
 .run-summary-details summary { cursor: pointer; color: var(--accent); font-size: 10px; user-select: none; }
-.run-summary-content { margin-top: 7px; white-space: pre-wrap; line-height: 1.55; }
 .file-change-label {
   display: flex;
   align-items: center;
@@ -8982,7 +8978,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .tool-detail,
 .tool-code,
-.run-summary-content,
 .execution-flow-detail { min-width: 0; max-width: 100%; }
 .app-chat-slot.map,
 .app-chat-slot.map > .chat,
@@ -10019,6 +10014,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 
 .artifact-changes-card { border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--panel2-bg) 45%, transparent); margin: 8px 0; }
 
+/* B02：结果卡结论的“简短”提示 */
+.run-result-conclusion-hint { margin-top: 4px; font-size: 10px; color: var(--dim); }
+
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
@@ -10064,8 +10062,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .composer-suggestions,
   .task-center-panel,
   .run-result,
-  .run-artifact-row.fresh,
-  .summary-product.fresh,
+    .summary-product.fresh,
   .file-item.changed,
   .app-preview-slot
 ) { animation: none !important; }
@@ -10118,9 +10115,6 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   0% { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   100% { background: transparent; }
 }
-.run-artifact-row.fresh { animation: oaw-file-flash 700ms ease-out both; }
-/* 一张卡里最多闪前 6 个文件，避免长产物列表整屏闪动 */
-.run-artifact-row.fresh:nth-child(n+7) { animation: none; }
 /* W1：结果卡改为单一文件清单，短时高亮迁移到 .summary-product.fresh（同一套 oaw-file-flash） */
 .summary-product.fresh { animation: oaw-file-flash 700ms ease-out both; }
 .summary-product.fresh:nth-child(n+7) { animation: none; }

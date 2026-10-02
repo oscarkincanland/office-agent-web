@@ -39,23 +39,74 @@ export const MOTION_LEVELS = Object.freeze([
   { id: "off", label: "关闭动效", hint: "只保留静态颜色标识，彻底不闪" },
 ]);
 
+// B02：执行过程 / 回答详细程度 / 自动打开预览（界面文案与计划一致）
+export const ACTIVITY_DISPLAY_OPTIONS = Object.freeze([
+  { id: "compact", label: "紧凑（默认收起）", hint: "每个 Run 一行过程，点击展开查看工具与输出" },
+  { id: "expanded", label: "默认展开", hint: "进入页面即展开过程细节，便于边跑边看" },
+  { id: "hidden", label: "隐藏过程", hint: "只保留状态与结论，需要时点“显示执行流”再展开" },
+]);
+
+export const ANSWER_DETAIL_OPTIONS = Object.freeze([
+  { id: "auto", label: "自动（推荐）", hint: "短问答直接给结论；有成果时给结构化要点" },
+  { id: "brief", label: "简短", hint: "结论只保留要点行，细节看产物与过程" },
+  { id: "detailed", label: "详细", hint: "结论按完整 Markdown 展开（标题/列表/路径）" },
+]);
+
+export const PREVIEW_AUTO_OPEN_OPTIONS = Object.freeze([
+  { id: "requested", label: "按需（默认）", hint: "本轮产生文件时自动打开右侧预览" },
+  { id: "deliverable", label: "仅交付产物", hint: "只有通过验收的交付文件才自动打开" },
+  { id: "never", label: "从不自动打开", hint: "始终由你手动打开预览" },
+]);
+
+/** 旧版“隐藏执行流”开关：只用于一次性迁移 */
+export const LEGACY_EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
+
 export const APPEARANCE_DEFAULTS = Object.freeze({
   marqueeStyle: "shine",
   marqueeColor: "accent",
   marqueeSpeed: "normal",
   motionLevel: "full",
+  activityDisplay: "compact",
+  answerDetail: "auto",
+  previewAutoOpen: "requested",
 });
 
 const STYLE_IDS = new Set(MARQUEE_STYLES.map((item) => item.id));
 const COLOR_IDS = new Set(MARQUEE_COLORS.map((item) => item.id));
 const SPEED_IDS = new Set(MARQUEE_SPEEDS.map((item) => item.id));
 const MOTION_IDS = new Set(MOTION_LEVELS.map((item) => item.id));
+const ACTIVITY_IDS = new Set(ACTIVITY_DISPLAY_OPTIONS.map((item) => item.id));
+const ANSWER_DETAIL_IDS = new Set(ANSWER_DETAIL_OPTIONS.map((item) => item.id));
+const PREVIEW_AUTO_OPEN_IDS = new Set(PREVIEW_AUTO_OPEN_OPTIONS.map((item) => item.id));
+const SETTINGS_VERSION = 2;
 
 function readSettings() {
   try {
     return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") || {};
   } catch {
     return {};
+  }
+}
+
+/**
+ * 一次性迁移（B02）：把旧的独立开关 `oaw_execution_flow_hidden` 读进 activityDisplay，
+ * 之后统一由外观设置驱动；只在版本落后时执行一次。
+ */
+export function migrateLegacyAppearance() {
+  try {
+    const raw = readSettings();
+    if (Number(raw.settingsVersion || 0) >= SETTINGS_VERSION) return false;
+    let changed = false;
+    if (!ACTIVITY_IDS.has(raw.activityDisplay)) {
+      const legacyHidden = localStorage.getItem(LEGACY_EXECUTION_FLOW_HIDDEN_KEY) === "true";
+      raw.activityDisplay = legacyHidden ? "hidden" : APPEARANCE_DEFAULTS.activityDisplay;
+      changed = true;
+    }
+    raw.settingsVersion = SETTINGS_VERSION;
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(raw));
+    return changed;
+  } catch {
+    return false;
   }
 }
 
@@ -67,6 +118,9 @@ export function loadAppearance() {
     marqueeColor: COLOR_IDS.has(raw.marqueeColor) ? raw.marqueeColor : APPEARANCE_DEFAULTS.marqueeColor,
     marqueeSpeed: SPEED_IDS.has(raw.marqueeSpeed) ? raw.marqueeSpeed : APPEARANCE_DEFAULTS.marqueeSpeed,
     motionLevel: MOTION_IDS.has(raw.motionLevel) ? raw.motionLevel : APPEARANCE_DEFAULTS.motionLevel,
+    activityDisplay: ACTIVITY_IDS.has(raw.activityDisplay) ? raw.activityDisplay : APPEARANCE_DEFAULTS.activityDisplay,
+    answerDetail: ANSWER_DETAIL_IDS.has(raw.answerDetail) ? raw.answerDetail : APPEARANCE_DEFAULTS.answerDetail,
+    previewAutoOpen: PREVIEW_AUTO_OPEN_IDS.has(raw.previewAutoOpen) ? raw.previewAutoOpen : APPEARANCE_DEFAULTS.previewAutoOpen,
   };
 }
 
@@ -89,6 +143,10 @@ export function saveAppearance(patch = {}) {
     if (COLOR_IDS.has(merged.marqueeColor)) settings.marqueeColor = merged.marqueeColor;
     if (SPEED_IDS.has(merged.marqueeSpeed)) settings.marqueeSpeed = merged.marqueeSpeed;
     if (MOTION_IDS.has(merged.motionLevel)) settings.motionLevel = merged.motionLevel;
+    if (ACTIVITY_IDS.has(merged.activityDisplay)) settings.activityDisplay = merged.activityDisplay;
+    if (ANSWER_DETAIL_IDS.has(merged.answerDetail)) settings.answerDetail = merged.answerDetail;
+    if (PREVIEW_AUTO_OPEN_IDS.has(merged.previewAutoOpen)) settings.previewAutoOpen = merged.previewAutoOpen;
+    settings.settingsVersion = SETTINGS_VERSION;
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {}
   emit();
@@ -156,7 +214,8 @@ export function subscribeAppearance(listener) {
   return () => listeners.delete(listener);
 }
 
-// 模块加载即应用一次：即使当前页面还没渲染跑马灯，CSS 变体也先挂到 <html> 上
+// 模块加载即迁移旧开关并应用一次：即使当前页面还没渲染跑马灯，CSS 变体也先挂到 <html> 上
+migrateLegacyAppearance();
 applyAppearance();
 
 // 系统"减少动效"偏好变化时同步 <html>，CSS 闸门据此立即生效（与 index.html 内联脚本互为兜底）
@@ -199,6 +258,9 @@ export function normalizeAppearance(input = {}) {
     marqueeColor: COLOR_IDS.has(input.marqueeColor) ? input.marqueeColor : APPEARANCE_DEFAULTS.marqueeColor,
     marqueeSpeed: SPEED_IDS.has(input.marqueeSpeed) ? input.marqueeSpeed : APPEARANCE_DEFAULTS.marqueeSpeed,
     motionLevel: MOTION_IDS.has(input.motionLevel) ? input.motionLevel : APPEARANCE_DEFAULTS.motionLevel,
+    activityDisplay: ACTIVITY_IDS.has(input.activityDisplay) ? input.activityDisplay : APPEARANCE_DEFAULTS.activityDisplay,
+    answerDetail: ANSWER_DETAIL_IDS.has(input.answerDetail) ? input.answerDetail : APPEARANCE_DEFAULTS.answerDetail,
+    previewAutoOpen: PREVIEW_AUTO_OPEN_IDS.has(input.previewAutoOpen) ? input.previewAutoOpen : APPEARANCE_DEFAULTS.previewAutoOpen,
   };
 }
 

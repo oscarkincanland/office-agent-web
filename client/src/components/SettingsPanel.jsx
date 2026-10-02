@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import Icon from "./Icon.jsx";
 import { useTheme, SKINS } from "../theme.jsx";
 import 跑马灯文本 from "./跑马灯文本.jsx";
-import { MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, useAppearance, useAppearanceSetter } from "../界面外观.js";
+import { ACTIVITY_DISPLAY_OPTIONS, ANSWER_DETAIL_OPTIONS, MARQUEE_COLORS, MARQUEE_SPEEDS, MARQUEE_STYLES, MOTION_LEVELS, PREVIEW_AUTO_OPEN_OPTIONS, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { agentAuth, agentAuthSave, agentAuthRemove, agentConfigStatus, agentCustomProvider, agentDiagnostics, agentImportConfig, agentImportPreview, agentModelConfigs, agentNetworkSettings, agentNetworkSettingsSave, archiveProject, classifyProjects, createProject, deleteAgentModelConfig, fetchAgentModels, getPermissionRules, mapSettings, mapSettingsSave, pinProject, probeAgentModel, refreshModels, removePermissionRule, saveAgentModelConfig, searchSettings, searchSettingsSave, searchSettingsTest, updateProject, updateProjectSettings } from "../api.js";
 
 /**
@@ -893,7 +893,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
 
       <div className="sp-section" id="settings-marquee">
         <div className="sp-section-title"><Icon name="flow" size={12} /> 跑马灯与动效</div>
-        <div className="sp-hint">运行中的会话、项目与任务名会用跑马灯滚动；样式、配色、速度与动效强度都在这里调，改完立即生效。</div>
+        <div className="sp-hint">运行中的会话、项目与任务名会用跑马灯滚动；执行过程、回答详细程度与自动打开预览都在这里调，改完立即生效。</div>
         <div className="sp-row">
           <span className="sp-label">样式</span>
           <div className="sp-options sp-marquee-styles">
@@ -928,6 +928,45 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
                 key={item.id}
                 className={`sp-opt ${appearance.marqueeSpeed === item.id ? "active" : ""}`}
                 onClick={() => setAppearance({ marqueeSpeed: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">执行过程</span>
+          <div className="sp-options">
+            {ACTIVITY_DISPLAY_OPTIONS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.activityDisplay === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ activityDisplay: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">回答详细程度</span>
+          <div className="sp-options">
+            {ANSWER_DETAIL_OPTIONS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.answerDetail === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ answerDetail: item.id })}
+              >{item.label}</button>
+            ))}
+          </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">自动打开预览</span>
+          <div className="sp-options">
+            {PREVIEW_AUTO_OPEN_OPTIONS.map((item) => (
+              <button
+                key={item.id}
+                className={`sp-opt ${appearance.previewAutoOpen === item.id ? "active" : ""}`}
+                title={item.hint}
+                onClick={() => setAppearance({ previewAutoOpen: item.id })}
               >{item.label}</button>
             ))}
           </div>

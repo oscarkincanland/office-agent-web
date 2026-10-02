@@ -12,7 +12,7 @@ import { projectLegacyRunSummary } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
-import { isMotionReduced, motionScrollBehavior } from "../界面外观.js";
+import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -53,7 +53,6 @@ const MODEL_KEY = "oaw_model";
 const MODE_KEY = "oaw_chat_mode";
 const THINKING_KEY = "oaw_thinking_level";
 const APPROVAL_MODE_KEY = "oaw_approval_mode";
-const EXECUTION_FLOW_HIDDEN_KEY = "oaw_execution_flow_hidden";
 const DEFAULT_CONTEXT_WINDOW = 128000;
 // 与服务端 Pi 压缩策略保持一致（server/Pi运行时管理.mjs 的 PI_COMPACTION_POLICY）：
 // 服务端快照没返回时用作展示兜底，不代表新策略。
@@ -480,14 +479,15 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAgentPhaseState(value);
   }, []);
   const [historyLoading, setHistoryLoading] = useState(false);
-  // 执行流隐藏状态上提到这里：隐藏时状态栏要回到上方，避免状态信息整体消失
-  const [flowHidden, setFlowHiddenRaw] = useState(() => {
-    try { return localStorage.getItem(EXECUTION_FLOW_HIDDEN_KEY) === "true"; } catch { return false; }
-  });
+  // B02：执行过程显示由外观设置驱动（compact | expanded | hidden），走共享订阅立即生效；
+  // 旧版独立的 oaw_execution_flow_hidden 已由 界面外观.js 一次性迁移。
+  const appearance = useAppearance();
+  const setAppearance = useAppearanceSetter();
+  const flowHidden = appearance.activityDisplay === "hidden";
   const setFlowHidden = useCallback((next) => {
-    setFlowHiddenRaw(Boolean(next));
-    try { localStorage.setItem(EXECUTION_FLOW_HIDDEN_KEY, next ? "true" : "false"); } catch {}
-  }, []);
+    setAppearance({ activityDisplay: next ? "hidden" : "compact" });
+  }, [setAppearance]);
+  const flowDefaultExpanded = appearance.activityDisplay === "expanded";
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
   const [executionEvents, setExecutionEvents] = useState([]);
@@ -2893,6 +2893,7 @@ case "runtime_connecting":
                 note={recentNarration}
                 compaction={runState.compaction || null}
                 hidden={flowHidden}
+                defaultExpanded={flowDefaultExpanded}
                 onHiddenChange={setFlowHidden}
                 statusText={statusText}
                 statusChips={statusChips}
@@ -3338,6 +3339,13 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const traceSummary = trace ? runTraceSummaryText(trace) : "";
   // 单一份文件集合：投影已按 runId 归并、去重并按语义标角色
   const changes = view.changes || [];
+  // B02 回答详细程度：brief 只保留结论要点行；auto/detailed 保留完整 Markdown
+  const answerDetail = useAppearance().answerDetail;
+  const fullConclusion = String(completion?.summary || "");
+  const answerBriefClamped = answerDetail === "brief" && fullConclusion.split(/\r?\n/).filter(Boolean).length > 3;
+  const conclusionText = answerBriefClamped
+    ? `${fullConclusion.split(/\r?\n/).filter(Boolean).slice(0, 3).join("\n")}\n\n…`
+    : fullConclusion;
   const fileChanges = useMemo(() => changes.filter((change) => change.role !== "internal"), [changes]);
   const deliverables = view.deliverables || [];
   // A03：待审核记忆建议的入口（实时挂在消息上，历史从事件投影得到）
@@ -3423,8 +3431,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           </div>
           {completion?.summary && (
             <div className="run-result-conclusion">
-              <div className="run-result-conclusion-label">结论</div>
-              <SafeMarkdown text={completion.summary} />
+              <div className="run-result-conclusion-label">结论{answerDetail === "brief" ? "（简短）" : ""}</div>
+              <SafeMarkdown text={conclusionText} />
+              {answerBriefClamped && (
+                <div className="run-result-conclusion-hint" title="可在「设置 → 外观」把回答详细程度改为自动或详细">已按「简短」收窄；完整结论见上方答复与产物</div>
+              )}
             </div>
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
@@ -4018,9 +4029,16 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 }
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
-function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", nextStep = "", pendingApproval = null, onLocateApproval }) {
-  // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口
-  const [expanded, setExpanded] = useState(false);
+function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, defaultExpanded = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", nextStep = "", pendingApproval = null, onLocateApproval }) {
+  // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口；
+  // B02：设置里的“默认展开”生效，并跟随设置变化（用户在页面内的手动开合仍优先）。
+  const [expanded, setExpanded] = useState(Boolean(defaultExpanded));
+  const defaultExpandedRef = useRef(Boolean(defaultExpanded));
+  useEffect(() => {
+    if (defaultExpandedRef.current === Boolean(defaultExpanded)) return;
+    defaultExpandedRef.current = Boolean(defaultExpanded);
+    setExpanded(Boolean(defaultExpanded));
+  }, [defaultExpanded]);
   const [notesOpen, setNotesOpen] = useState(false);
   const wasRunningRef = useRef(running);
   // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表

@@ -14,6 +14,7 @@ const chatPanelSource = fs.readFileSync(new URL("../client/src/components/ChatPa
 const appSource = fs.readFileSync(new URL("../client/src/App.jsx", import.meta.url), "utf8");
 const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
 const settingsSource = fs.readFileSync(new URL("../client/src/components/SettingsPanel.jsx", import.meta.url), "utf8");
+const appearanceSource = fs.readFileSync(new URL("../client/src/界面外观.js", import.meta.url), "utf8");
 const agentSource = fs.readFileSync(new URL("../server/agent.mjs", import.meta.url), "utf8");
 const serverSource = fs.readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8");
 const excelSource = fs.readFileSync(new URL("../client/src/components/ExcelGrid.jsx", import.meta.url), "utf8");
@@ -37,8 +38,13 @@ try {
   assert.doesNotMatch(chatPanelSource, /executionFlowAnchored && m\.id === executionFlowAnchorId && <ExecutionFlow/);
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
-  assert.match(chatPanelSource, /EXECUTION_FLOW_HIDDEN_KEY/, "执行流应支持隐藏并记住用户选择");
-  assert.match(stylesSource, /\.msg-blocks \.thinking-block \.thinking-text[\s\S]{0,220}height: auto/, "思考块应按内容自适应高度");
+  // B02：执行过程显示改为外观设置驱动（compact|expanded|hidden）并走共享订阅；
+  // 旧独立开关只在 界面外观.js 里做一次性迁移。
+  assert.match(chatPanelSource, /const flowHidden = appearance\.activityDisplay === "hidden"/, "执行流隐藏应由设置项决定");
+  assert.match(chatPanelSource, /setAppearance\(\{ activityDisplay: next \? "hidden" : "compact" \}\)/, "隐藏/显示选择应写回设置并保留");
+  assert.match(chatPanelSource, /useAppearance\(\)/, "执行流显示应订阅外观设置（立即生效，而不是只在挂载时读一次）");
+  assert.match(appearanceSource, /LEGACY_EXECUTION_FLOW_HIDDEN_KEY/, "旧隐藏开关应保留常量用于迁移");
+  assert.match(appearanceSource, /export function migrateLegacyAppearance\(\)/, "旧开关应一次性迁移到 activityDisplay");  assert.match(stylesSource, /\.msg-blocks \.thinking-block \.thinking-text[\s\S]{0,220}height: auto/, "思考块应按内容自适应高度");
   assert.match(stylesSource, /\.msg-blocks \.thinking-block \.thinking-text[\s\S]{0,260}max-height: 240px/, "思考内容区最多显示 240px 并内部滚动");
   assert.match(settingsSource, /thinkingDefaultOpen: false/, "思考块默认应收起（结论优先）");
   assert.match(chatPanelSource, /const \[expanded, setExpanded\] = useState\(\(\) => loadSettings\(\)\.thinkingDefaultOpen === true\)/, "思考块默认收起但尊重设置面板开关");
@@ -150,6 +156,30 @@ try {
   assert.equal(fs.readFileSync(path.join(workspace, "合格产物.txt"), "utf8"), "通过");
   assert.equal(fs.existsSync(path.join(workspace, "坏产物.json")), false);
 
+  // B02：执行过程 / 回答详细程度 / 自动打开预览（设置项 + 立即生效 + 旧开关迁移）
+  for (const id of ['activityDisplay: "compact"', 'answerDetail: "auto"', 'previewAutoOpen: "requested"']) {
+    assert.ok(appearanceSource.includes(id), `外观默认值应包含 ${id}`);
+  }
+  for (const name of ["ACTIVITY_DISPLAY_OPTIONS", "ANSWER_DETAIL_OPTIONS", "PREVIEW_AUTO_OPEN_OPTIONS"]) {
+    assert.match(appearanceSource, new RegExp(`export const ${name} = Object.freeze\\(\\[`), `应导出 ${name} 供设置面板消费`);
+  }
+  assert.match(appearanceSource, /const SETTINGS_VERSION = 2;/, "设置应有版本号以便一次性迁移");
+  assert.match(appearanceSource, /migrateLegacyAppearance\(\);\napplyAppearance\(\);/, "模块加载应先迁移再应用");
+  assert.match(appearanceSource, /if \(Number\(raw\.settingsVersion \|\| 0\) >= SETTINGS_VERSION\) return false;/, "迁移必须幂等");
+  // 设置面板：文案与计划一致
+  for (const label of ["执行过程", "回答详细程度", "自动打开预览"]) {
+    assert.ok(settingsSource.includes(`>${label}<`) || settingsSource.includes(`>${label}`), `设置面板应有「${label}」`);
+  }
+  assert.match(settingsSource, /setAppearance\(\{ activityDisplay: item\.id \}\)/, "执行过程设置应写回外观");
+  assert.match(settingsSource, /setAppearance\(\{ answerDetail: item\.id \}\)/, "回答详细程度应写回外观");
+  assert.match(settingsSource, /setAppearance\(\{ previewAutoOpen: item\.id \}\)/, "自动打开预览应写回外观");
+  // 三处消费点
+  assert.match(chatPanelSource, /useAppearance\(\)\.answerDetail/, "结果卡应消费回答详细程度");
+  assert.match(chatPanelSource, /answerDetail === "brief" && fullConclusion/, "brief 应收窄结论");
+  assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
+  assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
+  assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
+  assert.match(appSource, /\}, \[currentWorkspace, open, previewAutoOpen, threadId\]\)/, "策略变化应立即生效（依赖数组）");
   console.log("对话流性能回归：通过");
 } finally {
   if (runId) {
