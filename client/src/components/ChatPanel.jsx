@@ -4030,9 +4030,9 @@ function ApprovalModeControl({ mode, saving, onChange }) {
 
 // ========== SSE 执行流（顶部可折叠/隐藏，独立于消息气泡） ==========
 function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], note = "", compaction = null, hidden = false, defaultExpanded = false, onHiddenChange, statusText = "", statusChips = [], statusDotClass = "", nextStep = "", pendingApproval = null, onLocateApproval }) {
-  // 默认折叠，避免几十条启动/工具事件把正文和输入框顶出视口；
-  // B02：设置里的“默认展开”生效，并跟随设置变化（用户在页面内的手动开合仍优先）。
-  const [expanded, setExpanded] = useState(Boolean(defaultExpanded));
+  // 运行时自动展开并跟随最新事件；结束后收束为一行，可随时展开回看。
+  // 隐藏状态仍由用户设置控制；折叠/展开偏好只影响空闲时和下一轮启动前。
+  const [expanded, setExpanded] = useState(Boolean(defaultExpanded || running));
   const defaultExpandedRef = useRef(Boolean(defaultExpanded));
   useEffect(() => {
     if (defaultExpandedRef.current === Boolean(defaultExpanded)) return;
@@ -4040,6 +4040,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     setExpanded(Boolean(defaultExpanded));
   }, [defaultExpanded]);
   const [notesOpen, setNotesOpen] = useState(false);
+  const executionListRef = useRef(null);
+  const followExecutionTailRef = useRef(true);
   const wasRunningRef = useRef(running);
   // 纯阶段状态事件（准备/受理/请求模型/回合切换等）合并为一行，不逐条刷屏；清单来自事件展示注册表
   const contentEvents = events.filter((event) => !STAGE_ONLY_EVENTS.has(event.type));
@@ -4052,6 +4054,32 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   const traceStats = summarizeRunTrace(runTrace);
   const traceSummary = runTraceSummaryText(runTrace);
   const completion = traceStats.completion;
+  const handleExecutionScroll = (event) => {
+    const list = event.currentTarget;
+    followExecutionTailRef.current = list.scrollHeight - list.scrollTop - list.clientHeight <= 28;
+  };
+  const toggleExpanded = () => {
+    setExpanded((value) => {
+      const next = !value;
+      if (next && running) followExecutionTailRef.current = true;
+      return next;
+    });
+  };
+  useEffect(() => {
+    const wasRunning = wasRunningRef.current;
+    if (running && !wasRunning) {
+      followExecutionTailRef.current = true;
+      setExpanded(true);
+    } else if (!running && wasRunning) {
+      setExpanded(false);
+    }
+    wasRunningRef.current = running;
+  }, [running]);
+  useEffect(() => {
+    const list = executionListRef.current;
+    if (!expanded || !running || !list || !followExecutionTailRef.current) return;
+    list.scrollTop = list.scrollHeight;
+  }, [visibleEvents, expanded, running]);
   // 运行中的进度行：秒级刷新"用时"，让长任务一眼看出进行到哪一步
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -4060,11 +4088,6 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     return () => window.clearInterval(timer);
   }, [running]);
   const progressText = runTraceProgressText(runTrace, { now, running });
-  useEffect(() => {
-    // 收到终结事件后自动回到一行摘要
-    if (wasRunningRef.current && !running) setExpanded(false);
-    wasRunningRef.current = running;
-  }, [running]);
   if (!visibleEvents.length) return null;
   if (hidden) {
     return (
@@ -4079,7 +4102,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   return (
     <div className={`execution-flow ${expanded ? "expanded" : ""} ${running ? "live" : ""}`}>
       <div className="execution-flow-head">
-        <button type="button" className="execution-flow-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <button type="button" className="execution-flow-toggle" onClick={toggleExpanded} aria-expanded={expanded}>
           <span className="execution-flow-chevron">{expanded ? "▾" : "▸"}</span>
           <Icon name="flow" size={12} />
           <strong>执行过程</strong>
@@ -4159,7 +4182,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
         <>
           {/* 脑回路执行图：工具按类别聚合，点击可在消息流中定位工具卡 */}
           <AgentBrainGraph trace={runTrace} running={running} onFocusTool={onFocusTool} />
-          <div className="execution-flow-list">
+          <div className="execution-flow-list" ref={executionListRef} onScroll={handleExecutionScroll}>
           {visibleEvents.map((event, index) => {
             const data = event.data || {};
             const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");

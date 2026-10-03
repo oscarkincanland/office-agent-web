@@ -11,6 +11,7 @@ import { bashTimeoutPolicy, isGlobalSearchCommand, normalizeBashOptions } from "
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "规聚对话流-"));
 const chatPanelSource = fs.readFileSync(new URL("../client/src/components/ChatPanel.jsx", import.meta.url), "utf8");
+const workProductSource = fs.readFileSync(new URL("../client/src/components/工作产物面板.jsx", import.meta.url), "utf8");
 const runProjectionSource = fs.readFileSync(new URL("../client/src/运行展示投影.js", import.meta.url), "utf8");
 const appSource = fs.readFileSync(new URL("../client/src/App.jsx", import.meta.url), "utf8");
 const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
@@ -37,6 +38,12 @@ try {
   assert.match(chatPanelSource, /className="chat-topbar"/);
   assert.match(chatPanelSource, /showExecutionFlow && \(\s*<ExecutionFlow\s+events=\{executionEvents\}\s+running=\{busy\}\s+onFocusTool=\{focusTool\}/, "当前运行的过程固定在对话顶部（B01 后仍保留）");
   assert.match(chatPanelSource, /className="run-process-toggle"/, "每个已结束的 Run 应有一行内联过程（B01）");
+  assert.match(workProductSource, /import React, \{[^}]*useCallback/, "改动页签使用的 useCallback 必须正确从 React 导入");
+  assert.match(chatPanelSource, /useState\(Boolean\(defaultExpanded \|\| running\)\)/, "活动 SSE 执行流应在运行时展开");
+  assert.match(chatPanelSource, /if \(running && !wasRunning\)[\s\S]{0,180}setExpanded\(true\)/, "SSE 运行开始时应展开过程流");
+  assert.match(chatPanelSource, /else if \(!running && wasRunning\)[\s\S]{0,80}setExpanded\(false\)/, "SSE 运行结束后应自动收束为一行摘要");
+  assert.match(chatPanelSource, /executionListRef[\s\S]{0,260}list\.scrollTop = list\.scrollHeight/, "展开的实时事件流应自动跟随最新事件");
+  assert.match(chatPanelSource, /followExecutionTailRef\.current = list\.scrollHeight - list\.scrollTop - list\.clientHeight <= 28/, "用户向上回看时应暂停自动滚动，回到底部后恢复跟随");
   assert.match(chatPanelSource, /const processSummary = view\.progress\.toolTotal/, "过程行摘要应只聚合工具成功/失败数，不与文件验收信息重复");
   const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
   assert.match(runSummarySource, /const \[open, setOpen\] = useState\(false\)/, "每轮文件清单默认折叠");
