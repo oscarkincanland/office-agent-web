@@ -7,7 +7,7 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, reduceRunTrace, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
 import { projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
@@ -3508,8 +3508,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             </button>
             {toolsOpen && <div className="run-trace-timeline" role="list" aria-label="工具调用明细">
               {(trace?.tools || []).map((tool, index) => {
-                const rawDetail = [tool.output, tool.result, tool.input].find((value) => typeof value === "string" && value.trim()) || "";
-                const detail = rawDetail.trim();
+                const detail = runToolDetailText(tool);
                 const preview = detail.length > 240 ? `${detail.slice(0, 240)}…` : detail;
                 const state = tool.status !== "done" ? "running" : tool.isError ? "error" : "ok";
                 const stateLabel = state === "running" ? "进行中" : state === "error" ? "失败" : "完成";

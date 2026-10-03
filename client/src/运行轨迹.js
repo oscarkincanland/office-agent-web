@@ -153,7 +153,7 @@ export function applyRunTraceEvent(trace, event) {
     case "tool_output": {
       const tool = findTool(trace, data);
       if (!tool) break;
-      const chunk = String(data.output ?? data.text ?? "");
+      const chunk = runToolDetailText({ output: data.output ?? data.text });
       if (!chunk) break;
       tool.output = data.replace ? chunk : (tool.output || "") + chunk;
       break;
@@ -181,7 +181,7 @@ export function applyRunTraceEvent(trace, event) {
       }
       tool.status = "done";
       tool.isError = !!data.isError;
-      if (data.result !== undefined && data.result !== null) tool.result = String(data.result).slice(0, 4000);
+      if (data.result !== undefined && data.result !== null) tool.result = runToolDetailText({ result: data.result }).slice(0, 4000);
       tool.endAt = at;
       if (tool.startAt) {
         const ms = new Date(at).getTime() - new Date(tool.startAt).getTime();
@@ -360,6 +360,22 @@ export function verificationLabel(status) {
     pending: "验证中",
     not_checked: "未验收",
   }[String(status || "not_checked")] || "未验收";
+}
+
+/** 工具时间线的紧凑明细：兼容文本与结构化输入/输出，不出现 [object Object]。 */
+export function runToolDetailText(tool = {}) {
+  for (const value of [tool.output, tool.result, tool.input]) {
+    if (value === undefined || value === null) continue;
+    let text = "";
+    if (typeof value === "string") text = value;
+    else {
+      try { text = JSON.stringify(value, null, 2) ?? String(value); }
+      catch { text = String(value); }
+    }
+    text = text.trim();
+    if (text && text !== "[object Object]") return text;
+  }
+  return "";
 }
 
 /** 折叠态一行摘要，例如：已调用 6 个工具 · 5 成功 · 待办 3/4 · 验收通过 · 2 个文件变更 */

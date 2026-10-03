@@ -10,6 +10,7 @@ import {
   completionLabel,
   createRunTrace,
   reduceRunTrace,
+  runToolDetailText,
   runTraceSummaryText,
   summarizeRunTrace,
   verificationLabel,
@@ -52,6 +53,21 @@ test("start/output/end 合成一条工具记录", () => {
   assert.equal(tool.output, "第一段第二段");
   assert.equal(tool.duration, 3);
   assert.equal(tool.startMissing, false);
+});
+
+test("结构化工具输入/输出转为可读 JSON，不泄漏 [object Object]", () => {
+  const trace = reduceRunTrace([
+    ev("tool_start", { toolCallId: "json-1", name: "bash", input: { command: "pwd" } }, 0),
+    ev("tool_output", { toolCallId: "json-1", output: { cwd: "/workspace", ok: true } }, 1),
+    ev("tool_end", { toolCallId: "json-1", result: { exitCode: 0 } }, 2),
+  ]);
+  const tool = trace.tools[0];
+  assert.match(tool.output, /"cwd": "\/workspace"/);
+  assert.match(tool.result, /"exitCode": 0/);
+  assert.match(runToolDetailText(tool), /"cwd": "\/workspace"/);
+  const legacy = runToolDetailText({ output: "[object Object]", input: { path: "报告.docx" } });
+  assert.match(legacy, /"path": "报告\.docx"/, "旧的对象字符串占位应回退到可读输入");
+  assert.doesNotMatch(legacy, /\[object Object\]/);
 });
 
 test("多个工具并行不互相覆盖", () => {
