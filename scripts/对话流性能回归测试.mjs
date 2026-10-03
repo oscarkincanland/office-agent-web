@@ -11,6 +11,7 @@ import { bashTimeoutPolicy, isGlobalSearchCommand, normalizeBashOptions } from "
 
 const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "规聚对话流-"));
 const chatPanelSource = fs.readFileSync(new URL("../client/src/components/ChatPanel.jsx", import.meta.url), "utf8");
+const runProjectionSource = fs.readFileSync(new URL("../client/src/运行展示投影.js", import.meta.url), "utf8");
 const appSource = fs.readFileSync(new URL("../client/src/App.jsx", import.meta.url), "utf8");
 const stylesSource = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
 const settingsSource = fs.readFileSync(new URL("../client/src/components/SettingsPanel.jsx", import.meta.url), "utf8");
@@ -36,7 +37,12 @@ try {
   assert.match(chatPanelSource, /className="chat-topbar"/);
   assert.match(chatPanelSource, /showExecutionFlow && \(\s*<ExecutionFlow\s+events=\{executionEvents\}\s+running=\{busy\}\s+onFocusTool=\{focusTool\}/, "当前运行的过程固定在对话顶部（B01 后仍保留）");
   assert.match(chatPanelSource, /className="run-process-toggle"/, "每个已结束的 Run 应有一行内联过程（B01）");
-  assert.match(chatPanelSource, /const processSummary = traceSummary/, "过程行摘要来自轨迹归约，不重数原始事件");
+  assert.match(chatPanelSource, /const processSummary = view\.progress\.toolTotal/, "过程行摘要应只聚合工具成功/失败数，不与文件验收信息重复");
+  const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
+  assert.match(runSummarySource, /const \[open, setOpen\] = useState\(false\)/, "每轮文件清单默认折叠");
+  assert.ok(runSummarySource.indexOf("run-process-row${toolsOpen") > runSummarySource.indexOf("</details>}"), "执行过程应独立于文件清单折叠区");
+  assert.match(runSummarySource, /执行过程/, "折叠行应有明确的执行过程标签");
+  assert.match(runSummarySource, /run-trace-step-heading/, "展开后应展示有序工具时间线与状态");
   assert.doesNotMatch(chatPanelSource, /executionFlowAnchored && m\.id === executionFlowAnchorId && <ExecutionFlow/);
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
@@ -79,7 +85,7 @@ try {
   assert.doesNotMatch(agentSource, /emitChannelSafe\(entry, "context_compacted"/, "压缩完成只由 Pi SDK 事件产生，不能重复合成一份");
   assert.match(serverSource, /requireWorkspaceWriteForTask\(initialWritePlan, requestedWorkspace\)/, "工作区产物任务必须在创建 Runtime 和模型初始化前探测写权限");
   assert.match(serverSource, /publishableStagedValidations/, "暂存产物校验失败时应跳过失败文件并继续发布其他文件");
-  assert.match(chatPanelSource, /previous\?\.products \|\| \[\]/, "空的终结事件不能覆盖已有产物列表");
+  assert.match(runProjectionSource, /previous\?\.products \|\| \[\]/, "空的终结事件不能覆盖已有产物列表");
   assert.match(chatPanelSource, /window\.setTimeout\(resolve, 3000\)/, "发送应给 SSE 握手最多 3 秒，超时后靠服务端回放补齐 admission 事件");
   assert.match(chatPanelSource, /streamIdsRef/, "SSE 游标必须按通道代际隔离，避免 Runtime 重建后事件被旧游标过滤");
   assert.match(chatPanelSource, /streamGenerationRef/, "切换会话后必须隔离旧 EventSource 的迟到回调");

@@ -16,6 +16,7 @@ const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 const 存在 = (rel) => fs.existsSync(new URL(rel, import.meta.url));
 const 样式 = read("../client/src/styles.css");
 const 对话面板 = read("../client/src/components/ChatPanel.jsx");
+const 运行投影 = read("../client/src/运行展示投影.js");
 const 跑马灯 = read("../client/src/components/跑马灯文本.jsx");
 const 界面外观 = read("../client/src/界面外观.js");
 const 入口页 = read("../client/index.html");
@@ -139,7 +140,7 @@ for (const 宿主 of 宿主清单) {
   assert.ok(样式.slice(0, 闸门起点).includes(宿主), `闸门清单里的 ${宿主} 在样式表里找不到定义（可能是过期条目）`);
 }
 // 装饰性入场也要纳入闸门
-for (const 宿主 of [".comment-anchor-badge", ".oa-anno-toolbar", ".comment-highlight", ".comment-highlight-active", ".ct-pop", ".cmd-panel", ".composer-suggestions", ".task-center-panel", ".run-result", ".summary-product.fresh", ".file-item.changed", ".app-preview-slot"]) {
+for (const 宿主 of [".comment-anchor-badge", ".oa-anno-toolbar", ".comment-highlight", ".comment-highlight-active", ".ct-pop", ".cmd-panel", ".composer-suggestions", ".task-center-panel", ".run-result", ".run-trace-timeline", ".summary-product.fresh", ".file-item.changed", ".app-preview-slot"]) {
   assert.ok(闸门块.includes(宿主), `闸门清单缺少装饰性入场宿主：${宿主}`);
 }
 // 跑马灯静态回退：去掉渐变文字与描边，保留状态色标
@@ -178,7 +179,7 @@ assert.doesNotMatch(样式, /@keyframes\s+(confetti|fireworks|celebrate)/i, "不
 assert.match(闸门块, /@keyframes oaw-file-flash/, "被改文件应有短时高亮");
 assert.match(闸门块, /\.summary-product\.fresh:nth-child\(n\+7\) \{ animation: none; \}/, "长文件清单不应整屏闪动（高亮已迁移到单一清单）");
 assert.match(闸门块, /\.file-item\.changed \{ animation: oaw-file-flash 900ms/, "文件树里被改文件也应短时高亮（同一套 oaw-file-flash）");
-assert.match(对话面板, /flashFiles: data\.fresh === true \|\| previous\?\.flashFiles === true/, "只有本轮刚结束才标记文件高亮");
+assert.match(运行投影, /flashFiles: data\.fresh === true \|\| previous\?\.flashFiles === true/, "只有本轮刚结束才标记文件高亮");
 assert.match(对话面板, /fresh: Boolean\(data\.runId\) && data\.runId === knownRunId/, "run_finished 只在当前活跃 run 上标记 fresh");
 assert.match(对话面板, /const changeClass = \(change\) => `summary-product clickable role-\$\{change\.role\}/, "结果卡单一份文件清单应带角色类名");
 assert.match(对话面板, /m\.flashFiles \? " fresh" : ""/, "结果卡按 fresh 标记文件行（迁移到单一清单）");

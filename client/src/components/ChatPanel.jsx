@@ -8,7 +8,7 @@ import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
 import { completionLabel, formatDuration, reduceRunTrace, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
-import { projectLegacyRunSummary } from "../运行展示投影.js";
+import { projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
 import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
@@ -2200,54 +2200,17 @@ case "runtime_connecting":
   const upsertRunSummary = useCallback((data = {}) => {
     const runId = data.runId || null;
     if (!runId) return;
-    const status = data.status || previous?.runStatus || "";
-    // R04：不得默认 completed。缺失状态显示“状态待同步”，收到权威终态再更新。
-    const statusText = status === "failed" ? "失败"
-      : status === "cancelled" ? "已取消"
-        : status === "aborted" ? "已中断"
-          : status === "running" ? "执行中"
-            : status === "completed" ? "完成"
-              : "状态待同步";
-    const summaryText = String(data.summary || data.completion?.summary || `本轮任务${statusText}`).trim();
-    const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
-    const incomingProducts = Array.isArray(data.products) ? data.products : [];
-    const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
-    const products = incomingProducts.length
-      ? data.products
-      : (artifacts || []).map((item) => item?.path).filter(Boolean);
+    const id = newId();
+    const createdAt = Date.now();
     setMessages((messages) => {
-      const index = messages.findIndex((item) => item.summary && item.runId === runId);
-      const previous = index >= 0 ? messages[index] : null;
-      const nextArtifacts = artifacts || previous?.artifacts || [];
-      const nextProducts = products.length ? products : (previous?.products || []);
-      const next = {
-        ...(previous || {}),
-        id: previous?.id || newId(),
-        role: "system",
-        text: summaryText,
-        products: nextProducts,
-        artifacts: nextArtifacts,
-        runId,
-        runStatus: status || "unknown",
-        references: data.references || previous?.references || [],
-        task: data.task || previous?.task || null,
-        workspace: data.workspace || previous?.workspace || workspace || "",
-        runMode: data.task?.mode || previous?.runMode || runState.mode || "agent",
-        eventCount: Number(data.eventCount || previous?.eventCount || 0),
-        // 完成语义：显式 complete_task 或服务端推断结果，随 run_finished 一起到达
-        completion: data.completion || previous?.completion || null,
-        reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
-        status: "done",
-        summary: true,
-        createdAt: previous?.createdAt || Date.now(),
-        expanded: true,
-        // 只有"本轮刚刚结束"才做文件改动高亮；历史回放与重连补齐不重播动画
-        flashFiles: data.fresh === true || previous?.flashFiles === true,
-      };
-      if (index < 0) return [...messages, next];
-      return messages.map((item, itemIndex) => itemIndex === index ? next : item);
+      return upsertRunSummaryMessage(messages, data, {
+        id,
+        createdAt,
+        workspace: workspace || "",
+        runMode: runState.mode || "agent",
+      });
     });
-  }, [runState.mode]);
+  }, [runState.mode, workspace]);
 
   // 脑图点击工具节点：在消息流中展开对应工具卡（工具卡默认折叠）
   const focusTool = useCallback((toolId) => {
@@ -3331,12 +3294,10 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     .replace(/[*`_]/g, "")
     .slice(0, 140)
     .trim() || "本轮任务";
-  // 每一轮结束后直接展示结论和产物；用户仍可点击标题收起，
-  // 但恢复历史时不再把所有轮次默认藏在“查看本轮”里。
-  const [open, setOpen] = useState(m.expanded !== false);
-  // 工具明细与折叠摘要：沿用轨迹归约（投影已含 trace，这里只需摘要文案）
+  // 结论直接可见；文件清单与执行细节分别折叠，历史回放也保持轻量。
+  const [open, setOpen] = useState(false);
+  // 工具明细与折叠摘要：沿用轨迹归约与统一投影，避免直接统计重复事件。
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
-  const traceSummary = trace ? runTraceSummaryText(trace) : "";
   // 单一份文件集合：投影已按 runId 归并、去重并按语义标角色
   const changes = view.changes || [];
   // B02 回答详细程度：brief 只保留结论要点行；auto/detailed 保留完整 Markdown
@@ -3355,8 +3316,14 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   ])], [view.memoryProposalIds, m.memoryProposalIds]);
   const rollbackableCount = fileChanges.filter((change) => change.before?.reversible).length;
   // B01 过程行：优先用轨迹摘要（含成功/失败/待办），退化到投影计数
-  const processSummary = traceSummary
-    || (view.progress.toolTotal ? `已调用 ${view.progress.toolTotal} 个工具${view.progress.toolFailed ? `（${view.progress.toolFailed} 失败）` : ""}` : "");
+  const processSummary = view.progress.toolTotal
+    ? [
+      `已调用 ${view.progress.toolTotal} 个工具`,
+      view.progress.toolOk ? `${view.progress.toolOk} 成功` : "",
+      view.progress.toolFailed ? `${view.progress.toolFailed} 失败` : "",
+      view.progress.toolRunning ? `${view.progress.toolRunning} 执行中` : "",
+    ].filter(Boolean).join(" · ")
+    : "";
   // 只有真实需要用户行动时才提示（计划 A02-4：删除通用“下一步”）
   const actionNeeded = view.lifecycle === "waiting_approval"
     ? { kind: "approval", text: view.progress.waitingReason || "等待你审批后继续" }
@@ -3402,7 +3369,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                 {completionLabel(completion.status)}{completion.source === "inferred" ? "（推断）" : ""}
               </span>
             )}
-            {traceSummary ? ` · ${traceSummary}` : (m.eventCount ? ` · 过程 ${m.eventCount} 事件` : "")}{time ? ` · ${time}` : ""}
+            {time ? ` · ${time}` : ""}
           </span>
         </div>
         {showResultCard && (
@@ -3481,18 +3448,18 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           </details>
         </div>
         )}
-        <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-          <summary>本轮文件与工具</summary>
+        {(fileChanges.length > 0 || reviewSources.length > 0) && <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+          <summary>文件与依据 · {fileChanges.length} 项改动{reviewSources.length ? ` · ${reviewSources.length} 条依据` : ""}</summary>
           {/* A02-3：不再把 agent_summary 的“共处理 N 个文件：…”当正文重复渲染；结论已在结果卡 */}
           {changes.length > 0 && (
             <div className="file-change-summary">
               <span className="file-change-label">
-                <Icon name="folder" size={11} /> 本轮文件（{changes.length}）
+                <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
                 {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
               </span>
               {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
               <div className="summary-products">
-                {changes.map((change) => (
+                {fileChanges.map((change) => (
                   <span
                     key={change.relativePath}
                     className={changeClass(change)}
@@ -3511,31 +3478,6 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
             </div>
           )}
-          {/* B01：每个 Run 内联一条过程（一行摘要 + 展开工具/输出）；顶部执行流只服务于“当前正在跑”的那一轮 */}
-          {(trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
-            <div className="run-process-row">
-              <button type="button" className="run-process-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
-                <Icon name="flow" size={11} />
-                <span className="run-process-text">
-                  {processSummary}
-                  {view.progress.durationMs ? ` · 用时 ${formatDuration(view.progress.durationMs)}` : ""}
-                  {view.progress.waitingReason ? ` · ${view.progress.waitingReason}` : ""}
-                </span>
-                <span className="run-process-chevron">{toolsOpen ? "▾" : "▸"}</span>
-              </button>
-              {toolsOpen && <div className="run-trace-tool-list">
-                {trace.tools.map((tool) => (
-                  <span
-                    key={tool.id}
-                    className={`run-trace-tool ${tool.status !== "done" ? "running" : tool.isError ? "error" : "ok"}`}
-                    title={tool.result || tool.output || tool.input || ""}
-                  >
-                    <ToolIdentityIcon name={tool.name} size={11} /> {tool.name}{tool.startMissing ? "（已恢复）" : ""}
-                  </span>
-                ))}
-              </div>}
-            </div>
-          )}
           {m.runMode === "review" && reviewSources.length > 0 && (
             <div className="review-source-summary">
               <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
@@ -3550,7 +3492,46 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               </div>
             </div>
           )}
-        </details>
+        </details>}
+        {/* 执行过程与文件清单分开：折叠态仅占一行，展开后按调用顺序展示工具与输出摘要。 */}
+        {(trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
+          <div className={`run-process-row${toolsOpen ? " expanded" : ""}`}>
+            <button type="button" className="run-process-toggle" onClick={() => setToolsOpen((value) => !value)} aria-expanded={toolsOpen}>
+              <Icon name="flow" size={12} />
+              <span className="run-process-label">执行过程</span>
+              <span className="run-process-text">
+                {processSummary || `已调用 ${view.progress.toolTotal} 个工具`}
+                {view.progress.durationMs ? ` · 用时 ${formatDuration(view.progress.durationMs)}` : ""}
+                {view.progress.waitingReason ? ` · ${view.progress.waitingReason}` : ""}
+              </span>
+              <span className="run-process-chevron" aria-hidden="true">{toolsOpen ? "⌄" : "›"}</span>
+            </button>
+            {toolsOpen && <div className="run-trace-timeline" role="list" aria-label="工具调用明细">
+              {(trace?.tools || []).map((tool, index) => {
+                const rawDetail = [tool.output, tool.result, tool.input].find((value) => typeof value === "string" && value.trim()) || "";
+                const detail = rawDetail.trim();
+                const preview = detail.length > 240 ? `${detail.slice(0, 240)}…` : detail;
+                const state = tool.status !== "done" ? "running" : tool.isError ? "error" : "ok";
+                const stateLabel = state === "running" ? "进行中" : state === "error" ? "失败" : "完成";
+                const duration = Number(tool.duration);
+                return (
+                  <div key={tool.id || `${tool.name}-${index}`} className={`run-trace-step ${state}`} role="listitem">
+                    <span className="run-trace-step-index">{index + 1}</span>
+                    <div className="run-trace-step-content">
+                      <div className="run-trace-step-heading">
+                        <ToolIdentityIcon name={tool.name} size={12} />
+                        <strong>{tool.name}{tool.startMissing ? "（恢复）" : ""}</strong>
+                        <span className={`run-trace-step-status ${state}`}>{stateLabel}</span>
+                        {Number.isFinite(duration) && duration >= 0 && <time>{formatDuration(duration * 1000)}</time>}
+                      </div>
+                      {preview && <p title={detail}>{preview}</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>}
+          </div>
+        )}
       </div>
     </div>
   );

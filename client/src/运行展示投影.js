@@ -379,3 +379,63 @@ export function adaptLegacyRunSummary(message = {}) {
 export function projectLegacyRunSummary(message = {}, events = [], options = {}) {
   return projectRunView(adaptLegacyRunSummary(message), Array.isArray(events) && events.length ? events : (message.events || []), options);
 }
+
+/**
+ * 合并同一 Run 的实时摘要与终态事件。
+ * agent_summary 通常先到，run_finished 随后补齐状态、结论和产物；
+ * 这里集中处理旧消息复用，避免事件处理器依赖 setState updater 内部变量。
+ */
+export function upsertRunSummaryMessage(messages = [], data = {}, {
+  id = null,
+  workspace = "",
+  runMode = "agent",
+  createdAt = Date.now(),
+} = {}) {
+  const list = Array.isArray(messages) ? messages : [];
+  const runId = data?.runId || null;
+  if (!runId) return list;
+
+  const index = list.findIndex((item) => item?.summary && item.runId === runId);
+  const previous = index >= 0 ? list[index] : null;
+  const status = data.status || previous?.runStatus || "";
+  const statusText = status === "failed" ? "失败"
+    : status === "cancelled" ? "已取消"
+      : status === "aborted" ? "已中断"
+        : status === "running" ? "执行中"
+          : status === "completed" ? "完成"
+            : "状态待同步";
+  const summaryText = String(data.summary || data.completion?.summary || previous?.text || `本轮任务${statusText}`).trim();
+  const incomingArtifacts = Array.isArray(data.artifacts) ? data.artifacts : [];
+  const artifacts = incomingArtifacts.length ? incomingArtifacts : null;
+  const incomingProducts = Array.isArray(data.products) ? data.products : [];
+  const products = incomingProducts.length
+    ? incomingProducts
+    : (artifacts || []).map((item) => item?.path).filter(Boolean);
+  const nextArtifacts = artifacts || previous?.artifacts || [];
+  const nextProducts = products.length ? products : (previous?.products || []);
+  const next = {
+    ...(previous || {}),
+    id: previous?.id || id || `run-summary:${runId}`,
+    role: "system",
+    text: summaryText,
+    products: nextProducts,
+    artifacts: nextArtifacts,
+    runId,
+    runStatus: status || "unknown",
+    references: data.references || previous?.references || [],
+    task: data.task || previous?.task || null,
+    workspace: data.workspace || previous?.workspace || workspace || "",
+    runMode: data.task?.mode || previous?.runMode || runMode || "agent",
+    eventCount: Number(data.eventCount || previous?.eventCount || 0),
+    completion: data.completion || previous?.completion || null,
+    reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
+    status: "done",
+    summary: true,
+    createdAt: previous?.createdAt || createdAt,
+    expanded: false,
+    // 只有“本轮刚刚结束”才做文件改动高亮；历史回放与重连补齐不重播动画。
+    flashFiles: data.fresh === true || previous?.flashFiles === true,
+  };
+  if (index < 0) return [...list, next];
+  return list.map((item, itemIndex) => itemIndex === index ? next : item);
+}

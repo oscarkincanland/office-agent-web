@@ -26,6 +26,7 @@ import {
   normalizeLifecycle,
   projectLegacyRunSummary,
   projectRunView,
+  upsertRunSummaryMessage,
 } from "../client/src/运行展示投影.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -198,6 +199,42 @@ test("normalizeFileChange：删除/新增类型与回滚可用性", () => {
 
 console.log("\n▶ 归属与旧数据适配");
 
+test("agent_summary 与 run_finished 合并为同一条摘要，并保留早到的文件信息", () => {
+  const initial = upsertRunSummaryMessage([{ id: "user-1", role: "user", text: "修改报告" }], {
+    runId: "run_merge",
+    status: "running",
+    summary: "正在处理报告",
+    artifacts: [{ path: "报告.docx", status: "modified" }],
+    products: ["报告.docx"],
+  }, { id: "summary-1", createdAt: 100, workspace: "/workspace", runMode: "agent" });
+  const finished = upsertRunSummaryMessage(initial, {
+    runId: "run_merge",
+    status: "completed",
+    completion: { status: "success", summary: "报告已修改并通过检查" },
+    artifacts: [],
+    products: [],
+  }, { id: "must-not-replace", createdAt: 200 });
+
+  assert.equal(finished.length, 2, "终态事件应更新原摘要，而非新增第二条");
+  const summary = finished.find((item) => item.summary);
+  assert.equal(summary.id, "summary-1", "同一 Run 应保留原消息 id");
+  assert.equal(summary.runStatus, "completed");
+  assert.equal(summary.text, "报告已修改并通过检查");
+  assert.deepEqual(summary.products, ["报告.docx"], "空终态产物不得清除先到的文件列表");
+  assert.deepEqual(summary.artifacts, [{ path: "报告.docx", status: "modified" }]);
+  assert.equal(summary.createdAt, 100);
+  assert.equal(summary.expanded, false, "历史摘要的文件详情默认折叠");
+});
+
+test("缺少 runId 的摘要事件无副作用，缺失状态不冒报为完成", () => {
+  const messages = [{ id: "existing", role: "user", text: "保留" }];
+  assert.equal(upsertRunSummaryMessage(messages, { summary: "缺少 runId" }), messages);
+  const next = upsertRunSummaryMessage(messages, { runId: "run_unknown" }, { id: "summary-unknown" });
+  const summary = next.find((item) => item.summary);
+  assert.equal(summary.runStatus, "unknown");
+  assert.equal(summary.text, "本轮任务状态待同步");
+});
+
 test("其他 Run 的迟到事件不影响本 Run", () => {
   const view = projectRunView({ id: "run_j", status: "running" }, [
     { type: "tool_start", data: { name: "read", toolCallId: "t1", runId: "run_j" } },
@@ -232,11 +269,14 @@ console.log("\n▶ R04 客户端契约（非终态不得宣告完成）");
 
 test("ChatPanel 不再默认 completed，缺失状态显示“状态待同步”", () => {
   const panel = fs.readFileSync(path.join(ROOT, "client/src/components/ChatPanel.jsx"), "utf8");
+  const projection = fs.readFileSync(path.join(ROOT, "client/src/运行展示投影.js"), "utf8");
   assert.doesNotMatch(panel, /upsertRunSummary\(\{ \.\.\.data, status: data\.status \|\| "completed" \}\)/, "agent_summary 不得强制 completed");
   assert.doesNotMatch(panel, /const status = data\.status \|\| "completed"/, "结果卡状态不得默认 completed");
   assert.doesNotMatch(panel, /const finalStatus = data\.status \|\| "completed"/, "run_finished 缺失状态不得谎报完成");
-  assert.match(panel, /"状态待同步"/, "缺失状态应显示“状态待同步”");
-  assert.match(panel, /runStatus: status \|\| "unknown"/, "结果卡应以 unknown 表达待同步");
+  assert.match(projection, /"状态待同步"/, "缺失状态应显示“状态待同步”");
+  assert.match(projection, /runStatus: status \|\| "unknown"/, "结果卡应以 unknown 表达待同步");
+  assert.match(panel, /upsertRunSummaryMessage\(messages, data/, "实时与终态事件必须合并到同一个纯函数，覆盖事件时序回归");
+  assert.doesNotMatch(panel, /const status = data\.status \|\| previous\?\.runStatus/, "事件处理器不得引用状态更新器内部的 previous 变量");
 });
 
 console.log("\n▶ A03 输出与记忆策略契约");

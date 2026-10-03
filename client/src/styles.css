@@ -9828,12 +9828,33 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-changes-workspace .run-changes-picker label { display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--muted); }
 .run-changes-workspace .run-changes-picker select { flex: 1; min-width: 0; }
 
-/* B01：每个 Run 内联的过程行（一行摘要 + 展开工具） */
-.run-process-row { margin-top: 6px; }
-.run-process-toggle { display: inline-flex; align-items: center; gap: 5px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; padding: 2px 4px; border-radius: 4px; max-width: 100%; }
-.run-process-toggle:hover { color: var(--accent); }
-.run-process-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.run-process-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* B01：执行过程独立于文件清单；折叠态一行，展开后用轻量时间线呈现工具与输出。 */
+.run-process-row { margin-top: 7px; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--panel2-bg) 68%, transparent); }
+.run-process-toggle { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 32px; padding: 6px 9px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; text-align: left; }
+.run-process-toggle:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, transparent); }
+.run-process-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.run-process-label { flex: 0 0 auto; color: var(--text); font-weight: 600; }
+.run-process-text { min-width: 0; overflow: hidden; color: var(--dim); text-overflow: ellipsis; white-space: nowrap; }
+.run-process-chevron { color: var(--dim); font-size: 17px; line-height: 12px; transition: transform 150ms ease; }
+.run-process-row.expanded .run-process-chevron { transform: rotate(90deg); }
+.run-trace-timeline { display: grid; gap: 6px; max-height: 340px; overflow: auto; margin: 0 9px 9px 14px; padding: 2px 4px 2px 10px; border-left: 1px solid var(--border); animation: run-trace-in 160ms ease-out both; }
+.run-trace-step { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; align-items: start; min-width: 0; }
+.run-trace-step-index { display: grid; place-items: center; width: 17px; height: 17px; margin-left: -19px; border: 1px solid var(--border); border-radius: 50%; background: var(--panel-bg); color: var(--dim); font-size: 9px; font-variant-numeric: tabular-nums; }
+.run-trace-step-content { min-width: 0; padding: 2px 0 4px; }
+.run-trace-step-heading { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); font-size: 10px; }
+.run-trace-step-heading strong { overflow: hidden; color: var(--text); font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.run-trace-step-heading time { margin-left: auto; color: var(--dim); font-size: 9px; white-space: nowrap; }
+.run-trace-step-status { flex: 0 0 auto; color: var(--success); font-size: 9px; }
+.run-trace-step-status.error { color: var(--danger, #e5484d); }
+.run-trace-step-status.running { color: var(--accent); }
+.run-trace-step p { max-height: 96px; overflow: auto; margin: 3px 0 0; color: var(--dim); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+.run-trace-step.error .run-trace-step-index { color: var(--danger, #e5484d); border-color: color-mix(in srgb, var(--danger, #e5484d) 45%, var(--border)); }
+@keyframes run-trace-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (max-width: 620px) {
+  .run-process-toggle { grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 5px; padding-inline: 7px; }
+  .run-process-text { font-size: 9px; }
+  .run-trace-timeline { margin-right: 6px; }
+}
 
 /* B04：任务中心浮层走 Portal 后的固定定位容器（窄屏不启用，交给贴边抽屉） */
 .task-center-float { position: fixed; z-index: 300; max-width: calc(100vw - 16px); }
@@ -9899,6 +9920,7 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .composer-suggestions,
   .task-center-panel,
   .run-result,
+  .run-trace-timeline,
     .summary-product.fresh,
   .file-item.changed,
   .app-preview-slot
@@ -9978,4 +10000,3 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
     min-width: 32px;
   }
 }
-
