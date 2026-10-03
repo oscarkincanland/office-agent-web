@@ -293,5 +293,20 @@ assert.match(serverSource, /png: "image\/png"/, "raw 应给图片正确 MIME");
 assert.match(serverSource, /svg: "image\/svg\+xml"/, "SVG 应使用 image/svg+xml");
 assert.match(serverSource, /Content-Security-Policy", "sandbox/, "SVG 应带沙箱响应头，受控展示");
 console.log("  ✓ D04 图片查看器与 PDF 状态契约");
+
+// D03：PPT 渲染队列与资源释放（用真实 pptxviewjs 的 destroy 接口，不虚构库 API）
+const pptxSource = fs.readFileSync(new URL("../client/src/components/PptxViewer.jsx", import.meta.url), "utf8");
+const renderSlideCalls = (pptxSource.match(/renderSlide\(/g) || []).length;
+assert.equal(renderSlideCalls, 1, "同一时刻只保留一处 renderSlide 调用路径（单一渲染路径）");
+assert.match(pptxSource, /destroy\?\.\(\)/, "必须调用 pptxviewjs 的真实释放接口 destroy");
+assert.match(pptxSource, /renderSeqRef/, "渲染请求应有 latest-wins 令牌");
+assert.match(pptxSource, /pending\.token !== token\) return;/, "旧页请求应在执行前被跳过");
+assert.match(pptxSource, /setRenderer\("office"\)/, "浏览器渲染失败应自动回退高保真");
+assert.doesNotMatch(pptxSource, /const go = async|const jump = async/, "go/jump 不得再直接触发渲染（改为只设置目标页）");
+const officeSource = fs.readFileSync(new URL("../server/office.mjs", import.meta.url), "utf8");
+assert.match(officeSource, /OfficeCLI 渲染失败（退出码/, "renderHtml 非零退出必须明确失败");
+assert.match(officeSource, /相对资源引用/, "应检查相对资源引用（临时副本删除后可能失效）");
+assert.match(officeSource, /"--out", outFile/, "renderHtml 应用文件输出，绕开 stdout/JSON 大小上限（254MB 样本实测）");
+console.log("  ✓ D03 PPT 渲染队列与资源释放契约");
 console.log(failed ? "\n预览身份测试：失败" : "\n预览身份测试：通过");
 process.exit(failed ? 1 : 0);

@@ -213,11 +213,34 @@ async function withPreviewCopy(file, operation) {
   }
 }
 
-/** Render docx/pptx to self-contained HTML (stdout). */
+/**
+ * Render docx/pptx to self-contained HTML。
+ * D03：改为 OfficeCLI 文件输出（--out）：stdout/JSON 通道对超大文档有大小上限
+ * （254MB PPTX 走 stdout 会以 JSON 超限失败，--out 实测 3.1s 产出 181.5MB 自包含 HTML）；
+ * 同时 OfficeCLI 非零退出必须明确失败，不能只把 stdout 当成功。
+ * 相对资源引用会在临时副本删除后失效，发现即告警（实测 10-杨勇/6-贺向阳/7-刘业全 均为 0 引用）。
+ */
 export async function renderHtml(file) {
   return withPreviewCopy(file, async (previewFile, cwd) => {
-    const r = await runOfficecli(["view", previewFile, "html"], { cwd });
-    return r.stdout;
+    const outFile = path.join(cwd, "preview.html");
+    const r = await runOfficecli(["view", previewFile, "html", "--out", outFile], { cwd });
+    if (Number(r.code) !== 0) {
+      const detail = String(r.stderr || r.text || "").trim().slice(0, 300);
+      const error = new Error(`OfficeCLI 渲染失败（退出码 ${r.code}）${detail ? `：${detail}` : ""}`);
+      error.code = "OFFICECLI_RENDER_FAILED";
+      throw error;
+    }
+    const html = await fs.promises.readFile(outFile, "utf8").catch(() => "");
+    if (!String(html).trim()) {
+      const error = new Error("OfficeCLI 渲染失败：输出为空");
+      error.code = "OFFICECLI_RENDER_FAILED";
+      throw error;
+    }
+    const relative = [...String(html).matchAll(/(?:src|href)="(?!data:|https?:|#|mailto:)([^"]+)"/g)].map((m) => m[1]);
+    if (relative.length) {
+      console.warn(`[preview] 高保真 HTML 含 ${relative.length} 个相对资源引用，临时副本删除后可能失效（样例：${relative.slice(0, 3).join(", ")}）`);
+    }
+    return html;
   });
 }
 
