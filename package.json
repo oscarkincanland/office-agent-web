@@ -33,6 +33,7 @@
     "test:perf-budget": "node scripts/性能与流量基线测试.mjs",
     "test:sse-protocol": "node scripts/SSE事件协议回归测试.mjs",
     "test:run-trace": "node scripts/执行轨迹归约测试.mjs",
+    "test:run-budget": "node scripts/运行预算测试.mjs",
     "test:memory-admission": "node scripts/记忆准入治理测试.mjs",
     "test:workspace-isolation": "node scripts/工作区隔离回归测试.mjs",
     "test:search": "node scripts/联网搜索测试.mjs",
