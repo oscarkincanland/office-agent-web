@@ -3571,17 +3571,18 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
   const completed = run ? finishRun(run.id, { status: finalStatus, sessionId: entry?.session?.sessionId || null, summary: cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更"), validations: allValidations, publishPaths: run ? publishPaths : null, completion: resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }) }) : null;
   if (entry) {
     const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
-    if (productPaths.length) {
-      emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
-      emitChannel(entry, "agent_summary", {
-        products: productPaths,
-        // A02-3：同上，正文只保留数量
-        summary: `本轮对话完成，共处理 ${productPaths.length} 个文件`,
-        runId: run?.id || null,
-        artifacts: completed?.artifacts || [],
-        references: resolved,
-      });
-    }
+    if (productPaths.length) emitChannel(entry, "file_changed", { files: productPaths, runId: run?.id || null });
+    // 终态总结必须无条件发出：没有文件变更的轮次也要有结果卡（总结 + 本轮过程行），
+    // 否则对话看起来“没有总结、折叠过程也没做完”。文案与 run 记录里的 summary 保持一致。
+    emitChannel(entry, "agent_summary", {
+      products: productPaths,
+      // A02-3：正文只保留数量，文件清单走 products/artifacts
+      summary: completed?.summary || (cancelled ? "任务已取消" : (publishedCount ? `本轮对话完成，共处理 ${publishedCount} 个文件${verificationNote}` : "本轮对话完成，未检测到文件变更")),
+      runId: run?.id || null,
+      artifacts: completed?.artifacts || [],
+      references: resolved,
+      status: completed?.status || finalStatus,
+    });
     if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
   }
 }
@@ -3900,17 +3901,17 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       completion: resolveRunCompletion(entry, status, { artifacts: changed.length + publishableStagedValidations.length, validations: allValidations, runId: run.id }),
     });
     const productPaths = [...changed, ...publishableStagedValidations.map((item) => item.path).filter(Boolean)];
-    if (productPaths.length) {
-      emitChannel(entry, "file_changed", { files: productPaths, runId: run.id });
-      emitChannel(entry, "agent_summary", {
-        products: productPaths,
-        // A02-3：恢复路径同样只保留数量
-        summary: `恢复任务完成，共处理 ${productPaths.length} 个文件`,
-        runId: run.id,
-        artifacts: finished?.artifacts || [],
-        references,
-      });
-    }
+    if (productPaths.length) emitChannel(entry, "file_changed", { files: productPaths, runId: run.id });
+    // 恢复路径同样无条件发终态总结（没有文件变更也要有结果卡）
+    emitChannel(entry, "agent_summary", {
+      products: productPaths,
+      // A02-3：恢复路径同样只保留数量
+      summary: finished?.summary || (status === "cancelled" ? "恢复任务已取消" : (productPaths.length ? `恢复任务完成，共处理 ${productPaths.length} 个文件` : "恢复任务完成，未检测到文件变更")),
+      runId: run.id,
+      artifacts: finished?.artifacts || [],
+      references,
+      status: finished?.status || status,
+    });
     emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
   } catch (error) {

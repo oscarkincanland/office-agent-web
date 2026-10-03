@@ -9846,6 +9846,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .image-viewer-loading { align-self: center; color: var(--muted); font-size: 12px; }
 .image-viewer-error { display: flex; align-items: center; gap: 10px; margin: 16px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--error) 10%, transparent); color: var(--text); font-size: 12px; }
 
+/* B03：改动页签的“最近一轮无改动”诊断提示 */
+.run-changes-note { margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--muted); font-size: 11px; line-height: 1.55; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：

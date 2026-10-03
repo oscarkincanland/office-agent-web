@@ -246,6 +246,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
 function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId = "", refreshToken = 0, onOpenFile }) {
   const [pickedRunId, setPickedRunId] = useState(selectedRunId || "");
   const [runs, setRuns] = useState([]);
+  const [latestRun, setLatestRun] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -257,15 +258,17 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
     setError("");
     try {
       const listed = await listRuns("", 60, { cwd: workspace, projectId });
-      const scoped = (listed.runs || []).filter((run) => run?.artifacts?.length
-        && (!currentSessionId || run.sessionId === currentSessionId));
+      const sessionRuns = (listed.runs || []).filter((run) => !currentSessionId || run.sessionId === currentSessionId);
+      const scoped = sessionRuns.filter((run) => run?.artifacts?.length);
       const wanted = pickedRunId || scoped[0]?.id || "";
       const fetched = wanted ? await getRun(wanted).catch(() => null) : null;
       setRuns(scoped);
+      setLatestRun(sessionRuns[0] || null);
       setDetail(fetched?.run || scoped[0] || null);
     } catch (err) {
       setError(err.message || String(err));
       setRuns([]);
+      setLatestRun(null);
       setDetail(null);
     } finally {
       setLoading(false);
@@ -308,7 +311,17 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
       )}
       {error && <div className="model-feedback warn">读取改动失败：{error}</div>}
       {loading && <div className="preview-empty">正在读取本轮改动…</div>}
-      {!loading && !error && (
+      {!loading && !error && latestRun && (!detail || latestRun.id !== detail.id) && (
+        <div className="run-changes-note">
+          最近一次运行（{(latestRun.finishedAt || latestRun.startedAt || "").slice(5, 16).replace("T", " ")} · {statusText[latestRun.status] || latestRun.status || "?"}）
+          {latestRun.status === "cancelled" ? "被中断" : latestRun.status === "failed" ? "失败" : "没有捕获到文件改动"}
+          ，{runs.length ? "下面显示最近有改动的一轮。" : "当前会话还没有可展示的改动记录。"}
+        </div>
+      )}
+      {!loading && !error && !runs.length && (
+        <div className="preview-empty"><Icon name="file" size={20} />当前会话还没有捕获到文件改动（运行产生文件后才会记录）</div>
+      )}
+      {!loading && !error && runs.length > 0 && (
         <FileChangesPanel
           runId={detail?.id || ""}
           changes={changes}

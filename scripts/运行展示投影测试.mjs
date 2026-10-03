@@ -273,9 +273,14 @@ test("记忆建议不插主消息流，改挂结果卡入口", () => {
 test("服务端不再把全部文件名塞进总结正文（A02-3）", () => {
   const index = fs.readFileSync(path.join(ROOT, "server/index.mjs"), "utf8");
   assert.doesNotMatch(index, /个文件：\$\{[^}]*\.join\(", "\)\}/, "agent_summary 不应再拼接全部文件名");
-  assert.match(index, /summary: `本轮对话完成，共处理 \$\{productPaths\.length\} 个文件`/, "应只保留数量，清单走 products/artifacts");
+  // 终态总结与 run 记录同文案（只保留数量/未检测到文件变更），并且无条件发出
+  assert.match(index, /summary: completed\?\.summary \|\|/, "成功/取消路径沿用 run 记录文案");
+  assert.match(index, /本轮对话完成，共处理 \$\{publishedCount\} 个文件/, "成功路径只保留数量");
+  assert.match(index, /本轮对话完成，未检测到文件变更/, "无产物轮次也要有明确文案");
   assert.match(index, /summary: `对话异常结束，仍处理了 \$\{changed\.length\} 个文件`/, "异常路径同样只保留数量");
-  assert.match(index, /summary: `恢复任务完成，共处理 \$\{productPaths\.length\} 个文件`/, "恢复路径同样只保留数量");
+  assert.match(index, /summary: finished\?\.summary \|\|/, "恢复路径沿用 run 记录文案");
+  assert.match(index, /恢复任务完成，共处理 \$\{productPaths\.length\} 个文件/, "恢复路径只保留数量");
+  assert.match(index, /if \(productPaths\.length\) emitChannel\(entry, "file_changed"/, "总结无条件，file_changed 仍按需");
 });
 
 console.log("\n▶ W7/E01+E03 工作阶段与时间线");

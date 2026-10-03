@@ -286,5 +286,14 @@ test("思考块默认收起且尊重设置，并有 ARIA 展开状态", () => {
   assert.match(对话面板, /aria-controls=\{idRef\.current\}/);
 });
 
+test("终态总结无条件发出：没有产物也要有总结卡与过程行", () => {
+  // 成功/取消路径：file_changed 仍按需，agent_summary 不再被 productPaths 判空包裹
+  assert.doesNotMatch(index源, /if \(productPaths\.length\) \{/, "终态总结不得再被 productPaths 判空包裹");
+  assert.match(index源, /if \(productPaths\.length\) emitChannel\(entry, "file_changed"/, "file_changed 仍按需发出");
+  assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: completed\?\.summary/, "成功/取消路径总结与 run 记录同文案");
+  assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: finished\?\.summary/, "恢复路径总结与 run 记录同文案");
+  assert.match(index源, /未检测到文件变更/, "无产物轮次也要有明确文案");
+});
+
 console.log(failed ? "\n✗ 任务结论事件流测试未通过\n" : "\n✓ 任务结论事件流测试全部通过\n");
 process.exit(failed ? 1 : 0);
