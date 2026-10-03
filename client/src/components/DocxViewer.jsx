@@ -642,7 +642,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             </button>
           </>
         )}
-        <span className="oaw-docx-hint">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 页` : ""}{imageNotice ? ` · ${imageNotice}` : ""}</span>
+        <span className="oaw-docx-hint" title="预览页由浏览器按 A4 排版计算，不保证与 Word 原始页码一致">{mode === "edit" ? "编辑模式" : "预览模式"}{pageCount ? ` · 共 ${pageCount} 个预览页` : ""}{imageNotice ? ` · ${imageNotice}` : ""}</span>
       </div>
 
       {/* 第二行：编辑工具栏（仅编辑模式显示） */}

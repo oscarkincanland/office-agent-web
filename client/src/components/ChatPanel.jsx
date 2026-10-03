@@ -137,6 +137,7 @@ function ModelOptionRow({ model, current, favorite, onPick, onToggleFavorite }) 
       >
         <ModelProviderMark model={model} size={17} />
         <span><strong>{modelDisplayName(model)}</strong><small>{modelCapabilityLabel(model)} · {model.id}</small></span>
+        {unavailable && <span className="model-unavailable-badge" title="当前不可用：供应商缺少密钥、无模型权限或网络不可达（可在设置里配置后重新扫描）">不可用</span>}
         {current && <Icon name="check" size={12} />}
       </button>
       <button
