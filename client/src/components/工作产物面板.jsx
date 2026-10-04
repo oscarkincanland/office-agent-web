@@ -250,32 +250,59 @@ function RunChangesPanel({ workspace, projectId, currentSessionId, selectedRunId
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const refreshSeqRef = useRef(0);
+  const abortRef = useRef(null);
 
   useEffect(() => { setPickedRunId(selectedRunId || ""); }, [selectedRunId]);
 
   const load = useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const requestSeq = ++refreshSeqRef.current;
+    const timeoutId = window.setTimeout(() => controller.abort(), 15000);
     setLoading(true);
     setError("");
     try {
-      const listed = await listRuns("", 60, { cwd: workspace, projectId });
+      // 改动页只需要当前会话的 Run 清单；不要先下载整个工作区的 SSE 事件再在浏览器筛选。
+      const listed = await listRuns("", 60, {
+        cwd: workspace,
+        projectId,
+        sessionId: currentSessionId,
+        includeEvents: "none",
+        signal: controller.signal,
+      });
+      if (requestSeq !== refreshSeqRef.current) return;
       const sessionRuns = (listed.runs || []).filter((run) => !currentSessionId || run.sessionId === currentSessionId);
       const scoped = sessionRuns.filter((run) => run?.artifacts?.length);
       const wanted = pickedRunId || scoped[0]?.id || "";
-      const fetched = wanted ? await getRun(wanted).catch(() => null) : null;
+      const fetched = wanted ? await getRun(wanted, { signal: controller.signal }).catch((err) => {
+        if (controller.signal.aborted) throw err;
+        return null;
+      }) : null;
+      if (requestSeq !== refreshSeqRef.current) return;
       setRuns(scoped);
       setLatestRun(sessionRuns[0] || null);
       setDetail(fetched?.run || scoped[0] || null);
     } catch (err) {
-      setError(err.message || String(err));
+      if (requestSeq !== refreshSeqRef.current) return;
+      setError(controller.signal.aborted ? "读取本轮改动超时，请检查本地服务后重试。" : err.message || String(err));
       setRuns([]);
       setLatestRun(null);
       setDetail(null);
     } finally {
-      setLoading(false);
+      window.clearTimeout(timeoutId);
+      if (requestSeq === refreshSeqRef.current) setLoading(false);
     }
   }, [workspace, projectId, currentSessionId, pickedRunId]);
 
-  useEffect(() => { load(); }, [load, refreshToken]);
+  useEffect(() => {
+    load();
+    return () => {
+      refreshSeqRef.current += 1;
+      abortRef.current?.abort();
+    };
+  }, [load, refreshToken]);
 
   const changes = useMemo(() => {
     if (!detail) return [];

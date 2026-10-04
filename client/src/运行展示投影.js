@@ -391,7 +391,7 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
   runMode = "agent",
   createdAt = Date.now(),
 } = {}) {
-  const list = Array.isArray(messages) ? messages : [];
+  const list = associateRunMessages(Array.isArray(messages) ? messages : []);
   const runId = data?.runId || null;
   if (!runId) return list;
 
@@ -427,6 +427,8 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     workspace: data.workspace || previous?.workspace || workspace || "",
     runMode: data.task?.mode || previous?.runMode || runMode || "agent",
     eventCount: Number(data.eventCount || previous?.eventCount || 0),
+    events: Array.isArray(data.events) ? data.events : (previous?.events || []),
+    finalText: String(data.finalText || previous?.finalText || ""),
     completion: data.completion || previous?.completion || null,
     reviewSources: Array.isArray(data.reviewSources) ? data.reviewSources : (previous?.reviewSources || []),
     status: "done",
@@ -436,6 +438,38 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     // 只有“本轮刚刚结束”才做文件改动高亮；历史回放与重连补齐不重播动画。
     flashFiles: data.fresh === true || previous?.flashFiles === true,
   };
-  if (index < 0) return [...list, next];
-  return list.map((item, itemIndex) => itemIndex === index ? next : item);
+  if (index < 0) return associateRunMessages([...list, next]);
+  return associateRunMessages(list.map((item, itemIndex) => itemIndex === index ? next : item));
+}
+
+/**
+ * 把同一轮里的 assistant 过程消息及系统进度提醒关联到 runId，
+ * 让界面能将它们和 SSE/结论合并到同一个过程面板；真实用户消息仍是分组边界。
+ */
+export function associateRunMessages(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  if (!list.length) return list;
+  let next = list;
+  let changed = false;
+  for (let summaryIndex = 0; summaryIndex < list.length; summaryIndex += 1) {
+    const summary = list[summaryIndex];
+    const runId = String(summary?.role === "system" && summary.summary ? summary.runId || "" : "");
+    if (!runId) continue;
+    let start = summaryIndex - 1;
+    for (; start >= 0; start -= 1) {
+      const item = list[start];
+      if (item?.role === "system" && item.summary) break;
+      const internalReminder = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
+      if (item?.role === "user" && !internalReminder) break;
+    }
+    for (let index = start + 1; index < summaryIndex; index += 1) {
+      const item = (changed ? next : list)[index];
+      const internalProcess = item?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(item.text || ""));
+      if ((!internalProcess && item?.role !== "assistant") || (item.runId && item.runId !== runId)) continue;
+      if (item.runId === runId && Boolean(item.internalProcess) === internalProcess) continue;
+      if (!changed) { next = [...list]; changed = true; }
+      next[index] = { ...item, runId, ...(internalProcess ? { internalProcess: true } : {}) };
+    }
+  }
+  return changed ? next : list;
 }

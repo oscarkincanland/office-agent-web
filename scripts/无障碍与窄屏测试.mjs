@@ -151,7 +151,7 @@ console.log("\n▶ 焦点可见与读屏状态");
 });
 
 检查("异步状态区可被读屏播报", () => {
-  assert.match(ChatPanel, /className="task-status-bar" role="status" aria-live="polite"/, "任务状态条应播报");
+  assert.doesNotMatch(ChatPanel, /className="task-status-bar"/, "移除顶栏任务状态条，避免重复播报与占位");
   assert.match(ChatPanel, /className="execution-flow-status" role="status" aria-live="polite"/, "执行流状态应播报");
   assert.match(ChatPanel, /className="execution-flow-next" role="status" aria-live="polite"/, "下一步指引应播报");
   assert.match(ChatPanel, /className="chat-pending-bar" aria-live="polite"/, "等待审批/提问应播报");
@@ -258,8 +258,9 @@ console.log("\n▶ 最小点击目标与窄屏");
   assert.match(样式, /\.cmd-panel \{[^}]*max-height: 72vh/, "命令面板高度应受视口约束");
   assert.match(样式, /\.cmd-panel \{[^}]*overflow: hidden/, "命令面板应约束溢出");
   assert.match(样式, /@media \(max-width: 720px\), \(max-height: 560px\) \{\s*\.cmd-overlay \{ padding-top: 4vh; \}/, "小窗口应调整命令面板留白");
-  // 顶栏在极窄窗口换行而不是被裁掉
-  assert.match(样式, /@media \(max-width: 520px\) \{\s*\.chat-topbar \{ flex-wrap: wrap/, "极窄窗口顶栏应换行");
+  // 顶栏已收敛为控制按钮；极窄屏隐藏冗余文字，避免内容挤出视口。
+  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,260}\.context-ring-label \{ display: none; \}/, "极窄窗口隐藏上下文环标签");
+  assert.match(样式, /@media \(max-width: 520px\) \{[\s\S]{0,320}\.approval-mode-control span \{ display: none; \}/, "极窄窗口隐藏审批按钮文字");
 });
 
 检查("窄屏不再强挤三栏，任务中心与地图可用（P1）", () => {

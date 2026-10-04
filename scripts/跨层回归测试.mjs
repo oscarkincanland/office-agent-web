@@ -123,7 +123,7 @@ function 查询无限动画(匹配) {
   assert.match(源码.审批策略, /export function listPendingApprovals/, "应能列出待审批记录");
   assert.match(源码.ChatPanel, /data-approval-id=\{block\.id \|\| ""\}/, "审批卡应带稳定锚点 id");
   assert.match(源码.ChatPanel, /querySelector\("\.approval-block:not\(\.resolved\)"\)/, "定位只找未决审批");
-  assert.match(源码.ChatPanel, /onLocateApproval=\{locateApproval\}/, "状态条应能定位到同一条审批");
+  assert.match(源码.ChatPanel, /onLocateApproval: locateApproval/, "执行流应能定位到同一条审批（随执行流配置传入）");
   assert.match(源码.ChatPanel, /className="efs-approval"/, "执行流应展示审批等待态");
 
   const 审批动画 = 查询无限动画(/approval-block|efs-approval/);

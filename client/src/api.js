@@ -191,10 +191,11 @@ export const listRuns = (thread = "", limit = 50, options = {}) => {
   if (options.status && options.status !== "all") params.set("status", options.status);
   if (options.mode && options.mode !== "all") params.set("mode", options.mode);
   if (options.query) params.set("query", options.query);
+  if (options.includeEvents) params.set("includeEvents", options.includeEvents);
   params.set("limit", String(limit));
-  return api(`/api/runs?${params.toString()}`);
+  return api(`/api/runs?${params.toString()}`, options.signal ? { signal: options.signal } : {});
 };
-export const getRun = (id) => api(`/api/runs/${encodeURIComponent(id)}`);
+export const getRun = (id, options = {}) => api(`/api/runs/${encodeURIComponent(id)}`, options.signal ? { signal: options.signal } : {});
 export const cancelRun = (id, reason = "用户请求取消") => api(`/api/runs/${encodeURIComponent(id)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
 export const resumeRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/resume`, { method: "POST", body: JSON.stringify({}) });
 export const retryRun = (id) => api(`/api/runs/${encodeURIComponent(id)}/retry`, { method: "POST", body: JSON.stringify({}) });

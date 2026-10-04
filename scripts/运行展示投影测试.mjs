@@ -18,6 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   adaptLegacyRunSummary,
+  associateRunMessages,
   deriveTimeline,
   deriveWorkPhase,
   isInternalChangePath,
@@ -198,6 +199,28 @@ test("normalizeFileChange：删除/新增类型与回滚可用性", () => {
 });
 
 console.log("\n▶ 归属与旧数据适配");
+
+test("同一 Run 的过程消息归组且真实用户消息保持边界", () => {
+  const source = [
+    { id: "user-1", role: "user", text: "检查浏览器" },
+    { id: "assistant-1", role: "assistant", text: "先检查浏览器状态" },
+    { id: "reminder-1", role: "user", text: "[系统提醒] 已运行 3 轮，继续检查截图" },
+    { id: "assistant-2", role: "assistant", text: "截图功能正常" },
+    { id: "reminder-2", role: "user", text: "系统提醒：本轮工具执行已经结束，请记录结论" },
+    { id: "summary-1", role: "system", summary: true, runId: "run_group" },
+    { id: "user-2", role: "user", text: "开始另一个任务" },
+    { id: "assistant-3", role: "assistant", text: "新任务答复" },
+  ];
+  const grouped = associateRunMessages(source);
+  assert.equal(grouped[0].runId, undefined, "真实用户消息不应加入执行折叠");
+  assert.equal(grouped[1].runId, "run_group");
+  assert.equal(grouped[2].runId, "run_group");
+  assert.equal(grouped[2].internalProcess, true, "系统提醒应成为执行过程而非独立用户气泡");
+  assert.equal(grouped[4].runId, "run_group", "无方括号格式的收尾提醒也必须识别为内部事件");
+  assert.equal(grouped[5].summary, true);
+  assert.equal(grouped[6].runId, undefined, "下一条真实用户消息保持边界");
+  assert.equal(grouped[7].runId, undefined, "下一轮助手答复不应被旧 Run 吸收");
+});
 
 test("agent_summary 与 run_finished 合并为同一条摘要，并保留早到的文件信息", () => {
   const initial = upsertRunSummaryMessage([{ id: "user-1", role: "user", text: "修改报告" }], {

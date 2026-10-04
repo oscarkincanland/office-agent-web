@@ -95,7 +95,7 @@ assert.match(对话面板, /const actionNeeded = view\.lifecycle === "waiting_ap
 assert.match(对话面板, /completion\?\.status === "partial"/, "部分完成应给出行动提示分支");
 assert.match(对话面板, /view\.lifecycle === "failed"/, "失败应给出行动提示分支");
 // W1：单一份文件集合 + 统一投影（不再同时渲染 m.products 与 m.artifacts 两套清单）
-assert.match(对话面板, /import \{ projectLegacyRunSummary \} from "\.\.\/运行展示投影\.js"/, "结果卡应消费统一展示投影");
+assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\.\.\/运行展示投影\.js"/, "结果卡应消费统一展示投影");
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");
@@ -107,7 +107,7 @@ assert.match(对话面板, /run-result-conclusion-label/, "结论区应有标签
 assert.match(对话面板, /<SafeMarkdown text=\{conclusionText\} \/>/, "结论必须按 Markdown 渲染，保留标题/列表");
 assert.match(对话面板, /const conclusionText = answerBriefClamped/, "结论文本来自投影结论，并按回答详细程度收窄");
 assert.doesNotMatch(对话面板, /结论：\{readableProgressText\(completion\.summary\)\}/, "不得再把结论抹平为纯文本");
-assert.match(对话面板, /data\.summary \|\| data\.completion\?\.summary/, "run_finished 缺 summary 时应回退到 completion.summary");
+assert.match(运行展示投影, /data\.summary \|\| data\.completion\?\.summary/, "run_finished 缺 summary 时应回退到 completion.summary（统一投影层）");
 assert.match(运行展示投影, /completed: "运行结束"/, "运行结束不应写成已完成（文案单一来源：运行展示投影）");
 assert.match(对话面板, /const statusLabel = view\.lifecycleLabel/, "结果卡状态应来自统一投影");
 assert.match(对话面板, /const showResultCard = m\.runMode !== "chat"/, "纯只读问答不弹结果卡");
