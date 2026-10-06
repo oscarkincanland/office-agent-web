@@ -758,6 +758,10 @@ export default function App() {
 
   // 点击历史会话：加载该会话的消息记录，并尝试打开关联文件
   const handleSelectSession = useCallback(async (session) => {
+    // 会话切换：重置右栏“改动/产物”的 runId 与范围，
+    // 避免上一个会话的“本轮产物”污染到当前会话（用户反馈的跨会话污染）。
+    setChangesRunId("");
+    setArtifactScope("session");
     const loadSeq = ++sessionLoadSeqRef.current;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
     const targetWorkspace = session.cwd || currentWorkspace;
