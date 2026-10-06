@@ -1389,7 +1389,9 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   position: relative;
   max-width: 85%;
 }
-.msg-main > .msg-header { margin-bottom: 2px; }
+.msg-main > .msg-header { margin-bottom: 2px; order: -2; }
+/* 用户要求：执行过程折叠排在文字上方（标题仍在最上，结论/产物在下方） */
+.msg-main > .message-process-fold { order: -1; }
 .msg.user .msg-main { align-items: flex-end; }
 /* 工具卡片独立气泡 */
 .tool-card {
@@ -9982,6 +9984,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .execution-flow-embedded-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
 .execution-flow-embedded-count { color: var(--dim); }
 .execution-flow-embedded-current { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 对话正文行距/段落间距收紧（用户反馈“文字之间距离太宽”） */
+.msg .markdown-body { line-height: 1.65; }
+.msg .markdown-body p { margin: 4px 0; }
+.msg .markdown-body ul, .msg .markdown-body ol { margin: 4px 0; }
+.msg .markdown-body li { margin: 2px 0; }
+.msg .markdown-body h1, .msg .markdown-body h2, .msg .markdown-body h3,
+.msg .markdown-body h4, .msg .markdown-body h5, .msg .markdown-body h6 { margin: 10px 0 4px; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
