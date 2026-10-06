@@ -97,6 +97,9 @@ assert.match(对话面板, /view\.lifecycle === "failed"/, "失败应给出行�
 // W1：单一份文件集合 + 统一投影（不再同时渲染 m.products 与 m.artifacts 两套清单）
 assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\.\.\/运行展示投影\.js"/, "结果卡应消费统一展示投影");
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
+// 结论：优先模型原始总结；默认折叠且与本轮产物分节（0.11.29）
+assert.match(对话面板, /view\.answer\?\.text \|\| m\.authoritativeFinalText \|\| completion\?\.summary/, "结论应优先使用模型自己的总结");
+assert.match(对话面板, /<details className="run-result-conclusion">/, "结论区应默认折叠（与本轮产物分开）");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");
 assert.match(对话面板, /className="run-result-tech"/, "原始错误应放在技术详情");
