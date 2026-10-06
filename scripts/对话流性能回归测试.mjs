@@ -46,6 +46,7 @@ try {
   assert.doesNotMatch(chatPanelSource, /className="task-status-bar"/, "顶部不再重复展示复杂状态栏");
   assert.doesNotMatch(stylesSource, /\.chat-body > \.execution-flow \{\s*position: sticky/, "消息内执行流不能吸顶遮挡消息");
   assert.match(workProductSource, /import React, \{[^}]*useCallback/, "改动页签使用的 useCallback 必须正确从 React 导入");
+  assert.match(workProductSource, /Boolean\(currentSessionId\) && run\.sessionId === currentSessionId/, "无会话 id 时不得跨会话显示产物（防同文件夹污染）");
   assert.match(workProductSource, /sessionId: currentSessionId,[\s\S]{0,80}includeEvents: "none"/, "改动页签应在服务端按会话筛选并省略 SSE 事件载荷");
   assert.match(workProductSource, /setTimeout\(\(\) => controller\.abort\(\), 15000\)/, "改动数据请求应有限等待并超时收敛");
   assert.match(workProductSource, /abortRef\.current\?\.abort\(\)/, "切换会话/组件卸载时应取消过期的改动请求");

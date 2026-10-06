@@ -131,10 +131,11 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         listPublishedArtifacts(workspace, projectId),
       ]);
       if (requestSeq !== refreshSeqRef.current) return;
-      // C03：本轮按 runId 归属；会话范围再按 sessionId 过滤（两者都只保留有产物的 Run）
+      // C03：本轮按 runId 归属；会话范围再按 sessionId 过滤（两者都只保留有产物的 Run）。
+      // 会话 id 缺失时不再退回“不过滤”——否则同一工作区下其他会话的产物会串进来。
       const scopeRunId = artifactScope === "run" ? selectedRunId : "";
       const nextRuns = (runData.runs || []).filter((run) => run?.artifacts?.length
-        && (!currentSessionId || run.sessionId === currentSessionId)
+        && Boolean(currentSessionId) && run.sessionId === currentSessionId
         && (!scopeRunId || run.id === scopeRunId));
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
