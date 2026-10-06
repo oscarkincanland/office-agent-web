@@ -2719,7 +2719,7 @@ case "runtime_connecting":
       const blocks = messages[index]?.blocks;
       if (!Array.isArray(blocks)) continue;
       const found = blocks.find((block) => block?.type === "ask" && !block.answer);
-      if (found) return found;
+      if (found) return { ...found, messageId: messages[index].id };
     }
     return null;
   }, [messages]);
@@ -3086,7 +3086,7 @@ case "runtime_connecting":
             onLocateAsk={locateAsk}
             clientId={clientId}
             threadId={threadId}
-            onAnswered={handleMessageAskAnswered}
+            onAnswered={(blockId, answer) => handleMessageAskAnswered(pendingAsk?.messageId, blockId, answer)}
           />
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (

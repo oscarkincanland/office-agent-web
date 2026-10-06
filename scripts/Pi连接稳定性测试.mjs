@@ -53,7 +53,14 @@ try {
 
   const beforeFetch = globalThis.fetch;
   const createSessionTypes = fs.readFileSync(path.join(ROOT, "node_modules/@earendil-works/pi-coding-agent/dist/core/sdk.d.ts"), "utf8");
-  const piAiTypes = fs.readFileSync(path.join(ROOT, "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/types.d.ts"), "utf8");
+  // pi 1.0.1 起移除了 npm-shrinkwrap.json，pi-ai 由嵌套提升到顶层 node_modules；
+  // 先试旧嵌套路径，再回退顶层路径，兼容 0.87.x 与 1.0+ 两种安装布局。
+  const piAiTypesPath = [
+    path.join(ROOT, "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/types.d.ts"),
+    path.join(ROOT, "node_modules/@earendil-works/pi-ai/dist/types.d.ts"),
+  ].find((candidate) => fs.existsSync(candidate));
+  assert.ok(piAiTypesPath, "未找到 pi-ai 类型定义文件（检查 pi 安装布局）");
+  const piAiTypes = fs.readFileSync(piAiTypesPath, "utf8");
   assert.equal(/interface CreateAgentSessionOptions[\s\S]*?streamFunction/.test(createSessionTypes), false, "CreateAgentSessionOptions 不应猜测 streamFunction 参数");
   assert.equal(/interface CreateAgentSessionOptions[\s\S]*?fetch\??:/.test(createSessionTypes), false, "CreateAgentSessionOptions 不应猜测 fetch 参数");
   assert.match(piAiTypes, /fetch\?: FetchFunction/, "pi-ai StreamOptions 应提供 fetch 注入点");

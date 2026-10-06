@@ -172,6 +172,8 @@ try {
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");
   assert.match(chatPanelSource, /\/api\/agent\/answer/, "输入栏可直接提交回答");
+  assert.match(chatPanelSource, /messageId: messages\[index\]\.id/, "待回答应带所在消息 id");
+  assert.match(chatPanelSource, /onAnswered=\{\(blockId, answer\) => handleMessageAskAnswered\(pendingAsk\?\.messageId, blockId, answer\)\}/, "输入栏回答成功应标记已回答（待处理条消失）");
   assert.match(chatPanelSource, /const visibleMessages = useMemo\([\s\S]{0,100}associateRunMessages\(messages\.slice\(visibleStart\)\)/, "渲染层必须再次保障历史过程消息按 Run 归组");
   assert.doesNotMatch(chatPanelSource, /<span>\{activityCount\} 项/, "执行过程摘要不显示容易与模型轮次混淆的数量标签");
   // 本轮结构化结论、事件轨迹与思考/播报共用同一滚动折叠；权威最终答复仍留在外面。
