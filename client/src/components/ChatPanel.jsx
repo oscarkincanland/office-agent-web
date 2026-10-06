@@ -3832,7 +3832,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
             {streaming && !hasContent && (
-              <div className="bubble loading-bubble">
+              <div className="loading-inline">
                 <LoadingDots label={agentPhase || "正在思考"} seconds={waitSec} />
               </div>
             )}

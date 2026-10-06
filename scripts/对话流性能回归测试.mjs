@@ -154,6 +154,7 @@ try {
   assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度
   assert.match(chatPanelSource, /className="run-products-box"/, "结论之后应有本轮产物独立框");
+  assert.match(chatPanelSource, /className="loading-inline"/, "等待首块应为无框行内指示");
   assert.match(chatPanelSource, /className="run-products-badge">交付/, "产物框应标记交付项");
   const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
   assert.match(widthStyles, /--chat-w: 460px/, "对话面板默认宽度应加宽");

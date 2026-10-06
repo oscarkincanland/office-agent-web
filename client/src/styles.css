@@ -9991,6 +9991,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .msg .markdown-body li { margin: 2px 0; }
 .msg .markdown-body h1, .msg .markdown-body h2, .msg .markdown-body h3,
 .msg .markdown-body h4, .msg .markdown-body h5, .msg .markdown-body h6 { margin: 10px 0 4px; }
+/* 等待首块：无框行内指示（不再用一个气泡框） */
+.loading-inline { display: inline-flex; align-items: center; gap: 6px; padding: 0; background: transparent; border: 0; color: var(--muted); font-size: 11px; }
+.loading-inline .loading-dots { background: transparent; border: 0; padding: 0; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
