@@ -680,7 +680,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .msg { display: flex; gap: 10px; }
 .msg.user { flex-direction: row-reverse; }
 .avatar { width: 28px; height: 28px; border-radius: 4px; background: var(--surface); display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; color: var(--muted); }
-.bubble { max-width: 85%; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
+.bubble { max-width: 85%; width: fit-content; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; line-height: 1.7; word-break: break-word; white-space: pre-wrap; }
 /* 用户消息：高对比强调（边框 + 加粗文本），突出"我的任务" */
 .msg.user .bubble {
   background: var(--user-bg);
@@ -8327,8 +8327,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   gap: 20px;
 }
 .center-chat-slot .msg { gap: 9px; }
-.center-chat-slot .msg-main { width: min(100%, 700px); max-width: 700px; }
-.center-chat-slot .msg.user .msg-main { width: min(78%, 540px); max-width: 540px; }
+.center-chat-slot .msg-main { width: min(100%, 880px); max-width: 880px; }
+.center-chat-slot .msg.user .msg-main { width: auto; max-width: min(78%, 540px); }
+.center-chat-slot .msg.user .bubble { width: fit-content; max-width: 100%; }
 .center-chat-slot .msg .avatar { width: 30px; height: 30px; border-radius: 9px; }
 .center-chat-slot .msg-header { min-height: 22px; gap: 6px; }
 .center-chat-slot .msg-author { font-size: 11px; }

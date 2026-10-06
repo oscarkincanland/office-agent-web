@@ -154,6 +154,9 @@ try {
   const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
   assert.match(widthStyles, /--chat-w: 460px/, "对话面板默认宽度应加宽");
   assert.match(widthStyles, /--chat-max: 720px/, "对话面板最大宽度应放宽");
+  assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
+  assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.bubble \{ width: fit-content/, "用户气泡应为内容宽度");
+  assert.match(widthStyles, /\.center-chat-slot \.msg-main \{ width: min\(100%, 880px\); max-width: 880px; \}/, "agent 回答区应加宽到 880px");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");
