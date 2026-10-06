@@ -144,6 +144,16 @@ try {
   assert.match(chatPanelSource, /function PendingActionBar/, "输入栏应提供待处理入口组件");
   assert.match(chatPanelSource, /const pendingAsk = useMemo/, "应计算待回答项");
   assert.match(chatPanelSource, /<PendingActionBar\s/, "待处理条应渲染进输入栏");
+  // 执行行去重：同一工具的调用/完成只保留一行；tool_start 不再重复工具名
+  assert.match(chatPanelSource, /const endedToolCalls = new Set/, "已结束的工具调用应从事件行中去重");
+  assert.match(chatPanelSource, /const dedupedEvents = visibleEvents.filter/, "事件行应使用去重后的序列");
+  assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
+  // 本轮产物独立框 + 面板宽度
+  assert.match(chatPanelSource, /className="run-products-box"/, "结论之后应有本轮产物独立框");
+  assert.match(chatPanelSource, /className="run-products-badge">交付/, "产物框应标记交付项");
+  const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
+  assert.match(widthStyles, /--chat-w: 460px/, "对话面板默认宽度应加宽");
+  assert.match(widthStyles, /--chat-max: 720px/, "对话面板最大宽度应放宽");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
   assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
   assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");

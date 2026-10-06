@@ -77,9 +77,10 @@ console.log("\n▶ 装饰性动效预算");
   const 样式 = read("client/src/styles.css");
   const 无限 = 样式.match(/animation\s*:[^;]*infinite/g) || [];
   const 名字 = new Set(无限.map((声明) => (声明.match(/animation\s*:\s*([\w-]+)/) || [])[1]).filter(Boolean));
-  // P3 清单已登记的 16 个持续动画名；出现新的持续动画必须先登记再进预算
-  assert.ok(名字.size <= 16, `持续动画种类不应超过 16 种，实际 ${名字.size} 种：${[...名字].join(", ")}`);
-  console.log(`    持续动画 ${名字.size} 种 / ${无限.length} 处声明（预算 16 种）`);
+  // P3 清单已登记的持续动画名；出现新的持续动画必须先登记再进预算。
+  // v0.11.10 起新增 pulse-status-soft / dot-breathe-soft 两个降闪变体（与原始 keyframes 不同），登记后预算为 18。
+  assert.ok(名字.size <= 18, `持续动画种类不应超过 18 种，实际 ${名字.size} 种：${[...名字].join(", ")}`);
+  console.log(`    持续动画 ${名字.size} 种 / ${无限.length} 处声明（预算 18 种）`);
 });
 
 // ============================================================

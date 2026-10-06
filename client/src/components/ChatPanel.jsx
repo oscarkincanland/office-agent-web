@@ -3473,6 +3473,33 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               )}
             </div>
           )}
+          {/* 本轮产物：结论之后单独成框，只列主要产物（交付优先，最多 6 项） */}
+          {(deliverables.length > 0 || fileChanges.length > 0) && (
+            <div className="run-products-box">
+              <div className="run-products-head">
+                <Icon name="folder" size={12} /> 本轮产物
+                {deliverables.length > 0 ? ` · 交付 ${deliverables.length}` : ` · ${fileChanges.length}`}
+              </div>
+              <div className="run-products-list">
+                {[
+                  ...deliverables.map((item) => ({ path: String(item?.path || item?.relativePath || item?.name || ""), deliverable: true })),
+                  ...fileChanges.map((item) => ({ path: String(item?.relativePath || ""), deliverable: false })),
+                ]
+                  .filter((item, index, list) => item.path && list.findIndex((other) => other.path === item.path) === index)
+                  .slice(0, 6)
+                  .map((item) => (
+                    <button key={item.path} type="button" className="run-products-item" onClick={() => onOpenFile?.(item.path)} title={item.path}>
+                      <Icon name={item.deliverable ? "star" : "file"} size={11} />
+                      <span className="run-products-name">{item.path.split("/").pop()}</span>
+                      {item.deliverable && <span className="run-products-badge">交付</span>}
+                    </button>
+                  ))}
+                {deliverables.length + fileChanges.length > 6 && (
+                  <span className="run-products-more">共 {deliverables.length + fileChanges.length} 项，展开下方清单查看全部</span>
+                )}
+              </div>
+            </div>
+          )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
           {!embedded && (trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
@@ -3787,19 +3814,20 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
                       return null;
                     })}
                     {executionFlow && <ExecutionFlow {...executionFlow} embedded />}
-                    {runSummary && (
-                      <RunSummary
-                        m={runSummary}
-                        embedded
-                        onOpenFile={onOpenFile}
-                        onRollbackRun={onRollbackRun}
-                        onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
-                        onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
-                      />
-                    )}
                   </div>
                 </div>
               </details>
+            )}
+            {/* 规范顺序：执行过程（可折叠）在上，结论与产物在下，且不随过程折叠隐藏 */}
+            {runSummary && (
+              <RunSummary
+                m={runSummary}
+                embedded
+                onOpenFile={onOpenFile}
+                onRollbackRun={onRollbackRun}
+                onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
+                onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
+              />
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
@@ -4343,14 +4371,26 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     return () => window.clearInterval(timer);
   }, [running]);
   const progressText = runTraceProgressText(runTrace, { now, running });
-  const eventRows = visibleEvents.map((event, index) => {
+  // 去重：同一工具的“调用/完成”只保留一行（完成行），避免同一动作刷三条。
+  const endedToolCalls = new Set(contentEvents.filter((event) => event.type === "tool_end")
+    .map((event) => String(event.data?.toolCallId || "")).filter(Boolean));
+  const endedToolNames = new Set(contentEvents.filter((event) => event.type === "tool_end")
+    .map((event) => String(event.data?.name || "")).filter(Boolean));
+  const dedupedEvents = visibleEvents.filter((event) => {
+    if (event.type !== "tool_start") return true;
+    const id = String(event.data?.toolCallId || "");
+    if (id) return !endedToolCalls.has(id);
+    const name = String(event.data?.name || "");
+    return !(name && endedToolNames.has(name));
+  });
+  const eventRows = dedupedEvents.map((event, index) => {
     const data = event.data || {};
     const internalProgressSignal = event.type === "steer" && /^(turn-progress|turn-budget)/.test(String(data.source || ""));
-    const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
+    const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? "" : event.type === "file_changed" ? (data.files || []).join(", ") : "");
     const label = flowEventLabel(event);
     const showDetail = detail && String(detail).trim() !== String(label).trim();
     const phase = phaseForEvent(event);
-    const previousPhase = index > 0 ? phaseForEvent(visibleEvents[index - 1]) : null;
+    const previousPhase = index > 0 ? phaseForEvent(dedupedEvents[index - 1]) : null;
     const showPhase = phase && phase !== previousPhase && phase !== "done";
     return (
       <div key={event.key || `${event.seq || event.id || index}:${event.type}`}>

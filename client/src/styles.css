@@ -21,10 +21,10 @@
   --sidebar-w: 220px;
   --sidebar-min: 180px;
   --sidebar-max: 400px;
-  --chat-w: 400px;
+  --chat-w: 460px;
   --chat-min: 280px;
-  --chat-max: 600px;
-  --map-chat-w: 360px;
+  --chat-max: 720px;
+  --map-chat-w: 420px;
   --map-topbar-h: 78px;
   /* B05 语义 token 别名：新代码优先使用（text/surface/border/status），旧变量保留兼容 */
   --text-primary: var(--text);
@@ -9966,6 +9966,15 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .pending-action-buttons { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .pending-action-input { flex: 1 1 220px; min-width: 160px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-bg); color: var(--text); font-size: 11px; }
 .pending-action-error { color: var(--error); }
+/* 本轮产物框：结论之后单独成框，交付优先 */
+.run-products-box { margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--surface) 55%, transparent); }
+.run-products-head { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.run-products-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.run-products-item { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-bg); color: var(--text); font-size: 11px; cursor: pointer; }
+.run-products-item:hover { border-color: var(--accent); color: var(--accent); }
+.run-products-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-products-badge { font-size: 10px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; padding: 0 5px; }
+.run-products-more { align-self: center; font-size: 10px; color: var(--muted); }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
