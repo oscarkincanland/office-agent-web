@@ -153,6 +153,8 @@ export default function App() {
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
   const browserActiveRef = useRef(false);
 
+  const browserStateSeenRef = useRef(false); // 首个浏览器状态只记录，不触发自动展开
+
   useEffect(() => {
     if (!browserPanelOpen) setBrowserFullscreen(false);
   }, [browserPanelOpen]);
@@ -199,9 +201,12 @@ export default function App() {
           const payload = JSON.parse(event.data || "{}");
           if (payload.type !== "state") return;
           const active = Boolean(payload.data?.active);
-          if (active && !browserActiveRef.current) {
+          // 刷新后首个 state 只记录、不自动展开（浏览器在服务器侧仍活跃），
+          // 仅当会话过程中从“不活跃”变为“活跃”才自动打开面板。
+          if (active && browserStateSeenRef.current && !browserActiveRef.current) {
             setBrowserPanelOpen(true);
           }
+          browserStateSeenRef.current = true;
           browserActiveRef.current = active;
         } catch {}
       };

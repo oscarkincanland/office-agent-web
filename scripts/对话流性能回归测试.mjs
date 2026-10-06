@@ -147,6 +147,8 @@ try {
   assert.match(chatPanelSource, /<PendingActionBar\s/, "待处理条应渲染进输入栏");
   // 执行行去重：同一工具的调用/完成只保留一行；tool_start 不再重复工具名
   assert.match(chatPanelSource, /const endedToolCalls = new Set/, "已结束的工具调用应从事件行中去重");
+  assert.match(chatPanelSource, /blockIndex !== lastTextBlockIndex/, "最后一段文本不应折进执行过程");
+  assert.match(chatPanelSource, /let lastTextBlockIndex = -1/, "应显式计算最后一段文本块");
   assert.match(chatPanelSource, /const dedupedEvents = visibleEvents.filter/, "事件行应使用去重后的序列");
   assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
   // 嵌入执行列表默认折叠：一行摘要 + 点击展开

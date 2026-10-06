@@ -3642,6 +3642,9 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
       || [...(Array.isArray(runSummary?.events) ? runSummary.events : [])].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
       || "",
   ).trim();
+  // 最后一段文本块：无论最终答复是否已单独渲染，都不折进“执行过程”
+  let lastTextBlockIndex = -1;
+  blocks.forEach((block, index) => { if (block?.type === "text") lastTextBlockIndex = index; });
   let finalTextBlockIndex = -1;
   if (authoritativeFinalText) {
     const normalizedFinal = authoritativeFinalText.replace(/\s+/g, " ").trim();
@@ -3659,14 +3662,14 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   const isProcessBlock = (block, blockIndex) => {
     if (!block || block.type === "message_boundary") return false;
     if (processBlockTypes.has(block.type)) return true;
-    return block.type === "text" && isTaskActivity && (streaming || Boolean(m.runId) || authoritativeFinalText) && blockIndex !== finalTextBlockIndex;
+    return block.type === "text" && isTaskActivity && (streaming || Boolean(m.runId) || authoritativeFinalText) && blockIndex !== lastTextBlockIndex;
   };
   const foldedProcessBlocks = blocks.filter(isProcessBlock);
   const lastThinkingBlockIndex = foldedProcessBlocks.reduce((last, block, blockIndex) => block.type === "thinking" ? blockIndex : last, -1);
   const visibleBlocks = blocks.filter((block, blockIndex) => {
     if (block?.type === "message_boundary" || isProcessBlock(block, blockIndex)) return false;
     if (block?.type === "text" && isTaskActivity && streaming) return false;
-    if (block?.type === "text" && isTaskActivity && authoritativeFinalText && blockIndex === finalTextBlockIndex) return false;
+    if (block?.type === "text" && isTaskActivity && authoritativeFinalText && blockIndex === lastTextBlockIndex) return false;
     return true;
   });
   const activityCount = foldedProcessBlocks.length + Number(executionFlow?.events?.length || 0) + Number(Boolean(executionFlow?.running)) + Number(runSummary ? 1 : 0);
