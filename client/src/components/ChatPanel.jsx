@@ -3071,13 +3071,6 @@ case "runtime_connecting":
                 <Icon name="link" size={11} /> 参考文件 {targetReferenceCount}
               </span>
             )}
-            <span className={`chat-target-write ${editMode === "chat" ? "readonly" : approvalMode === "auto" ? "auto" : "ask"}`}>
-              {editMode === "chat"
-                ? "只读：本轮不改文件"
-                : approvalMode === "auto"
-                  ? "可写：工作区内 · 自动批准已开启（deny 规则仍生效）"
-                  : "可写：工作区内 · 写入需逐次审批"}
-            </span>
           </div>
           <PendingActionBar
             approval={pendingApproval}
@@ -3111,7 +3104,7 @@ case "runtime_connecting":
               ref={textareaRef}
               value={input}
               disabled={frozen}
-              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…  @ 引用文件，/ 调用 Skill，# 使用能力，& 引用会话"}
+              placeholder={frozen ? "会话已冻结，可新建分支继续分析" : busy ? "输入后可排队执行，或仅注入下一轮上下文…" : "输入消息…"}
               onKeyDown={(e) => {
                 if (composerMenu && composerItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
