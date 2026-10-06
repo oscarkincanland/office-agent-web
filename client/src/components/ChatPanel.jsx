@@ -4325,8 +4325,7 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   const [notesOpen, setNotesOpen] = useState(false);
   // 嵌入在消息折叠区里的执行列表：默认折叠，只显示一行摘要，点击展开明细
   const [embeddedExpanded, setEmbeddedExpanded] = useState(false);
-  // 运行过程中不折叠：展开跟随运行状态；任务结束自动收起，结论保持可见
-  useEffect(() => { setEmbeddedExpanded(Boolean(running)); }, [running]);
+  // 事件明细列表默认折叠（只保留一行摘要）；运行中的过程内容由消息级区域平铺展示
   const executionListRef = useRef(null);
   const followExecutionTailRef = useRef(true);
   const wasRunningRef = useRef(running);

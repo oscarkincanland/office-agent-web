@@ -153,7 +153,9 @@ try {
   assert.match(chatPanelSource, /const \[embeddedExpanded, setEmbeddedExpanded\] = useState\(false\)/, "嵌入执行流应默认折叠");
   assert.match(chatPanelSource, /open=\{isTaskLive \|\| processOpen\}/, "运行中执行过程应强制展开");
   assert.match(chatPanelSource, /isTaskLive \? "is-live is-live-plain" : ""/, "运行中过程区应去掉框");
-  assert.match(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "嵌入执行流应随运行状态展开/收起");
+  assert.doesNotMatch(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "事件列表不应随运行自动展开（默认折叠）");
+  assert.match(widthStyles, /\.message-process-fold\.is-live-plain \.message-process-scroll \{ max-height: none; overflow: visible; padding: 0; gap: 6px; \}/, "运行中过程应平铺、由页面滚动");
+  assert.match(widthStyles, /\.message-process-fold\.is-live-plain \.message-process-fold-body \{ border-top: 0; \}/, "运行中过程区不应有分隔边框");
   assert.match(chatPanelSource, /className="execution-flow-embedded-toggle"/, "嵌入执行流应有一行折叠摘要");
   assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度

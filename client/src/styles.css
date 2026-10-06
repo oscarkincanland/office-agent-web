@@ -10003,6 +10003,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .message-process-fold.is-live-plain { border: 0; background: transparent; box-shadow: none; }
 .message-process-fold.is-live-plain > summary { border: 0; background: transparent; }
 .message-process-fold.is-live-plain .message-process-scroll { border: 0; background: transparent; }
+/* 运行中：不设内部滚动框，过程内容平铺、由页面滚动（“跟没折叠一样，滚动向下”） */
+.message-process-fold.is-live-plain .message-process-fold-body { border-top: 0; }
+.message-process-fold.is-live-plain .message-process-scroll { max-height: none; overflow: visible; padding: 0; gap: 6px; }
+.message-process-fold.is-live-plain .execution-flow-embedded-toggle { display: none; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
