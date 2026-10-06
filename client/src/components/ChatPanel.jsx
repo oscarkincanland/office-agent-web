@@ -545,6 +545,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const clearSystemNotes = useCallback(() => setSystemNotes([]), []);
   const [queuedMessages, setQueuedMessages] = useState([]); // 当前任务完成后顺序执行
   const [injectedContext, setInjectedContext] = useState([]); // 等待下一轮发送的上下文片段
+  // 模型连接状态：重试中/已恢复（输入框旁小状态点；过程区不再堆这类提示）
+  const [connectionNotice, setConnectionNotice] = useState(null);
+  const connectionTimerRef = useRef(null);
   const [busyInputMode, setBusyInputMode] = useState("queue"); // "queue" | "context"
   const [composerMenu, setComposerMenu] = useState(null);
   const [composerIndex, setComposerIndex] = useState(0);
@@ -1904,6 +1907,8 @@ case "runtime_connecting":
         // Pi 结算失败后，工作台可能会在同一请求内重放一次。失败回合
         // 已经发出 agent_end 并清空了 assistant 引用，这里重新建立一个
         // 流式气泡，避免恢复后的 token 被丢弃。
+        if (connectionTimerRef.current) { window.clearTimeout(connectionTimerRef.current); connectionTimerRef.current = null; }
+        setConnectionNotice({ state: "retrying" });
         agentErrorRef.current = false;
         cancelTextReveal();
         stoppingRef.current = false;
@@ -1929,7 +1934,10 @@ case "runtime_connecting":
       case "agent_retry_end":
         if (data.success) {
           setAgentPhase("模型连接已恢复");
-          pushSystem("模型连接已恢复，继续执行当前任务。", `agent_retry_end:${data.attempt || "ok"}`);
+          // A+B：恢复不再作为系统消息堆在对话里；改为输入框旁状态点，3.5s 后自动消失
+          if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+          setConnectionNotice({ state: "recovered" });
+          connectionTimerRef.current = window.setTimeout(() => setConnectionNotice(null), 3500);
         }
         break;
       case "agent_model_fallback":
@@ -3072,6 +3080,11 @@ case "runtime_connecting":
               </span>
             )}
           </div>
+          {connectionNotice && (
+            <div className={`conn-status ${connectionNotice.state}`} role="status" aria-live="polite">
+              <i /> {connectionNotice.state === "retrying" ? "模型连接重试中…" : "连接已恢复"}
+            </div>
+          )}
           <PendingActionBar
             approval={pendingApproval}
             ask={pendingAsk}
@@ -4376,7 +4389,10 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     .map((event) => String(event.data?.toolCallId || "")).filter(Boolean));
   const endedToolNames = new Set(contentEvents.filter((event) => event.type === "tool_end")
     .map((event) => String(event.data?.name || "")).filter(Boolean));
-  const dedupedEvents = visibleEvents.filter((event) => {
+  const dedupedEvents = visibleEvents.filter((event, index, list) => {
+    // 连接重试：连续重试只保留最后一条；“已恢复”不再单独成行（由输入框旁状态点承担）
+    if (event.type === "agent_retry_end") return false;
+    if (event.type === "agent_retry") return !(list[index + 1]?.type === "agent_retry");
     if (event.type !== "tool_start") return true;
     const id = String(event.data?.toolCallId || "");
     if (id) return !endedToolCalls.has(id);

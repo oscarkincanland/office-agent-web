@@ -10031,6 +10031,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-result-conclusion > summary::before { content: "▸ "; color: var(--accent); }
 .run-result-conclusion[open] > summary::before { content: "▾ "; }
 .run-result-conclusion[open] > summary { margin-bottom: 4px; }
+/* 模型连接状态点（输入框旁）：重试中黄点，恢复绿点后自动消失 */
+.conn-status { display: inline-flex; align-items: center; gap: 5px; margin: 4px 0; font-size: 11px; color: var(--muted); }
+.conn-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.conn-status.retrying { color: var(--warning); }
+.conn-status.retrying i { background: var(--warning); animation: pulse-status-soft 1.6s ease-in-out infinite; }
+.conn-status.recovered { color: var(--success); }
+.conn-status.recovered i { background: var(--success); }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
