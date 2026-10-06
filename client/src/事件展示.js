@@ -152,9 +152,9 @@ export function flowEventLabel(event) {
     }
     case "steer": {
       const source = String(data.source || "user");
-      if (source === "turn-progress") return `进度播报提醒（第 ${data.turnCount || "?"} 轮）`;
-      if (source === "turn-budget-hard") return "轮次预算用尽提醒";
-      if (source === "turn-budget") return "阶段结论提醒";
+      if (source === "turn-progress") return "阶段进度更新";
+      if (source === "turn-budget-hard") return "阶段进度收束";
+      if (source === "turn-budget") return "阶段进度检查";
       return "插入新指令";
     }
     case "tool_repeat_warning": return `重复调用提醒：${data.name || "工具"} 第 ${data.count || 3} 次`;

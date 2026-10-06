@@ -65,6 +65,7 @@ export const APPEARANCE_DEFAULTS = Object.freeze({
   marqueeStyle: "shine",
   marqueeColor: "accent",
   marqueeSpeed: "normal",
+  activityMarqueeEnabled: true,
   motionLevel: "full",
   activityDisplay: "compact",
   answerDetail: "auto",
@@ -117,6 +118,7 @@ export function loadAppearance() {
     marqueeStyle: STYLE_IDS.has(raw.marqueeStyle) ? raw.marqueeStyle : APPEARANCE_DEFAULTS.marqueeStyle,
     marqueeColor: COLOR_IDS.has(raw.marqueeColor) ? raw.marqueeColor : APPEARANCE_DEFAULTS.marqueeColor,
     marqueeSpeed: SPEED_IDS.has(raw.marqueeSpeed) ? raw.marqueeSpeed : APPEARANCE_DEFAULTS.marqueeSpeed,
+    activityMarqueeEnabled: raw.activityMarqueeEnabled !== false,
     motionLevel: MOTION_IDS.has(raw.motionLevel) ? raw.motionLevel : APPEARANCE_DEFAULTS.motionLevel,
     activityDisplay: ACTIVITY_IDS.has(raw.activityDisplay) ? raw.activityDisplay : APPEARANCE_DEFAULTS.activityDisplay,
     answerDetail: ANSWER_DETAIL_IDS.has(raw.answerDetail) ? raw.answerDetail : APPEARANCE_DEFAULTS.answerDetail,
@@ -142,6 +144,7 @@ export function saveAppearance(patch = {}) {
     if (STYLE_IDS.has(merged.marqueeStyle)) settings.marqueeStyle = merged.marqueeStyle;
     if (COLOR_IDS.has(merged.marqueeColor)) settings.marqueeColor = merged.marqueeColor;
     if (SPEED_IDS.has(merged.marqueeSpeed)) settings.marqueeSpeed = merged.marqueeSpeed;
+    settings.activityMarqueeEnabled = merged.activityMarqueeEnabled !== false;
     if (MOTION_IDS.has(merged.motionLevel)) settings.motionLevel = merged.motionLevel;
     if (ACTIVITY_IDS.has(merged.activityDisplay)) settings.activityDisplay = merged.activityDisplay;
     if (ANSWER_DETAIL_IDS.has(merged.answerDetail)) settings.answerDetail = merged.answerDetail;
@@ -159,6 +162,7 @@ export function applyAppearance(appearance = loadAppearance()) {
     root.dataset.marqueeStyle = appearance.marqueeStyle;
     root.dataset.marqueeColor = appearance.marqueeColor;
     root.dataset.marqueeSpeed = appearance.marqueeSpeed;
+    root.dataset.activityMarquee = appearance.activityMarqueeEnabled ? "true" : "false";
     root.dataset.motionLevel = appearance.motionLevel;
     // 兜底再同步一次系统偏好：即使 index.html 的内联脚本被剥离，闸门依然生效
     root.dataset.reduceMotion = prefersReducedMotion() ? "1" : "";
@@ -257,6 +261,7 @@ export function normalizeAppearance(input = {}) {
     marqueeStyle: STYLE_IDS.has(input.marqueeStyle) ? input.marqueeStyle : APPEARANCE_DEFAULTS.marqueeStyle,
     marqueeColor: COLOR_IDS.has(input.marqueeColor) ? input.marqueeColor : APPEARANCE_DEFAULTS.marqueeColor,
     marqueeSpeed: SPEED_IDS.has(input.marqueeSpeed) ? input.marqueeSpeed : APPEARANCE_DEFAULTS.marqueeSpeed,
+    activityMarqueeEnabled: input.activityMarqueeEnabled !== false,
     motionLevel: MOTION_IDS.has(input.motionLevel) ? input.motionLevel : APPEARANCE_DEFAULTS.motionLevel,
     activityDisplay: ACTIVITY_IDS.has(input.activityDisplay) ? input.activityDisplay : APPEARANCE_DEFAULTS.activityDisplay,
     answerDetail: ANSWER_DETAIL_IDS.has(input.answerDetail) ? input.answerDetail : APPEARANCE_DEFAULTS.answerDetail,

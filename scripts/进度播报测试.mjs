@@ -19,6 +19,7 @@ import {
   runTraceProgressText,
   summarizeRunTrace,
 } from "../client/src/运行轨迹.js";
+import { flowEventLabel } from "../client/src/事件展示.js";
 import {
   TURN_BUDGET_HARD,
   TURN_BUDGET_SOFT,
@@ -97,7 +98,7 @@ test("agent_end 携带轮次/工具/耗时", () => {
   assert.equal(trace.durationMs, 192000);
 });
 
-test("进度行包含轮次、工具、待办与用时", () => {
+test("进度行隐藏轮次数，只保留工具、待办与用时", () => {
   const trace = reduceRunTrace([
     ev("run_admitted", { runId: "run_p" }, 0),
     ev("turn_started", {}, 1),
@@ -108,10 +109,16 @@ test("进度行包含轮次、工具、待办与用时", () => {
     ev("agent_end", { turns: 2, tools: 1, durationMs: 125000 }, 6),
   ]);
   const text = runTraceProgressText(trace, { running: false });
-  assert.match(text, /第 2 轮/);
+  assert.doesNotMatch(text, /轮/);
   assert.match(text, /工具 1/);
   assert.match(text, /待办 1\/2/);
   assert.match(text, /用时 2 分 5 秒/);
+});
+
+test("轮次预算类事件显示为无计数的阶段提示", () => {
+  assert.equal(flowEventLabel(ev("steer", { source: "turn-progress", turnCount: 18, message: "内部提示" })), "阶段进度更新");
+  assert.equal(flowEventLabel(ev("steer", { source: "turn-budget-hard", turnCount: 40, message: "立即收尾" })), "阶段进度收束");
+  assert.doesNotMatch(flowEventLabel(ev("steer", { source: "turn-progress", turnCount: 18 })), /18|第 .*轮/);
 });
 
 test("运行中按 startedAt 实时计算用时", () => {

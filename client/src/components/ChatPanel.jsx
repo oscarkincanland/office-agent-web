@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
@@ -2063,14 +2063,8 @@ case "runtime_connecting":
         const source = String(data.source || "user");
         const message = String(data.message || data.text || "").trim();
         if (source === "turn-progress" || source.startsWith("turn-budget")) {
-          // 进度播报提醒：只在顶部进度行留痕（事件列表 + 进度小结计数），
-          // 不再插一条转瞬即逝又永不清理的气泡；模型的小结本体在正文里。
-          pushSystemNote({
-            key: source,
-            kind: "progress",
-            text: message,
-            turnCount: Number(data.turnCount || 0),
-          });
+          // 轮次/预算提示是 harness 内部控制事件，不把原始提示词或轮次计数展示给用户。
+          // 模型生成的进度小结仍作为普通过程播报，进入消息级折叠。
         } else if (message) {
           pushSystem(`⟳ 插入新指令：${message.slice(0, 60)}${message.length > 60 ? "…" : ""}`, `steer:${message.slice(0, 40)}`);
         }
@@ -2719,6 +2713,16 @@ case "runtime_connecting":
     }
     return null;
   }, [messages]);
+  // 输入栏常驻入口：折叠过程收起时也要能直接处理待审批/待回答（计划 B01）。
+  const pendingAsk = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const blocks = messages[index]?.blocks;
+      if (!Array.isArray(blocks)) continue;
+      const found = blocks.find((block) => block?.type === "ask" && !block.answer);
+      if (found) return found;
+    }
+    return null;
+  }, [messages]);
   const locateApproval = useCallback(() => {
     const container = bodyRef.current;
     if (!container) return;
@@ -2726,6 +2730,14 @@ case "runtime_connecting":
     if (!pending) return;
     pending.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
     requestAnimationFrame(() => pending.querySelector(".approval-allow")?.focus?.());
+  }, []);
+  const locateAsk = useCallback(() => {
+    const container = bodyRef.current;
+    if (!container) return;
+    const pending = container.querySelector(".ask-block:not(.answered)");
+    if (!pending) return;
+    pending.scrollIntoView({ behavior: motionScrollBehavior(), block: "center" });
+    requestAnimationFrame(() => pending.querySelector(".ask-input")?.focus?.());
   }, []);
   // 新审批到达时只在用户本来就跟在底部时自动定位，避免把正在回看历史的用户拽走。
   const locatedApprovalRef = useRef("");
@@ -3067,6 +3079,15 @@ case "runtime_connecting":
                   : "可写：工作区内 · 写入需逐次审批"}
             </span>
           </div>
+          <PendingActionBar
+            approval={pendingApproval}
+            ask={pendingAsk}
+            onLocateApproval={locateApproval}
+            onLocateAsk={locateAsk}
+            clientId={clientId}
+            threadId={threadId}
+            onAnswered={handleMessageAskAnswered}
+          />
           <div className="chat-input-row">
             {composerMenu && composerItems.length > 0 && (
               <div className="composer-suggestions" role="listbox" aria-label="输入建议">
@@ -3454,7 +3475,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
           {!!completion?.blockers?.length && <div className="run-result-note warn">受阻：{completion.blockers.join("；")}</div>}
-          {(trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
+          {!embedded && (trace?.tools?.length > 0 || view.progress.toolTotal > 0) && (
             <section className="run-process-details" aria-label="工具调用明细">
               <div className="run-process-heading"><Icon name="flow" size={12} /> 执行过程</div>
               <div className="run-trace-timeline" role="list" aria-label="按顺序排列的工具调用">
@@ -3482,7 +3503,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
               </div>
             </section>
           )}
-          <details className="run-result-tech">
+          {!embedded && <details className="run-result-tech">
             <summary>技术详情（运行 ID、事件与原始错误）</summary>
             <pre>{JSON.stringify({
               runId: m.runId || null,
@@ -3496,7 +3517,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                 .slice(-5)
                 .map((event) => ({ type: event.type, at: event.at, data: event.data })),
             }, null, 2)}</pre>
-          </details>
+          </details>}
         </div>
         </details>
         )}
@@ -3621,6 +3642,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     return block.type === "text" && isTaskActivity && (streaming || Boolean(m.runId) || authoritativeFinalText) && blockIndex !== finalTextBlockIndex;
   };
   const foldedProcessBlocks = blocks.filter(isProcessBlock);
+  const lastThinkingBlockIndex = foldedProcessBlocks.reduce((last, block, blockIndex) => block.type === "thinking" ? blockIndex : last, -1);
   const visibleBlocks = blocks.filter((block, blockIndex) => {
     if (block?.type === "message_boundary" || isProcessBlock(block, blockIndex)) return false;
     if (block?.type === "text" && isTaskActivity && streaming) return false;
@@ -3648,7 +3670,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     processWasLiveRef.current = isTaskLive;
   }, [isTaskLive]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const list = processScrollRef.current;
     if (!isTaskLive || !processOpen || !list || !followProcessTailRef.current) return;
     list.scrollTop = list.scrollHeight;
@@ -3731,7 +3753,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             )}
             {activityCount > 0 && (
               <details
-                className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""}`}
+                className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isTaskLive ? "is-live" : ""}`}
                 open={processOpen}
                 onToggle={(event) => {
                   const next = event.currentTarget.open;
@@ -3747,7 +3769,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
                 <div className="message-process-fold-body">
                   <div className="message-process-scroll" ref={processScrollRef} onScroll={handleProcessScroll}>
                     {foldedProcessBlocks.map((block, blockIndex) => {
-                      if (block.type === "thinking") return <ThinkingBlock key={block.id || `thinking-${blockIndex}`} text={block.text} startTime={block.startTime} streaming={false} embedded />;
+                      if (block.type === "thinking") return <ThinkingBlock key={block.id || `thinking-${blockIndex}`} text={block.text} startTime={block.startTime} streaming={streaming && blockIndex === lastThinkingBlockIndex} embedded />;
                       if (block.type === "tool") return <ToolCard key={block.id || blockIndex} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
                       if (block.type === "subagent") return <SubagentCard key={block.id || blockIndex} block={block} />;
                       if (block.type === "ask") return <AskBlock key={block.id || blockIndex} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
@@ -3765,20 +3787,19 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
                       return null;
                     })}
                     {executionFlow && <ExecutionFlow {...executionFlow} embedded />}
+                    {runSummary && (
+                      <RunSummary
+                        m={runSummary}
+                        embedded
+                        onOpenFile={onOpenFile}
+                        onRollbackRun={onRollbackRun}
+                        onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
+                        onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
+                      />
+                    )}
                   </div>
                 </div>
               </details>
-            )}
-            {/* 结果卡不放进“执行过程”折叠体：恢复会话后本轮产物/结论/验收直接可见 */}
-            {runSummary && (
-              <RunSummary
-                m={runSummary}
-                embedded
-                onOpenFile={onOpenFile}
-                onRollbackRun={onRollbackRun}
-                onOpenChanges={onOpenRunChanges ? () => onOpenRunChanges(runSummary.runId || m.runId) : undefined}
-                onOpenArtifacts={onOpenRunArtifacts ? () => onOpenRunArtifacts(runSummary.runId || m.runId) : undefined}
-              />
             )}
             {m.references?.length > 0 && <ReferenceChips references={m.references} onOpenFile={onOpenFile} />}
             {/* 流式等待首块：思考中 + 耗时 */}
@@ -3879,7 +3900,7 @@ function ThinkingBlock({ text, startTime, streaming, embedded = false }) {
 
   if (embedded) {
     return (
-      <section className="thinking-process-inline">
+      <section className={`thinking-process-inline ${streaming ? "is-streaming" : ""}`}>
         <div className="thinking-process-heading">
           <ToolIdentityIcon name="__thinking__" size={11} />
           <span>思考</span>
@@ -3934,6 +3955,90 @@ function SubagentCard({ block }) {
 }
 
 // ========== 主动提问卡片（ask_user：agent 遇不明确处询问用户） ==========
+/**
+ * 输入栏常驻的待处理条：待审批可直接允许/拒绝，待回答可直接提交；
+ * 折叠过程收起或正在回看历史时，不必先找到卡片再操作。
+ */
+function PendingActionBar({ approval, ask, onLocateApproval, onLocateAsk, clientId, threadId, onAnswered }) {
+  const [sending, setSending] = useState("");
+  const [error, setError] = useState("");
+  const [answer, setAnswer] = useState("");
+  if (!approval && !ask) return null;
+  const toolNames = { officecli: "Office CLI", bash: "命令", write: "写入文件", map_edit: "地图样式编辑", map_import: "地图数据导入" };
+  const approvalLabel = toolNames[String(approval?.tool || "").toLowerCase()] || approval?.tool || "工具";
+
+  const decide = async (decision) => {
+    if (sending || !approval?.id) return;
+    setSending("approval");
+    setError("");
+    try {
+      const res = await fetch("/api/agent/approval", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: approval.id, decision }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `审批提交失败（${res.status}）`);
+    } catch (e) { setError(e.message || "审批提交失败，请重试"); }
+    setSending("");
+  };
+
+  const submitAnswer = async (text) => {
+    const value = String(text ?? answer).trim();
+    if (!value || sending) return;
+    setSending("ask");
+    setError("");
+    try {
+      const res = await fetch("/api/agent/answer", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, thread: threadId, answer: value }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `回答失败（${res.status}）`);
+      onAnswered?.(ask?.id, value);
+      setAnswer("");
+    } catch (e) { setError(e.message || "回答失败，请重试"); }
+    setSending("");
+  };
+
+  return (
+    <div className="pending-action-bar" role="status" aria-live="polite">
+      {approval && (
+        <>
+          <span className="pending-action-label"><Icon name="shield" size={12} /> 待审批：{approvalLabel}</span>
+          <span className="pending-action-command" title={String(approval.input || "")}>{String(approval.input || "").slice(0, 80)}</span>
+          <span className="pending-action-buttons">
+            <button className="btn primary" onClick={() => decide("allow")} disabled={Boolean(sending)}>允许一次</button>
+            <button className="btn" onClick={() => decide("deny")} disabled={Boolean(sending)}>拒绝</button>
+            <button className="btn-xs" onClick={onLocateApproval} title="滚动到审批卡片">定位</button>
+          </span>
+        </>
+      )}
+      {ask && (
+        <>
+          <span className="pending-action-label"><Icon name="comment" size={12} /> 待回答：{String(ask.question || "").slice(0, 120)}</span>
+          {ask.options?.length > 0 && (
+            <span className="pending-action-buttons">
+              {ask.options.map((opt, i) => <button key={i} className="btn-xs" onClick={() => submitAnswer(opt)} disabled={Boolean(sending)}>{opt}</button>)}
+            </span>
+          )}
+          <input
+            className="pending-action-input"
+            placeholder="输入你的回答…"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submitAnswer(); } }}
+          />
+          <span className="pending-action-buttons">
+            <button className="btn primary" onClick={() => submitAnswer()} disabled={Boolean(sending) || !answer.trim()}>{sending === "ask" ? "…" : "发送"}</button>
+            <button className="btn-xs" onClick={onLocateAsk} title="滚动到提问卡片">定位</button>
+          </span>
+        </>
+      )}
+      {error && <span className="pending-action-error" role="alert">{error}</span>}
+    </div>
+  );
+}
+
 function AskBlock({ block, clientId, threadId, onAnswered }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -4240,7 +4345,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   const progressText = runTraceProgressText(runTrace, { now, running });
   const eventRows = visibleEvents.map((event, index) => {
     const data = event.data || {};
-    const detail = data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
+    const internalProgressSignal = event.type === "steer" && /^(turn-progress|turn-budget)/.test(String(data.source || ""));
+    const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? data.name : event.type === "file_changed" ? (data.files || []).join(", ") : "");
     const label = flowEventLabel(event);
     const showDetail = detail && String(detail).trim() !== String(label).trim();
     const phase = phaseForEvent(event);

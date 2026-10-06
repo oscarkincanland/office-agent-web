@@ -893,7 +893,7 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
 
       <div className="sp-section" id="settings-marquee">
         <div className="sp-section-title"><Icon name="flow" size={12} /> 跑马灯与动效</div>
-        <div className="sp-hint">运行中的会话、项目与任务名会用跑马灯滚动；执行过程、回答详细程度与自动打开预览都在这里调，改完立即生效。</div>
+        <div className="sp-hint">运行中的会话、项目与任务名会用跑马灯滚动；对话过程的细线动效会沿用下方样式、配色和速度，改完立即生效。</div>
         <div className="sp-row">
           <span className="sp-label">样式</span>
           <div className="sp-options sp-marquee-styles">
@@ -931,6 +931,17 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
               >{item.label}</button>
             ))}
           </div>
+        </div>
+        <div className="sp-row">
+          <span className="sp-label">对话过程跑马灯</span>
+          <label className="sp-toggle-label">
+            <input
+              type="checkbox"
+              checked={appearance.activityMarqueeEnabled}
+              onChange={(event) => setAppearance({ activityMarqueeEnabled: event.target.checked })}
+            />
+            <span>运行时显示轻量流光</span>
+          </label>
         </div>
         <div className="sp-row">
           <span className="sp-label">执行过程</span>
@@ -986,14 +997,19 @@ const diagnosticModel = String(activeModel || defaultModel || diagnostics?.model
         </div>
         <div className="sp-row sp-marquee-preview-row">
           <span className="sp-label">效果预览</span>
-          <div className="sp-marquee-preview">
-            <span className="sp-marquee-dot" aria-hidden="true" />
-            <跑马灯文本
-              text="正在执行：把可研报告的结构梳理成清单，并逐条核对数据来源与引用"
-              active
-              className="sp-marquee-preview-text"
-            />
-            <small>执行中</small>
+          <div className="sp-marquee-preview-stack">
+            <div className="sp-marquee-preview">
+              <span className="sp-marquee-dot" aria-hidden="true" />
+              <跑马灯文本
+                text="正在执行：把可研报告的结构梳理成清单，并逐条核对数据来源与引用"
+                active
+                className="sp-marquee-preview-text"
+              />
+              <small>执行中</small>
+            </div>
+            <details open className="message-process-fold run-activity-fold is-live sp-activity-marquee-preview">
+              <summary><Icon name="flow" size={11} /> 对话执行过程<span>实时</span></summary>
+            </details>
           </div>
         </div>
       </div>

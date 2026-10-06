@@ -62,8 +62,8 @@ try {
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
   assert.doesNotMatch(runSummarySource, /任务轮次 \{m\.runIndex/, "常规对话结果头不显示任务轮次计数");
   assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
-  assert.match(runSummarySource, /run-process-details/, "结构化工具总结仍保留在统一过程卡内");
-  assert.match(runSummarySource, /run-trace-step-heading/, "展开后应展示有序工具时间线与状态");
+  assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
+  assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
   assert.match(runSummarySource, /run-result-conclusion/, "本轮结论应收纳在同一个可展开摘要内");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
@@ -72,12 +72,18 @@ try {
   assert.doesNotMatch(chatPanelSource, /latestTextBlock\?\.text/, "不能把最后一条过程播报猜成最终答复并留在折叠区外");
   assert.match(chatPanelSource, /Boolean\(m\.runId\)/, "历史 Run 的所有非终稿文本都应归入过程折叠");
   assert.match(chatPanelSource, /process_note/, "内部系统提醒应收进过程区，不作为独立用户消息显示");
-  assert.match(chatPanelSource, /streaming=\{false\} embedded/, "过程面板内的思考正文应服从外层单一折叠，不再逐条二次折叠");
+  assert.match(chatPanelSource, /streaming=\{streaming && blockIndex === lastThinkingBlockIndex\} embedded/, "只有最新思考块在流式阶段显示实时打字状态");
+  assert.match(chatPanelSource, /useLayoutEffect\(\(\) => \{[\s\S]{0,220}list\.scrollTop = list\.scrollHeight/, "流式内容 DOM 更新后应在布局阶段贴底，避免滚动慢一帧");
+  assert.match(chatPanelSource, /followProcessTailRef\.current = list\.scrollHeight - list\.scrollTop - list\.clientHeight <= 28/, "用户上滚阅读时暂停自动贴底，回到底部后恢复跟随");
+  assert.match(chatPanelSource, /thinking-process-inline \$\{streaming \? "is-streaming" : ""\}/, "实时思考应显示轻量打字光标");
   assert.match(stylesSource, /\.message-process-scroll \.thinking-text \{ max-height: none; overflow: visible; \}/, "思考内容不得在过程滚动区内产生第二个滚动条");
   assert.match(chatPanelSource, /appendAssistantMessageBoundary/, "流式 assistant 消息边界应支持准确分离进度与终稿");
   assert.match(runProjectionSource, /export function associateRunMessages\(/, "历史对话需按真实用户消息边界关联到对应 Run");
   assert.match(stylesSource, /\.message-process-scroll \{[^}]*max-height: 300px; overflow: auto/s, "过程面板应限制高度并在内部滚动");
-  assert.match(stylesSource, /\.message-process-scroll \.execution-flow-list-embedded \{ max-height: none; overflow: visible;/, "SSE 列表不应在统一过程滚动框内再产生嵌套滚动");
+  assert.match(stylesSource, /\.message-process-scroll \.execution-flow-list-embedded \{ max-height: none; overflow: visible; padding: 0; border: 0; background: transparent; \}/, "SSE 事件列表应压平到外层滚动区，不再单独套框");
+  assert.match(stylesSource, /\.execution-flow-embedded \{ min-width: 0; padding: 0; border: 0; background: transparent; \}/, "嵌入式事件轨迹不应额外增加分隔框");
+  assert.match(stylesSource, /\.embedded-run-summary \{ display: block; min-width: 0; margin: 0; border: 0; background: transparent; \}/, "结构化总结也不应在过程流里再套第二层卡片");
+  assert.match(stylesSource, /\.embedded-run-summary \.run-result-fold\.embedded > \.run-result \{[^}]*background: transparent;/, "嵌入式结果摘要底色也应压平");
   assert.match(chatPanelSource, /function ContextUsageRing\(/, "顶部应提供模型上下文用量环形圈");
   assert.match(chatPanelSource, /function ApprovalModeControl\(/, "顶部应提供 Codex 风格审批模式按钮");
   // B02：执行过程显示改为外观设置驱动（compact|expanded|hidden）并走共享订阅；
@@ -133,12 +139,20 @@ try {
   assert.match(appSource, /onRunFinished=\{handleRunFinished\}/, "本轮完成后应把权威产物交给预览层");
   assert.match(appSource, /void open\(firstArtifact\.path/, "本轮完成后应自动打开首个产物");
   assert.match(chatPanelSource, /onRunFinished\?\.\(data\)/, "前端应在 run_finished 后通知产物预览");
-  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\}`\}/, "思考、SSE、总结归入同一个消息级折叠");
+  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\} \$\{isTaskLive \? "is-live" : ""\}`\}/, "思考、SSE、总结归入同一个消息级折叠并仅在运行时标记活跃态");
+  // 输入栏待处理条：折叠过程收起时审批/提问仍可直接处理（计划 B01）
+  assert.match(chatPanelSource, /function PendingActionBar/, "输入栏应提供待处理入口组件");
+  assert.match(chatPanelSource, /const pendingAsk = useMemo/, "应计算待回答项");
+  assert.match(chatPanelSource, /<PendingActionBar\s/, "待处理条应渲染进输入栏");
+  assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
+  assert.match(chatPanelSource, /待回答：\{String\(ask\.question/, "待回答应显示在输入栏");
+  assert.match(chatPanelSource, /\/api\/agent\/approval/, "输入栏可直接提交审批");
+  assert.match(chatPanelSource, /\/api\/agent\/answer/, "输入栏可直接提交回答");
   assert.match(chatPanelSource, /const visibleMessages = useMemo\([\s\S]{0,100}associateRunMessages\(messages\.slice\(visibleStart\)\)/, "渲染层必须再次保障历史过程消息按 Run 归组");
   assert.doesNotMatch(chatPanelSource, /<span>\{activityCount\} 项/, "执行过程摘要不显示容易与模型轮次混淆的数量标签");
-  // 结果卡不放进折叠体：恢复会话后本轮产物/结论直接可见
-  assert.match(chatPanelSource, /\/\* 结果卡不放进“执行过程”折叠体/, "结果卡应移出执行过程折叠体");
-  assert.doesNotMatch(chatPanelSource, /message-process-scroll[\s\S]{0,800}?runSummary && \(\s*<RunSummary/, "折叠体滚动区不应再包住结果卡");
+  // 本轮结构化结论、事件轨迹与思考/播报共用同一滚动折叠；权威最终答复仍留在外面。
+  assert.match(chatPanelSource, /message-process-scroll[\s\S]{0,2400}\{runSummary && \([\s\S]{0,240}<RunSummary/, "本轮结构化结论应并入同一个滚动过程容器");
+  assert.match(chatPanelSource, /authoritativeFinalText[\s\S]{0,220}assistant-final-answer/, "简洁的权威最终答复仍保持可见");
   // harness 提醒不得显示为可见消息（恢复 + 实时兜底各一道）
   assert.match(chatPanelSource, /不得在恢复会话后显示为“You”消息/, "历史恢复应过滤系统提醒");
   assert.match(chatPanelSource, /未被分组消费的提醒消息同样不渲染/, "渲染层应有提醒兜底过滤");
@@ -211,6 +225,10 @@ try {
   for (const id of ['activityDisplay: "compact"', 'answerDetail: "auto"', 'previewAutoOpen: "requested"']) {
     assert.ok(appearanceSource.includes(id), `外观默认值应包含 ${id}`);
   }
+  assert.match(appearanceSource, /activityMarqueeEnabled: true/, "对话过程跑马灯默认开启");
+  assert.match(appearanceSource, /root\.dataset\.activityMarquee = appearance\.activityMarqueeEnabled \? "true" : "false"/, "对话过程跑马灯设置应实时同步到页面样式");
+  assert.match(settingsSource, /checked=\{appearance\.activityMarqueeEnabled\}/, "设置页应提供对话过程跑马灯开关");
+  assert.match(stylesSource, /html\[data-activity-marquee="true"\] \.message-process-fold\.run-activity-fold\.is-live > summary::after/, "流光只绘制在运行中的外层过程栏");
   for (const name of ["ACTIVITY_DISPLAY_OPTIONS", "ANSWER_DETAIL_OPTIONS", "PREVIEW_AUTO_OPEN_OPTIONS"]) {
     assert.match(appearanceSource, new RegExp(`export const ${name} = Object.freeze\\(\\[`), `应导出 ${name} 供设置面板消费`);
   }

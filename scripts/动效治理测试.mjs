@@ -104,9 +104,9 @@ for (const 名称 of 全部关键帧) {
   if (动画声明.some((d) => /infinite/.test(d) && 命中.test(d.replace(/^animation\s*:/, " ")))) 无限动画.add(名称);
 }
 const 期望持续动画 = [
-  "blink", "brain-pulse", "dot-breathe", "dot-breathe-soft", "ldot-bounce",
+  "activity-marquee-sweep", "blink", "brain-pulse", "dot-breathe", "dot-breathe-soft", "ldot-bounce",
   "marquee-neon", "marquee-scroll", "marquee-scan", "marquee-shine", "marquee-stripe",
-  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin",
+  "mp-spin", "pulse", "pulse-status", "pulse-status-soft", "session-pulse", "spin", "thinking-caret-blink",
 ];
 assert.deepEqual(
   [...无限动画].sort(),
@@ -131,6 +131,8 @@ const 持续动画宿主 = {
   "marquee-neon": [".marquee-text"],
   "marquee-scan": [".marquee.is-active::after"],
   "marquee-stripe": [".marquee.is-active::after"],
+  "activity-marquee-sweep": [".message-process-fold.run-activity-fold.is-live > summary::after"],
+  "thinking-caret-blink": [".thinking-process-inline.is-streaming .thinking-text::after"],
   "mp-spin": [".mp-spin"],
 };
 const 宿主清单 = new Set();

@@ -768,7 +768,7 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .run-summary-details { margin-top: 7px; border-top: 1px dashed var(--border); padding-top: 6px; font-size: 11px; }
 .run-summary-details summary { cursor: pointer; color: var(--accent); font-size: 10px; user-select: none; }
 .message-process-fold { margin: 6px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--panel2-bg) 55%, transparent); }
-.message-process-fold > summary { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 9px; color: var(--muted); font-size: 10px; list-style: none; cursor: pointer; }
+.message-process-fold > summary { position: relative; display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 5px 9px; color: var(--muted); font-size: 10px; list-style: none; cursor: pointer; }
 .message-process-fold > summary::-webkit-details-marker { display: none; }
 .message-process-fold > summary::before { content: "›"; color: var(--accent); font-family: monospace; font-size: 14px; }
 .message-process-fold[open] > summary::before { transform: rotate(90deg); }
@@ -782,23 +782,59 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .thinking-process-heading .icon { color: var(--accent); }
 .thinking-process-heading span:last-child { margin-left: auto; }
 .thinking-process-inline .thinking-text { padding: 0; border: 0; }
+.thinking-process-inline.is-streaming .thinking-text::after { content: "▍"; display: inline-block; margin-left: 2px; color: var(--accent); animation: thinking-caret-blink 1s steps(2, end) infinite; }
 .message-process-fold.run-activity-fold { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); background: color-mix(in srgb, var(--panel2-bg) 75%, transparent); }
 .run-activity-fold > summary { min-height: 32px; }
 .run-activity-fold[open] > summary { background: color-mix(in srgb, var(--accent) 5%, transparent); }
 .process-narration { padding: 2px 0 5px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .assistant-final-answer { margin-top: 5px; }
-.execution-flow-embedded { min-width: 0; padding-top: 7px; border-top: 1px solid var(--border); }
-.execution-flow-embedded-notes { display: grid; gap: 3px; margin-bottom: 5px; }
-.message-process-scroll .execution-flow-list-embedded { max-height: none; overflow: visible; padding: 2px 3px 2px 10px; border: 0; }
+.execution-flow-embedded { min-width: 0; padding: 0; border: 0; background: transparent; }
+.execution-flow-embedded-notes { display: grid; gap: 3px; margin: 0 0 5px; }
+.message-process-scroll .execution-flow-list-embedded { max-height: none; overflow: visible; padding: 0; border: 0; background: transparent; }
 .execution-flow-embedded .execution-flow-item { min-width: 0; flex-wrap: wrap; }
 .execution-flow-embedded .execution-flow-detail { flex: 1 1 100%; padding-left: 14px; white-space: normal; overflow-wrap: anywhere; }
-.embedded-run-summary { display: block; min-width: 0; margin: 0; border-top: 1px solid var(--border); }
+.embedded-run-summary { display: block; min-width: 0; margin: 0; border: 0; background: transparent; }
 .msg.system.summary-msg.embedded-run-summary .run-summary-bubble { width: 100%; max-width: none; padding: 6px 0 0; border: 0; color: var(--muted); }
 .embedded-run-summary .run-result-fold.embedded { margin: 0; overflow: visible; border: 0; background: transparent; }
 .embedded-run-summary .run-result-fold.embedded > summary { display: none; }
-.embedded-run-summary .run-result-fold.embedded > .run-result { padding: 5px 0; border: 0; }
-.embedded-run-summary .run-result-conclusion { margin-top: 7px; }
+.embedded-run-summary .run-result-fold.embedded > .run-result { padding: 5px 0; border: 0; border-radius: 0; background: transparent; }
+.embedded-run-summary .run-result-conclusion { margin-top: 7px; padding: 4px 0 0; border-radius: 0; background: transparent; }
 .embedded-run-summary .run-result-tech { display: none; }
+
+/* 对话过程跑马灯：只在运行中给外层折叠标题加一条细流光，不给事件正文再套框。 */
+html { --activity-marquee-a: var(--accent); --activity-marquee-b: #7dd3fc; --activity-marquee-duration: 2.8s; }
+html[data-marquee-color="cyan"] { --activity-marquee-a: #22d3ee; --activity-marquee-b: #3b82f6; }
+html[data-marquee-color="violet"] { --activity-marquee-a: #a78bfa; --activity-marquee-b: #f472b6; }
+html[data-marquee-color="amber"] { --activity-marquee-a: #fbbf24; --activity-marquee-b: #f97316; }
+html[data-marquee-color="emerald"] { --activity-marquee-a: #34d399; --activity-marquee-b: #10b981; }
+html[data-marquee-color="rainbow"] { --activity-marquee-a: #f87171; --activity-marquee-b: #60a5fa; }
+html[data-marquee-speed="slow"] { --activity-marquee-duration: 4.6s; }
+html[data-marquee-speed="fast"] { --activity-marquee-duration: 1.5s; }
+html[data-activity-marquee="true"] .message-process-fold.run-activity-fold.is-live > summary::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, var(--activity-marquee-a) 44%, var(--activity-marquee-b) 58%, transparent 100%);
+  background-size: 36% 100%;
+  background-repeat: no-repeat;
+  animation: activity-marquee-sweep var(--activity-marquee-duration) linear infinite;
+}
+html[data-marquee-style="neon"] .message-process-fold.run-activity-fold.is-live > summary::after { filter: drop-shadow(0 0 4px var(--activity-marquee-a)); }
+html[data-marquee-style="rainbow"] .message-process-fold.run-activity-fold.is-live > summary::after { background-image: linear-gradient(90deg, transparent, #f87171, #fbbf24, #34d399, #22d3ee, #a78bfa, transparent); }
+html[data-marquee-style="terminal"] .message-process-fold.run-activity-fold.is-live > summary::after { height: 3px; background-image: repeating-linear-gradient(90deg, var(--activity-marquee-a) 0 3px, transparent 3px 7px); }
+html[data-marquee-style="stripe"] .message-process-fold.run-activity-fold.is-live > summary::after { height: 3px; background-image: repeating-linear-gradient(135deg, var(--activity-marquee-a) 0 3px, transparent 3px 7px, var(--activity-marquee-b) 7px 10px, transparent 10px 14px); }
+html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-live > summary::after { height: 1px; background: var(--activity-marquee-a); background-size: 100% 100%; animation: none; opacity: .55; }
+@keyframes activity-marquee-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(360%); }
+}
+@keyframes thinking-caret-blink {
+  50% { opacity: 0; }
+}
 .file-change-label {
   display: flex;
   align-items: center;
@@ -5788,6 +5824,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
   margin-bottom: 6px;
 }
 .sp-label { width: 88px; flex-shrink: 0; color: var(--text); font-size: 12px; }
+.sp-toggle-label { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; color: var(--muted); font-size: 11px; cursor: pointer; }
+.sp-toggle-label input { accent-color: var(--accent); }
 .sp-options { display: flex; gap: 4px; }
 .sp-opt {
   padding: 2px 10px;
@@ -9382,6 +9420,9 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .marquee-swatch.color-emerald { background: linear-gradient(135deg, #34d399, #10b981); }
 .marquee-swatch.color-rainbow { background: linear-gradient(135deg, #f87171, #fbbf24 25%, #34d399 50%, #60a5fa 75%, #a78bfa); }
 .sp-marquee-preview-row { align-items: center; }
+.sp-marquee-preview-stack { display: grid; gap: 7px; width: min(260px, 100%); min-width: 0; }
+.sp-activity-marquee-preview { width: 100%; margin: 0; }
+.sp-activity-marquee-preview > summary { min-height: 28px; }
 .sp-marquee-preview {
   display: flex;
   align-items: center;
@@ -9918,6 +9959,13 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-changes-note { margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--muted); font-size: 11px; line-height: 1.55; }
 /* 模型选择：不可用模型显式标记 */
 .model-unavailable-badge { font-size: 10px; line-height: 1; color: var(--dim); border: 1px solid var(--border); border-radius: 999px; padding: 2px 6px; margin-left: auto; white-space: nowrap; }
+/* 输入栏待处理条：待审批/待回答直接操作，不依赖展开执行过程 */
+.pending-action-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 6px 0; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 8%, transparent); font-size: 11px; }
+.pending-action-label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
+.pending-action-command { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-action-buttons { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.pending-action-input { flex: 1 1 220px; min-width: 160px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-bg); color: var(--text); font-size: 11px; }
+.pending-action-error { color: var(--error); }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
@@ -9951,6 +9999,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
   .marquee-inner,
   .marquee-text
 ) { animation: none !important; }
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .thinking-process-inline.is-streaming .thinking-text::after,
+:is([data-reduce-motion="1"], [data-motion-level="off"]) .message-process-fold.run-activity-fold.is-live > summary::after { animation: none !important; }
 
 /* 2) 装饰性入场：弹层/面板/批注徽标/结果卡/文件高亮 */
 :is([data-reduce-motion="1"], [data-motion-level="off"]) :is(
@@ -9971,6 +10021,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 :is([data-reduce-motion="1"], [data-motion-level="off"]) .marquee.is-active::after {
   animation: none !important;
   display: none;
+}
+:is(html[data-reduce-motion="1"], html[data-motion-level="off"]) .message-process-fold.run-activity-fold.is-live > summary::after {
+  width: 100%;
+  transform: none;
+  background-size: 100% 100%;
+  opacity: .55;
 }
 
 /* 3) 跑马灯静态回退：去掉渐变文字与描边，只留状态色标；

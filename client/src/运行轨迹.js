@@ -333,14 +333,10 @@ export function formatDuration(ms) {
   return `${hours} 小时 ${minutes % 60} 分`;
 }
 
-/**
- * 运行中进度行：阶段 · 第 N 轮 · 工具 M · 待办 x/y · 用时。
- * 与折叠摘要互补——摘要讲"做了什么"，进度行讲"现在到哪一步"。
- */
+/** 运行中进度行只保留用户可行动的工具、待办与耗时，不暴露 harness 轮次计数。 */
 export function runTraceProgressText(trace, { now = Date.now(), running = false } = {}) {
   const stats = summarizeRunTrace(trace);
   const parts = [];
-  if (stats.turns) parts.push(`第 ${stats.turns} 轮`);
   if (stats.toolTotal) parts.push(`工具 ${stats.toolTotal}`);
   if (stats.todoTotal) parts.push(`待办 ${stats.todoDone}/${stats.todoTotal}`);
   const startedAt = stats.startedAt ? new Date(stats.startedAt).getTime() : 0;
