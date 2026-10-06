@@ -10007,6 +10007,15 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .message-process-fold.is-live-plain .message-process-fold-body { border-top: 0; }
 .message-process-fold.is-live-plain .message-process-scroll { max-height: none; overflow: visible; padding: 0; gap: 6px; }
 .message-process-fold.is-live-plain .execution-flow-embedded-toggle { display: none; }
+/* 结论与正文紧凑：空段落、仅含换行的段落、连续换行、分隔线都不再撑出大空隙 */
+.markdown-body p:empty { display: none; }
+.markdown-body p:has(> br:only-child) { display: none; }
+.markdown-body br + br { display: none; }
+.markdown-body hr { margin: 6px 0; border: 0; border-top: 1px solid var(--border); }
+.run-result-conclusion .markdown-body { line-height: 1.6; }
+.run-result-conclusion .markdown-body p { margin: 4px 0; }
+.run-result-conclusion .markdown-body ul, .run-result-conclusion .markdown-body ol { margin: 4px 0; }
+.run-result-conclusion .markdown-body li { margin: 2px 0; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
