@@ -159,6 +159,7 @@ try {
   assert.match(livePlainStyles, /\.message-process-fold\.is-live-plain \.message-process-fold-body \{ border-top: 0; \}/, "运行中过程区不应有分隔边框");
   assert.match(livePlainStyles, /\.markdown-body p:has\(> br:only-child\) \{ display: none; \}/, "仅含换行的段落不应占位");
   assert.match(livePlainStyles, /\.run-result-conclusion \.markdown-body \{ line-height: 1\.6; \}/, "结论区行距应紧凑");
+  assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "无侧栏时消息列应居中（有侧栏时自适应）");
   assert.match(chatPanelSource, /className="execution-flow-embedded-toggle"/, "嵌入执行流应有一行折叠摘要");
   assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度

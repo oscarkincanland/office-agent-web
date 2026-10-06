@@ -8332,6 +8332,15 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .center-chat-slot .msg-main { width: min(100%, 880px); max-width: 880px; }
 .center-chat-slot .msg.user .msg-main { width: auto; max-width: min(78%, 540px); }
 .center-chat-slot .msg.user .bubble { width: fit-content; max-width: 100%; }
+/* 无浏览器/产物侧栏时消息列（含 agent 事件流）居中展示；有侧栏时按可用宽度自适应 */
+.center-chat-slot .chat-body > .msg,
+.center-chat-slot .chat-body > .chat-load-older,
+.center-chat-slot .chat-body > .chat-history-window-note {
+  width: 100%;
+  max-width: 880px;
+  margin-left: auto;
+  margin-right: auto;
+}
 .center-chat-slot .msg .avatar { width: 30px; height: 30px; border-radius: 9px; }
 .center-chat-slot .msg-header { min-height: 22px; gap: 6px; }
 .center-chat-slot .msg-author { font-size: 11px; }
