@@ -163,7 +163,8 @@ try {
   assert.match(chatPanelSource, /className="run-products-box"/, "结论之后应有本轮产物独立框");
   assert.match(chatPanelSource, /className="loading-inline"/, "等待首块应为无框行内指示");
   assert.doesNotMatch(chatPanelSource, /可写：工作区内/, "输入框不应再显示写入权限徽标");
-  assert.doesNotMatch(chatPanelSource, /@ 引用文件，\/ 调用 Skill/, "占位提示应简化为“输入消息…”");
+  assert.doesNotMatch(chatPanelSource, /输入消息…  @ 引用文件/, "输入框占位提示不应再带长说明");
+  assert.match(chatPanelSource, /: "输入消息…"\}/, "输入框占位提示应简化为“输入消息…”");
   assert.match(chatPanelSource, /className="run-products-badge">交付/, "产物框应标记交付项");
   const widthStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
   assert.match(widthStyles, /--chat-w: 460px/, "对话面板默认宽度应加宽");
