@@ -9976,6 +9976,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-products-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-products-badge { font-size: 10px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; padding: 0 5px; }
 .run-products-more { align-self: center; font-size: 10px; color: var(--muted); }
+/* 嵌入消息折叠区里的执行列表：默认折叠为一行摘要 */
+.execution-flow-embedded-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 2px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; text-align: left; }
+.execution-flow-embedded-toggle:hover { color: var(--accent); }
+.execution-flow-embedded-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+.execution-flow-embedded-count { color: var(--dim); }
+.execution-flow-embedded-current { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：

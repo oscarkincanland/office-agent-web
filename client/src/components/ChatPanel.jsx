@@ -4323,6 +4323,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     setExpanded(Boolean(defaultExpanded));
   }, [defaultExpanded]);
   const [notesOpen, setNotesOpen] = useState(false);
+  // 嵌入在消息折叠区里的执行列表：默认折叠，只显示一行摘要，点击展开明细
+  const [embeddedExpanded, setEmbeddedExpanded] = useState(false);
   const executionListRef = useRef(null);
   const followExecutionTailRef = useRef(true);
   const wasRunningRef = useRef(running);
@@ -4423,7 +4425,14 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
             {notes.map((item) => <div key={item.key} className={`efn-item kind-${item.kind || "info"}`}><span className="efn-text">{item.text}</span>{Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}</div>)}
           </div>
         )}
-        <div className="execution-flow-list execution-flow-list-embedded">{eventRows}</div>
+        <button type="button" className="execution-flow-embedded-toggle" onClick={() => setEmbeddedExpanded((value) => !value)} aria-expanded={embeddedExpanded}>
+          <span className="execution-flow-chevron">{embeddedExpanded ? "▾" : "▸"}</span>
+          <Icon name="flow" size={11} />
+          <span className="execution-flow-embedded-count">{contentEvents.length ? `${contentEvents.length} 个事件` : "等待首个事件"}</span>
+          <span className="execution-flow-embedded-current">{traceSummary || flowEventLabel(latest || visibleEvents[0])}</span>
+          {running && <span className="execution-flow-live"><i /> 实时</span>}
+        </button>
+        {embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">{eventRows}</div>}
       </div>
     );
   }

@@ -148,6 +148,10 @@ try {
   assert.match(chatPanelSource, /const endedToolCalls = new Set/, "已结束的工具调用应从事件行中去重");
   assert.match(chatPanelSource, /const dedupedEvents = visibleEvents.filter/, "事件行应使用去重后的序列");
   assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
+  // 嵌入执行列表默认折叠：一行摘要 + 点击展开
+  assert.match(chatPanelSource, /const \[embeddedExpanded, setEmbeddedExpanded\] = useState\(false\)/, "嵌入执行流应默认折叠");
+  assert.match(chatPanelSource, /className="execution-flow-embedded-toggle"/, "嵌入执行流应有一行折叠摘要");
+  assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度
   assert.match(chatPanelSource, /className="run-products-box"/, "结论之后应有本轮产物独立框");
   assert.match(chatPanelSource, /className="run-products-badge">交付/, "产物框应标记交付项");
