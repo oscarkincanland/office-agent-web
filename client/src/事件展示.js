@@ -31,6 +31,8 @@ const TOOL_LABELS = Object.freeze({
 
 /** 只作为阶段标记、不逐条刷屏的事件（ExecutionFlow 合并为一行） */
 export const STAGE_ONLY_EVENTS = new Set([
+  // Pi/SSE 传输与调试事件不直接呈现在用户执行时间线上。
+  "run_started", "prompt", "runtime_health", "stats", "token", "heartbeat", "message_start", "message_end",
   "runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started",
   "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan",
   "agent_end", "assistant_final",

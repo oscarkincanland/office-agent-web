@@ -426,7 +426,7 @@ export function filterRunChanges(run, changes = []) {
   });
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full" } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
   const normalizedSnapshotMode = snapshotMode === "none" ? "none" : "full";
@@ -434,7 +434,9 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
   // 会话追溯记录；真正可能写文件的 Agent / Office Run 继续使用完整可回滚快照。
   const before = normalizedSnapshotMode === "none"
     ? { root: path.resolve(cwd), capturedAt: new Date().toISOString(), files: {}, size: 0 }
-    : snapshotWorkspace(cwd);
+    : (beforeSnapshot?.root === path.resolve(cwd) && beforeSnapshot?.files && typeof beforeSnapshot.files === "object"
+      ? beforeSnapshot
+      : snapshotWorkspace(cwd));
   if (normalizedSnapshotMode === "full") copyBeforeBlobs(id, before);
   const run = {
     id,
@@ -623,13 +625,17 @@ function finalizeFileChanges(run, changes, after) {
     if (path && path !== "." && callId && !toolCallIdByPath.has(path)) toolCallIdByPath.set(path, String(callId));
   }
   const out = [];
+  // 本轮完全没有写入台账（touchedPaths 为空）时，快照 diff 只能证明“文件变了”，
+  // 不能证明“是本轮改的”——共享工作区里并行 Run 的发布同样会出现在 before/after 之间。
+  // 这类差异降级为“未归属线索”，不再以 confirmed 自动宣告为本轮交付。
+  const hasLedgerEvidence = touched.size > 0;
   for (const change of Array.isArray(changes) ? changes : []) {
     const relativePath = String(change?.path || change?.relativePath || "").replace(/\\/g, "/");
     if (!relativePath) continue;
     const changeType = normalizeChangeTypeOf(change);
     const viaLedger = touched.has(relativePath);
-    const source = viaLedger ? "write-ledger" : (change.detectedBy === "recent-mtime" ? "recent-mtime" : "snapshot");
-    const confidence = source === "recent-mtime" ? "suspected" : "confirmed";
+    const source = viaLedger ? "write-ledger" : (change.detectedBy === "recent-mtime" ? "recent-mtime" : (hasLedgerEvidence ? "snapshot" : "unattributed"));
+    const confidence = source === "write-ledger" ? "confirmed" : "suspected";
     // 疑似变更再核对一次：大小与修改时间都一致时视为“只是被 touch”，不算修改
     if (confidence === "suspected" && changeType === "modified") {
       const beforeItem = run.before?.files?.[relativePath];
@@ -648,6 +654,8 @@ function finalizeFileChanges(run, changes, after) {
       cwd: run.cwd || null,
       source,
       confidence,
+      // 未归属线索不得自动成为交付物；仍需显式验收/固定才升级为 deliverable。
+      autoDeliverable: source !== "unattributed",
       toolCallId: toolCallIdByPath.get(relativePath) || change.toolCallId || null,
       detectedBy: source,
       detectable: changeType !== "deleted" || beforeReversible,

@@ -16,6 +16,7 @@ import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
+import { markRunTiming, attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
@@ -1595,6 +1596,25 @@ app.get("/api/agent/runtime", (req, res) => {
   if (!client) return res.status(400).json({ error: "client required" });
   const key = agentKey(client, req.query.thread);
   res.json({ runtime: agentManager.runtimeHealth(key), usage: agentManager.usageSnapshot(key) });
+});
+
+// 全链路首字延迟（方案 §3.5）：客户端用 sendBeacon 上报自己的阶段打点，
+// 服务端把它并入同一 runId 的样本，最后按阶段给 P50/P95。
+app.post("/api/agent/timing", express.json({ limit: "16kb" }), (req, res) => {
+  const runId = String(req.body?.runId || "").trim();
+  if (!runId) return res.status(400).json({ error: "runId required" });
+  // 只接受白名单阶段与数字，避免任意字段混入聚合统计。
+  const marks = {};
+  for (const key of STAGE_KEYS) {
+    const value = Number(req.body?.[key]);
+    if (Number.isFinite(value)) marks[key] = value;
+  }
+  const merged = mergeClientTiming(runId, marks, { model: req.body?.model || null, mode: req.body?.mode || null });
+  res.status(200).json({ ok: true, ...merged });
+});
+
+app.get("/api/agent/timing", (req, res) => {
+  res.json({ ...latencySummary(), recent: recentLatencySamples(Number(req.query.limit) || 20) });
 });
 
 app.get("/api/agent/diagnostics", async (req, res) => {
@@ -3589,7 +3609,10 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
 
 app.post("/api/agent/prompt", async (req, res) => {
   const admissionStartedAt = new Date().toISOString();
-  const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput } = req.body || {};
+  // 首字延迟分项（方案 §3.5）：服务端收到请求的时刻。runId 要到 beginRun 才有，
+  // 因此先在请求作用域内取时间戳，admission 就绪后再连同 runId 一起登记。
+  const serverReceivedAt = Date.now();
+  const { client, thread, text, images, attachments, references, effort, model: requestedModel, task: taskInput, latency: clientLatency } = req.body || {};
   const hasImages = Array.isArray(images) && images.some((img) => img?.data);
   const hasAttachments = Array.isArray(attachments) && attachments.some((att) => att?.data);
   if (!client || (!String(text || "").trim() && !hasImages && !hasAttachments)) {
@@ -3725,7 +3748,12 @@ app.post("/api/agent/prompt", async (req, res) => {
       capabilityPlan,
       runtimeSnapshot,
       snapshotMode: tracksWorkspace ? "full" : "none",
+      beforeSnapshot: tracksWorkspace ? before : null,
     });
+    // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
+    markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
+    markRunTiming(run.id, "admissionReadyAt");
+    attachRunTimingMeta(run.id, { model: requestedModel || taskInput?.model || null, mode: task.mode });
     // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
     if (Array.isArray(attachments) && attachments.length) {
       for (const att of attachments) {
@@ -4834,6 +4862,12 @@ function emitChannel(entry, type, data) {
   // 其余由 HTTP 层补发的摘要/错误/文件事件在这里进入根级事件流。
   if (! ["capability_plan", "run_finished"].includes(type)) {
     appendEvent({ clientId: entry.clientId, threadId: entry.threadId, runId: eventData.runId, type, data: eventData });
+  }
+  // run_finished 是所有终态路径的收口：在这里结算首字延迟样本，
+  // 避免每条失败/取消/成功分支各结算一次或漏结算。
+  // 模型与模式已在 beginRun 处通过 attachRunTimingMeta 登记，这里不重复推断。
+  if (type === "run_finished" && eventData.runId) {
+    finishRunTiming(eventData.runId);
   }
 }
 

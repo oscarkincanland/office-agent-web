@@ -57,7 +57,7 @@ try {
   assert.match(chatPanelSource, /else if \(!running && wasRunning\)[\s\S]{0,80}setExpanded\(false\)/, "SSE 运行结束后应自动收束");
   assert.match(chatPanelSource, /executionListRef[\s\S]{0,260}list\.scrollTop = list\.scrollHeight/, "展开的实时事件流应自动跟随最新事件");
   assert.match(chatPanelSource, /followExecutionTailRef\.current = list\.scrollHeight - list\.scrollTop - list\.clientHeight <= 28/, "用户向上回看时应暂停自动滚动，回到底部后恢复跟随");
-  assert.match(chatPanelSource, /const processSummary = view\.progress\.toolTotal/, "过程行摘要应只聚合工具成功/失败数，不与文件验收信息重复");
+  assert.match(chatPanelSource, /const messageExecutionFlow = executionFlow \? \{ \.\.\.executionFlow, events: visibleExecutionEvents \} : null/, "SSE 工具事件应先与富交互工具卡去重");
   const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
   assert.match(runSummarySource, /const \[open, setOpen\] = useState\(false\)/, "每轮文件清单默认折叠");
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
@@ -65,10 +65,10 @@ try {
   assert.match(runSummarySource, /useEffect\(\(\) => setSummaryOpen\(runIsLive\), \[runIsLive\]\)/, "任务结束时应自动收起结论与工具轨迹");
   assert.match(runSummarySource, /!embedded && \(trace\?\.tools\?\.length > 0/, "嵌入式结果卡不重复渲染工具明细");
   assert.match(runSummarySource, /run-trace-step-heading/, "独立结果摘要仍保留有序工具时间线");
-  assert.match(runSummarySource, /run-result-conclusion/, "本轮结论应收纳在同一个可展开摘要内");
+  assert.match(runSummarySource, /const fallbackSummary = finalAnswer \? ""/, "已有最终答案时结果卡不再重复展示结论");
   assert.match(chatPanelSource, /foldedProcessBlocks/, "思考、工具及运行中的进度播报应并入消息级过程卡");
   assert.match(chatPanelSource, /message-process-scroll/, "过程内容应在一个有界滚动容器中回看");
-  assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.executionFlow\} embedded \/>/, "SSE 轨迹应嵌入消息过程卡，而非独立置底状态栏");
+  assert.match(chatPanelSource, /<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>/, "去重后的 SSE 轨迹应嵌入消息过程卡");
   assert.match(chatPanelSource, /authoritativeFinalText/, "权威终稿应与过程播报分离，避免折叠误吞结论");
   assert.doesNotMatch(chatPanelSource, /latestTextBlock\?\.text/, "不能把最后一条过程播报猜成最终答复并留在折叠区外");
   assert.match(chatPanelSource, /Boolean\(m\.runId\)/, "历史 Run 的所有非终稿文本都应归入过程折叠");
@@ -140,7 +140,7 @@ try {
   assert.match(appSource, /onRunFinished=\{handleRunFinished\}/, "本轮完成后应把权威产物交给预览层");
   assert.match(appSource, /void open\(firstArtifact\.path/, "本轮完成后应自动打开首个产物");
   assert.match(chatPanelSource, /onRunFinished\?\.\(data\)/, "前端应在 run_finished 后通知产物预览");
-  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\} \$\{isTaskLive \? "is-live is-live-plain" : ""\}`\}/, "思考、SSE、总结归入同一个消息级折叠；运行时标记活跃且去框");
+  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\} \$\{isTaskLive \? "is-live" : ""\}`\}/, "思考、SSE 与工具归入同一个消息级折叠");
   // 输入栏待处理条：折叠过程收起时审批/提问仍可直接处理（计划 B01）
   assert.match(chatPanelSource, /function PendingActionBar/, "输入栏应提供待处理入口组件");
   assert.match(chatPanelSource, /const pendingAsk = useMemo/, "应计算待回答项");
@@ -150,23 +150,22 @@ try {
   assert.match(chatPanelSource, /className={`conn-status \$\{connectionNotice\.state\}`}/, "输入框旁应有连接状态点");
   assert.doesNotMatch(chatPanelSource, /pushSystem\("模型连接已恢复/, "恢复不应再作为系统消息堆在对话里");
   assert.match(chatPanelSource, /if \(event\.type === "agent_retry_end"\) return false;/, "过程区不应显示“已恢复”行");
-  assert.match(chatPanelSource, /blockIndex !== lastTextBlockIndex/, "最后一段文本不应折进执行过程");
+  assert.match(chatPanelSource, /blockIndex !== finalAnswerBlockIndex/, "最终答案候选不应折进执行过程");
+  assert.doesNotMatch(chatPanelSource, /block\?\.type === "text" && isTaskActivity && streaming\) return false/, "流式正文不能在首字后继续隐藏");
   assert.match(chatPanelSource, /let lastTextBlockIndex = -1/, "应显式计算最后一段文本块");
   assert.match(chatPanelSource, /const dedupedEvents = visibleEvents.filter/, "事件行应使用去重后的序列");
   assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
-  // 嵌入执行列表默认折叠：一行摘要 + 点击展开
-  assert.match(chatPanelSource, /const \[embeddedExpanded, setEmbeddedExpanded\] = useState\(false\)/, "嵌入执行流应默认折叠");
+  // 嵌入事件直接进入同一个过程滚动区，不再添加第二层折叠。
+  assert.doesNotMatch(chatPanelSource, /execution-flow-embedded-toggle/, "过程内部不应再有第二个事件折叠按钮");
+  assert.match(chatPanelSource, /className="execution-flow-list execution-flow-list-embedded" role="list"/, "事件行应直接显示在过程滚动区");
   assert.match(chatPanelSource, /open=\{isTaskLive \|\| processOpen\}/, "运行中执行过程应强制展开");
-  assert.match(chatPanelSource, /isTaskLive \? "is-live is-live-plain" : ""/, "运行中过程区应去掉框");
+  assert.match(chatPanelSource, /isTaskLive \? "is-live" : ""/, "运行中过程区应维持有界滚动容器");
   assert.doesNotMatch(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "事件列表不应随运行自动展开（默认折叠）");
   const livePlainStyles = fs.readFileSync(new URL("../client/src/styles.css", import.meta.url), "utf8");
-  assert.match(livePlainStyles, /\.message-process-fold\.is-live-plain \.message-process-scroll \{ max-height: none; overflow: visible; padding: 0; gap: 6px; \}/, "运行中过程应平铺、由页面滚动");
-  assert.match(livePlainStyles, /\.message-process-fold\.is-live-plain \.message-process-fold-body \{ border-top: 0; \}/, "运行中过程区不应有分隔边框");
+  assert.match(livePlainStyles, /\.message-process-fold\.is-live \.message-process-scroll \{ max-height: 300px; overflow: auto; overscroll-behavior: contain; \}/, "运行中的过程使用单个有界滚动容器");
   assert.match(livePlainStyles, /\.markdown-body p:has\(> br:only-child\) \{ display: none; \}/, "仅含换行的段落不应占位");
-  assert.match(livePlainStyles, /\.run-result-conclusion \.markdown-body \{ line-height: 1\.6; \}/, "结论区行距应紧凑");
+  assert.match(livePlainStyles, /\.run-products-box/, "产物区域应维持独立视觉分节");
   assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "无侧栏时消息列应居中（有侧栏时自适应）");
-  assert.match(chatPanelSource, /className="execution-flow-embedded-toggle"/, "嵌入执行流应有一行折叠摘要");
-  assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度
   assert.match(chatPanelSource, /className="run-products-box"/, "结论之后应有本轮产物独立框");
   assert.match(chatPanelSource, /className="loading-inline"/, "等待首块应为无框行内指示");
@@ -180,7 +179,8 @@ try {
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.msg-main \{ width: auto; max-width: min\(78%, 540px\); \}/, "用户气泡应随内容收缩（不再固定宽度）");
   assert.match(widthStyles, /\.center-chat-slot \.msg\.user \.bubble \{ width: fit-content/, "用户气泡应为内容宽度");
   assert.match(widthStyles, /\.center-chat-slot \.msg-main \{ width: min\(100%, 880px\); max-width: 880px; \}/, "agent 回答区应加宽到 880px");
-  assert.match(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程折叠应排在文字上方");
+  assert.doesNotMatch(widthStyles, /\.msg-main > \.message-process-fold \{ order: -1; \}/, "执行过程顺序应由 DOM 表达，不再用 flex order 制造视觉/阅读顺序错位");
+  assert.match(chatPanelSource, /\{processFold\}[\s\S]{0,80}<div className="msg-blocks">/, "执行过程折叠应在正文的 DOM 顺序之前");
   assert.match(widthStyles, /\.msg-main > \.msg-header \{ margin-bottom: 2px; order: -2; \}/, "标题应保持在最上方");
   assert.match(widthStyles, /\.msg \.markdown-body \{ line-height: 1\.65; \}/, "对话正文行距应收紧");
   assert.match(chatPanelSource, /待审批：\{approvalLabel\}/, "待审批应显示在输入栏");
@@ -191,8 +191,10 @@ try {
   assert.match(chatPanelSource, /onAnswered=\{\(blockId, answer\) => handleMessageAskAnswered\(pendingAsk\?\.messageId, blockId, answer\)\}/, "输入栏回答成功应标记已回答（待处理条消失）");
   assert.match(chatPanelSource, /const visibleMessages = useMemo\([\s\S]{0,100}associateRunMessages\(messages\.slice\(visibleStart\)\)/, "渲染层必须再次保障历史过程消息按 Run 归组");
   assert.doesNotMatch(chatPanelSource, /<span>\{activityCount\} 项/, "执行过程摘要不显示容易与模型轮次混淆的数量标签");
-  // 本轮结构化结论、事件轨迹与思考/播报共用同一滚动折叠；权威最终答复仍留在外面。
-  assert.match(chatPanelSource, /message-process-scroll[\s\S]{0,2400}\{runSummary && \([\s\S]{0,240}<RunSummary/, "本轮结构化结论应并入同一个滚动过程容器");
+  // 唯一展示所有权：过程折叠（思考/工具/SSE）→ 答案正文 → 结果与产物；结论不再塞进过程容器。
+  assert.match(chatPanelSource, /const processFold = activityCount > 0 \? \([\s\S]{0,2800}?<ExecutionFlow \{\.\.\.messageExecutionFlow\} embedded \/>\}\s*<\/div>\s*<\/div>\s*<\/details>\s*\) : null/, "过程折叠应包含思考、工具与去重后的 SSE 轨迹");
+  assert.doesNotMatch(chatPanelSource.slice(chatPanelSource.indexOf("const processFold ="), chatPanelSource.indexOf("<div className=\"msg-blocks\">")), /RunSummary/, "结果卡不得再渲染进过程折叠容器");
+  assert.match(chatPanelSource, /\{processFold\}\s*\{?\/\*[\s\S]{0,160}?\*\/\}?\s*<div className="msg-blocks">[\s\S]{0,1900}?assistant-final-answer[\s\S]{0,700}?\{runSummary && \(\s*<RunSummary/, "DOM 顺序应为：过程 → 答案 → 结果与产物");
   assert.match(chatPanelSource, /authoritativeFinalText[\s\S]{0,220}assistant-final-answer/, "简洁的权威最终答复仍保持可见");
   // harness 提醒不得显示为可见消息（恢复 + 实时兜底各一道）
   assert.match(chatPanelSource, /不得在恢复会话后显示为“You”消息/, "历史恢复应过滤系统提醒");
@@ -203,6 +205,17 @@ try {
   assert.match(serverSource, /s\.path \|\| `\/\$\{s\.name\}`/, "Excel 工作表读取应使用 DOM 路径");
   assert.match(serverSource, /ext === "xlsx" \|\| ext === "xls"/, "Excel 预览应同时识别 xlsx/xls");
   assert.match(excelSource, /hooks 顺序错误/, "Excel 空结果不能破坏 React hooks 顺序");
+
+  // 首字延迟链路（方案 §3.5）：分段计时，而不是一条“总耗时”。
+  assert.match(chatPanelSource, /startLatencyProbe\(\{ model:/, "提交时即开始首字延迟计时");
+  assert.match(chatPanelSource, /if \(streamReady && !connected\) \{/, "已建立的连接不应再等固定握手门槛");
+  assert.match(chatPanelSource, /patchLatencyMeta\(\{ handshakeWaitMs/, "握手等待耗时应单独记录");
+  assert.match(chatPanelSource, /markLatency\("firstEventAt"\)/, "首个 SSE 事件应打点");
+  assert.match(chatPanelSource, /markLatency\("firstTextDeltaAt"\)/, "首个正文 token 应打点");
+  assert.match(chatPanelSource, /if \(hasVisibleAnswer\) markFirstDomText\(\)/, "正文真正进 DOM 时应打点（不是 token 到达内存）");
+  assert.match(chatPanelSource, /finalizeLatencyProbe\(\{ runId: data\?\.runId/, "run_finished 时结算一次样本");
+  assert.match(serverSource, /markRunTiming\(run\.id, "admissionReadyAt"\)/, "服务端应记录 admission 完成时刻");
+  assert.match(serverSource, /if \(type === "run_finished" && eventData\.runId\) \{\s*finishRunTiming\(eventData\.runId\);/, "所有终态路径统一结算样本");
 
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
   const plan = planTaskCapabilities({ text: "测试一下", task: { mode: "agent" } });
@@ -284,8 +297,9 @@ try {
   assert.match(settingsSource, /setAppearance\(\{ answerDetail: item\.id \}\)/, "回答详细程度应写回外观");
   assert.match(settingsSource, /setAppearance\(\{ previewAutoOpen: item\.id \}\)/, "自动打开预览应写回外观");
   // 三处消费点
-  assert.match(chatPanelSource, /useAppearance\(\)\.answerDetail/, "结果卡应消费回答详细程度");
-  assert.match(chatPanelSource, /answerDetail === "brief" && fullConclusion/, "brief 应收窄结论");
+  assert.match(chatPanelSource, /useAppearance\(\)\.answerDetail/, "消息气泡应消费回答详细程度");
+  assert.match(chatPanelSource, /answerDetail === "brief" && !answerExpanded && lines\.length > 3/, "brief 应收窄唯一答案出口");
+  assert.match(chatPanelSource, /className="answer-detail-toggle"/, "brief 收窄后应提供展开完整答案的入口");
   assert.match(appSource, /const previewAutoOpen = appearance\.previewAutoOpen;/, "App 应消费自动打开预览策略");
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");

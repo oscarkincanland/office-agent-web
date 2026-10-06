@@ -131,12 +131,12 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         listPublishedArtifacts(workspace, projectId),
       ]);
       if (requestSeq !== refreshSeqRef.current) return;
-      // C03：本轮按 runId 归属；会话范围再按 sessionId 过滤（两者都只保留有产物的 Run）。
-      // 会话 id 缺失时不再退回“不过滤”——否则同一工作区下其他会话的产物会串进来。
-      const scopeRunId = artifactScope === "run" ? selectedRunId : "";
-      const nextRuns = (runData.runs || []).filter((run) => run?.artifacts?.length
-        && Boolean(currentSessionId) && run.sessionId === currentSessionId
-        && (!scopeRunId || run.id === scopeRunId));
+      // 先锁定当前会话的 Run（包括没有产物的最新一轮），再按范围选择。
+      // 否则最新 Run 无文件时会被滤掉，改动面板就会误显上一轮文件。
+      const sessionRuns = (runData.runs || []).filter((run) => Boolean(currentSessionId) && run?.sessionId === currentSessionId);
+      const latestSessionRunId = sessionRuns[0]?.id || "";
+      const scopeRunId = artifactScope === "run" ? (selectedRunId || latestSessionRunId) : "";
+      const nextRuns = sessionRuns.filter((run) => !scopeRunId || run.id === scopeRunId);
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
       const acceptanceEntries = await Promise.all(nextRuns.slice(0, 12).map(async (run) => {
@@ -150,7 +150,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
 
   // 根级事件流每收到一次重要事件都会递增 refreshToken；任务完成后必须立即
   // 重新读取 Run 和固定成果，否则用户会看到旧的“暂无产物”，直到手动刷新。
-  useEffect(() => { refresh(); }, [workspace, projectId, currentSessionId, refreshToken]);
+  useEffect(() => { refresh(); }, [workspace, projectId, currentSessionId, selectedRunId, artifactScope, refreshToken]);
 
   const entries = useMemo(() => runs.flatMap((run) => (run.artifacts || []).filter((item) => item.status !== "deleted").map((artifact) => ({ artifact, run }))), [runs]);
   const publishedByArtifact = useMemo(() => new Map(published.map((item) => [item.artifactId, item])), [published]);
@@ -165,7 +165,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
   // W3/C02：本轮（最新 Run）的文件改动与内容差异。B03 会把“改动”做成独立右栏页签，
   // 这里先接到产物面板，让用户今天就能打开差异；仍按 runId 归属，不做跨轮聚合。
   const latestRun = useMemo(() => {
-    const scoped = (runs || []).filter((run) => !currentSessionId || run.sessionId === currentSessionId);
+    const scoped = (runs || []).filter((run) => Boolean(currentSessionId) && run.sessionId === currentSessionId);
     return scoped[0] || null;
   }, [runs, currentSessionId]);
   const latestChanges = useMemo(() => {
@@ -191,7 +191,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         <button className="btn-sm" onClick={refresh} disabled={loading} title="刷新产物"><Icon name="refresh" size={12} /> {loading ? "读取中…" : "刷新"}</button>
       </div>
       <div className="artifact-summary-grid">
-        <div><strong>{entries.length}</strong><span>本轮产物</span></div>
+        <div><strong>{entries.length}</strong><span>{artifactScope === "run" ? "本轮产物" : "会话产物"}</span></div>
         <div title="仅统计：格式验收通过、所属任务成功结束、且尚未固定的文件"><strong>{readyCount}</strong><span>待固定</span></div>
         <div><strong>{published.length}</strong><span>正式版本</span></div>
       </div>
@@ -206,9 +206,9 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
         </div>
       )}
       <div className="artifact-list-card">
-        <div className="artifact-list-head"><span>本轮文件</span><small>{currentSessionId ? "已按当前会话筛选" : "当前工作区"}</small></div>
+        <div className="artifact-list-head"><span>{artifactScope === "run" ? "本轮文件" : "会话文件"}</span><small>{currentSessionId ? (artifactScope === "run" ? "已按当前 Run 筛选" : "已按当前会话筛选") : "当前工作区"}</small></div>
         {loading && <div className="preview-empty">正在读取产物清单…</div>}
-        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />本轮暂未生成产物{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
+        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
         {entries.map(({ artifact, run }, index) => {
         const name = artifactName(artifact.path);
         const publication = publishedByArtifact.get(artifact.artifactId);
@@ -223,6 +223,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
               <Icon name="file" size={14} />
               <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
             </button>
+            {artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
             <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>
             {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
             {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}

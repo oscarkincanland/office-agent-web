@@ -284,8 +284,26 @@ test("旧 RunSummary 消息可走同一投影（含产物与结论）", () => {
   const view = projectLegacyRunSummary(message);
   assert.equal(view.lifecycle, "completed");
   assert.equal(view.outcome.summary, "已修订报告");
-  assert.equal(view.answer.text, "本轮对话完成，共处理 2 个文件");
+  // 旧 RunSummary 的 text 是 harness 收尾摘要，不是助手答复：不得进入答案投影，
+  // 否则同一条答案会在正文与结果卡各出现一次（P0 单一展示所有权）。
+  assert.equal(view.answer, null, "harness 收尾摘要不得冒充助手最终答复");
+  assert.equal(snapshot.finalText, "", "旧摘要不应被改写成 finalText");
   assert.ok(view.changes.length >= 1, "旧摘要的历史产出应可读");
+});
+
+test("真正的权威终稿仍进入答案投影（旧消息兼容）", () => {
+  const message = {
+    summary: true,
+    runId: "run_legacy_final",
+    runStatus: "completed",
+    authoritativeFinalText: "我已经把报告改好了，共 2 个文件。",
+    completion: { status: "success", source: "explicit", summary: "已修订报告", incomplete: [], blockers: [] },
+    events: [{ type: "run_finished", data: { status: "completed" } }],
+  };
+  const view = projectLegacyRunSummary(message);
+  assert.ok(view.answer, "有权威终稿时答案投影不应为空");
+  assert.equal(view.answer.text, "我已经把报告改好了，共 2 个文件。");
+  assert.notEqual(view.answer.text, view.outcome.summary, "答案与收尾摘要必须是两段不同的文本，不能重复");
 });
 
 console.log("\n▶ R04 客户端契约（非终态不得宣告完成）");
@@ -394,23 +412,17 @@ test("E03：进度文本只来自结构化事件，不再正则猜正文", () =>
   assert.equal(typeof view.progress.workPhase, "string", "投影应带工作阶段");
 });
 
-test("无总结的旧轮次：相邻助手片段合并为同一历史组", () => {
+test("相邻助手片段不合成（回退：避免跨轮次错乱）", () => {
   const grouped = associateRunMessages([
     { id: "u1", role: "user", text: "任务" },
     { id: "a1", role: "assistant", text: "第一步" },
     { id: "a2", role: "assistant", text: "第二步" },
-    { id: "a3", role: "assistant", text: "第三步" },
     { id: "u2", role: "user", text: "追问" },
     { id: "b1", role: "assistant", text: "回答" },
   ]);
-  const a1 = grouped.find((m) => m.id === "a1");
-  const a2 = grouped.find((m) => m.id === "a2");
-  const a3 = grouped.find((m) => m.id === "a3");
-  assert.ok(a1?.runId && a1.runId === a2?.runId && a2.runId === a3?.runId, "相邻助手片段应共享同一合成 runId");
-  assert.equal(grouped.find((m) => m.id === "b1")?.runId, undefined, "单条助手片段不应被强行分组");
-  assert.equal(grouped.find((m) => m.id === "u1")?.runId, undefined, "用户消息不应带 runId");
+  assert.equal(grouped.find((m) => m.id === "a1")?.runId, undefined, "无总结的助手片段不应被强行合成");
+  assert.equal(grouped.find((m) => m.id === "a2")?.runId, undefined, "无总结的助手片段不应被强行合成");
 });
-
 console.log("\n▶ 真实样本");
 
 test("真实 Run 样本投影不抛错且字段自洽", () => {

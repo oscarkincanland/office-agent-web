@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { artifactStatusInfo, artifactAcceptanceText, acceptanceSummaryText } from "../client/src/components/验收状态.js";
-import { detectRecentWorkspaceFiles, mergeChangeLists, filterRunChanges, snapshotWorkspace } from "../server/runs.mjs";
+import { detectRecentWorkspaceFiles, mergeChangeLists, filterRunChanges, snapshotWorkspace, beginRun, finishRun, recordRunEvent } from "../server/runs.mjs";
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 const 面板 = read("../client/src/components/工作产物面板.jsx");
@@ -113,6 +113,31 @@ console.log("\n▶ 产物检测：大工作区 / 无明确路径（P0 回归）"
     assert.deepEqual(Object.keys(a.files), Object.keys(b.files), "快照遍历顺序必须稳定，否则产物检测会时有时无");
     assert.equal(a.truncated, false, "小目录不应标记截断");
     assert.equal(typeof a.truncated, "boolean");
+
+    // 并发回归：本轮完全没有写入台账时，前后快照 diff 只能证明“文件变了”，
+    // 不能证明“是本轮改的”。这类差异必须降级为未归属线索，而不是 confirmed 交付。
+    const concurrentRun = beginRun({ clientId: "concurrent-test", threadId: "t1", cwd: root, task: { mode: "work" }, sessionId: "s1" });
+    assert.deepEqual(concurrentRun.touchedPaths || [], [], "该 Run 刻意不产生任何写入台账");
+    // Run 开始后出现的文件变化（模拟并发运行在共享工作区发布文件）
+    fs.writeFileSync(path.join(root, "并发发布.md"), "published by another run");
+    const finished = finishRun(concurrentRun.id, { status: "completed", sessionId: "s1" });
+    const concurrentChanges = finished.artifacts.map((item) => item.relativePath);
+    assert.ok(concurrentChanges.includes("并发发布.md"), `快照差异仍应被记录（作为线索保留），实际 ${concurrentChanges.join(",")}`);
+    for (const item of finished.artifacts) {
+      assert.notEqual(item.source, "write-ledger", "无台账的 Run 不应声称写入台账来源");
+      assert.equal(item.confidence, "suspected", `未归属差异不得标成 confirmed：${item.relativePath}`);
+      assert.equal(item.autoDeliverable, false, "未归属差异不得自动宣告交付");
+    }
+
+    // 有写入台账时仍是精确归属，保持 confirmed。
+    const ledgerRun = beginRun({ clientId: "concurrent-test", threadId: "t2", cwd: root, task: { mode: "work" }, sessionId: "s1" });
+    fs.writeFileSync(path.join(root, "台账产物.md"), "ledger product");
+    recordRunEvent(ledgerRun.id, "write_started", { path: "台账产物.md", toolCallId: "call_1" });
+    const ledgerFinished = finishRun(ledgerRun.id, { status: "completed", sessionId: "s1" });
+    const ledgerItem = ledgerFinished.artifacts.find((item) => item.relativePath === "台账产物.md");
+    assert.ok(ledgerItem, "有台账的产物应被保留");
+    assert.equal(ledgerItem.source, "write-ledger", "有台账的产物应保持精确归属");
+    assert.equal(ledgerItem.confidence, "confirmed", "有台账的产物应为 confirmed");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

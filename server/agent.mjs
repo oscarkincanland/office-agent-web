@@ -26,6 +26,7 @@ import {
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
+import { markRunTiming } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 
 /**
@@ -458,17 +459,18 @@ export function classifyAgentError(error) {
   const authFailure = [401, 403].includes(status)
     || error?.errorCategory === "AUTH_ERROR"
     || /(?:invalid.?api.?key|authentication|unauthori[sz]ed|forbidden|permission denied)/i.test(message);
+  const configurationFailure = /(?:provider\s+is\s+not\s+configured|provider.*not configured|no provider configuration|missing (?:an? )?(?:api key|credentials?))/i.test(message);
   const timeout = ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT", "MODEL_PROBE_TIMEOUT"].includes(String(error?.code || "")) || /(?:timed?.?out|timeout)/i.test(message);
   const rateLimited = [408, 425, 429, 529].includes(status) || /(?:429|rate.?limit|overloaded)/i.test(message);
   const network = /(?:network.?error|connection.?error|connection.?refused|connection.?lost|other side closed|fetch failed|getaddrinfo|ENOTFOUND|EAI_AGAIN|upstream.?connect|reset before headers|socket hang up|socket connection was closed|websocket.?closed)/i.test(message);
-  const terminal = authFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || ([400, 404].includes(status) && !safeEmpty400);
-  const retryable = safeEmpty400 || (!terminal && Boolean(
+  const terminal = authFailure || configurationFailure || TERMINAL_AGENT_ERROR_PATTERN.test(message) || ([400, 404].includes(status) && !safeEmpty400);
+  const retryable = !configurationFailure && (safeEmpty400 || (!terminal && Boolean(
     ["MODEL_TIMEOUT", "MODEL_STREAM_TIMEOUT"].includes(String(error?.code || ""))
       || (status && [408, 425, 429, 500, 501, 502, 503, 504, 529].includes(status))
       || TRANSIENT_AGENT_ERROR_PATTERN.test(message),
-  ));
+  )));
   const quota = /(?:insufficient(?:[_\s-]?user)?[_\s-]?quota|quota exceeded|available balance|credit\s+insufficient|balance\s*=\s*0|out of budget|billing)/i.test(message);
-  const category = authFailure ? "auth" : quota ? "quota" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
+  const category = authFailure ? "auth" : quota ? "quota" : configurationFailure ? "configuration" : timeout ? "timeout" : rateLimited ? "rate_limit" : network ? "network" : [400, 404].includes(status) ? "request" : retryable ? "transient" : "unknown";
   if (category === "auth" && (error?.provider || error?.model?.provider)) {
     recordInvalidCredential(error.provider || error.model.provider, message);
   }
@@ -2300,6 +2302,10 @@ execute: async (_toolCallId, params) => {
     };
     session.subscribe((ev) => {
       if (entry) entry.lastPiEventAt = Date.now();
+      // 首个 provider 事件：只记第一次，重试/多回合不会覆盖首字口径。
+      // 从 sdk_request_dispatched 到这里的等待包含 SDK 准备、网络、网关与模型服务，
+      // 因此这一段不能单独算成 SSE 传输延迟。
+      markRunTiming(entry?.activeRunId, "firstProviderEventAt");
       // forward interesting events
       switch (ev.type) {
         case "agent_start":
@@ -2329,6 +2335,7 @@ execute: async (_toolCallId, params) => {
             const update = ev.assistantMessageEvent || {};
             if (update.type === "text_delta") {
               if (entry && update.delta) entry.firstResponseReceived = true;
+              markRunTiming(entry?.activeRunId, "firstTextDeltaAt");
               emit("token", { text: update.delta, contentIndex: update.contentIndex ?? null });
             } else if (update.type === "thinking_delta") {
               if (entry && update.delta) entry.firstResponseReceived = true;
@@ -2480,22 +2487,33 @@ execute: async (_toolCallId, params) => {
           break;
         case "auto_retry_start":
           // Pi SDK 已经判断这是可重试的完整模型回合；仅向前端播报，不能在这里再次手动 prompt。
+          {
+          const classification = classifyAgentError(ev.errorMessage || "");
           emit("agent_retry", {
-            message: ev.errorMessage || "模型连接异常",
+            message: classification.message || ev.errorMessage || "模型暂时没有响应",
+            category: classification.category,
+            code: classification.code,
+            retryable: classification.retryable,
             attempt: ev.attempt,
             maxAttempts: ev.maxAttempts,
             delayMs: ev.delayMs,
             source: "pi-sdk",
             willRetry: true,
           });
+          }
           break;
         case "auto_retry_end":
+          {
+          const finalError = ev.success ? null : classifyAgentError(ev.finalError || "");
           emit("agent_retry_end", {
             success: Boolean(ev.success),
             attempt: ev.attempt,
             message: ev.success ? "模型连接已恢复" : (ev.finalError || "模型重试失败"),
+            category: finalError?.category || null,
+            code: finalError?.code || null,
             source: "pi-sdk",
           });
+          }
           break;
         case "agent_settled":
           {
@@ -2907,6 +2925,10 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       }
       if (entry.task) text = `${taskSummary(entry.task)}\n- 当前对话边界：${modeDescription(entry.mode)}\n\n${text}`;
       entry.promptChars += text.length;
+      // 首字延迟分项（方案 §3.5）：真正把请求交给 SDK 的时刻。
+      // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、
+      // 网络与网关，不能整体算成 SSE 传输延迟。
+      markRunTiming(entry.activeRunId, "sdkRequestDispatchedAt");
       emitChannelSafe(entry, "model_request_started", {
         runId: entry.activeRunId,
         mode: entry.mode,
@@ -2947,6 +2969,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
               settledReplayAttempt += 1;
               emitChannelSafe(entry, "agent_retry", {
                 message: info.message,
+                category: info.category,
+                code: info.code,
+                retryable: info.retryable,
                 attempt: settledReplayAttempt,
                 maxAttempts: SETTLED_AGENT_RETRY_DELAYS.length,
                 delayMs,

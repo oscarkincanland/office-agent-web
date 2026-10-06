@@ -1390,8 +1390,7 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
   max-width: 85%;
 }
 .msg-main > .msg-header { margin-bottom: 2px; order: -2; }
-/* 用户要求：执行过程折叠排在文字上方（标题仍在最上，结论/产物在下方） */
-.msg-main > .message-process-fold { order: -1; }
+/* DOM 顺序即阅读顺序，避免仅用 flex order 把键盘/读屏顺序与视觉顺序分开。 */
 .msg.user .msg-main { align-items: flex-end; }
 /* 工具卡片独立气泡 */
 .tool-card {
@@ -8670,6 +8669,8 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .model-diagnostics-failures code { flex: 0 0 auto; color: var(--warning); font-size: 9px; }
 .model-diagnostics-failures span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-artifact-status.ready { color: var(--success); }
+/* 未归属线索：可能是并发运行写入的差异，不冒充本轮交付 */
+.preview-artifact-status.suspect { color: var(--muted); font-style: italic; }
 
 .artifact-workspace { padding: 0; }
 .artifact-workspace-head { padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: color-mix(in srgb, var(--panel-bg) 92%, var(--accent)); }
@@ -9987,6 +9988,19 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-products-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-products-badge { font-size: 10px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; padding: 0 5px; }
 .run-products-more { align-self: center; font-size: 10px; color: var(--muted); }
+/* 回答详细程度=简短：收窄唯一答案出口后，提供显式展开入口（不用 hover 才可发现） */
+.answer-detail-toggle {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.answer-detail-toggle:hover { color: var(--accent); border-color: var(--accent); }
 /* 嵌入消息折叠区里的执行列表：默认折叠为一行摘要 */
 .execution-flow-embedded-toggle { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 2px; border: 0; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; text-align: left; }
 .execution-flow-embedded-toggle:hover { color: var(--accent); }
@@ -10008,14 +10022,8 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .msg .markdown-body li:empty,
 .msg .markdown-body div:empty { display: none; }
 .msg .markdown-body br + br { display: none; }
-/* 运行中的执行过程：不限定在框里（透明、无边框），结束后才收成折叠框 */
-.message-process-fold.is-live-plain { border: 0; background: transparent; box-shadow: none; }
-.message-process-fold.is-live-plain > summary { border: 0; background: transparent; }
-.message-process-fold.is-live-plain .message-process-scroll { border: 0; background: transparent; }
-/* 运行中：不设内部滚动框，过程内容平铺、由页面滚动（“跟没折叠一样，滚动向下”） */
-.message-process-fold.is-live-plain .message-process-fold-body { border-top: 0; }
-.message-process-fold.is-live-plain .message-process-scroll { max-height: none; overflow: visible; padding: 0; gap: 6px; }
-.message-process-fold.is-live-plain .execution-flow-embedded-toggle { display: none; }
+/* 运行中的思考与事件使用同一个有界滚动区，自动跟随最新内容。 */
+.message-process-fold.is-live .message-process-scroll { max-height: 300px; overflow: auto; overscroll-behavior: contain; }
 /* 结论与正文紧凑：空段落、仅含换行的段落、连续换行、分隔线都不再撑出大空隙 */
 .markdown-body p:empty { display: none; }
 .markdown-body p:has(> br:only-child) { display: none; }

@@ -97,23 +97,21 @@ assert.match(对话面板, /view\.lifecycle === "failed"/, "失败应给出行�
 // W1：单一份文件集合 + 统一投影（不再同时渲染 m.products 与 m.artifacts 两套清单）
 assert.match(对话面板, /import \{[^}]*projectLegacyRunSummary[^}]*\} from "\.\.\/运行展示投影\.js"/, "结果卡应消费统一展示投影");
 assert.match(对话面板, /const fileChanges = useMemo\(\(\) => changes\.filter\(\(change\) => change\.role !== "internal"\)/, "文件改动应来自投影的单一份集合");
-// 结论：优先模型原始总结；默认折叠且与本轮产物分节（0.11.29）
-assert.match(对话面板, /view\.answer\?\.text \|\| m\.authoritativeFinalText \|\| completion\?\.summary/, "结论应优先使用模型自己的总结");
-assert.match(对话面板, /<details className="run-result-conclusion">/, "结论区应默认折叠（与本轮产物分开）");
+// 最终答案只在助手正文显示；结果卡只给状态与文件入口。
+assert.match(对话面板, /const finalAnswer = String\(view\.answer\?\.text \|\| m\.authoritativeFinalText/, "结果卡应识别已显示的权威答案");
+assert.match(对话面板, /const fallbackSummary = finalAnswer \? ""/, "有最终答案时不得再显示 completion 摘要");
+assert.doesNotMatch(对话面板, /run-result-conclusion/, "结果卡不能再生成第二份折叠结论");
 assert.match(对话面板, /交付产物 \{deliverables\.length\}/, "交付产物应单独成入口");
 assert.doesNotMatch(对话面板, /m\.products\.map/, "结果卡不应再单独渲染产物标签（与变更重复）");
 assert.match(对话面板, /className="run-result-tech"/, "原始错误应放在技术详情");
 assert.match(对话面板, /errors: \(Array\.isArray\(m\.events\)/, "技术详情应含原始错误事件");
-// 结论要「详细且保格式」：结果卡用 Markdown 渲染结论，而不是抹平成一行
-assert.match(对话面板, /className="run-result-conclusion"/, "结果卡应有独立结论区");
-assert.match(对话面板, /run-result-conclusion-label/, "结论区应有标签");
-assert.match(对话面板, /<SafeMarkdown text=\{conclusionText\} \/>/, "结论必须按 Markdown 渲染，保留标题/列表");
-assert.match(对话面板, /const conclusionText = answerBriefClamped/, "结论文本来自投影结论，并按回答详细程度收窄");
+assert.match(对话面板, /className="run-result-fallback"/, "缺少模型终稿时，结果卡应提供有标识的运行摘要兜底");
 assert.doesNotMatch(对话面板, /结论：\{readableProgressText\(completion\.summary\)\}/, "不得再把结论抹平为纯文本");
 assert.match(运行展示投影, /data\.summary \|\| data\.completion\?\.summary/, "run_finished 缺 summary 时应回退到 completion.summary（统一投影层）");
 assert.match(运行展示投影, /completed: "运行结束"/, "运行结束不应写成已完成（文案单一来源：运行展示投影）");
 assert.match(对话面板, /const statusLabel = view\.lifecycleLabel/, "结果卡状态应来自统一投影");
-assert.match(对话面板, /const showResultCard = m\.runMode !== "chat"/, "纯只读问答不弹结果卡");
+assert.match(对话面板, /const showResultCard = fileChanges\.length > 0/, "结果卡由真实文件、审查依据或待处理事项决定");
+assert.match(对话面板, /if \(!showResultCard\) return null/, "纯只读问答不弹空结果卡");
 
 // 7. 发送失败恢复草稿
 assert.match(对话面板, /const restoreDraft = \(\) => \{/, "应有失败恢复草稿逻辑");
