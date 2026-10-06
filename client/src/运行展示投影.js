@@ -471,5 +471,25 @@ export function associateRunMessages(messages = []) {
       next[index] = { ...item, runId, ...(internalProcess ? { internalProcess: true } : {}) };
     }
   }
-  return changed ? next : list;
+  // 无总结的旧轮次：把相邻的助手片段合并为一个“历史组”（合成 runId），
+  // 避免恢复会话后每条碎片各挂一个“思考与工具过程”，顺序与相互关系看起来错乱。
+  const out = changed ? next : [...list];
+  let cursor = 0;
+  while (cursor < out.length) {
+    if (out[cursor]?.role !== "assistant") { cursor += 1; continue; }
+    let end = cursor;
+    while (end + 1 < out.length && out[end + 1]?.role === "assistant") end += 1;
+    if (end > cursor) {
+      const groupId = `hist-${out[cursor].id || cursor}`;
+      let touched = false;
+      for (let index = cursor; index <= end; index += 1) {
+        if (out[index].runId) continue;
+        out[index] = { ...out[index], runId: groupId };
+        touched = true;
+      }
+      if (touched && !changed) changed = true;
+    }
+    cursor = end + 1;
+  }
+  return changed ? out : list;
 }

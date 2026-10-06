@@ -394,6 +394,23 @@ test("E03：进度文本只来自结构化事件，不再正则猜正文", () =>
   assert.equal(typeof view.progress.workPhase, "string", "投影应带工作阶段");
 });
 
+test("无总结的旧轮次：相邻助手片段合并为同一历史组", () => {
+  const grouped = associateRunMessages([
+    { id: "u1", role: "user", text: "任务" },
+    { id: "a1", role: "assistant", text: "第一步" },
+    { id: "a2", role: "assistant", text: "第二步" },
+    { id: "a3", role: "assistant", text: "第三步" },
+    { id: "u2", role: "user", text: "追问" },
+    { id: "b1", role: "assistant", text: "回答" },
+  ]);
+  const a1 = grouped.find((m) => m.id === "a1");
+  const a2 = grouped.find((m) => m.id === "a2");
+  const a3 = grouped.find((m) => m.id === "a3");
+  assert.ok(a1?.runId && a1.runId === a2?.runId && a2.runId === a3?.runId, "相邻助手片段应共享同一合成 runId");
+  assert.equal(grouped.find((m) => m.id === "b1")?.runId, undefined, "单条助手片段不应被强行分组");
+  assert.equal(grouped.find((m) => m.id === "u1")?.runId, undefined, "用户消息不应带 runId");
+});
+
 console.log("\n▶ 真实样本");
 
 test("真实 Run 样本投影不抛错且字段自洽", () => {
