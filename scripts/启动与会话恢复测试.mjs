@@ -38,4 +38,10 @@ assert.match(app, /const retrySessionResume = useCallback/, "应提供恢复重�
 assert.match(app, /历史已加载为只读/, "应明确说明历史只读");
 assert.match(样式, /\.session-resume-warning \{/, "只读提示应有样式");
 
+// 刷新行为：不自动打开预览、不恢复上次打开的标签（用户反馈的两个默认打开 bug）
+assert.match(app, /const \[previewOpen, setPreviewOpen\] = useState\(false\)/, "预览面板不应默认打开（没有内容时不显示空面板）");
+assert.doesNotMatch(app, /for \(const t of saved\.tabs/, "刷新不应恢复上次打开的标签/搜索预览");
+assert.doesNotMatch(app, /tabs: tabs\.map/, "不应持久化打开的标签");
+assert.match(app, /刷新不恢复上次打开的文档\/搜索预览/, "应有注释说明刷新行为");
+
 console.log("启动与会话恢复回归：通过");

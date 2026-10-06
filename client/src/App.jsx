@@ -142,7 +142,7 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null); // 0.10 统一模块入口
   const [settingsModuleTab, setSettingsModuleTab] = useState("settings");
   const [settingsSection, setSettingsSection] = useState("model");
-  const [previewOpen, setPreviewOpen] = useState(true); // 0.10 右侧工作产物预览
+  const [previewOpen, setPreviewOpen] = useState(false); // 默认不打开右侧预览：没有内容时不显示空面板（打开文件/产物时才展开）
   const [previewLayout, setPreviewLayout] = useState(0); // 0=默认，1=50%，2=100%
   const [mapChatVisible, setMapChatVisible] = useState(true); // 地图模式保留 Agent 对话，可独立隐藏
   const [previewTab, setPreviewTab] = useState("document");
@@ -1153,20 +1153,8 @@ export default function App() {
           setFiles(switched.files || []);
         }
       } catch {}
-      const opened = [];
-      for (const t of saved.tabs || []) {
-        if (!t?.name) continue;
-        // 防御：过滤非法/脏文件名（历史遗留的 URL 编码或正则片段），避免打开失败
-        if (!/^(?![\\/])[^:*?"<>|\[\]]{1,300}$/.test(t.name) || t.name.split(/[\\/]/).includes("..")) continue;
-        try {
-          const openedId = await open(t.name, undefined, t.cwd);
-          opened.push({ name: t.name, id: openedId || "" });
-        } catch {}
-      }
-      // 兼容旧状态：activeTab 可能是标签 id，也可能仍是文件名。
-      const wanted = saved.activeTab;
-      const match = opened.find((o) => o.id && o.id === wanted) || opened.find((o) => o.name === wanted);
-      if (match) setActiveTab(match.id || match.name);
+      // 刷新不恢复上次打开的文档/搜索预览：避免“每次刷新自动打开之前的内容”。
+      // 需要回看时从文件树或产物面板重新打开即可。
       if (saved.currentDir) {
         currentDirRef.current = saved.currentDir;
         setCurrentDir(saved.currentDir);
@@ -1198,8 +1186,7 @@ export default function App() {
     if (!uiRestored) return;
     if (currentSessionId) lastSessionIdRef.current = currentSessionId;
     saveUIState({
-      tabs: tabs.map((t) => ({ id: t.id || t.name, name: t.name, kind: t.kind || "", cwd: t.identity?.cwd || t.identity?.workspaceId || "" })),
-      activeTab,
+      // 不再持久化打开的标签与激活标签：刷新后回到主对话页，不自动恢复上次预览内容
       activeModule,
       workspace: currentWorkspace,
       currentDir,
