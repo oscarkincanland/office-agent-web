@@ -3780,8 +3780,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             )}
             {activityCount > 0 && (
               <details
-                className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isTaskLive ? "is-live" : ""}`}
-                open={processOpen}
+                className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isTaskLive ? "is-live is-live-plain" : ""}`}
+                open={isTaskLive || processOpen}
                 onToggle={(event) => {
                   const next = event.currentTarget.open;
                   setProcessOpen(next);
@@ -4325,6 +4325,8 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
   const [notesOpen, setNotesOpen] = useState(false);
   // 嵌入在消息折叠区里的执行列表：默认折叠，只显示一行摘要，点击展开明细
   const [embeddedExpanded, setEmbeddedExpanded] = useState(false);
+  // 运行过程中不折叠：展开跟随运行状态；任务结束自动收起，结论保持可见
+  useEffect(() => { setEmbeddedExpanded(Boolean(running)); }, [running]);
   const executionListRef = useRef(null);
   const followExecutionTailRef = useRef(true);
   const wasRunningRef = useRef(running);

@@ -9999,6 +9999,10 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .msg .markdown-body li:empty,
 .msg .markdown-body div:empty { display: none; }
 .msg .markdown-body br + br { display: none; }
+/* 运行中的执行过程：不限定在框里（透明、无边框），结束后才收成折叠框 */
+.message-process-fold.is-live-plain { border: 0; background: transparent; box-shadow: none; }
+.message-process-fold.is-live-plain > summary { border: 0; background: transparent; }
+.message-process-fold.is-live-plain .message-process-scroll { border: 0; background: transparent; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：

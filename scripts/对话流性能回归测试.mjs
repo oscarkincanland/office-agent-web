@@ -139,7 +139,7 @@ try {
   assert.match(appSource, /onRunFinished=\{handleRunFinished\}/, "本轮完成后应把权威产物交给预览层");
   assert.match(appSource, /void open\(firstArtifact\.path/, "本轮完成后应自动打开首个产物");
   assert.match(chatPanelSource, /onRunFinished\?\.\(data\)/, "前端应在 run_finished 后通知产物预览");
-  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\} \$\{isTaskLive \? "is-live" : ""\}`\}/, "思考、SSE、总结归入同一个消息级折叠并仅在运行时标记活跃态");
+  assert.match(chatPanelSource, /className=\{`message-process-fold \$\{isTaskActivity \? "run-activity-fold" : ""\} \$\{isTaskLive \? "is-live is-live-plain" : ""\}`\}/, "思考、SSE、总结归入同一个消息级折叠；运行时标记活跃且去框");
   // 输入栏待处理条：折叠过程收起时审批/提问仍可直接处理（计划 B01）
   assert.match(chatPanelSource, /function PendingActionBar/, "输入栏应提供待处理入口组件");
   assert.match(chatPanelSource, /const pendingAsk = useMemo/, "应计算待回答项");
@@ -150,6 +150,9 @@ try {
   assert.match(chatPanelSource, /event.type === "tool_start" \? "" : event.type === "file_changed"/, "tool_start 不应重复显示工具名 detail");
   // 嵌入执行列表默认折叠：一行摘要 + 点击展开
   assert.match(chatPanelSource, /const \[embeddedExpanded, setEmbeddedExpanded\] = useState\(false\)/, "嵌入执行流应默认折叠");
+  assert.match(chatPanelSource, /open=\{isTaskLive \|\| processOpen\}/, "运行中执行过程应强制展开");
+  assert.match(chatPanelSource, /isTaskLive \? "is-live is-live-plain" : ""/, "运行中过程区应去掉框");
+  assert.match(chatPanelSource, /setEmbeddedExpanded\(Boolean\(running\)\)/, "嵌入执行流应随运行状态展开/收起");
   assert.match(chatPanelSource, /className="execution-flow-embedded-toggle"/, "嵌入执行流应有一行折叠摘要");
   assert.match(chatPanelSource, /\{embeddedExpanded && <div className="execution-flow-list execution-flow-list-embedded">/, "事件明细应仅在展开时渲染");
   // 本轮产物独立框 + 面板宽度
