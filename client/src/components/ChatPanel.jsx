@@ -3334,7 +3334,8 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const completion = view.outcome || m.completion || null;
   // 标题取结论/答案首行（结论可能是多行 Markdown），避免把整段结论塞进标题。
-  const conclusionSource = String(completion?.summary || view.answer?.text || m.text || m.task?.text || m.task?.goal || "").trim();
+  // 保留最原始的模型总结：结论优先用模型自己的最终答复，缺失时才退回服务端收尾摘要
+  const conclusionSource = String(view.answer?.text || m.authoritativeFinalText || completion?.summary || m.text || m.task?.text || m.task?.goal || "").trim();
   const titleLine = conclusionSource.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0] || "";
   const title = String(m.conclusion || titleLine || "本轮任务")
     .replace(/^\s*#{1,6}\s*/, "")
@@ -3458,13 +3459,13 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             </div>
           </div>
           {completion?.summary && (
-            <div className="run-result-conclusion">
-              <div className="run-result-conclusion-label">结论{answerDetail === "brief" ? "（简短）" : ""}</div>
+            <details className="run-result-conclusion">
+              <summary className="run-result-conclusion-label">结论{answerDetail === "brief" ? "（简短）" : ""}（点击展开）</summary>
               <SafeMarkdown text={conclusionText} />
               {answerBriefClamped && (
                 <div className="run-result-conclusion-hint" title="可在「设置 → 外观」把回答详细程度改为自动或详细">已按「简短」收窄；完整结论见上方答复与产物</div>
               )}
-            </div>
+            </details>
           )}
           {/* 本轮产物：结论之后单独成框，只列主要产物（交付优先，最多 6 项） */}
           {(deliverables.length > 0 || fileChanges.length > 0) && (

@@ -10025,6 +10025,12 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .run-result-conclusion .markdown-body p { margin: 4px 0; }
 .run-result-conclusion .markdown-body ul, .run-result-conclusion .markdown-body ol { margin: 4px 0; }
 .run-result-conclusion .markdown-body li { margin: 2px 0; }
+/* 结论折叠头：与“本轮产物”独立成节，默认收起 */
+.run-result-conclusion > summary { cursor: pointer; list-style: none; margin-bottom: 0; }
+.run-result-conclusion > summary::-webkit-details-marker { display: none; }
+.run-result-conclusion > summary::before { content: "▸ "; color: var(--accent); }
+.run-result-conclusion[open] > summary::before { content: "▾ "; }
+.run-result-conclusion[open] > summary { margin-bottom: 4px; }
 /* ==========================================================================
    P3 · 统一动效闸门与一次性反馈（动效治理）
    命中条件（二者任一，属性写在 <html> 上）：
