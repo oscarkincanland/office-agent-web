@@ -28,9 +28,11 @@ assert.match(app, /className="load-recovery"/, "应展示可解释的失败提�
 assert.match(app, /已保留上一次可用数据/, "提示应说明保留上次数据");
 assert.match(app, /LOAD_SCOPE_LABELS/, "失败提示应说明具体分区");
 
-// 3. 会话恢复时序
-assert.match(app, /if \(loadStatus\.sessions !== "ready"\) return;/, "会话未成功返回前不得定稿恢复标记");
+// 3. 刷新进入空白新会话（已批准规则，交接文档交互 4）：
+// 会话列表就绪与否都不再自动 resume 旧会话；恢复标记仍保留给手动入口。
+assert.doesNotMatch(app, /handleSelectSession\(sess\)/, "刷新不得自动恢复上次会话");
 assert.match(app, /restoredSessionRef\.current = true;/, "恢复标记仍应存在，避免重复恢复");
+assert.match(app, /lastSessionIdRef\.current = null;/, "不得保留会自动恢复会话的旧字段");
 
 // 4. Agent 恢复失败：只读 + 重试
 assert.match(app, /resumeResult\?\.ok \? null : \{ sessionId: session\.id/, "恢复失败应记录为只读状态");
@@ -42,7 +44,7 @@ assert.match(样式, /\.session-resume-warning \{/, "只读提示应有样式");
 assert.match(app, /const \[previewOpen, setPreviewOpen\] = useState\(false\)/, "预览面板不应默认打开（没有内容时不显示空面板）");
 assert.doesNotMatch(app, /for \(const t of saved\.tabs/, "刷新不应恢复上次打开的标签/搜索预览");
 assert.doesNotMatch(app, /tabs: tabs\.map/, "不应持久化打开的标签");
-assert.match(app, /刷新不恢复上次打开的文档\/搜索预览/, "应有注释说明刷新行为");
+assert.match(app, /刷新后必须进入[\s\S]{0,40}空白新会话/, "应有注释说明刷新进入空白新会话");
 assert.match(app, /browserStateSeenRef/, "刷新后首个浏览器状态不应触发面板自动展开");
 assert.match(app, /避免上一个会话的“本轮产物”污染到当前会话/, "会话切换应重置本轮产物范围（防跨会话污染）");
 assert.match(app, /setChangesRunId\(""\);\n    setArtifactScope\("session"\);/, "会话切换应重置 runId 与范围");

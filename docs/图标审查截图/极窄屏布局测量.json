@@ -1,0 +1,94 @@
+{
+  "viewport": [
+    390,
+    844
+  ],
+  "documentWidth": 390,
+  "bodyOverflow": "visible",
+  "layout": [
+    {
+      "selector": ".app",
+      "rect": [
+        0,
+        0,
+        390.3999938964844,
+        844
+      ],
+      "right": 390.3999938964844,
+      "minWidth": "0px",
+      "overflow": "hidden"
+    },
+    {
+      "selector": ".sidebar",
+      "rect": [
+        0,
+        0,
+        210,
+        844
+      ],
+      "right": 210,
+      "minWidth": "180px",
+      "overflow": "hidden"
+    },
+    {
+      "selector": ".center-area",
+      "rect": [
+        215,
+        0,
+        300,
+        844
+      ],
+      "right": 515,
+      "minWidth": "300px",
+      "overflow": "visible"
+    },
+    {
+      "selector": ".center-content",
+      "rect": [
+        215,
+        0,
+        300,
+        844
+      ],
+      "right": 515,
+      "minWidth": "auto",
+      "overflow": "visible"
+    },
+    {
+      "selector": ".center-chat-slot",
+      "rect": [
+        215,
+        66,
+        300,
+        778
+      ],
+      "right": 515,
+      "minWidth": "auto",
+      "overflow": "hidden"
+    },
+    {
+      "selector": ".app-preview-slot",
+      "rect": [
+        520,
+        0,
+        390.3999938964844,
+        844
+      ],
+      "right": 910.3999938964844,
+      "minWidth": "0px",
+      "overflow": "visible"
+    },
+    {
+      "selector": ".topbar",
+      "rect": [
+        215,
+        0,
+        300,
+        66
+      ],
+      "right": 515,
+      "minWidth": "auto",
+      "overflow": "visible"
+    }
+  ]
+}

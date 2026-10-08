@@ -172,6 +172,9 @@ export default function TaskCenter({ sessions = [], projects = [], currentProjec
         status: statusFilter,
         mode: modeFilter,
         query: queryFilter.trim(),
+        // 列表与徽标只读状态摘要（明细点击后由 getRun 单条加载）：
+        // 完整 Run 视图带步骤/待办/事件，50 条即可达 1MB 级。
+        fields: "summary",
       };
       const request = listRuns("", 50, options)
         .then((result) => {

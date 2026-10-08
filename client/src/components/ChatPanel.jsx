@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from "react";
+import { createPortal } from "react-dom";
 import { fileToBase64, listModels, setAgentModel, compactAgentContext, getApprovalMode, setApprovalMode as saveApprovalMode, deleteSession, deleteSessions, renameSession, forkSession, approveMemoryProposal, rejectMemoryProposal, rollbackRun, getRun, listRuns } from "../api.js";
 import MarkdownBody from "./MarkdownBody.jsx";
 import Icon, { ProviderIcon } from "./Icon.jsx";
@@ -7,9 +8,10 @@ import Logo from "./Logo.jsx";
 import ChatTimeline from "./ChatTimeline.jsx";
 import AgentBrainGraph from "./AgentBrainGraph.jsx";
 import { 提取消息展示文本, 计算展示字符数 } from "./流式文本队列.js";
-import { completionLabel, formatDuration, reduceRunTrace, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, verificationLabel } from "../运行轨迹.js";
+import { completionLabel, formatDuration, formatTokenCount, reduceRunTrace, reduceTurnMetrics, runToolDetailText, runTraceProgressText, runTraceSummaryText, summarizeRunTrace, summarizeTurnMetrics, turnMetricsText, verificationLabel } from "../运行轨迹.js";
 import { associateRunMessages, projectLegacyRunSummary, upsertRunSummaryMessage } from "../运行展示投影.js";
-import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone, phaseForEvent } from "../事件展示.js";
+import { FLOW_EVENT_TYPES, PHASE_LABELS, STAGE_ONLY_EVENTS, flowEventLabel, flowEventTone } from "../事件展示.js";
+import { buildArtifactIndex } from "../产物类型.js";
 import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
@@ -89,6 +91,12 @@ const MODEL_PROVIDER_META = {
   alibaba: { label: "Qwen", icon: "qwen" },
   "opencode-go": { label: "OpenCode Go", icon: "opencode" },
   "xiaomi-token-plan-cn": { label: "MiMo", icon: "xiaomi" },
+  "command-code": { label: "Command Code", icon: "commandcode" },
+  "command-code-anthropic": { label: "Command Code", icon: "commandcode" },
+  zhipu: { label: "智谱 GLM", icon: "zhipu" },
+  moonshot: { label: "Moonshot", icon: "moonshot" },
+  kimi: { label: "Kimi", icon: "moonshot" },
+  xai: { label: "xAI", icon: "xai" },
 };
 
 function modelProvider(model) {
@@ -117,10 +125,39 @@ function eventMessageText(value, fallback = "") {
   return value == null ? fallback : String(value);
 }
 
+/**
+ * 供应商缩写：未知供应商不再显示一个没有信息量的圆点，而是显示可辨认的首字母
+ * （command-code → CC，xiaomi-token-plan-cn → XT），并按名称取稳定色相。
+ */
+function providerInitials(provider) {
+  const parts = String(provider || "").split(/[^a-z0-9]+/i).filter(Boolean);
+  if (!parts.length) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function providerHue(provider) {
+  const text = String(provider || "");
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) % 360;
+  return hash;
+}
+
 function ModelProviderMark({ model, size = 18 }) {
   const provider = modelProvider(model);
   const meta = modelProviderMeta(model);
-  return <span className={`model-provider-mark provider-${provider}`} style={{ width: size, height: size }} aria-hidden="true"><ProviderIcon provider={meta.icon} size={Math.max(11, size - 4)} /></span>;
+  const known = meta.icon !== "custom";
+  const fontSize = Math.max(9, Math.round(size * 0.52));
+  return (
+    <span
+      className={`model-provider-mark provider-${provider}${known ? "" : " provider-initials"}`}
+      style={known ? { width: size, height: size } : { width: size, height: size, fontSize, background: `hsl(${providerHue(provider)} 46% 42%)` }}
+      aria-hidden="true"
+      title={meta.label}
+    >
+      {known ? <ProviderIcon provider={meta.icon} size={Math.max(11, size - 4)} /> : providerInitials(provider)}
+    </span>
+  );
 }
 
 // 模型行：选择区 + 收藏按钮分开，键盘焦点与点击区域互不干扰；
@@ -224,6 +261,28 @@ function modelCapabilityLabel(model) {
 const MODEL_RECENT_KEY = "oaw_recent_models";
 const MODEL_FAVORITE_KEY = "oaw_favorite_models";
 const MAX_RECENT_MODELS = 5;
+
+// 未发送草稿按 thread 保存在模块级缓存（交互 3）：进入设置/知识库/成果等模块会
+// 卸载 ChatPanel，输入框是组件内 state，重挂载就丢了。缓存放在模块作用域可跨挂载
+// 存活；按 thread 隔离，切换会话不会把 A 的草稿带到 B，明确发送/新建时才清除。
+const DRAFT_CACHE_LIMIT = 20;
+const draftCache = new Map();
+function readDraft(threadId) {
+  return threadId ? draftCache.get(threadId) || "" : "";
+}
+function writeDraft(threadId, value) {
+  if (!threadId) return;
+  const text = String(value ?? "");
+  if (!text) draftCache.delete(threadId);
+  else {
+    // 重新插入以维持 LRU 顺序，避免长会话把活跃草稿挤出缓存。
+    draftCache.delete(threadId);
+    draftCache.set(threadId, text);
+  }
+  while (draftCache.size > DRAFT_CACHE_LIMIT) {
+    draftCache.delete(draftCache.keys().next().value);
+  }
+}
 
 function readStoredModelList(key) {
   try {
@@ -346,10 +405,7 @@ function usageDetails(usage) {
   return { input, output, cacheRead, cacheWrite, context };
 }
 
-function formatTokenCount(value) {
-  const count = Number(value) || 0;
-  return count >= 1000 ? `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}k` : String(count);
-}
+// token 文案统一走 运行轨迹.js 的 formatTokenCount（导入），不再在组件里维护第二份。
 
 // Office 是历史任务/会话的兼容值；用户入口使用 Chat / Work / Review。
 function normalizeUiMode(mode) {
@@ -447,7 +503,21 @@ function parseReferenceMarkers(text = "") {
 export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
-  const [input, setInput] = useState("");
+  // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
+  const [input, setInput] = useState(() => readDraft(threadId));
+  // 输入变化即写回草稿缓存：模块导航导致的卸载不会丢掉未发送内容。
+  const updateInput = useCallback((value) => {
+    setInput((previous) => {
+      const next = typeof value === "function" ? value(previous) : value;
+      writeDraft(threadId, next);
+      return next;
+    });
+  }, [threadId]);
+  // 发送成功、切换/新建会话、执行斜杠命令时才清空草稿。
+  const clearInput = useCallback(() => {
+    writeDraft(threadId, "");
+    setInput("");
+  }, [threadId]);
   const [references, setReferences] = useState([]);
   const [histOpen, setHistOpen] = useState(false); // 会话历史抽屉（默认隐藏，点击展开）
   const [images, setImages] = useState([]);
@@ -459,6 +529,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [model, setModel] = useState("");
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
+  // 运行中切换模型会排队到本轮结束（Pi 会话不支持中途换模型）：这里记住"待切换"的目标，
+  // 收到 model_switched(effective=now) 后再清掉。
+  const [pendingModel, setPendingModel] = useState("");
   const [modelCounts, setModelCounts] = useState({ available: 0, configured: 0 });
   const [compacting, setCompacting] = useState(false);
   const [approvalMode, setApprovalModeState] = useState(() => localStorage.getItem(APPROVAL_MODE_KEY) === "auto" ? "auto" : "ask");
@@ -473,6 +546,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     return THINKING_OPTIONS.some((item) => item.id === saved) ? saved : "low";
   }); // Pi 标准推理档位：low/medium/high/max
   const [modelOpen, setModelOpen] = useState(false); // 模型选择浮层
+  // 模型弹层曾用 right:0 贴着窄触发器向左伸，在 1440px 三栏布局下被
+  // .center-chat-slot 的 overflow:hidden 裁掉左侧（交接文档问题 2）。改为
+  // Portal 到 body + 视口定位：先按触发器算位置，再按可用空间夹取边界。
+  const modelTriggerRef = useRef(null);
+  const modelPopRef = useRef(null);
+  const [modelPopRect, setModelPopRect] = useState(null);
   const [modelQ, setModelQ] = useState(""); // 模型搜索
   // 模型选择收敛为“当前 / 最近 / 收藏 / 全部搜索”：最近与收藏只存本地轻量偏好，
   // 不复制密钥或凭据；完整列表仍保留为可展开的高级入口。
@@ -500,6 +579,61 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setAppearance({ activityDisplay: next ? "hidden" : "compact" });
   }, [setAppearance]);
   const flowDefaultExpanded = appearance.activityDisplay === "expanded";
+  // 弹层定位：以触发器为锚点向上展开（原本 bottom:34px 的语义），
+  // 再按视口与安全边距夹取，保证任何一栏布局下四边都在可视范围内。
+  const positionModelPop = useCallback(() => {
+    const trigger = modelTriggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(360, Math.max(280, window.innerWidth - margin * 2));
+    // 高度必须真正夹住：展开「全部模型」（100+ 行）时弹层会长到数千像素，
+    // 外层没有高度上限就会被撑开、顶出屏幕（列表自身的 max-height 挡不住）。
+    const spaceAbove = rect.top - margin - 6;
+    const spaceBelow = window.innerHeight - rect.bottom - margin - 6;
+    const flip = spaceAbove < 200 && spaceBelow > spaceAbove;
+    const maxHeight = Math.max(180, Math.min(flip ? spaceBelow : spaceAbove, window.innerHeight - margin * 2));
+    const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+    setModelPopRect({
+      left,
+      width,
+      maxHeight,
+      // 默认向上展开；上方空间不够（触发器贴顶）时改为向下展开。
+      bottom: flip ? undefined : Math.max(margin, window.innerHeight - rect.top + 6),
+      top: flip ? Math.round(rect.bottom + 6) : undefined,
+    });
+  }, []);
+  // 交互 7：模型菜单此前只能靠再次点触发器关闭，Escape 与外部点击都无效。
+  // 统一为：Escape 关闭并把焦点还给触发器；指针落在弹层/触发器之外时关闭。
+  useEffect(() => {
+    if (!modelOpen) return undefined;
+    positionModelPop();
+    const onKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      setModelOpen(false);
+      requestAnimationFrame(() => modelTriggerRef.current?.focus());
+    };
+    const onPointerDown = (event) => {
+      const target = event.target;
+      if (modelPopRef.current?.contains(target) || modelTriggerRef.current?.contains(target)) return;
+      setModelOpen(false);
+    };
+    const onReflow = () => positionModelPop();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("resize", onReflow);
+    window.addEventListener("scroll", onReflow, true);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("resize", onReflow);
+      window.removeEventListener("scroll", onReflow, true);
+    };
+  }, [modelOpen, positionModelPop]);
+  const closeModelPop = useCallback(({ returnFocus = true } = {}) => {
+    setModelOpen(false);
+    if (returnFocus) requestAnimationFrame(() => modelTriggerRef.current?.focus());
+  }, []);
   const [runState, setRunState] = useState({ status: "idle", runId: null, artifacts: [], references: [], task: null, mode: "chat" });
   const [todoItems, setTodoItems] = useState([]);
   const [executionEvents, setExecutionEvents] = useState([]);
@@ -647,6 +781,19 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     });
   }, []);
 
+  // 模型标识 → 展示名（能查到目录就用名称，否则原样显示 provider/model）。
+  const modelDisplayName = useCallback((spec) => {
+    // 兼容两种调用方：模型对象（输入栏触发器、弹层）与模型 id 字符串（模型切换提示）。
+    // 本函数在组件内遮蔽了模块级同名函数，若只接受字符串，传对象会显示成 "[object Object]"。
+    if (spec && typeof spec === "object") {
+      return spec.name || String(spec.id || "").split("/").slice(1).join("/") || String(spec.id || "").trim();
+    }
+    const value = String(spec || "").trim();
+    if (!value) return "";
+    const found = (models || []).find((item) => item.id === value);
+    return found?.name || value;
+  }, [models]);
+
   const toggleFavoriteModel = useCallback((id) => {
     if (!id) return;
     setFavoriteModels((list) => {
@@ -708,7 +855,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
 
   const insertComposerItem = (item) => {
     if (!composerMenu || !item) return;
-    setInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
+    updateInput((value) => value.slice(0, composerMenu.start) + item.insert + " " + value.slice(value.length));
     setComposerMenu(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
@@ -917,7 +1064,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setReferences([]);
     setImages([]);
     setAttachments([]);
-    setInput("");
+    // 交互 3：切会话时先把 A 的未发送内容存进 A 的草稿位，再取回 B 自己的草稿；
+    // 这样既不丢草稿，也不会把 A 的内容带到 B。
+    if (input) writeDraft(previous, input);
+    setInput(readDraft(threadId));
     if (!hydratingHistory) {
       setLastPrompt(null);
       setAgentPhase("");
@@ -943,6 +1093,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     textRevealRafRef.current = null;
     textRevealRef.current = null;
     setInput("");
+    writeDraft(threadId, "");
     setLastPrompt(null);
     setAgentPhase("");
     agentEventAtRef.current = 0;
@@ -960,7 +1111,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     runInProgressRef.current = false;
     systemEventKeysRef.current.clear();
     if (onNewSession) onNewSession();
-  }, [onNewSession, replaceExecutionEvents]);
+  }, [onNewSession, replaceExecutionEvents, threadId]);
 
   // 暴露插入文本方法（供 @ 按钮调用）
   useImperativeHandle(ref, () => ({
@@ -974,7 +1125,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     insertText(text) {
       const found = parseReferenceMarkers(text);
       if (found.length) setReferences((prev) => [...prev, ...found.filter((r) => !prev.some((p) => p.id === r.id))]);
-      setInput((v) => {
+      updateInput((v) => {
         const sep = v && !v.endsWith(" ") ? " " : "";
         return v + sep + text;
       });
@@ -982,7 +1133,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     insertContext(text) {
       const value = String(text || "").trim();
       if (!value) return;
-      setInput((v) => {
+      updateInput((v) => {
         const prefix = v && !v.endsWith("\n") ? "\n\n" : "";
         return `${v}${prefix}[选区上下文]\n${value}\n[/选区上下文]`;
       });
@@ -1000,7 +1151,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       setEditMode("agent");
       setReferences(nextReferences);
       setInjectedContext(payload.contextText ? [{ text: String(payload.contextText) }] : []);
-      setInput(prompt);
+      updateInput(prompt);
       setRunState((state) => ({ ...state, mode: "agent" }));
       setModelMsg("已转为 Agent 任务，请确认后发送");
       window.setTimeout(() => setModelMsg(""), 3200);
@@ -1273,6 +1424,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     setModelMsg("切换中...");
     try {
       const result = await setAgentModel(clientId, id, threadId);
+      // 运行中切换：服务端把切换排队到本轮结束（本轮仍由旧模型跑完），
+      // 这里保持提示可见，等 model_switched(effective=now) 再收尾。
+      if (result?.pending) {
+        setPendingModel(result.model || id);
+        setModelMsg(`本轮仍由 ${result.current || "当前模型"} 执行；已排队，本轮结束后切换为 ${result.model || id}`);
+        return;
+      }
+      setPendingModel("");
       if (result?.model && result.model !== id) {
         setModel(result.model);
         applyModel(result.model);
@@ -1974,6 +2133,31 @@ case "runtime_connecting":
       case "agent_model_fallback_failed":
         pushSystem(`备用模型切换失败：${data.message || "请在设置中检查模型授权"}`, `agent_model_fallback_failed:${data.from || "unknown"}`);
         break;
+      case "model_switched": {
+        // 模型切换的统一事实来源：排队（本轮结束前不生效）/ 生效 / 通道回退 / 失败。
+        const to = String(data.to || "").trim();
+        if (data.effective === "after-run") {
+          setPendingModel(to);
+          setModelMsg(`本轮仍由 ${data.from || model || "当前模型"} 执行；已排队，本轮结束后切换为 ${to}`);
+          break;
+        }
+        if (data.effective === "failed") {
+          setPendingModel("");
+          setModelMsg(`模型切换失败：${data.message || to || "未知原因"}`);
+          setTimeout(() => setModelMsg(""), 6000);
+          break;
+        }
+        if (to) {
+          setModel(to);
+          applyModel(to);
+          rememberModel(to);
+          onModelChange?.(to);
+        }
+        setPendingModel("");
+        setModelMsg(data.reason === "fallback" ? `通道回退为 ${to}` : `已切换为 ${to}`);
+        setTimeout(() => setModelMsg(""), 4000);
+        break;
+      }
       case "todo_updated":
         setTodoItems(Array.isArray(data.todos) ? data.todos : []);
         setRunState((s) => ({
@@ -2337,7 +2521,7 @@ case "runtime_connecting":
     if (!rawText && sourceImages.length === 0 && sourceAttachments.length === 0) return;
     if (!options.payload && /^\/(?:compact|new|chat|agent|review|help)$/i.test(rawText)) {
       const command = rawText.toLowerCase();
-      setInput("");
+      clearInput();
       setComposerMenu(null);
       if (command === "/compact") return compactContext();
       if (command === "/new") { onNewSession?.(workspace); return; }
@@ -2365,7 +2549,7 @@ case "runtime_connecting":
     if (busy && !options.force) {
       if (busyInputMode === "context") {
         setInjectedContext((prev) => [...prev, { text, images: sourceImages, attachments: sourceAttachments }]);
-        setInput("");
+        clearInput();
         setImages([]);
         setAttachments([]);
         pushSystem("已加入待注入上下文，不会打断当前任务。", `context:${Date.now()}:${text.slice(0, 40)}`);
@@ -2395,7 +2579,7 @@ case "runtime_connecting":
           status: "queued", queued: true, currentDoc,
           createdAt: Date.now(),
         }]);
-        setInput("");
+        clearInput();
         setImages([]);
         setAttachments([]);
         setInjectedContext([]);
@@ -2460,10 +2644,12 @@ case "runtime_connecting":
     streamBufRef.current = { text: "", thinking: "" };
     setMessages((ms) => [...ms, {
       id: aid, role: "assistant", blocks: [],
+      // 记下本轮实际发出的模型：流式期间就能按轮显示"由谁执行"，也是切换分割线的依据。
+      model: model || "",
       status: "streaming", images: [],
       createdAt: Date.now(),
     }]);
-    setInput("");
+    clearInput();
     setImages([]);
     setAttachments([]);
     setInjectedContext([]);
@@ -2480,7 +2666,7 @@ case "runtime_connecting":
     // 不用重新打一遍；队列来源的 payload 不属于草稿，不重复回填。
     const restoreDraft = () => {
       if (options.payload) return;
-      setInput((value) => (value ? value : rawText));
+      updateInput((value) => (value ? value : rawText));
       if (mountedRef.current) requestAnimationFrame(() => textareaRef.current?.focus());
     };
     try {
@@ -2967,7 +3153,7 @@ case "runtime_connecting":
                     type="button"
                     className="chat-empty-example"
                     title="点一下填入输入框，可再修改"
-                    onClick={() => { setInput(example); setComposerMenu(null); textareaRef.current?.focus(); }}
+                    onClick={() => { updateInput(example); setComposerMenu(null); textareaRef.current?.focus(); }}
                   >
                     {example}
                   </button>
@@ -2994,7 +3180,7 @@ case "runtime_connecting":
               历史较长，当前先加载最近 {historyWindow.end - historyWindow.start} 条以保持切换流畅；模型仍使用完整 Pi 会话上下文。
             </div>
           )}
-           {visibleMessages.map((originalMessage, i) => {
+           {(() => { let previousRoundModel = ""; return visibleMessages.map((originalMessage, i) => {
             if (originalMessage?.role === "system" && originalMessage.summary && originalMessage.runId && assistantRunIds.has(originalMessage.runId)) return null;
             let m = originalMessage;
             let firstIndex = i;
@@ -3019,6 +3205,11 @@ case "runtime_connecting":
             // 兜底：没有 runId/未被分组消费的提醒消息同样不渲染（例如终态后才到达的收尾提醒）。
             if (m?.role === "user" && /^\s*(?:\[系统提醒\]|系统提醒[：:])/.test(String(m.text || ""))) return null;
             const runSummary = m?.role === "assistant" && m.runId ? runSummaryById.get(m.runId) || null : null;
+            // 本轮实际使用的模型（服务端 run.model 优先，其次消息自带），用于按轮显示"由谁执行"。
+            const roundModel = m?.role === "assistant" ? String(m.model || runSummary?.model || "") : "";
+            // 相邻两轮的模型不同 → 中间插一条分割线，明确"从这里开始换了模型"。
+            const showModelDivider = Boolean(roundModel) && Boolean(previousRoundModel) && roundModel !== previousRoundModel;
+            previousRoundModel = roundModel || previousRoundModel;
             const summaryEvents = Array.isArray(runSummary?.events) ? runSummary.events : [];
             const isExecutionAnchor = m.id === executionAnchorId || runActivityMessagesById.get(m.runId)?.some(({ message }) => message.id === executionAnchorId);
             const eventsForMessage = isExecutionAnchor && showExecutionFlow ? executionEvents : summaryEvents;
@@ -3040,10 +3231,15 @@ case "runtime_connecting":
             } : null;
             return (
               <React.Fragment key={m.id}>
-                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
+                {showModelDivider && (
+                  <div className="model-switch-divider" role="separator" aria-label={`模型切换为 ${roundModel}`}>
+                    <span>模型切换为 <b>{modelDisplayName(roundModel)}</b></span>
+                  </div>
+                )}
+                <MemoMessage m={m} index={visibleStart + firstIndex} prevRole={visibleMessages[firstIndex - 1]?.role} model={roundModel || model} agentPhase={agentPhase} clientId={clientId} threadId={threadId} onOpenFile={onOpenFile} onMemoryApprove={handleMemoryApprove} onMemoryReject={handleMemoryReject} onRollbackRun={handleRollbackRun} onOpenRunChanges={onOpenRunChanges} onOpenRunArtifacts={onOpenRunArtifacts} onAskAnswered={handleMessageAskAnswered} onResend={handleMessageResend} onToggleTool={handleMessageToggleTool} runSummary={runSummary} executionFlow={executionFlow} />
               </React.Fragment>
             );
-           })}
+           }); })()}
           </div>
           {showScrollToBottom && (
             <button type="button" className="chat-scroll-latest" onClick={scrollToLatest} title="回到底部" aria-label="回到底部">
@@ -3205,7 +3401,7 @@ case "runtime_connecting":
               onDrop={(e) => { e.preventDefault(); handleFiles(e.dataTransfer?.files || []); }}
               onChange={(e) => {
                 const value = e.target.value;
-                setInput(value);
+                updateInput(value);
                 setComposerMenu(composerTrigger(value));
               }}
             />
@@ -3251,7 +3447,14 @@ case "runtime_connecting":
             <div className="chat-toolbar-group toolbar-agent-group" title="Agent 设置：模型与思考程度">
               <span className="chat-toolbar-label">Agent</span>
               <div className="ct-popwrap model-control-wrap">
-                <button className={`model-control-trigger ${modelOpen ? "active" : ""}`} onClick={() => setModelOpen((value) => !value)} title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}>
+                <button
+                  ref={modelTriggerRef}
+                  className={`model-control-trigger ${modelOpen ? "active" : ""}`}
+                  onClick={() => setModelOpen((value) => !value)}
+                  aria-haspopup="dialog"
+                  aria-expanded={modelOpen}
+                  title={model ? `模型：${modelDisplayName(selectedModelInfo)}，思考：${selectedEffort.shortLabel}` : "选择模型与思考程度"}
+                >
                   <ModelProviderMark model={selectedModelInfo} size={18} />
                   <span className="model-control-current">
                     <strong>{modelDisplayName(selectedModelInfo)}</strong>
@@ -3259,8 +3462,14 @@ case "runtime_connecting":
                   </span>
                   <Icon name="chevronDown" size={11} />
                 </button>
-                {modelOpen && (
-                  <div className="ct-pop model-control-pop">
+                {modelOpen && createPortal(
+                  <div
+                    className="ct-pop model-control-pop"
+                    ref={modelPopRef}
+                    role="dialog"
+                    aria-label="选择模型与思考程度"
+                    style={modelPopRect ? { position: "fixed", left: modelPopRect.left, ...(modelPopRect.top != null ? { top: modelPopRect.top } : { bottom: modelPopRect.bottom }), width: modelPopRect.width, maxWidth: "calc(100vw - 16px)", maxHeight: modelPopRect.maxHeight, right: "auto", zIndex: 400 } : { visibility: "hidden" }}
+                  >
                     <div className="model-control-head">
                       <div><ModelProviderMark model={selectedModelInfo} size={22} /><span><strong>{selectedProviderMeta.label}</strong><small>{model || "按 Pi 配置"}</small></span></div>
                       <span className="model-control-status">{selectedModelInfo?.available === false ? "不可用" : "可用"}</span>
@@ -3342,7 +3551,8 @@ case "runtime_connecting":
                       <small className="model-thinking-desc">{selectedEffort.desc}</small>
                       <small className="model-thinking-hint">高/最大档位会让模型首响应明显变慢，适合复杂任务；简单问答建议用低/标准</small>
                     </div>
-                  </div>
+                  </div>,
+                  document.body,
                 )}
               </div>
             </div>
@@ -3352,7 +3562,7 @@ case "runtime_connecting":
                 <Icon name="plus" size={14} />
               </button>
             </div>
-            {modelMsg && <span className="model-msg">{modelMsg}</span>}
+            {modelMsg && <span className={`model-msg${pendingModel ? " pending" : ""}`} title={pendingModel ? `已排队：本轮结束后切换为 ${pendingModel}` : undefined}>{modelMsg}</span>}
           </div>
         </div>
       </div>
@@ -3384,10 +3594,10 @@ function readableProgressText(value) {
     .join("\n");
 }
 
-function SafeMarkdown({ text }) {
+function SafeMarkdown({ text, onOpenFile, artifacts }) {
   const [showRaw, setShowRaw] = useState(false);
   if (!text) return null;
-  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody>{text}</MarkdownBody>;
+  if (text.length <= MAX_MARKDOWN_CHARS) return <MarkdownBody onOpenFile={onOpenFile} artifacts={artifacts}>{text}</MarkdownBody>;
   if (!showRaw) {
     return (
       <button className="large-msg-reveal" onClick={() => setShowRaw(true)}>
@@ -3398,10 +3608,38 @@ function SafeMarkdown({ text }) {
   return <pre className="large-msg-raw">{text}</pre>;
 }
 
-function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts, embedded = false }) {
+/**
+ * 结论内嵌产物 / 产物卡片的共同数据源：本轮投影 → 可点击产物清单。
+ * 交付物在前、其余文件改动跟随，同一路径只保留一条；内部文件不进入结论。
+ * `confirmed` 只认写入台账（write-ledger）或已验收/已固定的文件——共享工作区里
+ * 快照 diff 也会包含并行 Run 的产出，那些只能算"未归属线索"，不能当成本轮产物。
+ */
+function artifactsFromView(view) {
+  if (!view) return null;
+  const byPath = new Map();
+  const pick = (change) => String(change?.relativePath || change?.path || change?.name || "").replace(/\\/g, "/").trim();
+  const confirmedOf = (change) => change?.source === "write-ledger" || change?.role === "deliverable";
+  for (const change of view.deliverables || []) {
+    if (change?.role === "internal") continue;
+    const path = pick(change);
+    if (path) byPath.set(path, { path, deliverable: true, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+  }
+  for (const change of view.changes || []) {
+    if (change?.role === "internal") continue;
+    const path = pick(change);
+    if (path && !byPath.has(path)) byPath.set(path, { path, deliverable: false, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+  }
+  return byPath.size ? [...byPath.values()] : null;
+}
+
+function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifacts, view: viewOverride = null, embedded = false }) {
   // W1/A01：结果卡只消费「统一展示投影」，实时构建的消息与旧历史走同一条路径，
   // 不再各自拼装状态 / 产物 / 文件清单（R01/R02 的重复展示即源于此）。
-  const view = useMemo(() => projectLegacyRunSummary(m, Array.isArray(m.events) ? m.events : []), [m]);
+  // 消息层已算过的投影直接复用（viewOverride），避免同一条消息归约两遍事件流。
+  const view = useMemo(
+    () => viewOverride || projectLegacyRunSummary(m, Array.isArray(m.events) ? m.events : []),
+    [viewOverride, m],
+  );
   const statusLabel = view.lifecycleLabel; // R04：状态缺失显示“状态待同步”，不默认“运行结束”
   const completion = view.outcome || m.completion || null;
   const finalAnswer = String(view.answer?.text || m.authoritativeFinalText || "").trim();
@@ -3415,10 +3653,12 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     .replace(/[*`_]/g, "")
     .slice(0, 140)
     .trim() || "本轮任务";
-  // 运行中展开；终态将结论和过程一并折叠，产物入口仍保持直达。
-  const [open, setOpen] = useState(false);
   // 工具明细与折叠摘要：沿用轨迹归约与统一投影，避免直接统计重复事件。
   const trace = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceRunTrace(m.events, m.runId) : null), [m.events, m.runId]);
+  // 每轮用时与 token：来自持久化的 turn_started/turn_ended 与 stats 事件，实时与历史一致。
+  const turnMetrics = useMemo(() => (Array.isArray(m.events) && m.events.length ? reduceTurnMetrics(m.events) : []), [m.events]);
+  const turnTotals = useMemo(() => summarizeTurnMetrics(turnMetrics), [turnMetrics]);
+  const metricsText = useMemo(() => turnMetricsText(turnTotals, { durationMs: trace?.durationMs }), [turnTotals, trace?.durationMs]);
   // 单一份文件集合：投影已按 runId 归并、去重并按语义标角色
   const changes = view.changes || [];
   const fileChanges = useMemo(() => changes.filter((change) => change.role !== "internal"), [changes]);
@@ -3459,25 +3699,27 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     || reviewSources.length > 0
     || Boolean(actionNeeded)
     || Boolean(completion?.incomplete?.length || completion?.blockers?.length);
-  const products = useMemo(() => {
-    const byPath = new Map();
-    for (const item of deliverables) {
-      const productPath = String(item?.path || item?.relativePath || item?.name || "").replace(/\\/g, "/").trim();
-      if (productPath && !byPath.has(productPath)) byPath.set(productPath, { path: productPath, deliverable: true });
-    }
-    for (const item of fileChanges) {
-      const productPath = String(item?.relativePath || "").replace(/\\/g, "/").trim();
-      if (productPath && !byPath.has(productPath)) byPath.set(productPath, { path: productPath, deliverable: false });
-    }
-    return [...byPath.values()];
-  }, [deliverables, fileChanges]);
+  // 单一产物集合（交付优先、路径去重）＋ 类型/大小，供「本轮产物」tab 的卡片使用。
+  const products = useMemo(() => artifactsFromView(view) || [], [view]);
+  // 已确认（写入台账/已验收）与未归属线索分开：后者在共享工作区里可能来自其他运行。
+  const confirmedProducts = useMemo(() => products.filter((item) => item.confirmed), [products]);
+  const leadProducts = useMemo(() => products.filter((item) => !item.confirmed), [products]);
+  const confirmedCards = useMemo(() => (confirmedProducts.length ? buildArtifactIndex(confirmedProducts).list : []), [confirmedProducts]);
+  // 结果区页签：本轮产物 / 文件改动 / 依据（依据仅在 Review 轮次有）
+  const [resultTab, setResultTab] = useState("products");
+  useEffect(() => {
+    // 当前页签的数据不存在时（例如历史轮次没有依据）自动回到产物页
+    if (resultTab === "sources" && !reviewSources.length) setResultTab(products.length ? "products" : "changes");
+  }, [resultTab, reviewSources.length, products.length]);
   const runIsLive = LIVE_RUN_STATUSES.has(String(m.runStatus || ""));
   const [summaryOpen, setSummaryOpen] = useState(runIsLive);
   useEffect(() => setSummaryOpen(runIsLive), [runIsLive]);
   const hasRunDetails = showResultCard;
   // 单一文件清单的行类名：角色 + 内部弱化 + “本轮刚结束”的短时高亮（历史回放不重播）
   const changeClass = (change) => `summary-product clickable role-${change.role}${change.role === "internal" ? " internal" : ""}${m.flashFiles ? " fresh" : ""}`;
-  if (!showResultCard) return null;
+  // 每轮用时与 token 是独立于"有没有产物"的记录：纯问答轮也保留一行实测指标，不弹空结果卡。
+  const hasTurnMetrics = turnMetrics.length > 0;
+  if (!showResultCard && !hasTurnMetrics) return null;
   return (
     <div className={`msg system summary-msg ${embedded ? "embedded-run-summary" : ""}`}>
       <div className="bubble run-summary-bubble">
@@ -3536,30 +3778,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
           {fallbackSummary && (
             <div className="run-result-fallback">
               <strong>运行摘要</strong>
-              <SafeMarkdown text={fallbackSummary} />
-            </div>
-          )}
-          {/* 只列主要文件（交付优先，最多 6 项）；答案正文只有消息气泡一个出口。 */}
-          {(deliverables.length > 0 || fileChanges.length > 0) && (
-            <div className="run-products-box">
-              <div className="run-products-head">
-                <Icon name="folder" size={12} /> 本轮产物
-                {deliverables.length > 0 ? ` · 交付 ${deliverables.length}` : ` · ${fileChanges.length}`}
-              </div>
-              <div className="run-products-list">
-                {products
-                  .slice(0, 6)
-                  .map((item) => (
-                    <button key={item.path} type="button" className="run-products-item" onClick={() => onOpenFile?.(item.path)} title={item.path}>
-                      <Icon name={item.deliverable ? "star" : "file"} size={11} />
-                      <span className="run-products-name">{item.path.split("/").pop()}</span>
-                      {item.deliverable && <span className="run-products-badge">交付</span>}
-                    </button>
-                  ))}
-                {products.length > 6 && (
-                  <span className="run-products-more">共 {products.length} 个不同文件，可用下方“文件改动”查看完整清单</span>
-                )}
-              </div>
+              <SafeMarkdown text={fallbackSummary} onOpenFile={onOpenFile} artifacts={products.length ? products : null} />
             </div>
           )}
           {!!completion?.incomplete?.length && <div className="run-result-note warn">未完成：{completion.incomplete.join("；")}</div>}
@@ -3610,63 +3829,164 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         </div>
         </details>
         )}
-        {(fileChanges.length > 0 || deliverables.length > 0 || memoryProposalIds.length > 0) && (
-          <div className="run-result-links">
-            {fileChanges.length > 0 && (onOpenChanges
-              ? <button type="button" className="run-result-chip" onClick={() => onOpenChanges()} title="在右侧“改动”面板查看本轮真实文件改动"><Icon name="edit" size={11} /> 文件改动 {fileChanges.length}</button>
-              : <span className="run-result-chip" title="文件改动将在右侧“改动”面板中查看"><Icon name="edit" size={11} /> 文件改动 {fileChanges.length}</span>)}
-            {deliverables.length > 0 && (onOpenArtifacts
-              ? <button type="button" className="run-result-chip" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看交付产物与版本"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</button>
-              : <span className="run-result-chip" title="交付产物可在右侧“产物”面板查看与固定"><Icon name="file" size={11} /> 交付产物 {deliverables.length}</span>)}
-            {memoryProposalIds.length > 0 && <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>}
-          </div>
-        )}
         {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={11} /> {actionNeeded.text}</div>}
-        {(fileChanges.length > 0 || reviewSources.length > 0) && <details className="run-summary-details" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-          <summary>文件与依据 · {fileChanges.length} 项改动{reviewSources.length ? ` · ${reviewSources.length} 条依据` : ""}</summary>
-          {/* A02-3：不再把 agent_summary 的“共处理 N 个文件：…”当正文重复渲染；结论已在结果卡 */}
-          {changes.length > 0 && (
-            <div className="file-change-summary">
-              <span className="file-change-label">
-                <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
-                {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
-              </span>
-              {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
-              <div className="summary-products">
-                {fileChanges.map((change) => (
-                  <span
-                    key={change.relativePath}
-                    className={changeClass(change)}
-                    onClick={() => onOpenFile?.(change.relativePath)}
-                    title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
-                  >
-                    <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {/* 单一份文件清单：不再与 m.artifacts 各行重复；只保留“回滚本轮”这个真实动作 */}
-          {m.runId && rollbackableCount > 0 && (
-            <div className="run-artifacts">
-              <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
-            </div>
-          )}
-          {m.runMode === "review" && reviewSources.length > 0 && (
-            <div className="review-source-summary">
-              <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
-              <div className="review-source-list">
-                {reviewSources.map((source) => (
-                  <div className="review-source-row" key={source.sourceId}>
-                    <strong>{source.sourceId}</strong>
-                    <span title={`${source.relPath || ""}${source.rootName ? ` @ ${source.rootName}` : ""}`}>{source.title || source.relPath}</span>
-                    <em className={`review-source-status ${source.status || "read"}`}>{source.status === "applied" ? "已采用" : source.status === "read-not-applied" ? "未采用" : source.status === "failed" ? "读取失败" : "已读取"}</em>
+        {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
+        {hasTurnMetrics && (
+          <div className="run-metrics" aria-label="本轮用时与 token">
+            {/* 一行小字：用时 · 轮数 · 输入/输出 token · 上下文；逐轮明细收在后面的小折叠里 */}
+            <span className="run-metrics-text" title={metricsText}>
+              用时 <b>{formatDuration(trace?.durationMs || turnTotals.durationMs || 0)}</b>
+              <i>·</i><b>{turnMetrics.length}</b> 轮
+              {Number.isFinite(turnTotals.input) && <><i>·</i>输入 <b>{formatTokenCount(turnTotals.input)}</b></>}
+              {Number.isFinite(turnTotals.output) && <><i>·</i>输出 <b>{formatTokenCount(turnTotals.output)}</b> tokens</>}
+              {Number.isFinite(turnTotals.context) && <><i>·</i>上下文 {formatTokenCount(turnTotals.context)}</>}
+            </span>
+            <details className="run-turns">
+              <summary title="每轮用时来自回合开始/结束事件，token 来自每回合一次的用量事件（输入不含缓存读；上下文是该回合结束时的规模）">每轮明细</summary>
+              <div className="run-turns-table" role="table" aria-label="每轮用时与 token">
+                <div className="run-turns-row head" role="row">
+                  <span role="columnheader">回合</span>
+                  <span role="columnheader">用时</span>
+                  <span role="columnheader">输出</span>
+                  <span role="columnheader">输入</span>
+                  <span role="columnheader">缓存读</span>
+                  <span role="columnheader">上下文</span>
+                  <span role="columnheader">工具</span>
+                </div>
+                {turnMetrics.map((turn) => (
+                  <div className="run-turns-row" role="row" key={turn.index}>
+                    <span role="cell">#{turn.index}</span>
+                    <span role="cell">{Number.isFinite(turn.durationMs) ? formatDuration(turn.durationMs) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.output) ? formatTokenCount(turn.tokens.output) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.input) ? formatTokenCount(turn.tokens.input) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.cacheRead) ? formatTokenCount(turn.tokens.cacheRead) : "—"}</span>
+                    <span role="cell">{turn.tokens && Number.isFinite(turn.tokens.context) ? formatTokenCount(turn.tokens.context) : "—"}</span>
+                    <span role="cell">{Number.isFinite(turn.toolCount) ? turn.toolCount : "—"}</span>
                   </div>
                 ))}
               </div>
+            </details>
+          </div>
+        )}
+        {/* 本轮产物 tab：产物卡片 / 文件改动 / 依据，同一份投影的单一文件区域 */}
+        {(products.length > 0 || fileChanges.length > 0 || reviewSources.length > 0) && (
+          <div className="result-tabbed" aria-label="本轮结果">
+            <div className="result-tabs" role="tablist" aria-label="本轮结果视图">
+              {products.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "products"} className={`result-tab ${resultTab === "products" ? "active" : ""}`} onClick={() => setResultTab("products")}>
+                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{confirmedProducts.length}</span>
+                </button>
+              )}
+              {fileChanges.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "changes"} className={`result-tab ${resultTab === "changes" ? "active" : ""}`} onClick={() => setResultTab("changes")}>
+                  <Icon name="edit" size={11} /> 文件改动 <span className="result-tab-count">{fileChanges.length}</span>
+                </button>
+              )}
+              {reviewSources.length > 0 && (
+                <button type="button" role="tab" aria-selected={resultTab === "sources"} className={`result-tab ${resultTab === "sources" ? "active" : ""}`} onClick={() => setResultTab("sources")}>
+                  <Icon name="shield" size={11} /> 依据 <span className="result-tab-count">{reviewSources.length}</span>
+                </button>
+              )}
             </div>
-          )}
-        </details>}
+            {resultTab === "products" && products.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
+                <div className="product-cards-head">
+                  <span><Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}{leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}</span>
+                  {onOpenArtifacts && <button type="button" className="product-cards-link" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看版本与固定">在产物面板查看</button>}
+                </div>
+                {confirmedCards.length > 0 && (
+                  <div className="product-cards">
+                    {confirmedCards.map((item) => (
+                      <div className={`product-card${item.deliverable ? " deliverable" : ""}`} key={item.path}>
+                        <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
+                          <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
+                          <span className="product-card-meta">
+                            <strong>{item.name}</strong>
+                            <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
+                          </span>
+                          {item.deliverable && <span className="product-card-badge">交付</span>}
+                        </button>
+                        <button type="button" className="product-card-open" onClick={() => onOpenFile?.(item.path)} title={`打开 ${item.path}`}>打开</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* 未归属线索：共享工作区里并行运行/其他轮次的写入也会落在本轮前后快照之间，
+                    这些文件无法证明属于本轮，只作线索列出，不参与"本轮产物"计数。 */}
+                {leadProducts.length > 0 && (
+                  <details className="product-leads">
+                    <summary title="本轮没有写入台账（工具通过命令行写文件）时，快照差异无法证明文件归属；可能是并行运行或其他轮次写入的">
+                      未归属线索 {leadProducts.length} · 可能来自其他运行，需人工确认
+                    </summary>
+                    <div className="product-leads-list">
+                      {leadProducts.map((item) => (
+                        <button type="button" className="product-lead" key={item.path} onClick={() => onOpenFile?.(item.path)} title={`${item.path}（未归属线索）`}>
+                          <Icon name={item.icon || "file"} size={11} />
+                          <span>{item.name}</span>
+                          {item.sizeText && <em>{item.sizeText}</em>}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="product-leads-note">这些文件在本轮前后的工作区快照里有变化，但本轮没有写入台账记录它们；同一工作区并行运行时会互相出现，请以文件树与“文件改动”页签为准。</p>
+                  </details>
+                )}
+              </div>
+            )}
+            {resultTab === "changes" && fileChanges.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="文件改动">
+                <div className="file-change-summary">
+                  <span className="file-change-label">
+                    <Icon name="folder" size={11} /> 本轮文件（{fileChanges.length}）
+                    {deliverables.length ? ` · 交付 ${deliverables.length}` : ""}
+                  </span>
+                  {m.workspace && <small className="summary-workspace" title={m.workspace}>工作区：{m.workspace}</small>}
+                  <div className="summary-products">
+                    {fileChanges.map((change) => (
+                      <span
+                        key={change.relativePath}
+                        className={changeClass(change)}
+                        onClick={() => onOpenFile?.(change.relativePath)}
+                        title={`${change.changeType} · ${change.confidence === "suspected" ? "疑似变更" : "已确认"} · ${change.relativePath}`}
+                      >
+                        <Icon name={change.changeType === "deleted" ? "trash" : "file"} size={11} /> {change.relativePath}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {/* 单一份文件清单：不再与 m.artifacts 各行重复；只保留“回滚本轮”这个真实动作 */}
+                {(m.runId && rollbackableCount > 0) || onOpenChanges ? (
+                  <div className="run-artifacts">
+                    {m.runId && rollbackableCount > 0 && (
+                      <button className="btn-xs" onClick={() => onRollbackRun?.(m.runId, fileChanges.filter((change) => change.before?.reversible).map((change) => change.relativePath))}>回滚本轮（{rollbackableCount} 项）</button>
+                    )}
+                    {onOpenChanges && <button className="btn-xs" onClick={() => onOpenChanges()} title="在右侧“改动”面板查看内容差异">查看内容差异</button>}
+                  </div>
+                ) : null}
+              </div>
+            )}
+            {resultTab === "sources" && reviewSources.length > 0 && (
+              <div className="result-tab-panel" role="tabpanel" aria-label="规范依据">
+                <div className="review-source-summary">
+                  <div className="file-change-label"><Icon name="shield" size={11} /> 规范依据（已读取 {reviewSources.length}）</div>
+                  <div className="review-source-list">
+                    {reviewSources.map((source) => (
+                      <div className="review-source-row" key={source.sourceId}>
+                        <strong>{source.sourceId}</strong>
+                        <span title={`${source.relPath || ""}${source.rootName ? ` @ ${source.rootName}` : ""}`}>{source.title || source.relPath}</span>
+                        <em className={`review-source-status ${source.status || "read"}`}>{source.status === "applied" ? "已采用" : source.status === "read-not-applied" ? "未采用" : source.status === "failed" ? "读取失败" : "已读取"}</em>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {memoryProposalIds.length > 0 && (
+          <div className="run-result-links">
+            <span className="run-result-chip muted" title={`有 ${memoryProposalIds.length} 条待审核记忆建议，在「设置 → 记忆」中确认或拒绝`}><Icon name="book" size={11} /> 记忆建议 {memoryProposalIds.length}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3711,6 +4031,17 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
       || [...(Array.isArray(runSummary?.events) ? runSummary.events : [])].reverse().find((event) => event?.type === "assistant_final" && String(event?.data?.text || "").trim())?.data?.text
       || "",
   ).trim();
+  // 本轮展示投影只算一次：结论内嵌产物与结果卡（tab）共用，避免重复归约事件流。
+  const runCardSource = useMemo(
+    () => (runSummary ? { ...runSummary, authoritativeFinalText } : null),
+    [runSummary, authoritativeFinalText],
+  );
+  const runCardView = useMemo(
+    () => (runCardSource ? projectLegacyRunSummary(runCardSource, Array.isArray(runCardSource.events) ? runCardSource.events : []) : null),
+    [runCardSource],
+  );
+  // 结论里可点击的产物：交付物优先，其余文件改动跟随；同一路径只留一条。
+  const answerArtifacts = useMemo(() => artifactsFromView(runCardView), [runCardView]);
   // 最后一段文本块：无论最终答复是否已单独渲染，都不折进“执行过程”
   let lastTextBlockIndex = -1;
   blocks.forEach((block, index) => { if (block?.type === "text") lastTextBlockIndex = index; });
@@ -3739,11 +4070,11 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   const isTaskActivity = !isUser && Boolean(m.runId || runSummary || executionFlow);
   const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
   const processBlockTypes = new Set(["thinking", "tool", "subagent", "ask", "approval", "process_note"]);
-  const isProcessBlock = (block, blockIndex) => {
-    if (!block || block.type === "message_boundary") return false;
-    if (processBlockTypes.has(block.type)) return true;
-    return block.type === "text" && isTaskActivity && (streaming || Boolean(m.runId) || authoritativeFinalText) && blockIndex !== finalAnswerBlockIndex;
-  };
+  // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
+  // 过去只有"最后一个文本块"能留在外面，于是每写一段新小结，上一段就被折进
+  // "思考与工具过程"，折叠后整轮只剩最终答复。现在只把思考、工具、审批、
+  // 子代理与系统提醒收进可折叠的过程区。
+  const isProcessBlock = (block) => Boolean(block) && processBlockTypes.has(block.type);
   const foldedProcessBlocks = blocks.filter(isProcessBlock);
   const lastThinkingBlockIndex = foldedProcessBlocks.reduce((last, block, blockIndex) => block.type === "thinking" ? blockIndex : last, -1);
   // 工具既有富交互 block，也会出现在 SSE 轨迹中；保留工具卡，只让轨迹补充缺少卡片的调用。
@@ -3792,18 +4123,106 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     return true;
   });
   const messageExecutionFlow = executionFlow ? { ...executionFlow, events: visibleExecutionEvents } : null;
+  // 权威终稿若与某个文本块对应，该块由"最终答复"通道单独渲染，避免重复一份。
+  const hiddenFinalTextIndex = authoritativeFinalText && !streaming && finalTextBlockIndex >= 0 ? finalTextBlockIndex : -1;
   const visibleBlocks = blocks.filter((block, blockIndex) => {
-    if (block?.type === "message_boundary" || isProcessBlock(block, blockIndex)) return false;
-    if (block?.type === "text" && isTaskActivity && authoritativeFinalText && !streaming && finalTextBlockIndex >= 0 && blockIndex === finalTextBlockIndex) return false;
-    return true;
+    if (block?.type === "message_boundary" || isProcessBlock(block)) return false;
+    return blockIndex !== hiddenFinalTextIndex;
   });
-  const activityCount = foldedProcessBlocks.length + Number(messageExecutionFlow?.events?.length || 0) + Number(Boolean(messageExecutionFlow?.running));
+  // 有序片段：连续的过程块合成一个可折叠区，模型发言（小节结论）留在原位置可见。
+  // 于是渲染顺序就是模型真实的输出顺序——过程区 → 小节结论 → 新的过程区 → ……
+  // 折叠只收起思考与工具，小节结论不会被后面的小节吞掉。
+  const renderSegments = [];
+  let processOrder = -1;
+  blocks.forEach((block, blockIndex) => {
+    if (block?.type === "message_boundary" || blockIndex === hiddenFinalTextIndex) return;
+    if (isProcessBlock(block)) {
+      processOrder += 1;
+      const item = { block, blockIndex, processOrder };
+      const tail = renderSegments[renderSegments.length - 1];
+      if (tail?.kind === "process") tail.items.push(item);
+      else renderSegments.push({ kind: "process", items: [item] });
+      return;
+    }
+    renderSegments.push({ kind: "block", block, blockIndex });
+  });
+  // SSE 轨迹（事件流）挂在最后一个过程区里；没有过程块时单独补一个，保证轨迹仍可回看。
+  if (messageExecutionFlow && !renderSegments.some((segment) => segment.kind === "process")) {
+    renderSegments.push({ kind: "process", items: [], flowOnly: true });
+  }
+  const lastProcessSegmentIndex = renderSegments.reduce((last, segment, segmentIndex) => (segment.kind === "process" ? segmentIndex : last), -1);
+  const renderProcessBlock = ({ block, blockIndex, processOrder }) => {
+    const key = block.id || `block-${blockIndex}`;
+    if (block.type === "thinking") return <ThinkingBlock key={key} text={block.text} startTime={block.startTime} streaming={streaming && processOrder === lastThinkingBlockIndex} embedded />;
+    if (block.type === "tool") return <ToolCard key={key} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
+    if (block.type === "subagent") return <SubagentCard key={key} block={block} />;
+    if (block.type === "ask") return <AskBlock key={key} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
+    if (block.type === "approval") return <ApprovalBlock key={key} block={block} />;
+    if (block.type === "process_note") return (
+      <div className="flow-markdown process-narration process-note" key={key}>
+        <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} />
+      </div>
+    );
+    return null;
+  };
+  // 渲染时才读取 processOpenMap（状态声明在后面），因此这里是函数而不是常量数组。
+  const renderMessageBlocks = () => renderSegments.map((segment, segmentIndex) => {
+    if (segment.kind === "block") {
+      const block = segment.block;
+      if (block?.type !== "text") return null;
+      // 旧消息没有权威终稿时，最后一个文本块承担最终答复，按回答详细程度收窄。
+      const isFinalAnswerBlock = replaceLegacyFinalCandidate && block === blocks[lastTextBlockIndex];
+      const shown = isFinalAnswerBlock ? clampAnswer(authoritativeFinalText) : block.text;
+      return (
+        <div className="flow-markdown" key={block.id || `text-${segment.blockIndex}`}>
+          {streaming
+            ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(block.text)}</div>
+            : <SafeMarkdown text={shown} onOpenFile={onOpenFile} artifacts={answerArtifacts} />}
+        </div>
+      );
+    }
+    const isLastProcess = segmentIndex === lastProcessSegmentIndex;
+    const isLiveFold = isTaskLive && isLastProcess;
+    const foldKey = `process-${segment.items[0]?.blockIndex ?? "flow"}`;
+    const override = processOpenMap[foldKey];
+    const open = typeof override === "boolean" ? override : isLiveFold;
+    return (
+      <details
+        className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isLiveFold ? "is-live" : ""}`}
+        key={foldKey}
+        open={open}
+        onToggle={(event) => {
+          const next = event.currentTarget.open;
+          // <details> 的 toggle 对"用户点击"和"React 改 open 属性"都会触发。
+          // 只把与本次渲染值不同的变化记为用户偏好，否则运行中自动展开的
+          // 过程区会被记成"用户要它开着"，小节结束后再也收不回去。
+          if (next === open) return;
+          setProcessOpenMap((state) => (state[foldKey] === next ? state : { ...state, [foldKey]: next }));
+          if (next && isLiveFold) followProcessTailRef.current = true;
+        }}
+      >
+        <summary>
+          <Icon name="flow" size={11} />
+          {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
+          {isLiveFold && <span>实时</span>}
+        </summary>
+        <div className="message-process-fold-body">
+          <div className="message-process-scroll" ref={isLastProcess ? processScrollRef : undefined} onScroll={isLastProcess ? handleProcessScroll : undefined}>
+            {segment.items.map(renderProcessBlock)}
+            {isLastProcess && messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
+          </div>
+        </div>
+      </details>
+    );
+  });
   // 相邻同角色消息精简头部（连续 AI 回复/连续用户消息不再重复显示作者与时间）
   const hideHeader = prevRole === m.role;
   const hasContent = blocks.length > 0 || m.images?.length > 0;
   const [copied, setCopied] = useState(false);
   const [waitSec, setWaitSec] = useState(0);
-  const [processOpen, setProcessOpen] = useState(isTaskLive);
+  // 每个过程区各自开合：默认只有"最新（运行中）"的那一个展开，其余收成一行摘要，
+  // 用户点过的过程区按用户选择保持（与事件流阶段分组同一套约定）。
+  const [processOpenMap, setProcessOpenMap] = useState({});
   const processWasLiveRef = useRef(isTaskLive);
   const processScrollRef = useRef(null);
   const followProcessTailRef = useRef(true);
@@ -3811,18 +4230,19 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   useEffect(() => {
     if (isTaskLive && !processWasLiveRef.current) {
       followProcessTailRef.current = true;
-      setProcessOpen(true);
+      setProcessOpenMap({});
     } else if (!isTaskLive && processWasLiveRef.current) {
-      setProcessOpen(false);
+      // 运行结束：全部过程区收回一行摘要，只留小节结论与最终答复。
+      setProcessOpenMap({});
     }
     processWasLiveRef.current = isTaskLive;
   }, [isTaskLive]);
 
   useLayoutEffect(() => {
     const list = processScrollRef.current;
-    if (!isTaskLive || !processOpen || !list || !followProcessTailRef.current) return;
+    if (!isTaskLive || !list || !followProcessTailRef.current) return;
     list.scrollTop = list.scrollHeight;
-  }, [blocks, messageExecutionFlow?.events, runSummary, isTaskLive, processOpen]);
+  }, [blocks, messageExecutionFlow?.events, runSummary, isTaskLive, processOpenMap]);
 
   const handleProcessScroll = (event) => {
     const list = event.currentTarget;
@@ -3854,47 +4274,6 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
     const hasVisibleAnswer = visibleBlocks.some((block) => block?.type === "text" && String(block.text || "").trim());
     if (hasVisibleAnswer) markFirstDomText();
   }, [streaming, visibleBlocks]);
-  const processFold = activityCount > 0 ? (
-    <details
-      className={`message-process-fold ${isTaskActivity ? "run-activity-fold" : ""} ${isTaskLive ? "is-live" : ""}`}
-      open={isTaskLive || processOpen}
-      onToggle={(event) => {
-        const next = event.currentTarget.open;
-        setProcessOpen(next);
-        if (next && isTaskLive) followProcessTailRef.current = true;
-      }}
-    >
-      <summary>
-        <Icon name="flow" size={11} />
-        {isTaskActivity ? "执行过程" : foldedProcessBlocks.some((block) => block.type === "tool") ? "思考与工具过程" : "思考记录"}
-        {isTaskLive && <span>实时</span>}
-      </summary>
-      <div className="message-process-fold-body">
-        <div className="message-process-scroll" ref={processScrollRef} onScroll={handleProcessScroll}>
-          {foldedProcessBlocks.map((block, blockIndex) => {
-            if (block.type === "thinking") return <ThinkingBlock key={block.id || `thinking-${blockIndex}`} text={block.text} startTime={block.startTime} streaming={streaming && blockIndex === lastThinkingBlockIndex} embedded />;
-            if (block.type === "tool") return <ToolCard key={block.id || blockIndex} tool={block} onToggle={() => onToggleTool?.(m.id, block.id || blockIndex)} />;
-            if (block.type === "subagent") return <SubagentCard key={block.id || blockIndex} block={block} />;
-            if (block.type === "ask") return <AskBlock key={block.id || blockIndex} block={block} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
-            if (block.type === "approval") return <ApprovalBlock key={block.id || blockIndex} block={block} />;
-            if (block.type === "text") return (
-              <div className="flow-markdown process-narration" key={block.id || `text-${blockIndex}`}>
-                {streaming ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(block.text)}</div> : <SafeMarkdown text={block.text} />}
-              </div>
-            );
-            if (block.type === "process_note") return (
-              <div className="flow-markdown process-narration process-note" key={block.id || `note-${blockIndex}`}>
-                <SafeMarkdown text={String(block.text || "").replace(/^\s*\[系统提醒\]\s*/, "")} />
-              </div>
-            );
-            return null;
-          })}
-          {messageExecutionFlow && <ExecutionFlow {...messageExecutionFlow} embedded />}
-        </div>
-      </div>
-    </details>
-  ) : null;
-
   return (
     <div className={`msg ${isUser ? "user" : "assistant"} ${m.status || ""}`} data-msg-index={index}>
       <div className={`avatar ${isUser ? "user-avatar" : "agent-avatar"}`}>
@@ -3925,28 +4304,10 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             {m.images?.length > 0 && (
               <div className="msg-images assistant-images">{m.images.map((src, i) => <img key={i} src={src} alt="Agent 附图" />)}</div>
             )}
-            {processFold}
-            {/* 最终答复保持在过程卡外；运行中的进度、思考和工具归入同一个过程滚动区。 */}
+            {/* 顺序即模型真实输出顺序：过程区（思考/工具）→ 小节结论（模型发言）→ 新的过程区。
+                折叠只收起思考与工具，小节结论始终可见，不会被后面的小节替代。 */}
             <div className="msg-blocks">
-              {visibleBlocks.map((b, i) => {
-                if (b.type === "thinking") return <ThinkingBlock key={i} text={b.text} startTime={b.startTime} streaming={streaming} />;
-                if (b.type === "tool") return <ToolCard key={b.id || i} tool={b} onToggle={() => onToggleTool?.(m.id, b.id || i)} />;
-                if (b.type === "subagent") return <SubagentCard key={b.id || i} block={b} />;
-                if (b.type === "ask") return <AskBlock key={b.id || i} block={b} clientId={clientId} threadId={threadId} onAnswered={(blockId, answer) => onAskAnswered?.(m.id, blockId, answer)} />;
-                if (b.type === "approval") return <ApprovalBlock key={b.id || i} block={b} />;
-                if (b.type === "text") {
-                  const isFinalAnswerBlock = replaceLegacyFinalCandidate && b === blocks[lastTextBlockIndex];
-                  const shown = isFinalAnswerBlock ? clampAnswer(authoritativeFinalText) : b.text;
-                  return (
-                    <div className="flow-markdown" key={i}>
-                      {streaming
-                        ? <div className="flow-stream-text" aria-live="polite">{readableProgressText(b.text)}</div>
-                        : <SafeMarkdown text={shown} />}
-                    </div>
-                  );
-                }
-                return null;
-              })}
+              {renderMessageBlocks()}
               {answerClamped && (
                 <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
                   {answerExpanded ? "收起完整答案" : "展开完整答案"}
@@ -3955,7 +4316,7 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             </div>
             {!streaming && authoritativeFinalText && !replaceLegacyFinalCandidate && (
               <>
-                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} /></div>
+                <div className="flow-markdown assistant-final-answer"><SafeMarkdown text={clampAnswer(authoritativeFinalText)} onOpenFile={onOpenFile} artifacts={answerArtifacts} /></div>
                 {answerClamped && (
                   <button type="button" className="answer-detail-toggle" onClick={() => setAnswerExpanded((value) => !value)} aria-expanded={answerExpanded}>
                     {answerExpanded ? "收起完整答案" : "展开完整答案"}
@@ -3966,7 +4327,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
             {/* 规范顺序：执行过程（可折叠）在上，结论与产物在下，且不随过程折叠隐藏 */}
             {runSummary && (
               <RunSummary
-                m={{ ...runSummary, authoritativeFinalText }}
+                m={runCardSource || runSummary}
+                view={runCardView}
                 embedded
                 onOpenFile={onOpenFile}
                 onRollbackRun={onRollbackRun}
@@ -4262,7 +4624,7 @@ function AskBlock({ block, clientId, threadId, onAnswered }) {
               className="ask-input"
               placeholder="输入你的回答…"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => updateInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(input); } }}
             />
             <button className="btn primary ask-submit" onClick={() => submit(input)} disabled={sending}>
@@ -4532,28 +4894,24 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     const name = String(event.data?.name || "");
     return !(name && endedToolNames.has(name));
   });
-  const eventRows = dedupedEvents.map((event, index) => {
+  // 事件行：文案/明细/语气/时间（只服务非嵌入的独立执行流；消息流不再摊开事件时间线）。
+  const eventRow = (event, index) => {
     const data = event.data || {};
     const internalProgressSignal = event.type === "steer" && /^(turn-progress|turn-budget)/.test(String(data.source || ""));
     const detail = internalProgressSignal ? "" : data.message || (event.type === "tool_start" ? "" : event.type === "file_changed" ? (data.files || []).join(", ") : "");
     const label = flowEventLabel(event);
     const showDetail = detail && String(detail).trim() !== String(label).trim();
-    const phase = phaseForEvent(event);
-    const previousPhase = index > 0 ? phaseForEvent(dedupedEvents[index - 1]) : null;
-    const showPhase = phase && phase !== previousPhase && phase !== "done";
     return (
-      <div key={event.key || `${event.seq || event.id || index}:${event.type}`}>
-        {showPhase && <div className={`execution-flow-phase phase-${phase}`}>{PHASE_LABELS[phase] || phase}</div>}
-        <div className={`execution-flow-item ${flowEventTone(event)}`}>
-          <span className="execution-flow-dot" />
-          {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
-          <span className="execution-flow-label">{label}</span>
-          {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
-          <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
-        </div>
+      <div className={`execution-flow-item ${flowEventTone(event)}`} key={event.key || `${event.seq || event.id || index}:${event.type}`}>
+        <span className="execution-flow-dot" />
+        {(event.type === "tool_start" || event.type === "tool_end") && data.name && <ToolIdentityIcon name={data.name} size={11} className="tool-identity-inline" />}
+        <span className="execution-flow-label">{label}</span>
+        {showDetail && <span className="execution-flow-detail" title={detail}>{String(detail).slice(0, 100)}</span>}
+        <time>{event.at ? new Date(event.at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : ""}</time>
       </div>
     );
-  });
+  };
+  const eventRows = dedupedEvents.map((event, index) => eventRow(event, index));
   if (!visibleEvents.length) return null;
   if (hidden) {
     return (
@@ -4565,15 +4923,14 @@ function ExecutionFlow({ events = [], running = false, onFocusTool, notes = [], 
     );
   }
   if (embedded) {
+    // 消息流里不再摊开 SSE 事件时间线（计划/执行/验证/交付 逐条事件属于诊断信息，
+    // 右栏「事件」页签与任务中心保留完整轨迹）。这里只留需要用户知道的系统提示；
+    // 每轮用时与 token 由结果卡的「每轮明细」承担。
+    if (!notes.length) return null;
     return (
-      <div className="execution-flow-embedded" aria-label="SSE 事件轨迹">
-        {notes.length > 0 && (
-          <div className="execution-flow-embedded-notes">
-            {notes.map((item) => <div key={item.key} className={`efn-item kind-${item.kind || "info"}`}><span className="efn-text">{item.text}</span>{Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}</div>)}
-          </div>
-        )}
-        <div className="execution-flow-list execution-flow-list-embedded" role="list" aria-label="任务事件">
-          {eventRows}
+      <div className="execution-flow-embedded" aria-label="系统提示">
+        <div className="execution-flow-embedded-notes">
+          {notes.map((item) => <div key={item.key} className={`efn-item kind-${item.kind || "info"}`}><span className="efn-text">{item.text}</span>{Number(item.count) > 1 && <span className="efn-count">×{item.count}</span>}</div>)}
         </div>
       </div>
     );

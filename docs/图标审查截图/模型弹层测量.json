@@ -1,0 +1,134 @@
+[
+  {
+    "selector": ".model-control-popover",
+    "elements": []
+  },
+  {
+    "selector": ".model-control",
+    "elements": []
+  },
+  {
+    "selector": ".model-provider-mark",
+    "elements": [
+      {
+        "rect": {
+          "x": 424.6000061035156,
+          "y": 848.2000122070312,
+          "w": 18,
+          "h": 18
+        },
+        "overflow": "visible",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(0, 0, 0)",
+        "stroke": "none"
+      },
+      {
+        "rect": {
+          "x": 252.40000915527344,
+          "y": 454,
+          "w": 22,
+          "h": 22
+        },
+        "overflow": "visible",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(0, 0, 0)",
+        "stroke": "none"
+      },
+      {
+        "rect": {
+          "x": 252.40000915527344,
+          "y": 603.5,
+          "w": 17,
+          "h": 17
+        },
+        "overflow": "visible",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(0, 0, 0)",
+        "stroke": "none"
+      }
+    ]
+  },
+  {
+    "selector": ".provider-icon-opencode",
+    "elements": [
+      {
+        "rect": {
+          "x": 426.6000061035156,
+          "y": 850.2000122070312,
+          "w": 14,
+          "h": 14
+        },
+        "overflow": "hidden",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(241, 245, 255)",
+        "stroke": "none",
+        "html": "<svg class=\"provider-icon provider-icon-opencode \" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"currentColor\" stroke=\"none\" aria-hidden=\"true\"><path d=\"M5 5h14v14H5z\"></path><path d=\"m8 8 8 8M16 8l-8 8\"></path></svg>"
+      },
+      {
+        "rect": {
+          "x": 254.40000915527344,
+          "y": 456,
+          "w": 18,
+          "h": 18
+        },
+        "overflow": "hidden",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(241, 245, 255)",
+        "stroke": "none",
+        "html": "<svg class=\"provider-icon provider-icon-opencode \" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"currentColor\" stroke=\"none\" aria-hidden=\"true\"><path d=\"M5 5h14v14H5z\"></path><path d=\"m8 8 8 8M16 8l-8 8\"></path></svg>"
+      },
+      {
+        "rect": {
+          "x": 254.40000915527344,
+          "y": 605.5,
+          "w": 13,
+          "h": 13
+        },
+        "overflow": "hidden",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(241, 245, 255)",
+        "stroke": "none",
+        "html": "<svg class=\"provider-icon provider-icon-opencode \" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"currentColor\" stroke=\"none\" aria-hidden=\"true\"><path d=\"M5 5h14v14H5z\"></path><path d=\"m8 8 8 8M16 8l-8 8\"></path></svg>"
+      }
+    ]
+  },
+  {
+    "selector": ".chat-panel",
+    "elements": []
+  },
+  {
+    "selector": ".chat-input-area",
+    "elements": []
+  },
+  {
+    "selector": ".center-content",
+    "elements": [
+      {
+        "rect": {
+          "x": 279,
+          "y": 0,
+          "w": 796,
+          "h": 900
+        },
+        "overflow": "visible",
+        "position": "static",
+        "right": "auto",
+        "left": "auto",
+        "fill": "rgb(0, 0, 0)",
+        "stroke": "none"
+      }
+    ]
+  }
+]

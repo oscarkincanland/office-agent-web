@@ -1,0 +1,9 @@
+### Result
+Total messages: 5 (Errors: 1, Warnings: 1)
+Returning 2 messages for level "warning"
+
+[ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:3002/api/doc/%E5%AE%A1%E6%9F%A5%E6%8A%A5%E5%91%8A_%E5%85%AC%E4%BA%A4%E4%BD%93%E6%A3%80%E7%B3%BB%E7%BB%9F%E4%BA%A7%E5%93%81%E8%AF%B4%E6%98%8E%E4%B9%A61.md?cwd=F%3A%5CClaude+code%E6%9C%AC%E5%9C%B0%E6%96%87%E4%BB%B6%5Coffice-agent-web%5Coffice-workspace&wsid=F%3A%5CClaude+code%E6%9C%AC%E5%9C%B0%E6%96%87%E4%BB%B6%5Coffice-agent-web%5Coffice-workspace&client=client-1bhf0xip&thread=thread-27cf9c60-8f38-4ad1-9183-afa86364306b:0
+[WARNING] 创建新会话失败，将在首次对话时自动创建: Converting circular structure to JSON
+    --> starting at object with constructor 'SVGPathElement'
+    |     property '__reactFiber$kserxoxlj' -> object with constructor 'lE'
+    --- property 'stateNode' closes the circle @ http://127.0.0.1:3002/assets/index-BOmS6ZhM.js:137

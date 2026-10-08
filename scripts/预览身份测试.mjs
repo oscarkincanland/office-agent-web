@@ -154,9 +154,10 @@ await test("标签按工作区 + 相对路径去重（不再只按 name）", () 
   assert.match(open, /setActiveTab\(id\)/, "activeTab 应为身份键");
   // closeTab 也按 id
   assert.match(App, /const closeTab = useCallback\(\(id\)/, "closeTab 应按 id");
-  // 持久化与恢复带 cwd
-  assert.match(App, /tabs: tabs\.map\(\(t\) => \(\{ id: t\.id \|\| t\.name, name: t\.name, kind: t\.kind \|\| "", cwd:/, "持久化应记录 id 与 cwd");
-  assert.match(App, /open\(t\.name, undefined, t\.cwd\)/, "恢复应按记录的工作区重新获取版本");
+  // 已批准规则（交接文档交互 4）：刷新不恢复上次打开的标签，所以不再持久化 tabs。
+  // 标签身份仍在对象上（id/cwd），只是不经 localStorage 跨刷新恢复。
+  assert.doesNotMatch(App, /tabs: tabs\.map\(/, "不应持久化标签，刷新后回到空白新会话");
+  assert.match(App, /const id = fileIdentityKey\(identity\)/, "标签身份仍按工作区 + 相对路径生成");
 });
 
 console.log("\n▶ 前端接线：DocViewer / DocxViewer / PptxViewer");

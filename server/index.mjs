@@ -15,7 +15,7 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
 import { markRunTiming, attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
@@ -771,14 +771,28 @@ app.get("/api/m3/network-stats", (_req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 文件列表/搜索的身份解析：工作区必须由请求显式携带，服务端不再依赖全局
+// 可变的 getWorkspace()。全局变量会被其他浏览器页/后台任务改写，导致页面显示
+// A 工作区、列表却来自 B（交接文档交互 1）。
+// 兼容：未传 workspace 时仍回退全局值，但响应里回显真实来源供前端核对。
+function resolveRequestWorkspace(req) {
+  const raw = String(req.query?.workspace || req.query?.cwd || "").trim();
+  if (!raw) return { workspace: getWorkspace(), explicit: false };
+  const normalized = normalizeWorkspace(raw);
+  if (!normalized) return { workspace: null, explicit: true, invalid: raw };
+  return { workspace: normalized, explicit: true };
+}
+
 app.get("/api/files", (req, res) => {
   const dir = req.query.dir || "";
   // 只允许相对路径，防止越界
   if (dir && (dir.includes("..") || dir.startsWith("/") || /^[a-zA-Z]:/.test(dir))) {
     return res.status(400).json({ error: "invalid dir" });
   }
-  const target = dir ? resolvePath(dir) : getWorkspace();
-  if (dir && (!target || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found" });
+  const { workspace, explicit, invalid } = resolveRequestWorkspace(req);
+  if (explicit && !workspace) return res.status(409).json({ error: "unknown workspace", workspace: invalid });
+  const target = dir ? resolvePath(dir, workspace) : workspace;
+  if (dir && (!target || !fs.existsSync(target) || !fs.statSync(target).isDirectory())) return res.status(404).json({ error: "directory not found", workspace });
   const files = listWorkspace(target).map((item) => {
     if (item.isDir) return item;
     const p = path.join(target, item.name);
@@ -787,15 +801,17 @@ app.get("/api/files", (req, res) => {
       return { ...item, mime: mimeForExt(item.ext), mtime: st.mtimeMs, version: `${st.size}:${st.mtimeMs}` };
     } catch { return item; }
   });
-  res.json({ files, dir, workspace: getWorkspace() });
+  res.json({ files, dir, workspace });
 });
 
 app.get("/api/files/search", (req, res) => {
   const query = String(req.query.q || "").trim();
   const limit = Math.max(1, Math.min(500, Number.parseInt(String(req.query.limit || "200"), 10) || 200));
-  if (!query) return res.json({ files: [], query: "", workspace: getWorkspace() });
+  const { workspace, explicit, invalid } = resolveRequestWorkspace(req);
+  if (explicit && !workspace) return res.status(409).json({ error: "unknown workspace", workspace: invalid });
+  if (!query) return res.json({ files: [], query: "", workspace });
   try {
-    res.json({ files: searchWorkspace(query, { limit }), query, workspace: getWorkspace() });
+    res.json({ files: searchWorkspace(query, { dir: workspace, limit }), query, workspace });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -898,30 +914,36 @@ async function withOfficecliReleaseRetry(workspace, fileName, operation) {
 }
 
 app.post("/api/files/upload", async (req, res) => {
-  const { name, base64 } = req.body || {};
+  const { name, base64, workspace: rawWorkspace } = req.body || {};
   const safe = safeName(name);
   if (!safe || !base64) return res.status(400).json({ error: "invalid upload" });
   const buf = Buffer.from(base64, "base64");
   if (!/\.(docx|xlsx|xls|pptx|pdf|csv|json|md|markdown|txt|html|htm)$/i.test(safe)) return res.status(400).json({ error: "不支持的格式" });
+  // 上传必须落在请求声明的工作区，不能用全局可变值（交互 1）。
+  const requested = rawWorkspace ? normalizeWorkspace(String(rawWorkspace)) : null;
+  if (rawWorkspace && !requested) return res.status(409).json({ error: "unknown workspace", workspace: rawWorkspace });
   try {
-    const workspace = getWorkspace();
+    const workspace = requested || getWorkspace();
     const result = await withOfficecliReleaseRetry(workspace, safe, () =>
       writeWorkspaceFile({ workspace, targetPath: path.join(workspace, safe), content: buf, kind: "ui_upload" }));
-    res.json({ ...result, file: safe });
+    res.json({ ...result, file: safe, workspace });
   } catch (error) {
     respondWorkspaceFileError(req, res, error);
   }
 });
 
 app.post("/api/files/delete", async (req, res) => {
-  const p = resolvePath(req.body?.name);
+  const { name, workspace: rawWorkspace } = req.body || {};
+  const requested = rawWorkspace ? normalizeWorkspace(String(rawWorkspace)) : null;
+  if (rawWorkspace && !requested) return res.status(409).json({ error: "unknown workspace", workspace: rawWorkspace });
+  const workspaceRoot = requested || getWorkspace();
+  const p = resolvePath(name, workspaceRoot);
   if (!p) return res.status(404).json({ error: "not found" });
   try {
-    const workspace = getWorkspace();
-    const rel = path.relative(workspace, p);
-    await withOfficecliReleaseRetry(workspace, rel, () =>
-      withWriteLockAsync({ workspace, targetPath: p, runId: `ui_${crypto.randomUUID()}`, kind: "ui_delete" }, () => fs.unlinkSync(p)));
-    res.json({ ok: true, file: rel.replace(/\\/g, "/") });
+    const rel = path.relative(workspaceRoot, p);
+    await withOfficecliReleaseRetry(workspaceRoot, rel, () =>
+      withWriteLockAsync({ workspace: workspaceRoot, targetPath: p, runId: `ui_${crypto.randomUUID()}`, kind: "ui_delete" }, () => fs.unlinkSync(p)));
+    res.json({ ok: true, file: rel.replace(/\\/g, "/"), workspace: workspaceRoot });
   } catch (error) {
     respondWorkspaceFileError(req, res, error);
   }
@@ -2603,10 +2625,14 @@ function annotateSessionThread(sessionId, threadId) {
 app.get("/api/runs", (req, res) => {
   const rawCwd = String(req.query.cwd || "");
   const cwd = rawCwd ? (normalizeWorkspace(rawCwd) || "__invalid_workspace__") : "";
-  const includeEvents = ["all", "none", "latest"].includes(String(req.query.includeEvents || ""))
+  // fields=summary：任务中心列表/徽标只消费状态摘要，不需要步骤、待办与事件；
+  // 省下的解析与传输对首屏和高频轮询都直接可见（明细仍由 /api/runs/:id 单条加载）。
+  const summaryOnly = String(req.query.fields || "") === "summary";
+  const requestedEvents = ["all", "none", "latest"].includes(String(req.query.includeEvents || ""))
     ? String(req.query.includeEvents)
     : "latest";
-  res.json({ runs: listRuns({
+  const includeEvents = summaryOnly ? "none" : requestedEvents;
+  const runs = listRuns({
     threadId: String(req.query.thread || ""),
     sessionId: String(req.query.session || ""),
     cwd,
@@ -2616,7 +2642,8 @@ app.get("/api/runs", (req, res) => {
     query: String(req.query.query || ""),
     limit: parseInt(req.query.limit, 10) || 50,
     includeEvents,
-  }) });
+  });
+  res.json({ runs: summaryOnly ? runs.map(runSummaryView) : runs });
 });
 
 // 根级持久事件流：跨所有 thread 订阅当前 client 的可恢复状态事件。
@@ -3568,7 +3595,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       validations: [...validations, ...stagedValidations],
       completion: failureCompletion,
     });
-    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
+    if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     return;
   }
 
@@ -3603,7 +3630,7 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       references: resolved,
       status: completed?.status || finalStatus,
     });
-    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
+    if (run) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: completed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: completed?.status || finalStatus, verificationStatus: completed?.verificationStatus || "not_checked", completion: completed?.completion || resolveRunCompletion(entry, finalStatus, { artifacts: publishedCount, validations: allValidations }), finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
   }
 }
 
@@ -3749,6 +3776,8 @@ app.post("/api/agent/prompt", async (req, res) => {
       runtimeSnapshot,
       snapshotMode: tracksWorkspace ? "full" : "none",
       beforeSnapshot: tracksWorkspace ? before : null,
+      // 本轮实际使用的模型（含刚恢复的备用模型）：会话里按轮显示模型与切换分割线都靠它。
+      model: effectiveModel || null,
     });
     // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
     markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
@@ -3866,7 +3895,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       const cancelled = getRun(run.id)?.status === "cancel_requested";
       const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
       const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
-      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
+      if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
     return;
@@ -3940,7 +3969,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       references,
       status: finished?.status || status,
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || status, verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
   } catch (error) {
     const cancelled = getRun(run.id)?.status === "cancel_requested";
@@ -3953,7 +3982,7 @@ async function executeContinuation({ key, entry, run, task, references, workflow
       summary: cancelled ? "恢复任务已取消" : "恢复任务失败",
       completion: resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { runId: run.id }),
     });
-    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), finalMessageId: getRun(run.id)?.finalMessageId || null });
+    emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: finished?.artifacts || [], references, reviewSources: entry.reviewSources || [], status: finished?.status || "failed", verificationStatus: finished?.verificationStatus || "not_checked", completion: finished?.completion || null, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     return finished;
     return finished;
   }

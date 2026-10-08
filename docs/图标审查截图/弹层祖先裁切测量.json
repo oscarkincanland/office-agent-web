@@ -1,0 +1,132 @@
+{
+  "panels": [
+    [
+      {
+        "class": "ct-pop model-control-pop",
+        "rect": [
+          241.60000610351562,
+          435.20001220703125,
+          320,
+          403
+        ],
+        "overflow": "hidden",
+        "left": "-178.2px",
+        "right": "0px",
+        "width": "320px"
+      },
+      {
+        "class": "ct-popwrap model-control-wrap",
+        "rect": [
+          419.8000183105469,
+          842.2000122070312,
+          141.8000030517578,
+          30
+        ],
+        "overflow": "visible",
+        "left": "0px",
+        "right": "0px",
+        "width": "141.8px"
+      },
+      {
+        "class": "chat-toolbar-group toolbar-agent-group",
+        "rect": [
+          416.8000183105469,
+          841.2000122070312,
+          147.8000030517578,
+          32
+        ],
+        "overflow": "visible",
+        "left": "auto",
+        "right": "auto",
+        "width": "147.8px"
+      },
+      {
+        "class": "chat-toolbar",
+        "rect": [
+          314.8000183105469,
+          835.4000244140625,
+          724.4000244140625,
+          37.79999923706055
+        ],
+        "overflow": "visible",
+        "left": "0px",
+        "right": "0px",
+        "width": "724.4px"
+      },
+      {
+        "class": "chat-input",
+        "rect": [
+          301,
+          719,
+          752,
+          163
+        ],
+        "overflow": "visible",
+        "left": "auto",
+        "right": "auto",
+        "width": "752px"
+      },
+      {
+        "class": "chat",
+        "rect": [
+          279,
+          66,
+          796,
+          834
+        ],
+        "overflow": "visible",
+        "left": "auto",
+        "right": "auto",
+        "width": "796px"
+      },
+      {
+        "class": "center-chat-slot",
+        "rect": [
+          279,
+          66,
+          796,
+          834
+        ],
+        "overflow": "hidden",
+        "left": "auto",
+        "right": "auto",
+        "width": "796px"
+      },
+      {
+        "class": "center-content",
+        "rect": [
+          279,
+          0,
+          796,
+          900
+        ],
+        "overflow": "visible",
+        "left": "auto",
+        "right": "auto",
+        "width": "796px"
+      },
+      {
+        "class": "center-area",
+        "rect": [
+          279,
+          0,
+          796,
+          900
+        ],
+        "overflow": "visible",
+        "left": "0px",
+        "right": "0px",
+        "width": "796px"
+      }
+    ]
+  ],
+  "stylesheets": [
+    "http://127.0.0.1:3002/assets/index-CJciTi4p.css",
+    "http://127.0.0.1:3002/assets/DocViewer-g3oyHOct.css"
+  ],
+  "env": {
+    "w": 1440,
+    "h": 900,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+  }
+}

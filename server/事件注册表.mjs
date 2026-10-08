@@ -69,6 +69,7 @@ const REGISTRY = [
   { type: "agent_retry_end", lifecycle: true, persist: true, note: "模型重试结束" },
   { type: "agent_model_fallback", lifecycle: true, persist: true, note: "通道切换到备用模型" },
   { type: "agent_model_fallback_failed", lifecycle: true, persist: true, note: "通道切换失败" },
+  { type: "model_switched", lifecycle: true, persist: true, note: "模型切换（用户切换/排队生效/通道回退），界面据此画切换分割线" },
   { type: "agent_queued", lifecycle: true, persist: true, note: "任务排队" },
   { type: "agent_queue_update", lifecycle: true, persist: true, note: "队列状态更新" },
   { type: "steer", lifecycle: true, persist: true, note: "运行中插话/系统提醒" },

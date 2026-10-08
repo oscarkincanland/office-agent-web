@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
 import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
 import { sortFiles } from "./文件排序.js";
+import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
 import Icon from "./Icon.jsx";
 import Logo from "./Logo.jsx";
@@ -12,24 +13,25 @@ import 跑马灯文本 from "./跑马灯文本.jsx";
 // 运行中的状态集合：这些会话的名字用跑马灯 + 灯效展示，一眼看出"还在跑"
 const RUNNING_SESSION_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
 
-const FILE_TYPE_META = {
-  docx: { label: "W", className: "word", title: "Word 文档" },
-  xlsx: { label: "X", className: "excel", title: "Excel 工作簿" },
-  pptx: { label: "P", className: "powerpoint", title: "PowerPoint 演示文稿" },
-  pdf: { label: "PDF", className: "pdf", title: "PDF 文档" },
-  md: { label: "M", className: "markdown", title: "Markdown 文档" },
-  markdown: { label: "M", className: "markdown", title: "Markdown 文档" },
-  csv: { label: "CSV", className: "csv", title: "CSV 数据" },
-  json: { label: "{}", className: "json", title: "JSON 数据" },
-  html: { label: "<>" , className: "html", title: "HTML 页面" },
-  htm: { label: "<>" , className: "html", title: "HTML 页面" },
-  txt: { label: "TXT", className: "text", title: "文本文件" },
-};
+// 工作区身份比较：服务端返回 realpath，客户端保存的也是 realpath，但 Windows 的
+// 大小写与分隔符差异会让严格比较误报"来源不一致"。统一归一化后再比。
+function sameWorkspacePath(a, b) {
+  if (!a || !b) return false;
+  const normalize = (value) => String(value).replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+  return normalize(a) === normalize(b);
+}
 
+// 问题 6：文件类型表达统一到 产物类型.js 的单一映射（图标名 + 类型文案），
+// 文件树、预览标签、产物卡片、命令面板因此对同一文件给出同一种图形与说法；
+// 此前这里另写了一份「彩色字母徽章」，与产物/预览的线性图标互相漂移。
 function FileTypeIcon({ file, size = "normal" }) {
-  if (file?.isDir) return <span className="file-type-icon dir" title="文件夹"><Icon name="folder" size={12} /></span>;
-  const meta = FILE_TYPE_META[String(file?.ext || "").toLowerCase()] || { label: "•", className: "other", title: "其他文件" };
-  return <span className={`file-type-icon ${meta.className} ${size}`} title={meta.title}>{meta.label}</span>;
+  if (file?.isDir) return <span className="file-type-icon dir" title="文件夹"><Icon name="folder" size={size === "small" ? 11 : 12} /></span>;
+  const info = artifactTypeInfo(file?.name || "");
+  return (
+    <span className={`file-type-icon ${size}`} title={`${info.label}${info.ext ? ` · ${info.ext.toUpperCase()}` : ""}`}>
+      <Icon name={info.icon} size={size === "small" ? 11 : 12} />
+    </span>
+  );
 }
 // 启动未就绪区域的稳定骨架：静态占位、可被读屏播报，不把"加载中"显示成"空结果"
 const NO_CHANGED_FILES = new Set();
@@ -309,6 +311,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   }); // 文件树排序：time=按修改时间，type=按文件类型分组
   const [fileSearchResults, setFileSearchResults] = useState(null);
   const [fileSearchLoading, setFileSearchLoading] = useState(false);
+  // 搜索失败/身份不一致要能说清原因，不能退化成"没有找到匹配的文件或目录"。
+  const [searchError, setSearchError] = useState("");
   const fileSearchSeqRef = useRef(0);
   const fileSearchTimerRef = useRef(null);
   const [customMode, setCustomMode] = useState(false);
@@ -346,10 +350,21 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     fileSearchTimerRef.current = window.setTimeout(async () => {
       setFileSearchLoading(true);
       try {
-        const result = await searchFiles(query, 200);
-        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults(result.files || []);
-      } catch {
-        if (requestSeq === fileSearchSeqRef.current) setFileSearchResults([]);
+        // 搜索也必须带上当前工作区：否则结果可能来自其他页面切换后的工作区。
+        const result = await searchFiles(query, 200, currentWorkspace);
+        if (requestSeq !== fileSearchSeqRef.current) return;
+        if (result.workspace && currentWorkspace && !sameWorkspacePath(result.workspace, currentWorkspace)) {
+          setSearchError(`搜索来源与当前工作区不一致（${result.workspace}）`);
+          setFileSearchResults([]);
+          return;
+        }
+        setSearchError("");
+        setFileSearchResults(result.files || []);
+      } catch (err) {
+        if (requestSeq === fileSearchSeqRef.current) {
+          setSearchError(err?.message || "搜索失败");
+          setFileSearchResults([]);
+        }
       } finally {
         if (requestSeq === fileSearchSeqRef.current) setFileSearchLoading(false);
       }
@@ -456,7 +471,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
     if (!f) return;
     try {
       const { data } = await fileToBase64(f);
-      await uploadFile(f.name, data);
+      const result = await uploadFile(f.name, data, currentWorkspace);
+      if (result?.workspace && currentWorkspace && !sameWorkspacePath(result.workspace, currentWorkspace)) {
+        throw new Error(`上传落点与当前工作区不一致（${result.workspace}）`);
+      }
       onUploaded();
     } catch (err) { alert("上传失败: " + err.message); }
     e.target.value = "";
@@ -483,7 +501,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
       let name = "新建文档.docx";
       let i = 2;
       while (names.has(name)) name = `新建文档 ${i++}.docx`;
-      await uploadFile(name, data);
+      await uploadFile(name, data, currentWorkspace);
       onUploaded();
     } catch (err) { alert("新建失败: " + err.message); }
     setCreatingWord(false);
@@ -491,7 +509,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
 
   const handleDeleteFile = async (name) => {
     if (!confirm(`删除 ${name} ?`)) return;
-    try { await deleteFile(name); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
+        try { await deleteFile(name, currentWorkspace); onRefreshFiles(); } catch (err) { alert("删除失败: " + err.message); }
   };
 
   // 在文件管理器中显示（macOS 为 Finder 中选中该文件）
@@ -675,7 +693,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {workspaces.map((w) => (
             <option key={w.path} value={w.path}>{w.name}</option>
           ))}
-          <option value="__custom__">📂 自定义路径...</option>
+          <option value="__custom__">自定义路径…</option>
         </select>
          <button className="btn-sm sidebar-new-session" onClick={() => onNewSession && onNewSession()} title="新建会话">
            <Icon name="plus" size={13} />
@@ -689,7 +707,8 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                  try { await deleteWorkspace(currentWorkspace); onWorkspaceRemove && onWorkspaceRemove(currentWorkspace); } catch (e) { alert("移除失败: " + e.message); }
                }
              }}
-           >×</button>
+             aria-label="从列表移除该工作区"
+           ><Icon name="close" size={11} /></button>
          )}
          {primaryTab === "file" && <button className={`btn-sm sidebar-root-btn ${rootOpen ? "active" : ""}`} onClick={() => setRootOpen((v) => !v)} title="登记工作区外的本地目录">外部目录</button>}
       </div>
@@ -702,7 +721,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           {fileRoots.map((root) => (
             <div className="external-root-item" key={root.id} title={root.path}>
               <span>{root.label || root.path}</span>
-              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录">×</button>
+              <button className="btn-icon danger" onClick={async () => { await removeFileRoot(root.id); refreshFileRoots(); }} title="移除目录" aria-label="移除目录"><Icon name="close" size={11} /></button>
             </div>
           ))}
           {!fileRoots.length && <div className="external-root-empty">尚未登记外部目录</div>}
@@ -899,11 +918,12 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             value={fileQ}
             onChange={(e) => setFileQ(e.target.value)}
           />
-          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除">×</button>}
+          {fileQ && <button className="file-search-clear" onClick={() => setFileQ("")} title="清除" aria-label="清除搜索"><Icon name="close" size={11} /></button>}
         </div>
         <div className="file-list">
           {fileSearchLoading && <div className="file-search-status">正在搜索整个工作区…</div>}
-          {!fileSearchLoading && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
+          {!fileSearchLoading && searchError && <div className="file-search-status error" role="alert">{searchError}</div>}
+          {!fileSearchLoading && !searchError && fileQ.trim() && fileSearchResults?.length === 0 && <div className="file-search-status">没有找到匹配的文件或目录</div>}
           {sortFileList(fileQ.trim() ? (fileSearchResults || []) : files).map((f) => {
             const filePath = f.relPath || (currentDir ? `${currentDir}/${f.name}` : f.name);
             const isNew = newFiles.has(filePath);
@@ -925,7 +945,7 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 <FileTypeIcon file={f} />
                 <span className="file-name" title={f.name}>{f.isDir ? f.name : f.name}</span>
                 <span className="file-meta">
-                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? "▶" : formatSize(f.size))}
+                  {fileQ.trim() ? <span className="file-path-hint" title={filePath}>{filePath}</span> : (f.isDir ? <Icon name="chevronRight" size={11} className="file-dir-chevron" /> : formatSize(f.size))}
                   {!f.isDir && <span className="file-mtime">{formatTime(new Date(f.mtime).toISOString())}</span>}
                 </span>
                 <span
@@ -935,9 +955,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                     onAtMention && onAtMention(filePath, f.isDir);
                   }}
                   title="@ 到对话中作为参考"
+                  role="button"
+                  aria-label={`引用 ${f.name}`}
                 >@</span>
                 {!f.isDir && (
-                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }}>x</span>
+                  <span className="file-del" onClick={(e) => { e.stopPropagation(); handleDeleteFile(filePath); }} role="button" aria-label={`删除 ${f.name}`} title={`删除 ${f.name}`}><Icon name="close" size={10} /></span>
                 )}
               </div>
             );

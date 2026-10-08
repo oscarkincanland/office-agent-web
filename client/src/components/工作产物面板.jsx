@@ -120,17 +120,36 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
   const [loading, setLoading] = useState(false);
   const [action, setAction] = useState("");
   const [acceptance, setAcceptance] = useState({});
+  // 交互 6：读取失败、请求中、确实为空、保留旧数据必须是不同状态。
+  // 旧实现把 Promise.all 的失败吞进 catch{}，界面照常显示"暂未生成产物"，
+  // 用户无法区分"没做"与"读不到"。
+  const [loadError, setLoadError] = useState(null); // { message, source }
+  const [staleAt, setStaleAt] = useState(null); // 保留旧数据时的最后成功时间
   const refreshSeqRef = useRef(0);
 
   const refresh = async () => {
     const requestSeq = ++refreshSeqRef.current;
     setLoading(true);
+    setLoadError(null);
+    // 两次读取分开处理：一项失败不应该把另一项的结果也丢掉，失败信息要指明来源。
+    const [runResult, publishedResult] = await Promise.allSettled([
+      listRuns("", 100, { cwd: workspace, projectId }),
+      listPublishedArtifacts(workspace, projectId),
+    ]);
+    if (requestSeq !== refreshSeqRef.current) return;
+    const failures = [];
+    if (runResult.status === "rejected") failures.push({ source: "运行记录", message: runResult.reason?.message || "读取失败" });
+    if (publishedResult.status === "rejected") failures.push({ source: "已发布成果", message: publishedResult.reason?.message || "读取失败" });
+    if (failures.length) {
+      setLoadError({ message: failures.map((item) => `${item.source}：${item.message}`).join("；"), source: failures.map((item) => item.source).join("、") });
+      // 有旧数据时保留并标记陈旧，而不是清空伪装成"没有产物"。
+      if (runs.length || published.length) setStaleAt(Date.now());
+      setLoading(false);
+      return;
+    }
     try {
-      const [runData, publishedData] = await Promise.all([
-        listRuns("", 100, { cwd: workspace, projectId }),
-        listPublishedArtifacts(workspace, projectId),
-      ]);
-      if (requestSeq !== refreshSeqRef.current) return;
+      const runData = runResult.value;
+      const publishedData = publishedResult.value;
       // 先锁定当前会话的 Run（包括没有产物的最新一轮），再按范围选择。
       // 否则最新 Run 无文件时会被滤掉，改动面板就会误显上一轮文件。
       const sessionRuns = (runData.runs || []).filter((run) => Boolean(currentSessionId) && run?.sessionId === currentSessionId);
@@ -139,12 +158,15 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
       const nextRuns = sessionRuns.filter((run) => !scopeRunId || run.id === scopeRunId);
       setRuns(nextRuns);
       setPublished(publishedData.artifacts || []);
+      setStaleAt(null);
       const acceptanceEntries = await Promise.all(nextRuns.slice(0, 12).map(async (run) => {
         try { const result = await getRunAcceptance(run.id); return [run.id, result.run?.acceptance || result.acceptance || null]; } catch { return [run.id, null]; }
       }));
       if (requestSeq !== refreshSeqRef.current) return;
       setAcceptance(Object.fromEntries(acceptanceEntries.filter(([, value]) => value)));
-    } catch {}
+    } catch (error) {
+      if (requestSeq === refreshSeqRef.current) setLoadError({ message: error?.message || "成果读取失败", source: "成果" });
+    }
     if (requestSeq === refreshSeqRef.current) setLoading(false);
   };
 
@@ -207,8 +229,17 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
       )}
       <div className="artifact-list-card">
         <div className="artifact-list-head"><span>{artifactScope === "run" ? "本轮文件" : "会话文件"}</span><small>{currentSessionId ? (artifactScope === "run" ? "已按当前 Run 筛选" : "已按当前会话筛选") : "当前工作区"}</small></div>
+        {/* 交互 6：读取失败必须自报家门并给重试，不能退化成"暂未生成产物"。 */}
+        {loadError && (
+          <div className="preview-empty artifact-load-error" role="alert">
+            <Icon name="warning" size={16} />
+            <span>读取失败（{loadError.source}）：{loadError.message}</span>
+            {staleAt && <small>下方保留的是 {new Date(staleAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} 之前读取的数据</small>}
+            <button className="btn-xs" onClick={() => refresh()} disabled={loading}>{loading ? "重试中…" : "重试"}</button>
+          </div>
+        )}
         {loading && <div className="preview-empty">正在读取产物清单…</div>}
-        {!loading && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
+        {!loading && !loadError && !entries.length && <div className="preview-empty"><Icon name="file" size={20} />{artifactScope === "run" ? "本轮暂未生成产物" : "当前会话暂未生成产物"}{runs.some((run) => run.snapshotTruncated) ? "（工作区过大，部分轮次的产物检测可能不完整）" : ""}</div>}
         {entries.map(({ artifact, run }, index) => {
         const name = artifactName(artifact.path);
         const publication = publishedByArtifact.get(artifact.artifactId);

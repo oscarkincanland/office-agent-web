@@ -517,7 +517,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
           <button className="btn-sm" onClick={() => doSearch(searchQ)} disabled={searching}>
             {searching ? "…" : <Icon name="search" size={12} />}
           </button>
-          {searchQ && <button className="btn-sm" onClick={() => { setSearchQ(""); setResults(null); }}>✕</button>}
+          {searchQ && <button className="btn-sm" onClick={() => { setSearchQ(""); setResults(null); }} aria-label="清除搜索"><Icon name="close" size={12} /></button>}
         </div>
         <div className="kb-view-toggle">
           <button className={"btn-sm" + (view === "browse" ? " active" : "")} onClick={() => setView("browse")}>浏览</button>
@@ -647,7 +647,7 @@ export default function KnowledgeBase({ onExit, onAtMention, clientId, workspace
                 {tabs.map((t) => (
                   <div key={t.relPath} className={"kb-tab" + (activeTab === t.relPath ? " active" : "")} onClick={() => setActiveTab(t.relPath)} title={t.relPath}>
                     <span className="kb-tab-title">{t.title}</span>
-                    <span className="kb-tab-close" onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }}>✕</span>
+                    <span className="kb-tab-close" role="button" aria-label={`关闭 ${t.title}`} onClick={(e) => { e.stopPropagation(); closeTab(t.relPath); }}><Icon name="close" size={11} /></span>
                   </div>
                 ))}
               </div>

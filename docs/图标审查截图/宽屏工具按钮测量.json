@@ -1,0 +1,210 @@
+{
+  "viewport": [
+    1440,
+    900
+  ],
+  "buttons": [
+    {
+      "title": "新建会话",
+      "ariaLabel": null,
+      "class": "btn-sm sidebar-new-session",
+      "size": [
+        26.600000381469727,
+        20
+      ],
+      "icon": {
+        "class": "icon icon-plus ",
+        "size": [
+          13,
+          13
+        ]
+      }
+    },
+    {
+      "title": "收起侧栏",
+      "ariaLabel": null,
+      "class": "btn-sm",
+      "size": [
+        32.60000228881836,
+        25.600000381469727
+      ],
+      "icon": null
+    },
+    {
+      "title": "Chat：只读问答和资料检索",
+      "ariaLabel": null,
+      "class": "conversation-mode-option active",
+      "size": [
+        72,
+        31
+      ],
+      "icon": {
+        "class": "icon icon-comment ",
+        "size": [
+          15,
+          15
+        ]
+      }
+    },
+    {
+      "title": "Work：允许 Agent 调用编辑工具；实际读写与联网仍受运行环境权限限制",
+      "ariaLabel": null,
+      "class": "conversation-mode-option work ",
+      "size": [
+        75.5625,
+        31
+      ],
+      "icon": {
+        "class": "icon icon-tool ",
+        "size": [
+          15,
+          15
+        ]
+      }
+    },
+    {
+      "title": "Review：先依据实际读取的规范生成审查报告与安全副本，确认后才写回原文",
+      "ariaLabel": null,
+      "class": "conversation-mode-option review ",
+      "size": [
+        85.01250457763672,
+        31
+      ],
+      "icon": {
+        "class": "icon icon-shield ",
+        "size": [
+          15,
+          15
+        ]
+      }
+    },
+    {
+      "title": "新建对话",
+      "ariaLabel": null,
+      "class": "btn-sm topbar-new-chat",
+      "size": [
+        30,
+        30
+      ],
+      "icon": {
+        "class": "icon icon-plus ",
+        "size": [
+          13,
+          13
+        ]
+      }
+    },
+    {
+      "title": "显示右侧预览",
+      "ariaLabel": "显示右侧预览",
+      "class": "btn-sm topbar-preview-toggle",
+      "size": [
+        30,
+        30
+      ],
+      "icon": {
+        "class": "icon icon-layers ",
+        "size": [
+          13,
+          13
+        ]
+      }
+    },
+    {
+      "title": "显示内置浏览器",
+      "ariaLabel": "内置浏览器",
+      "class": "btn-sm topbar-browser-toggle ",
+      "size": [
+        34.60000228881836,
+        24
+      ],
+      "icon": {
+        "class": "icon icon-globe ",
+        "size": [
+          13,
+          13
+        ]
+      }
+    },
+    {
+      "title": "任务：执行中 0，恢复中 0，运行结束 8",
+      "ariaLabel": null,
+      "class": "btn-sm task-center-trigger ",
+      "size": [
+        30,
+        30
+      ],
+      "icon": {
+        "class": "icon icon-list ",
+        "size": [
+          14,
+          14
+        ]
+      }
+    },
+    {
+      "title": "上传图片",
+      "ariaLabel": null,
+      "class": "ct-btn",
+      "size": [
+        28,
+        27
+      ],
+      "icon": {
+        "class": "icon icon-image ",
+        "size": [
+          14,
+          14
+        ]
+      }
+    },
+    {
+      "title": "上传附件（docx/xlsx/pdf/md/txt 等）",
+      "ariaLabel": null,
+      "class": "ct-btn",
+      "size": [
+        28,
+        27
+      ],
+      "icon": {
+        "class": "icon icon-link ",
+        "size": [
+          14,
+          14
+        ]
+      }
+    },
+    {
+      "title": "压缩当前 Pi 会话上下文，保留任务摘要",
+      "ariaLabel": null,
+      "class": "ct-btn ct-context-btn ",
+      "size": [
+        28,
+        27
+      ],
+      "icon": {
+        "class": "icon icon-layers ",
+        "size": [
+          14,
+          14
+        ]
+      }
+    },
+    {
+      "title": "新建会话",
+      "ariaLabel": null,
+      "class": "ct-btn",
+      "size": [
+        28,
+        27
+      ],
+      "icon": {
+        "class": "icon icon-plus ",
+        "size": [
+          14,
+          14
+        ]
+      }
+    }
+  ]
+}

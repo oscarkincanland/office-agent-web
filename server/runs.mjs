@@ -426,7 +426,7 @@ export function filterRunChanges(run, changes = []) {
   });
 }
 
-export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null } = {}) {
+export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorkspace(), task = null, references = [], workflow = null, projectId = null, capabilityPlan = null, runtimeSnapshot = null, recoveryChain = [], snapshotMode = "full", beforeSnapshot = null, model = null } = {}) {
   const id = `run_${crypto.randomUUID()}`;
   const staging = ensureRunStaging(id, cwd);
   const normalizedSnapshotMode = snapshotMode === "none" ? "none" : "full";
@@ -447,6 +447,9 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     sessionId,
     projectId: projectId || null,
     cwd: before.root,
+    // 本轮实际使用的模型（provider/model）：会话里按轮显示"由谁执行"、以及
+    // 模型切换分割线都读这一份记录，不再用"当前选择"冒充历史。
+    model: model ? String(model) : null,
     task: task || null,
     capabilityPlan: capabilityPlan || task?.capabilityPlan || null,
     runtime: runtimeSnapshot || null,
@@ -1037,6 +1040,33 @@ function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) 
     todoProgress: { completed: todoCompleted, total: todos.length, running: todos.filter((item) => item.status === "in_progress").length, blocked: todos.filter((item) => item.status === "blocked").length, failed: todos.filter((item) => item.status === "failed").length },
     currentStep: steps.find((step) => step.id === publicRun.currentStepId) || steps.find((step) => step.status === "running") || null,
     workspaceSnapshot: { beforeFiles: Object.keys(before?.files || {}).length, afterFiles: Object.keys(after?.files || {}).length },
+  };
+}
+
+// 任务中心列表、徽标计数只需要状态摘要：完整 Run 视图（步骤/待办/事件/引用）
+// 单条可达数十 KB，列表一次 50 条就是 1MB 级响应，而明细点击时另有单条加载。
+export function runSummaryView(view) {
+  if (!view) return null;
+  return {
+    id: view.id,
+    status: view.status,
+    mode: view.mode || "",
+    task: view.task ? { goal: view.task.goal || "", title: view.task.title || "" } : null,
+    summary: view.summary || "",
+    completion: view.completion || null,
+    sessionId: view.sessionId || null,
+    threadId: view.threadId || null,
+    projectId: view.projectId || null,
+    cwd: view.cwd || "",
+    startedAt: view.startedAt || null,
+    finishedAt: view.finishedAt || null,
+    acceptanceStatus: view.acceptanceStatus || null,
+    verificationStatus: view.verificationStatus || null,
+    progress: view.progress || null,
+    todoProgress: view.todoProgress || null,
+    actions: view.actions || null,
+    eventCount: view.eventCount || 0,
+    workflow: view.workflow ? { id: view.workflow.id, name: view.workflow.name } : null,
   };
 }
 

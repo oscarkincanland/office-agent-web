@@ -35,7 +35,7 @@ export const STAGE_ONLY_EVENTS = new Set([
   "run_started", "prompt", "runtime_health", "stats", "token", "heartbeat", "message_start", "message_end",
   "runtime_connecting", "run_admitting", "run_admitted", "model_request_started", "agent_started",
   "turn_started", "turn_ended", "agent_turn_end", "mode_policy", "thinking_level", "capability_plan",
-  "agent_end", "assistant_final",
+  "agent_end", "assistant_final", "text_boundary", "thinking_boundary", "tool_call_progress",
 ]);
 
 /**
@@ -72,6 +72,7 @@ export const EVENT_UI = Object.freeze({
   agent_retry_end: { phase: "executing" },
   agent_model_fallback: { phase: "executing" },
   agent_model_fallback_failed: { phase: "executing" },
+  model_switched: { phase: "executing" },
   context_compacting: { phase: "executing" },
   context_compacted: { phase: "executing" },
   context_compact_warning: { phase: "executing" },
@@ -87,7 +88,28 @@ export const EVENT_UI = Object.freeze({
   artifact_staged: { phase: "delivering" },
   artifact_materialized: { phase: "delivering" },
   artifact_published: { phase: "delivering" },
+  artifact_rolled_back: { phase: "delivering" },
   write_cleaned: { phase: "delivering" },
+  // 恢复与取消（不推进阶段，避免把长任务拉回早期阶段）
+  run_recovery_started: { phase: "executing" },
+  run_recovered: { phase: "executing" },
+  run_cancel_requested: {},
+  runtime_error: { phase: "executing" },
+  map_action: { phase: "executing" },
+  step_updated: {},
+  // 记忆建议（A03：只作为过程事件，不再插入主消息流）
+  memory_initialized: {},
+  memory_proposal: {},
+  memory_proposal_created: {},
+  memory_proposal_updated: {},
+  memory_proposal_edited: {},
+  memory_proposal_resolved: {},
+  memory_proposal_approved: {},
+  memory_proposal_rejected: {},
+  memory_proposal_merged: {},
+  memory_proposal_failed: {},
+  memory_written: {},
+  memory_file_edited: {},
   // 收尾
   agent_turn_end: { phase: "done" },
   agent_summary: { phase: "done" },
@@ -175,11 +197,37 @@ export function flowEventLabel(event) {
     case "agent_retry_end": return data.success ? "模型连接已恢复" : "模型重试结束";
     case "agent_model_fallback": return `切换备用模型${data.to ? `：${data.to}` : ""}`;
     case "agent_model_fallback_failed": return "备用模型切换失败";
+    case "model_switched": {
+      const to = String(data.to || "").trim();
+      if (data.effective === "failed") return `模型切换失败${to ? `：${to}` : ""}`;
+      if (data.reason === "queued" && data.effective === "after-run") return `模型切换已排队：本轮结束后切到 ${to || "所选模型"}`;
+      if (data.reason === "fallback") return `通道回退为 ${to || "备用模型"}`;
+      return `模型切换为 ${to || "所选模型"}`;
+    }
     case "context_compacting": return "压缩上下文";
     case "context_compacted": return "上下文压缩完成";
     case "context_compact_warning": return "上下文压缩有提示";
     case "agent_turn_end": return "模型收尾";
     case "agent_error": return eventMessageText(data.message, data.category === "quota" ? "模型额度不足" : "模型调用失败");
+    case "runtime_error": return eventMessageText(data.message, "运行时错误");
+    case "run_recovery_started": return "正在恢复任务";
+    case "run_recovered": return "任务已恢复";
+    case "run_cancel_requested": return "已请求取消任务";
+    case "step_updated": return `步骤已更新${data.title || data.name ? `：${String(data.title || data.name).slice(0, 40)}` : ""}`;
+    case "artifact_rolled_back": return "产物已回滚";
+    case "map_action": return `地图操作${data.action ? `：${String(data.action).slice(0, 30)}` : ""}`;
+    case "memory_initialized": return "记忆已初始化";
+    case "memory_proposal":
+    case "memory_proposal_created": return "新增记忆建议";
+    case "memory_proposal_updated":
+    case "memory_proposal_edited": return "记忆建议已更新";
+    case "memory_proposal_resolved": return "记忆建议已处理";
+    case "memory_proposal_approved": return "记忆建议已通过";
+    case "memory_proposal_rejected": return "记忆建议已拒绝";
+    case "memory_proposal_merged": return "记忆建议已合并";
+    case "memory_proposal_failed": return "记忆建议处理失败";
+    case "memory_written": return "已写入长期记忆";
+    case "memory_file_edited": return "记忆文件已更新";
     case "write_rejected": return data.message || "工具操作被拦截";
     case "file_changed": return `文件已更新${data.files?.length ? `（${data.files.length}）` : ""}`;
     case "agent_summary": return "生成任务总结";
@@ -216,11 +264,11 @@ function completionLabelSafe(status) {
 /** 事件 → 语气（error / success / running），用于执行流配色 */
 export function flowEventTone(event) {
   const type = String(event?.type || "");
-  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync"].includes(type) || event?.data?.isError || (type === "subagent_end" && ["failed", "cancelled"].includes(event?.data?.status))) return "error";
+  if (["agent_error", "agent_model_fallback_failed", "write_rejected", "officecli_failed", "review_write_blocked", "review_confirmation_rejected", "stream_resync", "runtime_error", "memory_proposal_failed"].includes(type) || event?.data?.isError || (type === "subagent_end" && ["failed", "cancelled"].includes(event?.data?.status))) return "error";
   if (type === "artifacts_validated") return event?.data?.status === "failed" ? "error" : "success";
   if (type === "run_finished") return runConclusion(event).tone;
   if (type === "task_completed") return event?.data?.status === "failed" ? "error" : event?.data?.status === "success" ? "success" : "warning";
-  if (["agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed"].includes(type)) return "success";
+  if (["agent_end", "assistant_final", "tool_end", "agent_retry_end", "context_compacted", "review_source_read", "review_source_applied", "review_confirmed", "memory_written", "memory_proposal_approved", "run_recovered"].includes(type)) return "success";
   return "running";
 }
 

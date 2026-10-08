@@ -376,6 +376,7 @@ export function adaptLegacyRunSummary(message = {}) {
     artifacts,
     cwd: message.workspace || null,
     productPaths: Array.isArray(message.products) ? message.products : [],
+    model: message.model || null,
   };
 }
 
@@ -426,6 +427,8 @@ export function upsertRunSummaryMessage(messages = [], data = {}, {
     artifacts: nextArtifacts,
     runId,
     runStatus: status || "unknown",
+    // 本轮实际使用的模型（服务端 run.model）：会话按轮显示"由谁执行"、以及模型切换分割线都读它。
+    model: String(data.model || previous?.model || ""),
     references: data.references || previous?.references || [],
     task: data.task || previous?.task || null,
     workspace: data.workspace || previous?.workspace || workspace || "",

@@ -300,7 +300,7 @@ export default function TemplateLibrary({ onExit, onOpenFile, onAtMention }) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          {search && <button className="tpl-search-clear" onClick={() => setSearch("")}>×</button>}
+          {search && <button className="tpl-search-clear" onClick={() => setSearch("")} aria-label="清除搜索"><Icon name="close" size={11} /></button>}
         </div>
         <div className="tpl-sort">
           <label className="tpl-sort-label">排序：</label>

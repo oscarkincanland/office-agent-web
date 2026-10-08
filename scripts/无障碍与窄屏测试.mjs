@@ -269,8 +269,9 @@ console.log("\n▶ 最小点击目标与窄屏");
   // 窄窗口：最多两栏（浏览器栏/预览栏让位，对话列保底可读）
   assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.app-browser-slot \{ --browser-w: [^}]*min-width: 0/, "窄窗口浏览器栏应可收缩");
   assert.match(样式, /@media \(max-width: 1024px\) \{[\s\S]{0,320}?\.center-area \{ min-width: 300px/, "窄窗口对话列应保底可读");
-  // 极窄：右侧面板铺满
-  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,260}?\.app-preview-slot, \.app-browser-slot \{[\s\S]{0,200}?flex-basis: 100vw/, "极窄窗口右侧面板应铺满");
+  // 极窄：右侧面板与侧栏改为覆盖层，主区获得全宽（不再以 flex 宽度与对话抢位）
+  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,700}?\.app-preview-slot, \.app-browser-slot \{[\s\S]{0,300}?position: fixed;/, "极窄窗口右侧面板应改为覆盖层，不再与对话抢宽度");
+  assert.match(样式, /@media \(max-width: 768px\) \{[\s\S]{0,1200}?\.sidebar \{[\s\S]{0,400}?transform: translateX\(-100%\)/, "极窄窗口侧栏应改为抽屉，默认让出主区宽度");
   // 任务中心：窄屏全宽 + 换行，无横向穿模
   assert.match(样式, /@media \(max-width: 560px\) \{[\s\S]{0,260}?\.task-center-panel,?\s*\n?\s*\.mp-topbar \.task-center-panel \{[\s\S]{0,220}?position: fixed/, "任务中心窄屏应贴边全宽");
   assert.match(样式, /\.task-center-filters \{ flex-wrap: wrap; \}/, "任务中心筛选应换行");

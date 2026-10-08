@@ -860,7 +860,7 @@ export default function DocViewer({ tabs = [], activeTab, onSwitchTab, onCloseTa
                 aria-label={`关闭 ${t.name}`}
                 title={`关闭 ${t.name}`}
                 onClick={(e) => { e.stopPropagation(); onCloseTab && onCloseTab(tabId(t)); }}
-              >×</button>
+              ><Icon name="close" size={11} /></button>
             </div>
           ))}
         </div>

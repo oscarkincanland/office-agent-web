@@ -24,10 +24,22 @@ export async function api(path, opts = {}) {
   return data;
 }
 
-export const listFiles = (dir) => api(`/api/files${dir ? `?dir=${encodeURIComponent(dir)}` : ""}`);
-export const searchFiles = (query, limit = 200) => api(`/api/files/search?q=${encodeURIComponent(query)}&limit=${limit}`);
-export const uploadFile = (name, base64) => api("/api/files/upload", { method: "POST", body: JSON.stringify({ name, base64 }) });
-export const deleteFile = (name) => api("/api/files/delete", { method: "POST", body: JSON.stringify({ name }) });
+// 文件身份必须随请求显式携带：服务端 getWorkspace 是全局可变值，会被其他页面
+// 或后台任务改写，只传 dir 会出现“页面显示 A 工作区、列表来自 B”（交接文档交互 1）。
+export const listFiles = (dir, workspace = "") => {
+  const params = new URLSearchParams();
+  if (dir) params.set("dir", dir);
+  if (workspace) params.set("workspace", workspace);
+  const qs = params.toString();
+  return api(`/api/files${qs ? `?${qs}` : ""}`);
+};
+export const searchFiles = (query, limit = 200, workspace = "") => {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  if (workspace) params.set("workspace", workspace);
+  return api(`/api/files/search?${params.toString()}`);
+};
+export const uploadFile = (name, base64, workspace = "") => api("/api/files/upload", { method: "POST", body: JSON.stringify(workspace ? { name, base64, workspace } : { name, base64 }) });
+export const deleteFile = (name, workspace = "") => api("/api/files/delete", { method: "POST", body: JSON.stringify(workspace ? { name, workspace } : { name }) });
 export const openDoc = (name) => api(`/api/doc/${encodeURIComponent(name)}`);
 export const saveCells = (name, sheet, cells) =>
   api(`/api/doc/${encodeURIComponent(name)}/cells`, { method: "POST", body: JSON.stringify({ sheet, cells }) });
@@ -192,6 +204,7 @@ export const listRuns = (thread = "", limit = 50, options = {}) => {
   if (options.mode && options.mode !== "all") params.set("mode", options.mode);
   if (options.query) params.set("query", options.query);
   if (options.includeEvents) params.set("includeEvents", options.includeEvents);
+  if (options.fields) params.set("fields", options.fields);
   params.set("limit", String(limit));
   return api(`/api/runs?${params.toString()}`, options.signal ? { signal: options.signal } : {});
 };

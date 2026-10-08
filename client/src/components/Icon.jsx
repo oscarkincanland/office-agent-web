@@ -33,6 +33,7 @@ const PATHS = {
   minus: (<path d="M5 12h14" />),
   chevronDown: (<path d="M6 9l6 6 6-6" />),
   chevronRight: (<path d="M9 18l6-6-6-6" />),
+  chevronLeft: (<path d="M15 18l-6-6 6-6" />),
   arrowRight: (<><path d="M5 12h14" /><path d="m13 6 6 6-6 6" /></>),
   cursor: (<><path d="m5 3 14 9-6 2-3 6z" /><path d="m13 14 4 5" /></>),
   lock: (<><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>),
@@ -81,6 +82,10 @@ const PATHS = {
   cloud: (<><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" /></>),
   backlink: (<><path d="M17 7h-2a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2" /><path d="M7 17h2a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2H7" /></>),
   penTool: (<><path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="M2 2l7.586 7.586" /><circle cx="11" cy="11" r="2" /></>),
+  // 记忆治理入口用它标记「待审核的记忆条目」；与书签语义务必区分于 book（打开的书）。
+  bookmark: (<path d="m19 21-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />),
+  // 公交线路/站点模块标题图标。
+  bus: (<><path d="M8 6h8" /><path d="M4 8a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" /><path d="M4 13h16" /><path d="M7 17v2" /><path d="M17 17v2" /><circle cx="8" cy="10.5" r=".5" /><circle cx="16" cy="10.5" r=".5" /></>),
   filter: (<path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z" />),
   gear: (<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></>),
   book: (<><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></>),
@@ -96,7 +101,17 @@ const PATHS = {
 
 export default function Icon({ name, size = 16, className = "", strokeWidth = 2 }) {
   const d = PATHS[name];
-  if (!d) return null;
+  if (!d) {
+    // 未注册的名称过去静默返回 null，页面上只会“图标不见了”，很难定位。
+    // 开发期每个名称只告警一次，指明补注册位置；生产构建不产生噪音。
+    if (name && !MISSING_ICON_WARNED.has(name)) {
+      MISSING_ICON_WARNED.add(name);
+      if (typeof console !== "undefined" && import.meta?.env?.DEV) {
+        console.warn(`[Icon] 未注册的图标名称 "${name}"：请在 Icon.jsx 的 PATHS 中补注册，或改用已有名称（现有 ${ICON_NAMES.length} 个）。`);
+      }
+    }
+    return null;
+  }
   return (
     <svg
       className={`icon icon-${name} ${className}`}
@@ -116,6 +131,7 @@ export default function Icon({ name, size = 16, className = "", strokeWidth = 2 
 }
 
 export const ICON_NAMES = Object.keys(PATHS);
+const MISSING_ICON_WARNED = new Set();
 
 // 模型供应商标识使用项目已有的本地品牌 SVG 路径，不依赖 CDN 或远程图片请求。
 // 路径对应 templates/opendesign/open-design-landing/assets/agents 下的矢量资源，
@@ -129,21 +145,36 @@ const PROVIDER_GLYPHS = {
   gemini: <path fill="currentColor" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" />,
   xiaomi: <path fill="currentColor" d="M3 6.4h6.7c1.55 0 2.5.42 3.1 1.05.6.62.95 1.55.95 2.95v7.2h-2.5v-7c0-.75-.15-1.2-.45-1.5-.3-.3-.78-.45-1.55-.45H5.5v8.95H3Zm15.5 0H21v11.2h-2.5Z" />,
   zhipu: <path fill="currentColor" d="M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm3.4 4.1v1.95h5.04L7.05 15.1v1.8h9.55v-1.95h-5.3l5.4-6.05V7.1H7.4Z" />,
-  opencode: <><path d="M5 5h14v14H5z" /><path d="m8 8 8 8M16 8l-8 8" /></>,
+  // Command Code 是通过命令行/网关调用模型的供应商，用「终端提示符 >_」作为标识
+  // （不用臆造的品牌图形；同样以描边渲染，避免实心块）。
+  commandcode: (<><rect x="3" y="5" width="18" height="14" rx="2.4" strokeWidth="1.6" /><path d="m7.6 10.4 2.4 2.2-2.4 2.2" strokeWidth="1.6" /><path d="M12.6 15.2h3.6" strokeWidth="1.6" /></>),
+  // Moonshot/Kimi 用月牙，xAI 用 X 标记（几何图形，不冒充官方矢量）。
+  moonshot: <path fill="currentColor" d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79Z" />,
+  xai: <path fill="currentColor" d="M3 3h4.2l5.1 7.1L17.4 3H21l-6.6 8.9L21.4 21h-4.2l-5.3-7.4L6.4 21H3l6.9-9.3Z" />,
+  // OpenCode 没有随仓库提供的品牌矢量，原先用「方形 + 交叉线」描边图形占位；
+  // 但 ProviderIcon 统一 fill=currentColor + stroke=none，方框被填成实心白块、
+  // 交叉线直接消失（交接文档问题 3）。这里改为描边式渲染：方框不填充、交叉线可见。
+  opencode: (<><rect x="5" y="5" width="14" height="14" rx="1.5" strokeWidth="1.7" /><path d="m9 9 6 6M15 9l-6 6" strokeWidth="1.7" /></>),
   custom: <circle cx="12" cy="12" r="5" />,
 };
+
+// 需要描边渲染的品牌图形：这些路径不填充，改由 stroke 勾线（fill/stroke 见 ProviderIcon）。
+const STROKED_PROVIDER_GLYPHS = new Set(["opencode", "commandcode"]);
 
 export function ProviderIcon({ provider = "custom", size = 14, className = "" }) {
   const key = String(provider || "custom").toLowerCase();
   const glyph = PROVIDER_GLYPHS[key] || PROVIDER_GLYPHS.custom;
+  const stroked = STROKED_PROVIDER_GLYPHS.has(key);
   return (
     <svg
       className={`provider-icon provider-icon-${key} ${className}`}
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="currentColor"
-      stroke="none"
+      fill={stroked ? "none" : "currentColor"}
+      stroke={stroked ? "currentColor" : "none"}
+      strokeLinecap={stroked ? "round" : undefined}
+      strokeLinejoin={stroked ? "round" : undefined}
       aria-hidden="true"
     >
       {glyph}

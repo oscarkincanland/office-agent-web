@@ -1,0 +1,21 @@
+{
+  "uiWorkspace": "会话工作区（跨轮生效，在左侧会话栏切换）：F:\\Claude code本地文件\\office-agent-web\\office-workspace",
+  "uiSwitcher": "默认工作区\n…/office-agent-web/office-workspace",
+  "listWorkspace": "F:\\龙港数据",
+  "listDir": "",
+  "listCount": 40,
+  "firstFiles": [
+    "__pycache__",
+    "_临时公交班次OD核查",
+    "_gps",
+    "_sample",
+    "_skills_probe"
+  ],
+  "savedUI": {
+    "activeModule": null,
+    "workspace": "F:\\Claude code本地文件\\office-agent-web\\office-workspace",
+    "currentDir": "",
+    "sidebarOpen": true,
+    "lastSessionId": null
+  }
+}

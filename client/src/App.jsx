@@ -21,7 +21,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
-import { listFiles, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
+import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 
 function historyReferences(text = "") {
@@ -161,11 +161,14 @@ export default function App() {
 
   // 窄屏防挤压（P1）：右侧只保留一列面板。窗口变窄或打开浏览器栏时自动收起预览，
   // 避免「侧栏 + 对话 + 预览 + 浏览器」四条最小宽度之和超过视口把对话挤成细条。
+  // ≤768px 时侧栏与右侧面板都是覆盖层（抽屉），因此还要收起侧栏抽屉：
+  // 否则打开时它会整屏盖住对话，用户看不到输入框与发送键。
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     const enforceNarrowLayout = () => {
       if (window.innerWidth > 1024) return;
       setPreviewOpen((open) => (open && browserPanelOpen ? false : open));
+      if (window.innerWidth <= 768) setSidebarOpen(false);
     };
     enforceNarrowLayout();
     window.addEventListener("resize", enforceNarrowLayout);
@@ -237,11 +240,18 @@ export default function App() {
   const currentProject = projects.find((project) => sameWorkspacePath(project.rootPath, currentWorkspace)) || null;
   const [currentDir, setCurrentDir] = useState(""); // 相对路径子目录
   const currentDirRef = useRef(""); // 与 currentDir 同步的最新值，供无参 refreshFiles 使用
+  const currentWorkspaceRef = useRef(""); // 与 currentWorkspace 同步：文件请求必须带上它，避免用旧闭包值
+  const filesRef = useRef([]); // 与 files 同步：工作区切换失败时用它恢复原列表，不给回调加 files 依赖
   const [changedFiles, setChangedFiles] = useState(() => new Set()); // 本轮刚被改动的文件名（短时高亮文件树）
   const [historyMessages, setHistoryMessages] = useState(null); // 加载的历史会话消息
   const [historyThreadId, setHistoryThreadId] = useState(null); // 当前历史消息对应的 thread，避免切换 effect 覆盖恢复内容
   const [historyWindow, setHistoryWindow] = useState(null); // 服务端为长会话返回的展示窗口信息
   const [sessionResumeError, setSessionResumeError] = useState(null); // { sessionId, message } Agent 恢复失败时历史只读
+  // 新建会话的进行中/失败状态（交互 2）：失败必须可见，且不得清空旧会话。
+  const [creatingSession, setCreatingSession] = useState(false);
+  const [newSessionError, setNewSessionError] = useState(null); // { message, workspace }
+  // 工作区切换失败（交互 8）：保留原状态并提示原因，不再静默 refreshFiles。
+  const [workspaceSwitchError, setWorkspaceSwitchError] = useState(null); // { message, workspace }
   const [sessionResumeRetrying, setSessionResumeRetrying] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null); // 当前会话 id（用于界面恢复）
   const currentSession = sessions.find((session) => session.id === currentSessionId) || null;
@@ -259,6 +269,10 @@ export default function App() {
   const mapBridgeRef = useRef(null); // 地图模式复用同一个 ChatPanel，保持消息与 SSE 事件流连续
   const sessionLoadSeqRef = useRef(0);
   const workspaceSwitchSeqRef = useRef(0);
+  // 统一导航代际（交互 8）：项目/工作区/会话/新建共享一条失效边界；
+  // 任一导航都会推进它，异步返回后若不匹配就丢弃，避免逆序响应互相覆盖。
+  const navGenerationRef = useRef(0);
+  const newSessionInFlightRef = useRef(false);
   const filesRequestSeqRef = useRef(0);
   const docRequestSeqRef = useRef(0);
   const docAbortRef = useRef(null); // 打开文件请求的中止器：切文件/关标签/切工作区时取消旧请求
@@ -304,8 +318,18 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [activeModule]);
 
+  // 设置面板的“刷新模型”需要走一次供应商网络刷新；启动、定时轮询和切回标签页
+  // 只读已缓存目录：POST /api/models/refresh 会重置共享 ModelRuntime 并等待网络
+  // 往返（实测约 1 秒），既拖慢首屏，也会在会话进行中打断运行时预热。
   const refreshModelCatalog = useCallback(async () => {
     const data = await refreshModels();
+    setModels(data.models || []);
+    setDefaultModel(data.default || "");
+    return data;
+  }, []);
+
+  const syncModelCatalog = useCallback(async () => {
+    const data = await listModels();
     setModels(data.models || []);
     setDefaultModel(data.default || "");
     return data;
@@ -328,20 +352,45 @@ export default function App() {
     window.setTimeout(() => chatInputRef.current?.startAgentTask?.(payload), 120);
   }, [closeExternalModules]);
 
-  // 新建会话：清空历史消息和当前文档
-  const handleNewSession = useCallback(async (workspace = currentWorkspace) => {
+  // 新建会话：清空历史消息和当前文档。
+  // 交互 2：所有 UI 入口统一零参数调用；历史实现直接把入口当 workspace 传，
+  // React 点击事件被序列化成 cwd，抛出 "Converting circular structure to JSON"，
+  // 而失败又被吞掉、界面照常切换，用户看到的是"清空了但没有新会话"。
+  // 现在：只接受字符串工作区，连续点击去重，失败保留旧会话与草稿并给出可重试提示，
+  // 成功后才提交 thread 与清空旧上下文。
+  const handleNewSession = useCallback(async (workspaceArg) => {
+    const requested = typeof workspaceArg === "string" ? workspaceArg.trim() : "";
+    const targetWorkspace = requested || currentWorkspaceRef.current || currentWorkspace;
+    if (newSessionInFlightRef.current) return null;
+    newSessionInFlightRef.current = true;
+    // 导航代际（交互 8）：与工作区切换、选择历史共享同一条失效边界，
+    // await 返回后若用户已经做了别的导航，这次结果必须丢弃。
+    const generation = ++navGenerationRef.current;
+    setCreatingSession(true);
+    setNewSessionError(null);
     const next = `thread-${globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
     let created = null;
     try {
       // 先让后端创建并固定 session/workspace，再切换前端 thread，避免 SSE 先创建一个错误 cwd 的空 Agent。
-      const project = projects.find((item) => sameWorkspacePath(item.rootPath, workspace || currentWorkspace));
-      created = await createAgentThread(clientId, next, workspace || undefined, { projectId: project?.id || null });
-      // 新会话已经由当前 Chat 状态立即接管；历史列表刷新延后，避免工作区切换
-      // 立刻触发一次全量 JSONL 扫描，阻塞刚完成的界面切换。
-      window.setTimeout(() => refreshSessions(), 600);
+      const project = projects.find((item) => sameWorkspacePath(item.rootPath, targetWorkspace));
+      created = await createAgentThread(clientId, next, targetWorkspace || undefined, { projectId: project?.id || null });
     } catch (e) {
-      console.warn("创建新会话失败，将在首次对话时自动创建:", e.message);
+      newSessionInFlightRef.current = false;
+      setCreatingSession(false);
+      if (generation === navGenerationRef.current) {
+        // 保留旧会话、标签与未发送输入，只提示失败原因并提供重试。
+        setNewSessionError({ message: e?.message || "创建新会话失败", workspace: targetWorkspace || "" });
+      }
+      return null;
     }
+    if (generation !== navGenerationRef.current) {
+      newSessionInFlightRef.current = false;
+      setCreatingSession(false);
+      return null;
+    }
+    // 新会话已经由当前 Chat 状态立即接管；历史列表刷新延后，避免工作区切换
+    // 立刻触发一次全量 JSONL 扫描，阻塞刚完成的界面切换。
+    window.setTimeout(() => refreshSessions(), 600);
     setThreadId(next);
     localStorage.setItem("oaw_thread_id", next);
     setHistoryMessages(null);
@@ -353,11 +402,20 @@ export default function App() {
     if (docAbortRef.current) { try { docAbortRef.current.abort(); } catch {} docAbortRef.current = null; }
     setTabs([]);
     setActiveTab(null);
+    // 交互 5：目录归根必须与列表同一次导航——清掉旧子目录项并读根列表，
+    // 否则根目录下仍显示旧子目录内容，点开会按新的根路径解释。
     currentDirRef.current = "";
     setCurrentDir("");
+    setFiles([]);
+    void refreshFiles("");
     setCurrentSessionId(created?.sessionId || null);
     setMapContexts((prev) => ({ ...prev, [next]: null }));
     lastSessionIdRef.current = created?.sessionId || null;
+    newSessionInFlightRef.current = false;
+    setCreatingSession(false);
+    return created;
+    // 不把 refreshFiles / refreshSessions 列入依赖：它们在下方才声明，依赖数组在
+    // 渲染期求值会命中 TDZ；两者都是依赖稳定的 useCallback，闭包捕获始终有效。
   }, [clientId, currentWorkspace, projects]);
 
   const setScopeStatus = useCallback((scope, status) => {
@@ -374,16 +432,27 @@ export default function App() {
 
   const refreshFiles = useCallback(async (dir) => {
     const requestedDir = typeof dir === "string" ? dir : currentDirRef.current;
+    // 工作区身份必须显式传给服务端并在响应里核对：只传 dir 时，服务端会用
+    // 自己的全局工作区解析相对路径，页面显示 A、列表来自 B（交接文档交互 1）。
+    const requestedWorkspace = currentWorkspaceRef.current;
     const requestSeq = ++filesRequestSeqRef.current;
     setScopeStatus("files", "loading");
     try {
-      const result = await listFiles(requestedDir);
-      // 目录已切换或本次请求不是最新时，过期响应不得覆盖列表
-      if (requestSeq === filesRequestSeqRef.current && requestedDir === currentDirRef.current) {
-        setFiles(result.files || []);
-        setScopeStatus("files", "ready");
-        setScopeError("files", null);
+      const result = await listFiles(requestedDir, requestedWorkspace);
+      // 目录已切换、工作区已切换或本次请求不是最新时，过期响应不得覆盖列表
+      const stale = requestSeq !== filesRequestSeqRef.current
+        || requestedDir !== currentDirRef.current
+        || !sameWorkspacePath(requestedWorkspace, currentWorkspaceRef.current);
+      if (stale) return;
+      // 服务端回显的来源与页面不一致：判定为身份错位，阻止把它当当前目录展示。
+      if (result.workspace && requestedWorkspace && !sameWorkspacePath(result.workspace, requestedWorkspace)) {
+        setScopeStatus("files", "error");
+        setScopeError("files", new Error(`文件列表来源与当前工作区不一致（${result.workspace}）`));
+        return;
       }
+      setFiles(result.files || []);
+      setScopeStatus("files", "ready");
+      setScopeError("files", null);
     } catch (error) {
       if (requestSeq === filesRequestSeqRef.current) {
         setScopeStatus("files", "error");
@@ -391,6 +460,12 @@ export default function App() {
       }
     }
   }, [setScopeError, setScopeStatus]);
+
+  // 同步工作区 ref：文件请求由回调发起，若只依赖闭包里的 currentWorkspace，
+  // 工作区刚切换时仍可能用旧值（交互 8 的失效边界之一）。
+  useEffect(() => { currentWorkspaceRef.current = currentWorkspace; }, [currentWorkspace]);
+  // 同理同步文件列表：切换失败要能恢复原列表，但不能让回调依赖 files 频繁重建。
+  useEffect(() => { filesRef.current = files; }, [files]);
 
   const refreshSessions = useCallback(async () => {
     if (sessionsRefreshRef.current) return sessionsRefreshRef.current;
@@ -569,7 +644,7 @@ export default function App() {
     }, 30000);
     const syncModels = async () => {
       try {
-        await refreshModelCatalog();
+        await syncModelCatalog();
       } catch {
         // 扫描失败时保留上一次列表，避免模型下拉框瞬间清空。
       }
@@ -585,7 +660,7 @@ export default function App() {
       window.clearInterval(projectTimer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces, refreshModelCatalog]);
+  }, [refreshFiles, refreshSessions, refreshProjects, refreshWorkspaces, syncModelCatalog]);
 
   // 全局 Ctrl/Cmd+K 切换命令面板
   useEffect(() => {
@@ -604,6 +679,11 @@ export default function App() {
     const requestedPath = String(dir || "").trim();
     if (!requestedPath || sameWorkspacePath(requestedPath, currentWorkspace)) return;
     const switchSeq = ++workspaceSwitchSeqRef.current;
+    // 工作区切换同样推进统一导航代际：在途的新建/历史加载结果不得再写入。
+    navGenerationRef.current += 1;
+    // 记下失败时要恢复的原状态：切换未成功前不应让用户丢掉当前目录。
+    const previousDir = currentDirRef.current;
+    const previousFiles = filesRef.current;
     // 先清空旧工作区的视图，避免等待服务端时继续操作旧文件。
     currentDirRef.current = "";
     setCurrentDir("");
@@ -619,6 +699,9 @@ export default function App() {
     try {
       const r = await switchWorkspace(requestedPath);
       if (switchSeq !== workspaceSwitchSeqRef.current) return;
+      // 先同步 ref 再触发任何文件请求：refreshFiles 与 handleNewSession 都从
+      // currentWorkspaceRef 取身份，晚一拍就会把新工作区的请求发到旧路径上。
+      currentWorkspaceRef.current = r.workspace;
       setCurrentWorkspace(r.workspace);
       // 新工作区加入下拉列表（自定义路径切换后也能在下拉中看到）
       setWorkspaces((prev) => {
@@ -632,8 +715,11 @@ export default function App() {
       void handleNewSession(r.workspace);
     } catch (e) {
       if (switchSeq === workspaceSwitchSeqRef.current) {
-        refreshFiles();
-        alert("切换失败: " + e.message);
+        // 切换失败保留原有效状态：恢复原目录与文件列表，只提示失败原因。
+        currentDirRef.current = previousDir;
+        setCurrentDir(previousDir);
+        setFiles(previousFiles);
+        setWorkspaceSwitchError({ message: e?.message || "切换工作区失败", workspace: requestedPath });
       }
     }
   }, [currentWorkspace, handleNewSession, refreshFiles, refreshProjects]);
@@ -768,6 +854,8 @@ export default function App() {
     setChangesRunId("");
     setArtifactScope("session");
     const loadSeq = ++sessionLoadSeqRef.current;
+    // 选择历史同样推进统一导航代际：在途的新建/工作区切换不得覆盖本次结果。
+    navGenerationRef.current += 1;
     // 会话自带工作区归属；先切换文件视图，再切换 thread，避免历史会话在另一个项目目录下恢复。
     const targetWorkspace = session.cwd || currentWorkspace;
     let resumedWorkspace = targetWorkspace;
@@ -945,7 +1033,9 @@ export default function App() {
         const fn = fileMatch.text.match(/当前打开文件:\s*([^\]\n]+)/);
         if (fn?.[1]) {
           // 历史文本先显示，关联文档在后台打开，不再阻塞会话切换。
-          void open(fn[1].trim(), conversationId).catch(() => {});
+          // 交互 9：必须显式传本次恢复后的工作区——setCurrentWorkspace 还没让
+          // 正在执行的 open 闭包看到新值，否则跨工作区会在旧目录取同名文件或 404。
+          void open(fn[1].trim(), conversationId, resumedWorkspace || undefined).catch(() => {});
         }
       }
     } catch (e) {
@@ -1146,9 +1236,9 @@ export default function App() {
     lastSessionIdRef.current = loadUIState()?.lastSessionId || null;
   }, []);
 
-  // 恢复：工作区 → 打开的文档 tabs → 激活 tab → 侧栏/子目录。
-  // 外部模块（地图、知识库、模板库等）不跨刷新恢复，刷新后统一回到主对话页，
-  // 避免用户被留在某个子页面或进入一个尚未完成加载的懒加载模块。
+  // 恢复：只恢复工作区与必要的视图偏好。
+  // 已批准规则（交接文档交互 4）：刷新/服务重启后停留在工作区根目录的空白新会话，
+  // 不自动恢复旧子目录、旧会话或旧文件；历史会话与旧文件只走手动入口。
   useEffect(() => {
     if (uiRestored) return;
     if (!currentWorkspace) return; // 等待工作区列表就绪
@@ -1162,45 +1252,38 @@ export default function App() {
           setFiles(switched.files || []);
         }
       } catch {}
-      // 刷新不恢复上次打开的文档/搜索预览：避免“每次刷新自动打开之前的内容”。
-      // 需要回看时从文件树或产物面板重新打开即可。
-      if (saved.currentDir) {
-        currentDirRef.current = saved.currentDir;
-        setCurrentDir(saved.currentDir);
-        refreshFiles(saved.currentDir);
-      }
+      // 目录一律回到工作区根：上一次的子目录不再恢复（曾被保存值带回旧列表）。
+      currentDirRef.current = "";
+      setCurrentDir("");
+      void refreshFiles("");
       setActiveModule(null);
       setSidebarOpen(saved.sidebarOpen !== false);
+      // 清掉会触发旧行为的持久化字段，避免遗留值继续自动恢复。
+      saveUIState({ ...saved, currentDir: "", lastSessionId: null });
       setUiRestored(true);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentWorkspace]);
 
-  // 恢复最后会话（sessions 成功返回后执行一次）
+  // 已批准规则：刷新不再自动恢复上次会话。会话 id 与 thread 只在用户手动
+  // 选择历史时使用；这里保留 ref 同步，但不再触发 handleSelectSession。
   useEffect(() => {
     sessionsRef.current = sessions;
-    if (!uiRestored || restoredSessionRef.current) return;
-    const saved = loadUIState();
-    if (!saved?.lastSessionId) { restoredSessionRef.current = true; return; }
-    // 会话列表尚未成功返回时不要定稿：首屏 sessions 可能仍是空数组，
-    // 若此时就把一次性标记置真，异步列表晚到后就再也无法恢复上次会话。
-    if (loadStatus.sessions !== "ready") return;
     restoredSessionRef.current = true;
-    const sess = sessions.find((x) => x.id === saved.lastSessionId);
-    if (sess) handleSelectSession(sess);
-  }, [sessions, uiRestored, handleSelectSession, loadStatus.sessions]);
+    lastSessionIdRef.current = null;
+  }, [sessions]);
 
-  // 保存：界面状态变化时写入 localStorage
+  // 保存：界面状态变化时写入 localStorage。
+  // 只持久化工作区、目录与侧栏开关；不再写入 lastSessionId —— 刷新后必须进入
+  // 空白新会话，旧会话只从历史列表手动打开（交接文档交互 4）。
   useEffect(() => {
     if (!uiRestored) return;
-    if (currentSessionId) lastSessionIdRef.current = currentSessionId;
     saveUIState({
       // 不再持久化打开的标签与激活标签：刷新后回到主对话页，不自动恢复上次预览内容
       activeModule,
       workspace: currentWorkspace,
       currentDir,
       sidebarOpen,
-      lastSessionId: currentSessionId ?? lastSessionIdRef.current,
     });
   }, [tabs, activeTab, activeModule, currentWorkspace, currentDir, sidebarOpen, currentSessionId, uiRestored]);
 
@@ -1236,7 +1319,7 @@ export default function App() {
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
-      onNewSession={handleNewSession}
+      onNewSession={() => handleNewSession()}
       onOpenFile={handleChatOpenFile}
       referenceFiles={files.map((file) => currentDir ? currentDir + "/" + file.name : file.name)}
       sessions={visibleSessions}
@@ -1315,7 +1398,7 @@ export default function App() {
             models={models}
             defaultModel={defaultModel}
             onAgentEnd={handleAgentEnd}
-            onNewSession={handleNewSession}
+            onNewSession={() => handleNewSession()}
             historyMessages={historyMessages}
             sessions={visibleSessions}
             currentSessionId={currentSessionId}
@@ -1368,7 +1451,7 @@ export default function App() {
               onAtMention={handleAtMention}
               loadStatus={loadStatus}
               changedFiles={changedFiles}
-              onNewSession={handleNewSession}
+              onNewSession={() => handleNewSession()}
               onProjectUpdated={refreshProjects}
               models={models}
               clientId={clientId}
@@ -1405,14 +1488,14 @@ export default function App() {
         )}
         <div className="center-area">
           {!sidebarOpen && (
-            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏">
-              {"\u25B6"}
+            <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} title="展开侧栏" aria-label="展开侧栏">
+              <Icon name="chevronRight" size={14} />
             </button>
           )}
           <div className="center-content">
             <div className="topbar">
               {sidebarOpen && (
-                <button className="btn-sm" onClick={() => setSidebarOpen(false)} title="收起侧栏">{"\u25C0"}</button>
+                <button className="btn-sm sidebar-collapse" onClick={() => setSidebarOpen(false)} title="收起侧栏" aria-label="收起侧栏"><Icon name="chevronLeft" size={13} /></button>
               )}
             <span className="topbar-title">
               <Icon name="comment" size={16} />
@@ -1461,7 +1544,7 @@ export default function App() {
               </button>
             </div>
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
-            <button className="btn-sm topbar-new-chat" onClick={handleNewSession} title="新建对话"><Icon name="plus" size={13} /></button>
+            <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
             <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
@@ -1483,6 +1566,25 @@ export default function App() {
                 <Icon name="warning" size={13} />
                 <span>历史已加载为只读：Agent 会话恢复失败（{sessionResumeError.message}），继续对话前请先重试恢复。</span>
                 <button className="btn-xs" onClick={retrySessionResume} disabled={sessionResumeRetrying}>{sessionResumeRetrying ? "恢复中…" : "重试恢复"}</button>
+              </div>
+            )}
+            {/* 交互 2：新建失败必须可见。旧实现只 console.warn，界面照常清空，
+                用户以为已建好新会话。现在保留旧会话与草稿，并给出重试入口。 */}
+            {!activeModule && newSessionError && (
+              <div className="session-resume-warning" role="alert">
+                <Icon name="warning" size={13} />
+                <span>新建会话失败：{newSessionError.message}（已保留当前会话与未发送内容）</span>
+                <button className="btn-xs" onClick={() => handleNewSession()} disabled={creatingSession}>{creatingSession ? "创建中…" : "重试新建"}</button>
+                <button className="btn-xs" onClick={() => setNewSessionError(null)}>忽略</button>
+              </div>
+            )}
+            {/* 交互 8：工作区切换失败保留原目录与列表，说明失败原因并允许重试。 */}
+            {!activeModule && workspaceSwitchError && (
+              <div className="session-resume-warning" role="alert">
+                <Icon name="warning" size={13} />
+                <span>切换工作区失败：{workspaceSwitchError.message}（已保留原工作区与文件列表）</span>
+                <button className="btn-xs" onClick={() => { const target = workspaceSwitchError.workspace; setWorkspaceSwitchError(null); handleWorkspaceChange(target); }}>重试切换</button>
+                <button className="btn-xs" onClick={() => setWorkspaceSwitchError(null)}>忽略</button>
               </div>
             )}
             <div className="center-chat-slot">{!activeModule && sharedChatPanel}</div>

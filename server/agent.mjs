@@ -637,6 +637,13 @@ function configuredModelSpec() {
   return provider && model ? `${provider}/${model}` : "";
 }
 
+/** 当前会话实际在用的模型标识（provider/model）；未知时回退到备用模型记录。 */
+function currentModelSpec(entry) {
+  const current = entry?.session?.model;
+  if (current?.provider && current?.id) return `${current.provider}/${current.id}`;
+  return String(entry?.modelFallbackSpec || "");
+}
+
 function resolveInitialModel(modelRuntime, requestedSpec = "") {
   const spec = String(requestedSpec || configuredModelSpec()).trim();
   const separator = spec.indexOf("/");
@@ -3146,6 +3153,29 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       }
       entry.busy = false;
       entry.activeRunId = null;
+      // 排队中的模型切换在本轮结束后生效：运行中的任务始终用旧模型跑完，
+      // 结束后把用户选择的模型真正应用上，并广播一条 model_switched 供界面画分割线。
+      if (entry.pendingModelSpec) {
+        const pendingSpec = entry.pendingModelSpec;
+        entry.pendingModelSpec = "";
+        try {
+          const applied = await this.applyModelSpec(entry, pendingSpec);
+          emitChannelSafe(entry, "model_switched", {
+            from: applied.from || null,
+            to: applied.model,
+            reason: "queued",
+            effective: "now",
+          });
+        } catch (error) {
+          emitChannelSafe(entry, "model_switched", {
+            from: null,
+            to: pendingSpec,
+            reason: "queued",
+            effective: "failed",
+            message: String(error?.message || error).slice(0, 200),
+          });
+        }
+      }
     }
   }
 
@@ -3393,7 +3423,34 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       cwd: existing?.workspace || getWorkspace(),
       modelSpec: spec,
     });
-    if (entry.busy || entry.compacting || entry.queuedCount > 0) throw new Error("agent busy — wait for queued tasks to finish");
+    const nextSpec = String(spec || "").trim();
+    if (entry.busy || entry.compacting || entry.queuedCount > 0) {
+      // 运行中的任务继续用旧模型跑完（Pi 会话不支持中途换模型），把切换排队到本轮结束，
+      // 不再用 "agent busy" 直接失败——那样用户会以为切换没生效，实际是"稍后生效"。
+      entry.pendingModelSpec = nextSpec;
+      emitChannelSafe(entry, "model_switched", {
+        from: currentModelSpec(entry),
+        to: nextSpec,
+        reason: "queued",
+        effective: "after-run",
+      });
+      return { ok: true, model: nextSpec, pending: true, current: currentModelSpec(entry) };
+    }
+    const applied = await this.applyModelSpec(entry, nextSpec);
+    emitChannelSafe(entry, "model_switched", {
+      from: applied.from || null,
+      to: applied.model,
+      reason: applied.fallback ? "fallback" : "user",
+      effective: "now",
+    });
+    return applied;
+  }
+
+  /**
+   * 解析并应用模型（不含忙碌排队）：成功返回 { ok, model, from, fallback? }。
+   * 连接类失败时按既有策略回退 Pi 全局默认模型；认证等不可重试错误原样抛出。
+   */
+  async applyModelSpec(entry, spec) {
     // 模型 id 本身可能含斜线（如 command-code 的 deepseek/deepseek-v4-flash）：
     // 只能按第一个斜线切分 provider，否则 id 会被截断成 deepseek 并报 model not found。
     const specText = String(spec || "").trim();
@@ -3403,25 +3460,26 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       error.code = "MODEL_SPEC_INVALID";
       throw error;
     }
+    const from = currentModelSpec(entry);
     const provider = specText.slice(0, specSeparator);
     const id = specText.slice(specSeparator + 1);
-    if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + spec);
+    if (!localModelProviders().has(provider)) throw new Error("model is not in local Pi catalog: " + specText);
     const mr = await this.modelRuntime();
     // 优先使用 Pi Runtime；当 SDK 忽略了较新的 models-store overlay 时，
     // 回退到同一份本地缓存，保证列表中的模型都可以被实际选中。
     const model = mr.getModel(provider, id) || localStoredModels().find((item) => item.provider === provider && item.id === id);
-    if (!model) throw new Error("model not found: " + spec);
+    if (!model) throw new Error("model not found: " + specText);
     try {
       await piRuntimeManager.setModel(entry.runtimeId, entry.session, model);
       entry.modelFallbackSpec = "";
       entry.modelFallbackFrom = null;
-      return { ok: true, model: spec };
+      return { ok: true, model: specText, from };
     } catch (error) {
       // provider 目录可见不代表当前网络/授权可用。连接类失败时自动退回 Pi
       // 全局默认模型，避免会话再次卡在“连接模型”。认证错误等不可重试错误原样抛出。
       const fallback = configuredModelSpec();
       const info = classifyAgentError(error);
-      if (!fallback || fallback === spec || !info.retryable) throw error;
+      if (!fallback || fallback === specText || !info.retryable) throw error;
       const [fallbackProvider, ...fallbackIdParts] = fallback.split("/");
       const fallbackId = fallbackIdParts.join("/");
       const fallbackModel = mr.getModel(fallbackProvider, fallbackId)
@@ -3429,8 +3487,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       if (!fallbackModel) throw error;
       await piRuntimeManager.setModel(entry.runtimeId, entry.session, fallbackModel);
       entry.modelFallbackSpec = fallback;
-      entry.modelFallbackFrom = spec;
-      return { ok: true, model: fallback, modelFallbackFrom: spec };
+      entry.modelFallbackFrom = specText;
+      return { ok: true, model: fallback, from, modelFallbackFrom: specText, fallback: true };
     }
   }
 

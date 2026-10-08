@@ -601,7 +601,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
             <Icon name="eye" size={12} /> 预览
           </button>
           <button className={`toolbar-seg-btn ${mode === "edit" ? "active" : ""}`} onClick={enterEditMode}>
-            <Icon name="pen-tool" size={12} /> 编辑
+            <Icon name="penTool" size={12} /> 编辑
           </button>
         </div>
         <button className={`toolbar-btn ${showComments ? "active" : ""}`} onClick={() => setShowComments(!showComments)} title="显示批注">
@@ -752,7 +752,7 @@ export default function DocxViewer({ name, revision = 0, identity, onPreviewStat
           <div className="oaw-docx-outline" style={{ width: outlineW, minWidth: outlineW, maxWidth: outlineW }}>
             <div className="oaw-docx-outline-head">
               <span><Icon name="list" size={11} /> 目录{outline.length ? ` (${outline.length})` : ""}</span>
-              <button className="btn-xs" onClick={() => setOutlineOpen(false)}>×</button>
+              <button className="btn-xs" onClick={() => setOutlineOpen(false)} aria-label="关闭大纲"><Icon name="close" size={12} /></button>
             </div>
             <div className="oaw-docx-outline-list">
               {outline.map((item, i) => (

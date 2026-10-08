@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Icon from "./Icon.jsx";
 
 /**
  * 统一命令面板（Ctrl/Cmd+K）
@@ -10,12 +11,13 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  *   - 会话：GET /api/sessions → {sessions:[{id,title,modified,label,…}]}
  */
 
+// 问题 6：入口图形统一走 Icon 组件的线性 SVG，不再用受系统字体影响的 emoji。
 const ICONS = {
-  file: "📄",
-  kb: "📚",
-  template: "📋",
-  map: "🗺️",
-  session: "💬",
+  file: "file",
+  kb: "book",
+  template: "layers",
+  map: "map",
+  session: "comment",
 };
 
 function matches(item, q) {
@@ -126,7 +128,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         icon: ICONS.file,
         action: () => onOpenFile?.(f.name),
       }));
-    if (fileItems.length) out.push({ id: "files", title: "📄 文件", items: fileItems });
+    if (fileItems.length) out.push({ id: "files", title: "文件", items: fileItems });
 
     if (q) {
       const kbItems = kbResults
@@ -138,7 +140,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
           icon: ICONS.kb,
           action: () => onKb?.(),
         }));
-      if (kbItems.length) out.push({ id: "kb", title: "📚 知识库", items: kbItems });
+      if (kbItems.length) out.push({ id: "kb", title: "知识库", items: kbItems });
     }
 
     const tplItems = templates
@@ -151,7 +153,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         icon: ICONS.template,
         action: () => onTpl?.(),
       }));
-    if (tplItems.length) out.push({ id: "templates", title: "📋 模板", items: tplItems });
+    if (tplItems.length) out.push({ id: "templates", title: "模板", items: tplItems });
 
     const mapItems = mapProjects
       .filter((p) => matches({ title: p.name || p.project, subtitle: p.project }, q))
@@ -163,7 +165,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         icon: ICONS.map,
         action: () => onMap?.(),
       }));
-    if (mapItems.length) out.push({ id: "map", title: "🗺️ 地图", items: mapItems });
+    if (mapItems.length) out.push({ id: "map", title: "地图", items: mapItems });
 
     const sessItems = sessions
       .filter((s) => matches({ title: s.title || s.label, subtitle: s.id }, q))
@@ -175,7 +177,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
         icon: ICONS.session,
         action: () => onSession?.(s),
       }));
-    if (sessItems.length) out.push({ id: "sessions", title: "💬 会话", items: sessItems });
+    if (sessItems.length) out.push({ id: "sessions", title: "会话", items: sessItems });
 
     return out;
   }, [files, kbResults, templates, mapProjects, sessions, query, onOpenFile, onKb, onTpl, onMap, onSession]);
@@ -283,7 +285,7 @@ export default function CommandPalette({ open, onClose, onOpenFile, onKb, onTpl,
                     onMouseEnter={() => setSelectedIdx(idx)}
                     onClick={() => { it.action(); onClose?.(); }}
                   >
-                    <span className="cmd-item-icon" aria-hidden="true">{it.icon}</span>
+                    <span className="cmd-item-icon" aria-hidden="true"><Icon name={it.icon} size={14} /></span>
                     <div className="cmd-item-main">
                       <div className="cmd-item-title">{it.title}</div>
                       {it.subtitle && <div className="cmd-item-sub">{it.subtitle}</div>}
