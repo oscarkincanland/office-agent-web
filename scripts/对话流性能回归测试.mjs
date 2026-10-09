@@ -63,15 +63,21 @@ try {
   const runSummarySource = chatPanelSource.slice(chatPanelSource.indexOf("function RunSummary("), chatPanelSource.indexOf("// ========== 消息组件"));
   assert.match(runSummarySource, /const \[resultTab, setResultTab\] = useState\("products"\)/, "本轮结果区应是页签结构，默认落在“本轮产物”");
   assert.match(runSummarySource, /role="tablist" aria-label="本轮结果视图"/, "本轮产物/文件改动/依据应是无障碍页签");
-  assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型）");
+  assert.match(runSummarySource, /className=\{`product-card\$\{item\.deliverable \? " deliverable" : ""\}\$\{item\.confirmed \? "" : " provisional"\}`\}/, "本轮产物应渲染为文件卡片（图标 + 名称 + 类型，未确认的带待确认标记）");
   assert.match(runSummarySource, /className="product-card-badge">交付/, "产物卡片应标记交付项");
   assert.match(runSummarySource, /className="product-card-open"[\s\S]{0,200}?>打开</, "产物卡片应有“打开”按钮");
-  assert.match(runSummarySource, /confirmedCards\.map/, "产物卡片应来自统一去重集合（不再截断成 6 项）");
-  // 未归属线索：并行运行/其他轮次的写入不得冒充"本轮产物"。
+  assert.match(runSummarySource, /productCards\.map/, "产物卡片应来自统一去重集合（不再截断成 6 项）");
+  // 归属分层：write-ledger/已验收 = 已确认；"本轮写过 + 窗口内变更" = 待确认（可见但标注）；
+  // 完全没有写入证据的差异才是"未归属线索"，不参与产物计数。
+  assert.match(runSummarySource, /const attributedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.attributed\)/, "产物应按归属过滤（未归属线索不计数）");
   assert.match(runSummarySource, /const confirmedProducts = useMemo\(\(\) => products\.filter\(\(item\) => item\.confirmed\)/, "已确认产物应按写入台账/验收结果单独归类");
+  assert.match(runSummarySource, /本轮产物 <span className="result-tab-count">\{attributedProducts\.length\}/, "页签计数应包含归属到本轮的产物（含待确认）");
+  assert.match(runSummarySource, /className="product-card-badge provisional"/, "未确认的产物卡片应带待确认标记");
+  assert.match(runSummarySource, /本轮没有把该文件写进台账/, "待确认标记应解释原因（bash / officecli 不回报路径）");
   assert.match(runSummarySource, /className="product-leads"/, "未归属线索应单独成组（默认折叠）");
   assert.match(runSummarySource, /未归属线索 \{leadProducts\.length\} · 可能来自其他运行，需人工确认/, "线索组应明确说明可能来自其他运行");
-  assert.match(chatPanelSource, /const confirmedOf = \(change\) => change\?\.source === "write-ledger" \|\| change\?\.role === "deliverable"/, "只有写入台账或已验收的文件才算本轮产物");
+  assert.match(chatPanelSource, /const confirmedOf = \(change\) => change\?\.source === "write-ledger" \|\| change\?\.role === "deliverable"/, "只有写入台账或已验收的文件才算已确认");
+  assert.match(chatPanelSource, /const attributedOf = \(change\) => change\?\.attributed !== false && change\?\.source !== "unattributed"/, "归属判定应放行 run-window，只把 unattributed 当线索");
   assert.doesNotMatch(runSummarySource, /run-summary-details/, "文件清单不再另起一层折叠，统一进结果区页签");
   assert.match(runSummarySource, /run-result-fold \$\{embedded \? "embedded" : ""\}/, "嵌入式结果摘要应服从消息级统一折叠");
   assert.doesNotMatch(runSummarySource, /任务轮次 \{m\.runIndex/, "常规对话结果头不显示任务轮次计数");

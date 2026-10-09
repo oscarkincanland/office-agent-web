@@ -1,8 +1,26 @@
 {
   "name": "open-plan",
-  "version": "0.11.36",
+  "version": "0.11.39",
   "private": true,
-  "description": "Web-based planning workbench with AI agent (规聚)",
+  "description": "Open Plan（规聚）— 面向规划工程师的 AI 一体化工作台：Office 文档、知识库、地图可视化与 Agent 协作",
+  "keywords": [
+    "ai-agent",
+    "planning",
+    "office",
+    "knowledge-base",
+    "map",
+    "pi-agent-sdk",
+    "react",
+    "express"
+  ],
+  "homepage": "https://github.com/oscarkincanland/open-plan#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscarkincanland/open-plan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oscarkincanland/open-plan/issues"
+  },
   "type": "module",
   "scripts": {
     "start": "node scripts/服务监督.mjs --background",

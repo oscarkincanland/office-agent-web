@@ -176,4 +176,20 @@ assert.match(对话面板, /const modelDisplayName = useCallback/, "分割线应
 assert.match(样式, /\.model-switch-divider \{/, "切换分割线应有样式");
 assert.match(样式, /\.model-msg\.pending \{ color: var\(--warning\); \}/, "待切换提示应有独立样式");
 
+// 10. 模型选择浮层：高度必须真正夹住（展开「全部模型」不再撑出视口）+ 供应商图标覆盖
+assert.match(对话面板, /maxHeight: modelPopRect\.maxHeight/, "模型浮层必须把夹取后的高度应用到内联样式（只算不用会被撑出视口）");
+assert.match(对话面板, /const spaceAbove = rect\.top - margin - 6;/, "浮层高度应按触发器上方可用空间计算");
+assert.match(对话面板, /const spaceBelow = window\.innerHeight - rect\.bottom - margin - 6;/, "同时计算下方空间用于翻转");
+assert.match(对话面板, /const flip = spaceAbove < 200 && spaceBelow > spaceAbove;/, "上方空间不足时应改为向下展开");
+assert.match(样式, /\.model-control-pop \{\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n\}/, "浮层应是内部滚动的列容器（头部/思考深度固定，中间列表滚动）");
+assert.match(对话面板, /"command-code": \{ label: "Command Code", icon: "commandcode" \}/, "Command Code 供应商应有自己的品牌图标");
+assert.match(对话面板, /"command-code-anthropic": \{ label: "Command Code", icon: "commandcode" \}/, "command-code-anthropic 走同一品牌图标");
+assert.match(图标, /commandcode: \(/, "应提供 Command Code 的终端提示符图形");
+assert.match(图标, /STROKED_PROVIDER_GLYPHS = new Set\(\["opencode", "commandcode"\]\)/, "描边渲染集合应包含 commandcode（避免实心块）");
+assert.match(对话面板, /function providerInitials\(provider\)/, "未收录供应商应显示首字母缩写");
+assert.match(对话面板, /function providerHue\(provider\)/, "首字母标记应有稳定配色（同一供应商颜色固定）");
+assert.match(对话面板, /provider-initials/, "未收录供应商应带 provider-initials 类");
+assert.match(样式, /\.model-provider-mark\.provider-initials \{/, "首字母标记应有样式");
+assert.match(样式, /\.model-provider-mark\.provider-command-code, \.model-provider-mark\.provider-command-code-anthropic \{/, "Command Code 标记应有配色");
+
 console.log("主任务流可信度回归：通过");

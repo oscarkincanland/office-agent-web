@@ -351,7 +351,6 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
    flex-shrink: 0;
 }
 .topbar-title { font-size: 12px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topbar-badge { font-size: 10px; color: var(--dim); background: var(--surface); padding: 2px 8px; border-radius: 3px; }
 .task-center-wrap { position: relative; flex: 0 0 auto; }
 .task-center-trigger { display: inline-flex; align-items: center; gap: 5px; position: relative; }
 .task-center-trigger.active { color: var(--accent); border-color: var(--accent); }
@@ -586,12 +585,10 @@ select::placeholder, input::placeholder, textarea::placeholder { color: var(--mu
 .excel-sheet-hint { font-size: 10px; color: var(--dim); }
 /* chat */
 .chat-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; flex-shrink: 0; }
-.task-status-bar { display: flex; align-items: center; gap: 7px; min-height: 26px; padding: 3px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 .task-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
 .task-status-dot.running, .task-status-dot.finishing { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 .task-status-dot.completed { background: var(--success); }
 .task-status-dot.failed { background: var(--danger); }
-.task-status-bar code { margin-left: auto; color: var(--muted); font-size: 9px; }
 .model-select { max-width: 180px;  }
 .model-msg { font-size: 11px; color: var(--success); }
 .conn { font-size: 11px; color: var(--muted); }
@@ -1831,7 +1828,6 @@ html[data-marquee-style="static"] .message-process-fold.run-activity-fold.is-liv
 .todo-item.running .todo-num { color: var(--warning); animation: pulse 1s infinite; }
 .todo-item.done .todo-num { color: var(--success); }
 .todo-item.err .todo-num { color: var(--error); }
-.todo-tool { font-weight: 600; color: var(--text); flex-shrink: 0; font-family: monospace; font-size: 10px; }
 .todo-cmd {
   color: var(--muted);
   overflow: hidden;
@@ -5393,17 +5389,7 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .project-history-more { margin-left: 12px; }
 .project-history-modal { width: min(680px, calc(100vw - 30px)); }
 .project-history-body { max-height: min(620px, calc(100vh - 150px)); overflow: auto; }
-.sidebar-session-section .session-list { min-height: 0; overflow-y: auto; padding: 0; }
-.sidebar-session-section .session-search { margin-bottom: 5px; }
-.sidebar-session-section .session-filters { overflow-x: auto; padding-left: 0; padding-right: 0; }
-.sidebar-session-summary i.running { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 14%, transparent); }
-.sidebar-session-summary i.completed { background: var(--success); }
-.sidebar-session-summary i.unread { background: var(--accent); }
-.sidebar-session-section .session-item { padding: 8px 6px; border-bottom-color: color-mix(in srgb, var(--border) 72%, transparent); }
-.sidebar-session-section .session-label { font-size: 11px; }
 .sidebar-session-section .session-time, .sidebar-session-section .session-cwd { font-size: 9px; }
-.sidebar-session-section .session-actions { gap: 1px; }
-.sidebar-session-section .session-actions .btn-icon { width: 21px; height: 21px; }
 .sidebar-capabilities { display: grid; grid-template-columns: 1fr 1fr; align-content: start; gap: 7px; }
 .sidebar-capabilities .sidebar-view-title { grid-column: 1 / -1; margin-bottom: 2px; }
 .sidebar-capabilities > button { display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 9px; border: 1px solid transparent; border-radius: 8px; background: var(--panel2-bg); color: var(--muted); text-align: left; cursor: pointer; font: inherit; }
@@ -5730,8 +5716,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .section-sort-text { font-size: 10px; letter-spacing: .02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-section-head .section-count { margin-left: 6px; }
 
-.sessions-section { max-height: 30%; min-height: 80px; display: flex; flex-direction: column; }
-.sessions-section .session-list { flex: 1; overflow-y: auto; }
 .files-section { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .files-section .file-list { flex: 1; overflow-y: auto; }
 /* 搜索失败与"没有匹配结果"必须在视觉上可区分，否则用户会把读取失败
@@ -6375,7 +6359,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .btn-icon.danger:hover { color: var(--error); }
 .btn-icon .pinned { color: var(--accent); fill: var(--accent); }
 .session-list { overflow-x: hidden; }
-.sessions-section .session-list { overflow-x: hidden; }
 
 /* 设置面板新增样式 */
 .sp-skins { flex-wrap: wrap; }
@@ -7115,43 +7098,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 }
 .chat-hist-list .session-list { padding: 2px 0; }
 
-/* ===== 输入栏上方执行步骤（复杂任务） ===== */
-.todo-dock {
-  flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  background: var(--panel2-bg);
-  max-height: 176px;
-  overflow: hidden;
-}
-.todo-dock-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  padding: 4px 12px;
-  color: var(--muted);
-  font-size: 11px;
-  cursor: pointer;
-  user-select: none;
-}
-.todo-dock-head:hover { color: var(--text); background: var(--selected); }
-.todo-dock-chevron { width: 10px; color: var(--dim); font-family: monospace; }
-.todo-dock-title { font-weight: 700; }
-.todo-dock-progress { color: var(--accent); font-variant-numeric: tabular-nums; }
-.todo-dock-status { margin-left: auto; color: var(--dim); font-size: 10px; }
-.todo-dock-status.running { color: var(--accent); }
-.todo-dock-body { padding: 2px 12px 8px; max-height: 136px; overflow-y: auto; }
-.todo-dock-bar { height: 3px; margin: 0 0 5px 18px; background: var(--border); border-radius: 2px; overflow: hidden; }
-.todo-dock-bar span { display: block; height: 100%; background: var(--success); border-radius: inherit; transition: width .25s ease; }
-.todo-dock-item { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 2px 4px; color: var(--text); font-size: 11px; border-radius: 4px; }
-.todo-dock-item.running { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.todo-dock-item.done { color: var(--muted); }
-.todo-dock-item.done .todo-dock-text { text-decoration: line-through; }
-.todo-dock-check { width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--success); }
-.todo-dock-check > span { width: 7px; height: 7px; border: 1px solid var(--dim); border-radius: 50%; }
-.todo-dock-item.running .todo-dock-check { color: var(--accent); }
-.todo-dock-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.todo-dock-empty { padding: 5px 0 3px 18px; color: var(--dim); font-size: 10px; }
 
 /* ===== 知识库引用悬浮预览（siyuan 式） ===== */
 .kb-wikilink {
@@ -8345,7 +8291,6 @@ button.msg-reference-chip:hover { background: color-mix(in srgb, var(--accent) 1
 .topbar-browser-toggle { width: 30px; height: 30px; padding: 0; }
 .task-center-trigger { width: 30px; height: 30px; padding: 0; justify-content: center; }
 .task-center-trigger-label { display: none; }
-.topbar-badge { display: none; }
 
 .center-chat-slot .chat-head,
 .center-chat-slot .task-status-bar,
@@ -10078,6 +10023,9 @@ button.run-result-chip:hover { border-color: var(--accent); color: var(--accent)
 .product-card-meta strong { overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .product-card-meta small { color: var(--dim); font-size: 10px; }
 .product-card-badge { align-self: center; flex: 0 0 auto; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); border-radius: 999px; color: var(--accent); font-size: 9px; }
+/* 待确认：本轮确有写入但台账没记具体文件（bash/officecli），按运行窗口归属——可以点开，但不冒充"已确认" */
+.product-card.provisional { border-style: dashed; }
+.product-card-badge.provisional { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); color: var(--warning); }
 .product-card-open { flex: 0 0 auto; align-self: center; padding: 4px 10px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--panel2-bg) 70%, transparent); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }
 .product-card-open:hover { border-color: var(--accent); color: var(--accent); }
 .product-card-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

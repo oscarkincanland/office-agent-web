@@ -3611,23 +3611,36 @@ function SafeMarkdown({ text, onOpenFile, artifacts }) {
 /**
  * 结论内嵌产物 / 产物卡片的共同数据源：本轮投影 → 可点击产物清单。
  * 交付物在前、其余文件改动跟随，同一路径只保留一条；内部文件不进入结论。
- * `confirmed` 只认写入台账（write-ledger）或已验收/已固定的文件——共享工作区里
- * 快照 diff 也会包含并行 Run 的产出，那些只能算"未归属线索"，不能当成本轮产物。
+ * 归属分两档（与服务端一致）：
+ *   - confirmed：写入台账（write-ledger）或已验收/已固定的文件；
+ *   - 待确认：本轮确有写入（台账只有 "."，即 bash/officecli 写了但没回报路径）且文件在
+ *     运行窗口内发生变化（run-window）——归属本轮但不如精确台账可靠。
+ * 只有"本轮没有任何写入证据"（unattributed）的文件才降级为线索，不参与产物计数。
  */
 function artifactsFromView(view) {
   if (!view) return null;
   const byPath = new Map();
   const pick = (change) => String(change?.relativePath || change?.path || change?.name || "").replace(/\\/g, "/").trim();
   const confirmedOf = (change) => change?.source === "write-ledger" || change?.role === "deliverable";
+  const attributedOf = (change) => change?.attributed !== false && change?.source !== "unattributed";
+  const put = (change, deliverable) => {
+    const path = pick(change);
+    if (!path) return;
+    byPath.set(path, {
+      path,
+      deliverable,
+      size: change.after?.size ?? null,
+      confirmed: confirmedOf(change),
+      attributed: attributedOf(change),
+    });
+  };
   for (const change of view.deliverables || []) {
     if (change?.role === "internal") continue;
-    const path = pick(change);
-    if (path) byPath.set(path, { path, deliverable: true, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+    put(change, true);
   }
   for (const change of view.changes || []) {
-    if (change?.role === "internal") continue;
-    const path = pick(change);
-    if (path && !byPath.has(path)) byPath.set(path, { path, deliverable: false, size: change.after?.size ?? null, confirmed: confirmedOf(change) });
+    if (change?.role === "internal" || byPath.has(pick(change))) continue;
+    put(change, false);
   }
   return byPath.size ? [...byPath.values()] : null;
 }
@@ -3701,10 +3714,11 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
     || Boolean(completion?.incomplete?.length || completion?.blockers?.length);
   // 单一产物集合（交付优先、路径去重）＋ 类型/大小，供「本轮产物」tab 的卡片使用。
   const products = useMemo(() => artifactsFromView(view) || [], [view]);
-  // 已确认（写入台账/已验收）与未归属线索分开：后者在共享工作区里可能来自其他运行。
+  // 归到本轮的产物（含"待确认"）与"完全没有写入证据"的线索分开：后者不参与产物计数。
+  const attributedProducts = useMemo(() => products.filter((item) => item.attributed), [products]);
   const confirmedProducts = useMemo(() => products.filter((item) => item.confirmed), [products]);
-  const leadProducts = useMemo(() => products.filter((item) => !item.confirmed), [products]);
-  const confirmedCards = useMemo(() => (confirmedProducts.length ? buildArtifactIndex(confirmedProducts).list : []), [confirmedProducts]);
+  const leadProducts = useMemo(() => products.filter((item) => !item.attributed), [products]);
+  const productCards = useMemo(() => (attributedProducts.length ? buildArtifactIndex(attributedProducts).list : []), [attributedProducts]);
   // 结果区页签：本轮产物 / 文件改动 / 依据（依据仅在 Review 轮次有）
   const [resultTab, setResultTab] = useState("products");
   useEffect(() => {
@@ -3874,7 +3888,7 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             <div className="result-tabs" role="tablist" aria-label="本轮结果视图">
               {products.length > 0 && (
                 <button type="button" role="tab" aria-selected={resultTab === "products"} className={`result-tab ${resultTab === "products" ? "active" : ""}`} onClick={() => setResultTab("products")}>
-                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{confirmedProducts.length}</span>
+                  <Icon name="folder" size={11} /> 本轮产物 <span className="result-tab-count">{attributedProducts.length}</span>
                 </button>
               )}
               {fileChanges.length > 0 && (
@@ -3891,13 +3905,17 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
             {resultTab === "products" && products.length > 0 && (
               <div className="result-tab-panel" role="tabpanel" aria-label="本轮产物">
                 <div className="product-cards-head">
-                  <span><Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}{leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}</span>
+                  <span>
+                    <Icon name="folder" size={11} /> 交付产物 {deliverables.length} · 已确认 {confirmedProducts.length}
+                    {attributedProducts.length > confirmedProducts.length ? ` · 待确认 ${attributedProducts.length - confirmedProducts.length}` : ""}
+                    {leadProducts.length ? ` · 未归属线索 ${leadProducts.length}` : ""}
+                  </span>
                   {onOpenArtifacts && <button type="button" className="product-cards-link" onClick={() => onOpenArtifacts()} title="在右侧“产物”面板查看版本与固定">在产物面板查看</button>}
                 </div>
-                {confirmedCards.length > 0 && (
+                {productCards.length > 0 && (
                   <div className="product-cards">
-                    {confirmedCards.map((item) => (
-                      <div className={`product-card${item.deliverable ? " deliverable" : ""}`} key={item.path}>
+                    {productCards.map((item) => (
+                      <div className={`product-card${item.deliverable ? " deliverable" : ""}${item.confirmed ? "" : " provisional"}`} key={item.path}>
                         <button type="button" className="product-card-main" onClick={() => onOpenFile?.(item.path)} title={item.path}>
                           <span className={`product-card-icon artifact-kind-${item.icon}`}><Icon name={item.icon} size={15} /></span>
                           <span className="product-card-meta">
@@ -3905,14 +3923,20 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
                             <small>{item.typeLabel}{item.sizeText ? ` · ${item.sizeText}` : ""}</small>
                           </span>
                           {item.deliverable && <span className="product-card-badge">交付</span>}
+                          {!item.confirmed && (
+                            <span
+                              className="product-card-badge provisional"
+                              title="本轮没有把该文件写进台账（bash / officecli 写文件不回报路径），按“本轮确有写入 + 文件在运行窗口内变化”归属到本轮；若同一工作区有并行运行，也可能来自它"
+                            >待确认</span>
+                          )}
                         </button>
                         <button type="button" className="product-card-open" onClick={() => onOpenFile?.(item.path)} title={`打开 ${item.path}`}>打开</button>
                       </div>
                     ))}
                   </div>
                 )}
-                {/* 未归属线索：共享工作区里并行运行/其他轮次的写入也会落在本轮前后快照之间，
-                    这些文件无法证明属于本轮，只作线索列出，不参与"本轮产物"计数。 */}
+                {/* 未归属线索：本轮没有任何写入证据（纯读取的一轮）时，快照差异无法证明属于本轮，
+                    只作线索列出，不参与"本轮产物"计数。 */}
                 {leadProducts.length > 0 && (
                   <details className="product-leads">
                     <summary title="本轮没有写入台账（工具通过命令行写文件）时，快照差异无法证明文件归属；可能是并行运行或其他轮次写入的">

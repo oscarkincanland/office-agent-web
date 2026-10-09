@@ -108,6 +108,9 @@ export function normalizeFileChange(input = {}, { runId = null } = {}) {
     confidence: input.confidence || "confirmed",
     toolCallId: input.toolCallId || null,
     role,
+    // 归属：write-ledger / run-window = 归到本轮（后者带"待确认"）；unattributed = 只是线索。
+    attribution: input.source || "artifact",
+    attributed: (input.source || "artifact") !== "unattributed",
     // 无写入台账的快照差异只是“未归属线索”：可查看，但不能算本轮交付。
     unattributed: input.source === "unattributed" || input.confidence === "suspected",
     acceptanceStatus: acceptance?.status || input.acceptanceStatus || null,
@@ -276,9 +279,17 @@ export function projectRunView(run = {}, events = [], { now = Date.now() } = {})
     ? { messageId: finalMessageId, version: finalTextVersion, text: finalText, source: "run" }
     : (eventText ? { messageId: eventMessageId, version: 0, text: eventText, source: "event" } : null);
 
-  // 文件改动：Run 快照的 artifacts 为权威；事件里的 file_changed 只作疑似线索
+  // 文件改动：Run 快照的 artifacts 为权威；事件里的 file_changed 只作疑似线索。
+  // 必须保留服务端的归属分级（write-ledger / run-window / unattributed）：
+  // 它决定文件是「已确认的产物」「待确认产物」还是「未归属线索」。此前统一覆盖成
+  // "artifact"，后果是台账确认过的文件也显示「待确认」、「已确认」恒为 0，
+  // 用户看到的就是"文件改动里有、本轮产物里不算数"。
   const artifactChanges = (Array.isArray(source.artifacts) ? source.artifacts : [])
-    .map((artifact) => normalizeFileChange({ ...artifact, source: "artifact", confidence: "confirmed" }, { runId }));
+    .map((artifact) => normalizeFileChange({
+      ...artifact,
+      source: artifact.source || "artifact",
+      confidence: artifact.confidence || "confirmed",
+    }, { runId }));
   const knownPaths = new Set(artifactChanges.map((change) => change.relativePath));
   const suspected = [];
   for (const event of allEvents) {

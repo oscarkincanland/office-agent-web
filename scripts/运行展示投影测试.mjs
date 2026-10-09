@@ -29,6 +29,7 @@ import {
   projectRunView,
   upsertRunSummaryMessage,
 } from "../client/src/运行展示投影.js";
+import { buildArtifactIndex } from "../client/src/产物类型.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -188,6 +189,54 @@ test("事件里的 file_changed 只作疑似线索且不重复计入", () => {
   const paths = view.changes.map((item) => item.relativePath);
   assert.deepEqual(paths, ["报告.docx", "新增.md"], "同一路径只出现一次，已知路径不重复");
   assert.equal(view.changes.find((item) => item.relativePath === "新增.md").confidence, "suspected");
+});
+
+// 回归：「本轮产物」曾与「文件改动」不一致——投影层把服务端的归属分级
+// （write-ledger / run-window / unattributed）统一覆盖成 "artifact"，
+// 结果是台账已确认的文件也被降级成"待确认"，而产物索引又丢掉这些字段，
+// 卡片永远挂着「待确认」徽标。归属必须原样透传。
+test("投影保留服务端产物归属分级（不得覆盖成 artifact）", () => {
+  const run = {
+    id: "run_attr",
+    status: "completed",
+    artifacts: [
+      { path: "台账产物.md", status: "added", source: "write-ledger", confidence: "confirmed" },
+      { path: "窗口内产物.md", status: "added", source: "run-window", confidence: "suspected" },
+      { path: "并发发布.md", status: "added", source: "unattributed" },
+    ],
+  };
+  const view = projectRunView(run, []);
+  const byPath = new Map(view.changes.map((item) => [item.relativePath, item]));
+
+  const ledger = byPath.get("台账产物.md");
+  assert.equal(ledger.source, "write-ledger", "台账确认的归属不得被覆盖");
+  assert.equal(ledger.attributed, true, "台账文件应归到本轮");
+  assert.equal(ledger.unattributed, false);
+  assert.equal(ledger.confidence, "confirmed", "台账确认不得被降级为 suspected");
+
+  const windowed = byPath.get("窗口内产物.md");
+  assert.equal(windowed.source, "run-window", "运行窗口归属应保留");
+  assert.equal(windowed.attributed, true, "运行窗口内的变更归到本轮（待确认）");
+  assert.equal(windowed.unattributed, true, "运行窗口归属标记为待确认");
+
+  const lead = byPath.get("并发发布.md");
+  assert.equal(lead.source, "unattributed", "无写入证据的归属应保留");
+  assert.equal(lead.attributed, false, "未归属线索不参与本轮产物计数");
+
+  // 产物索引必须把归属字段带到卡片层，否则徽标会误报「待确认」。
+  const { list } = buildArtifactIndex(
+    view.changes.map((item) => ({
+      path: item.relativePath,
+      deliverable: item.role === "deliverable",
+      confirmed: item.source === "write-ledger" || item.role === "deliverable",
+      attributed: item.attributed,
+    })),
+  );
+  const card = list.find((item) => item.path === "台账产物.md");
+  assert.equal(card.confirmed, true, "台账确认应传到产物卡片（不再误报待确认）");
+  assert.equal(card.attributed, true);
+  const cardLead = list.find((item) => item.path === "并发发布.md");
+  assert.equal(cardLead.attributed, false, "未归属线索的标记也要传到卡片层");
 });
 
 test("normalizeFileChange：删除/新增类型与回滚可用性", () => {

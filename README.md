@@ -1,10 +1,28 @@
 # Open Plan（规聚）
 
+[![CI](https://github.com/oscarkincanland/open-plan/actions/workflows/ci.yml/badge.svg)](https://github.com/oscarkincanland/open-plan/actions/workflows/ci.yml)
+
 > 规划 + 聚集 —— 面向交通规划工程师的 AI 一体化工作台
 
 基于 [Pi Agent SDK](https://github.com/nicepkg/pi-coding-agent) 的 Web 端规划工作台 + AI Agent 协作工具：Office 文档编辑、知识库、地图可视化、脑图、模板库一站式协同。前端设计参考 [Proma](https://github.com/proma-ai/Proma) 与 [siyuan](https://github.com/siyuan-note/siyuan) 项目。
 
 **规聚释义**：`规` = 规划（文档成果、规划报告、地图与图表），`聚` = 聚集（知识汇聚、文档反链、引用关系图谱）——为交通规划工程师提供"规划成果 + 知识汇聚 + 智能协作"的一体化工作台。
+
+## 目录结构
+
+```
+open-plan/
+├─ client/              # 前端（Vite + React）：对话流、工作台、预览器、地图、知识库
+│  ├─ src/components/   # 界面组件（ChatPanel / 工作产物面板 / 预览器 / 地图面板…）
+│  ├─ src/*.js          # 展示投影、事件注册表、运行轨迹归约等纯函数模块
+│  └─ dist/             # 构建产物（npm run build 生成，不入库）
+├─ server/              # 服务端（Express + Pi Agent SDK）：会话、Run、事件流、工具
+├─ scripts/             # 回归测试与运维脚本（测试即脚本，node scripts/*.mjs）
+├─ templates/           # 文档/汇报模板库
+├─ docs/                # 计划、审计与实施记录（plans / audits）
+├─ office-workspace/    # 默认工作区（用户文档不入库；maps/ 图层入库）
+└─ 变更日志.md           # 逐版本变更记录（语义化版本）
+```
 
 ## 功能全景
 
@@ -118,6 +136,8 @@ npm run verify   # 语法检查 + 前端构建 + API 冒烟测试
 ## 版本历史
 
 当前版本 **v0.10.1**，详见 [变更日志.md](变更日志.md)。0.10.1 在 0.10.0 三栏工作台基础上增加 Pi 网络适配和规聚独立模型配置；本地 Pi 只作为明确导入来源，不再是 Agent 的实时配置依赖。
+
+> v0.11.x 起（对话流折叠与结论、每轮用时与 token、产物归属分层、模型切换排队与分割线等）逐版本记录见 [变更日志.md](变更日志.md)。
 
 关键里程碑：
 - **v0.5.0** Office Viewer 集成（批注/修订渲染）

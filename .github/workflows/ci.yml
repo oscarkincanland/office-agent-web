@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 安装依赖（服务端）
+        run: npm ci --no-audit --no-fund
+
+      - name: 安装依赖（前端）
+        run: npm --prefix client ci --no-audit --no-fund
+
+      - name: 构建前端
+        run: npm run build
+
+      - name: 执行轨迹归约（工具聚合 / 完成语义 / 每轮用时与 token）
+        run: node scripts/执行轨迹归约测试.mjs
+
+      - name: 事件注册表一致性
+        run: node scripts/事件注册表测试.mjs
+
+      - name: 任务结论事件流
+        run: node scripts/任务结论事件流测试.mjs
+
+      - name: 成果可信度（归属分层 / 回滚与固定口径）
+        run: node scripts/成果可信度测试.mjs
+
+      - name: 动效治理（持续动画白名单与降级）
+        run: node scripts/动效治理测试.mjs
+
+      - name: 主任务流（交互与结果卡）
+        run: node scripts/主任务流可信度测试.mjs
+
+      - name: 对话流（过程折叠 / 产物卡片 / 结论内嵌）
+        run: node scripts/对话流性能回归测试.mjs

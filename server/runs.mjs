@@ -613,13 +613,16 @@ function normalizeChangeTypeOf(change) {
 
 /**
  * C01：把变更补全为可审计的 FileChange，并剔除“没有内容差异”的疑似变更。
- *   - 来源优先级：工具写入记录（write-ledger）> 前后快照 diff（confirmed）> 运行窗口 mtime（suspected）
+ *   - 归属分层（source）：write-ledger（台账给了具体路径）> run-window（本轮确有写入 +
+ *     运行窗口内变更）> unattributed（本轮没有任何写入证据，只能算线索）
+ *   - detectedBy 保留检测机制（snapshot / recent-mtime / write-ledger），便于解释来源
  *   - 只有 before blob 可用、且当前内容与 Run.after 一致时才可回滚（blobs 字段交给前端判断）
  */
 function finalizeFileChanges(run, changes, after) {
-  const touched = new Set((run.touchedPaths || [])
+  const touchedAll = (run.touchedPaths || [])
     .map((value) => normalizeTrackedPath(run, value))
-    .filter((value) => value && value !== "."));
+    .filter(Boolean);
+  const touched = new Set(touchedAll.filter((value) => value !== "."));
   const toolCallIdByPath = new Map();
   for (const event of Array.isArray(run.events) ? run.events : []) {
     if (event?.type !== "write_started") continue;
@@ -628,17 +631,19 @@ function finalizeFileChanges(run, changes, after) {
     if (path && path !== "." && callId && !toolCallIdByPath.has(path)) toolCallIdByPath.set(path, String(callId));
   }
   const out = [];
-  // 本轮完全没有写入台账（touchedPaths 为空）时，快照 diff 只能证明“文件变了”，
-  // 不能证明“是本轮改的”——共享工作区里并行 Run 的发布同样会出现在 before/after 之间。
-  // 这类差异降级为“未归属线索”，不再以 confirmed 自动宣告为本轮交付。
-  const hasLedgerEvidence = touched.size > 0;
+  // 台账可能只知道“写过工作区”（bash / officecli 不回报具体路径，touchedPaths 只有 "."）。
+  // 此时还能救：本轮确有写入 + 文件在运行窗口内发生变化，两条证据合起来足以把变更归到本轮，
+  // 只是不如精确台账可靠（共享工作区里并行 Run 的写入同样落在窗口内）——记为 run-window（待确认）。
+  // 完全没有写入证据（纯读取的一轮）时，快照差异只能算“未归属线索”，不自动宣告交付。
+  const workspaceWrite = touchedAll.includes(".");
+  const writeEvidence = touched.size > 0 || workspaceWrite;
   for (const change of Array.isArray(changes) ? changes : []) {
     const relativePath = String(change?.path || change?.relativePath || "").replace(/\\/g, "/");
     if (!relativePath) continue;
     const changeType = normalizeChangeTypeOf(change);
     const viaLedger = touched.has(relativePath);
-    const source = viaLedger ? "write-ledger" : (change.detectedBy === "recent-mtime" ? "recent-mtime" : (hasLedgerEvidence ? "snapshot" : "unattributed"));
-    const confidence = source === "write-ledger" ? "confirmed" : "suspected";
+    const source = viaLedger ? "write-ledger" : (writeEvidence ? "run-window" : "unattributed");
+    const confidence = viaLedger ? "confirmed" : "suspected";
     // 疑似变更再核对一次：大小与修改时间都一致时视为“只是被 touch”，不算修改
     if (confidence === "suspected" && changeType === "modified") {
       const beforeItem = run.before?.files?.[relativePath];
@@ -660,7 +665,7 @@ function finalizeFileChanges(run, changes, after) {
       // 未归属线索不得自动成为交付物；仍需显式验收/固定才升级为 deliverable。
       autoDeliverable: source !== "unattributed",
       toolCallId: toolCallIdByPath.get(relativePath) || change.toolCallId || null,
-      detectedBy: source,
+      detectedBy: viaLedger ? "write-ledger" : (change.detectedBy || (workspaceWrite ? "run-window" : "unattributed")),
       detectable: changeType !== "deleted" || beforeReversible,
       blobs: { before: beforeReversible, after: afterAvailable },
     });
@@ -1001,12 +1006,38 @@ export function getRun(id) {
   return publicRunView(run);
 }
 
+/**
+ * 读取时统一归属口径（含历史数据）：Run 的 artifacts 在入库时固化了当时的归属结论，
+ * 后来补充的"本轮确有写入 + 运行窗口内变更 = run-window"规则不会自动回溯。这里按同一套
+ * 证据（touchedPaths 的精确路径 / 工作区级 "."）重新标注 source，保证新旧数据一致：
+ *   - 精确台账路径 → write-ledger（已确认）
+ *   - 有工作区级写入证据 → run-window（待确认）
+ *   - 完全没有写入证据 → unattributed（只作线索）
+ */
+function withNormalizedAttribution(run) {
+  if (!run || !Array.isArray(run.artifacts) || !run.artifacts.length) return run;
+  const touchedAll = (run.touchedPaths || []).map((value) => normalizeTrackedPath(run, value)).filter(Boolean);
+  const concrete = new Set(touchedAll.filter((value) => value !== "."));
+  const workspaceWrite = touchedAll.includes(".");
+  if (!concrete.size && !workspaceWrite) return run;
+  let changed = false;
+  const artifacts = run.artifacts.map((item) => {
+    const path = String(item?.path || item?.relativePath || "").replace(/\\/g, "/");
+    const source = concrete.has(path) ? "write-ledger" : (item?.source === "unattributed" ? "run-window" : item?.source);
+    if (!source || source === item?.source) return item;
+    changed = true;
+    return { ...item, source, autoDeliverable: source !== "unattributed" };
+  });
+  return changed ? { ...run, artifacts } : run;
+}
+
 // 把已加载的 Run 投影为对外公开结构（去掉体积很大的 before/after 快照）。
 // listRuns 直接复用该方法，避免对同一文件二次 loadRun。
 // includeEvents=false 时用 eventCount 代替 events；
 // eventByteBudget>0 时只保留尾部事件直到接近该字节预算（列表接口瘦身，单条 Run 查询不受限）。
 function publicRunView(run, { includeEvents = true, eventByteBudget = 0 } = {}) {
-  const { before, after, ...publicRun } = run;
+  const normalized = withNormalizedAttribution(run);
+  const { before, after, ...publicRun } = normalized;
   if (Array.isArray(publicRun.events) && !includeEvents) {
     publicRun.eventCount = publicRun.events.length;
     delete publicRun.events;

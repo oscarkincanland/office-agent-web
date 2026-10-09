@@ -102,7 +102,12 @@ export function buildArtifactIndex(entries = []) {
     const existing = byPath.get(path);
     const deliverable = Boolean(entry?.deliverable) || existing?.deliverable || false;
     const size = entry?.size ?? existing?.size ?? null;
-    byPath.set(path, { path, name: entry?.name || artifactName(path), size, deliverable });
+    // 归属分级必须一起带过去：产物卡片靠 confirmed / attributed 决定是否显示
+    // 「待确认」徽标。此前只保留 path/name/size/deliverable，字段丢失后所有卡片
+    // 都退化成"待确认"，即使服务端台账已确认（write-ledger）也一样。
+    const confirmed = Boolean(entry?.confirmed) || existing?.confirmed || false;
+    const attributed = entry?.attributed !== false && existing?.attributed !== false;
+    byPath.set(path, { path, name: entry?.name || artifactName(path), size, deliverable, confirmed, attributed });
   }
   const list = [...byPath.values()].map((item) => ({
     ...item,

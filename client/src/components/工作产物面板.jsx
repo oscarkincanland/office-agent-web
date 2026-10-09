@@ -255,6 +255,7 @@ function ArtifactPanel({ workspace, projectId, currentSessionId, selectedRunId =
               <span><strong>{name}</strong><small>{statusText[run.status] || run.status || "已完成"} · {String(artifact.path || "").replace(name, "").replace(/[\\/]$/, "") || "工作区根目录"}</small></span>
             </button>
             {artifact.source === "unattributed" && <span className="preview-artifact-status suspect" title="本轮没有写入台账记录该文件，可能来自并发运行；仅作线索，未自动计入交付">未归属线索</span>}
+            {artifact.source === "run-window" && <span className="preview-artifact-status suspect" title="本轮确有写入（台账只到工作区级，bash / officecli 不回报具体路径），按“运行窗口内变更”归属到本轮；若同一工作区有并行运行，可能来自它">待确认</span>}
             <span className={`preview-artifact-status ${info.tone}`} title={info.hint}>{info.label}</span>
             {canConfirm && <button className="btn-xs" disabled={action === `confirm-${artifact.artifactId}`} onClick={() => runAction(`confirm-${artifact.artifactId}`, async () => { const note = window.prompt("请输入人工确认说明（可选）", "已检查内容、格式和页面显示"); if (note !== null) await confirmArtifactAcceptance(run.id, artifact.artifactId, note); })}>人工确认</button>}
             {canPublish && <button className="btn-xs" disabled={action === `publish-${artifact.artifactId}`} onClick={() => runAction(`publish-${artifact.artifactId}`, () => publishArtifact(run.id, artifact.artifactId))}>固定成果</button>}

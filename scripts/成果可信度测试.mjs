@@ -12,7 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { artifactStatusInfo, artifactAcceptanceText, acceptanceSummaryText } from "../client/src/components/验收状态.js";
-import { detectRecentWorkspaceFiles, mergeChangeLists, filterRunChanges, snapshotWorkspace, beginRun, finishRun, recordRunEvent } from "../server/runs.mjs";
+import { detectRecentWorkspaceFiles, mergeChangeLists, filterRunChanges, snapshotWorkspace, beginRun, finishRun, recordRunEvent, getRun, runsDir } from "../server/runs.mjs";
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), "utf8");
 const 面板 = read("../client/src/components/工作产物面板.jsx");
@@ -138,6 +138,36 @@ console.log("\n▶ 产物检测：大工作区 / 无明确路径（P0 回归）"
     assert.ok(ledgerItem, "有台账的产物应被保留");
     assert.equal(ledgerItem.source, "write-ledger", "有台账的产物应保持精确归属");
     assert.equal(ledgerItem.confidence, "confirmed", "有台账的产物应为 confirmed");
+
+    // 台账只知道"写过工作区"（bash / officecli 不回报具体路径，touchedPaths 只有 "."）：
+    // 本轮确有写入 + 文件在运行窗口内变化，两条证据合起来归到本轮，记为 run-window（待确认）。
+    // 否则真实使用中（Office/PPT 全走命令行）会出现"产物根本显示不出来"。
+    const windowRun = beginRun({ clientId: "concurrent-test", threadId: "t3", cwd: root, task: { mode: "work" }, sessionId: "s1" });
+    recordRunEvent(windowRun.id, "write_started", { path: ".", toolCallId: "call_bash" });
+    fs.writeFileSync(path.join(root, "窗口内产物.md"), "written via bash");
+    const windowFinished = finishRun(windowRun.id, { status: "completed", sessionId: "s1" });
+    const windowItem = windowFinished.artifacts.find((item) => item.relativePath === "窗口内产物.md");
+    assert.ok(windowItem, "有工作区级写入证据时，窗口内新增文件应归到本轮");
+    assert.equal(windowItem.source, "run-window", "只到工作区级的台账应按 run-window 归属");
+    assert.equal(windowItem.confidence, "suspected", "run-window 是待确认，不能标成 confirmed");
+    assert.notEqual(windowItem.source, "unattributed", "run-window 不应退化成未归属线索");
+    assert.equal(windowItem.autoDeliverable, true, "只有完全没有写入证据的差异才不得自动宣告交付");
+
+    // 读取时统一口径：旧 Run 的 artifacts 固化过旧结论（unattributed），
+    // 但它的 touchedPaths 有 "." 证据 —— getRun 应把它重新标注为 run-window。
+    const legacy = getRun(windowRun.id);
+    const legacyItem = (legacy?.artifacts || []).find((item) => item.path === "窗口内产物.md");
+    assert.ok(legacyItem, "读取 Run 应返回该文件");
+    assert.equal(legacyItem.source, "run-window", "读取时按同一套证据重新标注归属");
+    // 反证：把落盘数据改成旧的 unattributed，读取后仍会被纠正（模拟历史数据）。
+    const legacyFile = path.join(runsDir(), `${windowRun.id}.json`);
+    const raw = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
+    raw.artifacts = (raw.artifacts || []).map((item) => ({ ...item, source: "unattributed", autoDeliverable: false }));
+    fs.writeFileSync(legacyFile, JSON.stringify(raw));
+    const reloaded = getRun(windowRun.id);
+    const reloadedItem = (reloaded?.artifacts || []).find((item) => item.path === "窗口内产物.md");
+    assert.equal(reloadedItem?.source, "run-window", "历史 Run 的产物归属应在读取时被纠正");
+    assert.equal(reloadedItem?.autoDeliverable, true, "纠正后应恢复可交付判定");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
