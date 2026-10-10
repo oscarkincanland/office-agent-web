@@ -59,6 +59,7 @@ export default function LayerPanel({
   onRenameLayer, onDuplicateLayer, onDeleteLayer, onZoomToLayer, onOpenAttribute,
   onSetLayout,
   onSetLabel, onCreateGroup, onMoveLayerToGroup,
+  layerViews = [], tempLayers = [],
 }) {
   const [collapsed, setCollapsed] = useState({});          // 组折叠
   const [expanded, setExpanded] = useState({});            // 图层图例展开
@@ -75,7 +76,7 @@ export default function LayerPanel({
   const panelRef = useRef(null);
 
   // ---- 分组：组内图层按 style.layers 顺序（视觉逆序=顶部最上层） ----
-  const groups = useMemo(() => {
+  const allGroups = useMemo(() => {
     const styleOrder = new Map((style?.layers || []).map((l, i) => [l.id, i]));
     const map = new Map();
     for (const g of cfg?.groups || []) {
@@ -94,6 +95,27 @@ export default function LayerPanel({
       (a, b) => (GROUP_ORDER.indexOf(a[0]) - GROUP_ORDER.indexOf(b[0])) || a[0].localeCompare(b[0])
     );
   }, [cfg, style]);
+
+  // 归属视图（来自服务端图层仓库）：shared = 共享数据集（只读、编辑需授权），
+  // workspace = 本工作区自有图层（可直接改）。没有归属数据时按"全部是我自己的"处理，
+  // 保证旧后端或后端异常时图层树仍可用。
+  const originOf = useCallback((id) => {
+    const view = layerViews.find((v) => String(v.id) === String(id));
+    return view?.origin || "workspace";
+  }, [layerViews]);
+  const isSharedLayer = useCallback((id) => originOf(id) === "shared", [originOf]);
+  const editableOf = useCallback((id) => {
+    const view = layerViews.find((v) => String(v.id) === String(id));
+    return view ? view.editable !== false : true;
+  }, [layerViews]);
+
+  // 共享数据集：跨用户组的扁平列表（共享图层不参与"我的图层组"拖拽语义）。
+  const sharedIds = useMemo(() => allGroups.flatMap(([, ids]) => ids).filter((id) => isSharedLayer(id)), [allGroups, isSharedLayer]);
+  // 我的图层：保留用户自定义图层组结构，只放本工作区自有的图层。
+  const groups = useMemo(
+    () => allGroups.map(([name, ids]) => [name, ids.filter((id) => !isSharedLayer(id))]).filter(([, ids]) => ids.length),
+    [allGroups, isSharedLayer],
+  );
 
   // ---- 组显隐（组内所有图层） ----
   const groupAllVisible = useCallback((ids) => ids.every((id) => {
@@ -279,6 +301,66 @@ export default function LayerPanel({
     setRenderMode({ layerId: selected, mode: "single", field: null, palette: 0 });
   }, [colorKey, selected, selectedStyleType, setPaint]);
 
+  // ---- 图层行渲染（共享组与"我的图层"组共用；共享图层显示锁标识） ----
+  const renderLayerRow = useCallback((id) => {
+    const meta = cfg?.layers?.find((l) => l.id === id);
+    const paint = layerPaint(id);
+    const stype = layerStyleType(id);
+    const vis = layerVisible(id);
+    const isSelected = selected === id;
+    const isDrag = dragId === id;
+    const shared = isSharedLayer(id);
+    const editable = editableOf(id);
+    const lockTitle = shared && !editable ? "共享数据集，编辑需授权" : undefined;
+    return (
+      <div
+        key={id}
+        className={`lp-row ${isSelected ? "active" : ""} ${isDrag ? "dragging" : ""} ${shared ? "lp-row-shared" : ""}`}
+        draggable
+        onClick={() => onSelect(id)}
+        onContextMenu={(e) => openCtx(e, id)}
+        onDragStart={(e) => {
+          dragIdRef.current = id;
+          setDragId(id);
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("application/x-open-plan-layer", id);
+          e.dataTransfer.setData("text/plain", id);
+        }}
+        onDragOver={(e) => { if (dragIdRef.current || dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
+        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, id); }}
+        onDragEnd={clearDrag}
+      >
+        <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={vis ? "隐藏" : "显示"}>
+          <input type="checkbox" checked={vis} onChange={() => onToggleLayer(id)} />
+        </label>
+        <span className="lp-symbol"><LegendSymbol styleType={stype} paint={paint} /></span>
+        {editing?.layerId === id ? (
+          <input
+            className="lp-rename-input"
+            autoFocus
+            defaultValue={editing.name}
+            onClick={(e) => e.stopPropagation()}
+            onBlur={(e) => { onRenameLayer(id, e.target.value.trim() || meta?.name || id); setEditing(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setEditing(null); }}
+          />
+        ) : (
+          <span className="lp-row-name" title={lockTitle || id} onDoubleClick={(e) => { e.stopPropagation(); setEditing({ layerId: id, name: meta?.name || id }); }}>
+            {shared && <span className="lp-row-lock" title={lockTitle}><Icon name="lock" size={10} /></span>}
+            {meta?.name || id}
+            <span className="lp-row-type">{TYPE_NAMES[meta?.type] || meta?.type || "?"}</span>
+          </span>
+        )}
+        <button
+          className={`lp-caret-btn ${expanded[id] ? "open" : ""}`}
+          title="图例 / 信息"
+          onClick={(e) => { e.stopPropagation(); toggleLegend(id); }}
+        >
+          <Icon name="chevronDown" size={10} />
+        </button>
+      </div>
+    );
+  }, [cfg, layerPaint, layerStyleType, layerVisible, selected, dragId, isSharedLayer, editableOf, openCtx, handleDrop, clearDrag, onSelect, onToggleLayer, onRenameLayer, expanded, toggleLegend]);
+
   return (
     <div className="lp" ref={panelRef}>
       <div className="lp-toolbar">
@@ -296,7 +378,30 @@ export default function LayerPanel({
         )}
       </div>
       <div className="lp-list">
-        {groups.length === 0 && <div className="mp-empty">暂无图层，点地图右上角「导入」添加 GeoJSON / SHP</div>}
+        {groups.length === 0 && sharedIds.length === 0 && tempLayers.length === 0 && (
+          <div className="mp-empty">暂无图层，点地图右上角「导入」添加 GeoJSON / SHP</div>
+        )}
+
+        {/* 共享数据集（只读，编辑需授权）：所有工作区共用，不随工作区切换变化 */}
+        {sharedIds.length > 0 && (
+          <div className="lp-group lp-group-shared">
+            <div
+              className="lp-group-head"
+              onClick={() => setCollapsed((p) => ({ ...p, "__shared__": !p.__shared__ }))}
+              title="共享数据集：所有工作区共用；编辑需逐次授权"
+            >
+              <span className="lp-caret">{collapsed.__shared__ ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
+              <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={groupAllVisible(sharedIds) ? "隐藏整组" : "显示整组"}>
+                <input type="checkbox" checked={groupAllVisible(sharedIds)} onChange={() => toggleGroup(sharedIds)} />
+              </label>
+              <span className="lp-group-name"><Icon name="lock" size={10} /> 共享数据集</span>
+              <span className="lp-group-count">{sharedIds.length}</span>
+            </div>
+            {!collapsed.__shared__ && <div className="lp-group-body">{sharedIds.map(renderLayerRow)}</div>}
+          </div>
+        )}
+
+        {/* 我的图层（本工作区自有，可直接编辑）：保留用户自定义图层组 */}
         {groups.map(([gname, ids]) => {
           const isCollapsed = !!collapsed[gname];
           const gVisible = groupAllVisible(ids);
@@ -322,67 +427,40 @@ export default function LayerPanel({
                 <span className="lp-group-name">{gname}</span>
                 <span className="lp-group-count">{ids.length}</span>
               </div>
-              {!isCollapsed && (
-                <div className="lp-group-body">
-                  {ids.map((id) => {
-                    const meta = cfg?.layers?.find((l) => l.id === id);
-                    const paint = layerPaint(id);
-                    const stype = layerStyleType(id);
-                    const vis = layerVisible(id);
-                    const isSelected = selected === id;
-                    const isDrag = dragId === id;
-                    return (
-                      <div
-                        key={id}
-                        className={`lp-row ${isSelected ? "active" : ""} ${isDrag ? "dragging" : ""}`}
-                        draggable
-                        onClick={() => onSelect(id)}
-                        onContextMenu={(e) => openCtx(e, id)}
-                        onDragStart={(e) => {
-                          dragIdRef.current = id;
-                          setDragId(id);
-                          e.dataTransfer.effectAllowed = "move";
-                          e.dataTransfer.setData("application/x-open-plan-layer", id);
-                          e.dataTransfer.setData("text/plain", id);
-                        }}
-                        onDragOver={(e) => { if (dragIdRef.current || dragId) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } }}
-                        onDrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, id); }}
-                        onDragEnd={clearDrag}
-                      >
-                        <label className="lp-eye" onClick={(e) => e.stopPropagation()} title={vis ? "隐藏" : "显示"}>
-                          <input type="checkbox" checked={vis} onChange={() => onToggleLayer(id)} />
-                        </label>
-                        <span className="lp-symbol"><LegendSymbol styleType={stype} paint={paint} /></span>
-                        {editing?.layerId === id ? (
-                          <input
-                            className="lp-rename-input"
-                            autoFocus
-                            defaultValue={editing.name}
-                            onClick={(e) => e.stopPropagation()}
-                            onBlur={(e) => { onRenameLayer(id, e.target.value.trim() || meta?.name || id); setEditing(null); }}
-                            onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setEditing(null); }}
-                          />
-                        ) : (
-                          <span className="lp-row-name" title={id} onDoubleClick={(e) => { e.stopPropagation(); setEditing({ layerId: id, name: meta?.name || id }); }}>
-                            {meta?.name || id}
-                            <span className="lp-row-type">{TYPE_NAMES[meta?.type] || meta?.type || "?"}</span>
-                          </span>
-                        )}
-                        <button
-                          className={`lp-caret-btn ${expanded[id] ? "open" : ""}`}
-                          title="图例 / 信息"
-                          onClick={(e) => { e.stopPropagation(); toggleLegend(id); }}
-                        >
-                          <Icon name="chevronDown" size={10} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              {!isCollapsed && <div className="lp-group-body">{ids.map(renderLayerRow)}</div>}
             </div>
           );
         })}
+
+        {/* 临时层（本次会话的临时可视化，不落盘） */}
+        {tempLayers.length > 0 && (
+          <div className="lp-group lp-group-temp">
+            <div
+              className="lp-group-head"
+              onClick={() => setCollapsed((p) => ({ ...p, "__temp__": !p.__temp__ }))}
+              title="本次会话的临时可视化，不写入项目；保存为正式图层需 Work 模式"
+            >
+              <span className="lp-caret">{collapsed.__temp__ ? <Icon name="chevronRight" size={10} /> : <Icon name="chevronDown" size={10} />}</span>
+              <span className="lp-caret-spacer" />
+              <span className="lp-group-name"><Icon name="star" size={10} /> 临时层</span>
+              <span className="lp-group-count">{tempLayers.length}</span>
+            </div>
+            {!collapsed.__temp__ && (
+              <div className="lp-group-body">
+                {tempLayers.map((item) => (
+                  <div key={item.key} className="lp-row lp-row-temp" title="临时可视化，不写入项目">
+                    <span className="lp-eye-spacer" />
+                    <span className="lp-symbol lp-symbol-temp"><Icon name="star" size={11} /></span>
+                    <span className="lp-row-name">
+                      {item.label}
+                      <span className="lp-row-type">未保存</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 图层图例信息 */}

@@ -21,6 +21,7 @@ import SettingsPanel from "./components/SettingsPanel.jsx";
 import MemoryTab from "./components/MemoryTab.jsx";
 import { useTheme } from "./theme.jsx";
 import { loadUIState, saveUIState } from "./persist-ui.js";
+import { acquireStream } from "./长连接预算.js";
 import { listFiles, listModels, refreshModels, listSessions, listProjects, listRuns, listWorkspaces, switchWorkspace, deleteWorkspace, deleteSession, deleteSessions, renameSession, getSession, getClientId, createAgentThread, resumeAgentThread, markAgentEventsRead, forkSession, pinSession, freezeSession } from "./api.js";
 import { buildDocUrls, makeFileIdentity, mergeFileIdentity, fileIdentityKey, identityMatches } from "./文件地址.js";
 
@@ -151,9 +152,8 @@ export default function App() {
   const [artifactScope, setArtifactScope] = useState("session");
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false); // 内置浏览器独立侧栏
   const [browserFullscreen, setBrowserFullscreen] = useState(false);
-  const browserActiveRef = useRef(false);
-
-  const browserStateSeenRef = useRef(false); // 首个浏览器状态只记录，不触发自动展开
+  // 用户手动关掉浏览器侧栏后，本轮不再自动弹开（否则每个 browser_* 工具都会把它重新拉起来）。
+  const browserAutoOpenBlockedRef = useRef(false);
 
   useEffect(() => {
     if (!browserPanelOpen) setBrowserFullscreen(false);
@@ -189,43 +189,17 @@ export default function App() {
   const currentMapContext = mapContexts[threadId] || null;
   const currentMapProject = currentMapContext?.mapProject || "zhejiang-map";
 
-  // 浏览器活动侦测：Agent 调用 browser_* 时自动打开浏览器侧栏（仅在激活瞬间触发一次）
-  useEffect(() => {
-    if (!clientId) return undefined;
-    let stopped = false;
-    let source = null;
-    let retry = null;
-    const connect = () => {
-      if (stopped) return;
-      const params = new URLSearchParams({ client: clientId, thread: threadId || "", frames: "0" });
-      source = new EventSource(`/api/browser/stream?${params.toString()}`);
-      source.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data || "{}");
-          if (payload.type !== "state") return;
-          const active = Boolean(payload.data?.active);
-          // 刷新后首个 state 只记录、不自动展开（浏览器在服务器侧仍活跃），
-          // 仅当会话过程中从“不活跃”变为“活跃”才自动打开面板。
-          if (active && browserStateSeenRef.current && !browserActiveRef.current) {
-            setBrowserPanelOpen(true);
-          }
-          browserStateSeenRef.current = true;
-          browserActiveRef.current = active;
-        } catch {}
-      };
-      source.onerror = () => {
-        try { source.close(); } catch {}
-        if (!stopped) retry = setTimeout(connect, 5000);
-      };
-    };
-    connect();
-    return () => {
-      stopped = true;
-      if (retry) clearTimeout(retry);
-      try { source?.close(); } catch {}
-      browserActiveRef.current = false;
-    };
-  }, [clientId, threadId]);
+  // Agent 调用 browser_* 时自动打开浏览器侧栏。信号来自对话流里的工具事件
+  // （ChatPanel 的 tool_start），不再为此常驻一条 /api/browser/stream：
+  // 每条长连接都占一个同源连接槽位，槽位被占满会让切工作区/切会话永远排队。
+  const handleBrowserActivity = useCallback(() => {
+    if (browserAutoOpenBlockedRef.current) return;
+    setBrowserPanelOpen(true);
+  }, []);
+  const closeBrowserPanel = useCallback(() => {
+    browserAutoOpenBlockedRef.current = true;
+    setBrowserPanelOpen(false);
+  }, []);
 
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState("");
@@ -498,6 +472,8 @@ export default function App() {
     let reconnectTimer = null;
     let retryDelay = 800;
     let cancelled = false;
+    // 全局事件流是核心长连接（必需）：槽位不足时优先保证它和对话流。
+    const slot = acquireStream("agent-events", { essential: true, priority: 2, label: "全局事件流" });
     const cursorKey = "oaw_event_cursor";
     const flushEventBatch = () => {
       eventBatchTimerRef.current = null;
@@ -532,6 +508,7 @@ export default function App() {
       }
       if (cancelled) return;
       source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&after=${encodeURIComponent(cursor)}`);
+      slot?.attach(() => source?.close());
       source.onopen = () => { retryDelay = 800; };
       source.onmessage = (message) => {
         try {
@@ -550,6 +527,8 @@ export default function App() {
             setUnreadByThread((prev) => ({ ...prev, [thread]: (prev[thread] || 0) + 1 }));
           }
           if (["run_finished", "run_recovered", "run_cancel_requested", "agent_error"].includes(event.type)) {
+            // 新一轮开始前恢复"浏览器侧栏可自动展开"：用户上一轮手动关掉的状态不跨轮传递。
+            if (event.type === "run_finished") browserAutoOpenBlockedRef.current = false;
             if (!eventRefreshTimerRef.current) {
               eventRefreshTimerRef.current = window.setTimeout(() => {
                 eventRefreshTimerRef.current = null;
@@ -575,6 +554,7 @@ export default function App() {
         clearTimeout(eventRefreshTimerRef.current);
         eventRefreshTimerRef.current = null;
       }
+      slot?.release();
     };
   }, [clientId, refreshSessions]);
 
@@ -1295,6 +1275,9 @@ export default function App() {
       workspace={currentWorkspace}
       project={currentProject}
       frozen={Boolean(currentSession?.frozen)}
+      // 阶段 4：地图模式下用紧凑呈现（地图是主角，对话是辅助）。
+      // 只影响视觉密度与能力预览折叠块，不动消息流、SSE 与工具栏功能。
+      compact={activeModule === "map"}
       onFileChanged={(changed) => {
         handleFileChanged(changed);
         mapBridgeRef.current?.onFileChanged?.(changed);
@@ -1316,6 +1299,7 @@ export default function App() {
       onOpenRunArtifacts={openArtifactsForRun}
       onModeChange={setConversationMode}
       onPhaseChange={setConversationPhase}
+      onBrowserActivity={handleBrowserActivity}
       historyMessages={historyMessages}
       historyThreadId={historyThreadId}
       historyWindow={historyWindow}
@@ -1407,11 +1391,20 @@ export default function App() {
             onRefreshSessions={refreshSessions}
             onFocusRun={(run) => chatInputRef.current?.focusRun?.(run?.id)}
             onProjectChange={(name) => setMapContexts((prev) => ({ ...prev, [threadId]: { ...(prev[threadId] || {}), mapProject: name } }))}
+            conversationMode={conversationMode}
+            onModeChange={(next) => {
+              // 与主对话的模式切换同源：先让 ChatPanel 真正切模式，成功后再更新状态，
+              // 避免"按钮变了但 Agent 还是旧模式"。
+              const switched = chatInputRef.current?.setMode?.(next);
+              if (switched !== false) setConversationMode(next);
+            }}
             hideChat
             chatVisible={mapChatVisible}
             onToggleChat={() => setMapChatVisible((value) => !value)}
             bridgeRef={mapBridgeRef}
             onViewportChange={(context) => setMapContexts((prev) => ({ ...prev, [threadId]: context }))}
+            // 阶段 2：可视面板的"交给 Agent"把意图填进全局对话栏输入框（复用同一实例，消息流连续）
+            insertChatText={insertChatText}
           />
           </DeferredModule>
         )}
@@ -1546,7 +1539,7 @@ export default function App() {
             <span className={`conversation-status ${conversationPhase ? "working" : ""}`}><i /> {conversationPhase || "待命"}</span>
             <button className="btn-sm topbar-new-chat" onClick={() => handleNewSession()} disabled={creatingSession} title="新建对话"><Icon name="plus" size={13} /></button>
             <button ref={previewToggleRef} className="btn-sm topbar-preview-toggle" onClick={() => { if (previewOpen) setPreviewLayout(0); setPreviewOpen((v) => !v); }} title={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-label={previewOpen ? "隐藏右侧预览" : "显示右侧预览"} aria-expanded={previewOpen}><Icon name="layers" size={13} /></button>
-            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => setBrowserPanelOpen((v) => !v)} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
+            <button className={`btn-sm topbar-browser-toggle ${browserPanelOpen ? "active" : ""}`} onClick={() => { if (browserPanelOpen) closeBrowserPanel(); else { browserAutoOpenBlockedRef.current = false; setBrowserPanelOpen(true); } }} title={browserPanelOpen ? "隐藏内置浏览器" : "显示内置浏览器"} aria-label="内置浏览器"><Icon name="globe" size={13} /></button>
               <TaskCenter
                 sessions={visibleSessions}
                 projects={projects}
@@ -1655,7 +1648,7 @@ export default function App() {
                 >
                   <Icon name={browserFullscreen ? "minimize" : "maximize"} size={14} />
                 </button>
-                <button className="btn-icon" onClick={() => setBrowserPanelOpen(false)} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
+                <button className="btn-icon" onClick={closeBrowserPanel} title="隐藏内置浏览器" aria-label="隐藏内置浏览器"><Icon name="close" size={14} /></button>
               </span>
             </div>
             <BrowserPanel clientId={clientId} threadId={threadId} fullscreen={browserFullscreen} onToggleFullscreen={() => setBrowserFullscreen((value) => !value)} />

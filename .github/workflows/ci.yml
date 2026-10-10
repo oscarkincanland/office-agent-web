@@ -45,3 +45,24 @@ jobs:
 
       - name: 对话流（过程折叠 / 产物卡片 / 结论内嵌）
         run: node scripts/对话流性能回归测试.mjs
+
+      - name: 长连接预算与流去重（切工作区/切会话卡死防护）
+        run: node scripts/长连接预算与流去重测试.mjs
+
+      - name: 地图只读能力与临时层（阶段 0 地基）
+        run: node scripts/地图只读能力与临时层测试.mjs
+
+      - name: 地图图层模型与入口（阶段 1：归属 / 选择器 / 审批 / 分组）
+        run: node scripts/地图图层模型与入口测试.mjs
+
+      - name: 交通数据源与可视化描述符（阶段 5 + 阶段 2.1）
+        run: node scripts/交通数据源与可视化描述符测试.mjs
+
+      - name: 地图可视化统一与面板整合（阶段 2：面板下线 / 顶栏收敛）
+        run: node scripts/地图可视化统一与面板整合测试.mjs
+
+      - name: 地图对话栏适配（阶段 4：紧凑呈现 / 状态行 / 临时层提示）
+        run: node scripts/地图对话栏适配测试.mjs
+
+      - name: 工作区隔离（地图项目生命周期）
+        run: node scripts/工作区隔离回归测试.mjs

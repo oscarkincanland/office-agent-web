@@ -5,10 +5,11 @@ import LayerPanel from "./LayerPanel.jsx";
 import AttributeTable from "./AttributeTable.jsx";
 import Icon from "./Icon.jsx";
 import TaskCenter from "./任务中心.jsx";
-import M2Analysis from "./M2宏观分析.jsx";
-import M3Analysis from "./M3公交分析.jsx";
-import CambodiaODPanel from "./柬埔寨OD面板.jsx";
+// 阶段 2：M2宏观分析 / M3公交分析 / 柬埔寨OD面板 三个旧面板已下线，
+// 统一由可视面板（可视面板.jsx + /api/map/visual 描述符）承担。
+import 可视面板 from "./可视面板.jsx";
 import shp from "shpjs";
+import { registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
 import {
   mapProjects, mapCreateProject, mapProject, mapSaveStyle, mapSaveConfig,
   mapDeleteLayer, mapRebuild, mapGetLayer, mapImportLayer, mapImportBatch, mapPrepare, mapIsochrone, mapRoute, mapDemoAnalysis,
@@ -159,12 +160,22 @@ export default function MapPanel({
   onExit, onOpenFile,
   clientId, threadId, workspace = "", models, defaultModel, onAgentEnd, onNewSession, historyMessages, sessions, currentSessionId, onSelectSession,
   onSessionChange, onRefreshSessions, onFocusRun, hideChat = false, chatVisible = true, onToggleChat, bridgeRef, onViewportChange, onProjectChange,
+  // 对话模式：地图里的查询（Chat）与分析总结可直接用，新增/修改图层需要 Work。
+  // 用户不必返回主对话切换——这正是此前"在地图里说画热力图却做不出来"的成因之一。
+  conversationMode = "chat", onModeChange,
+  // 阶段 2：可视面板的"交给 Agent"需要把文字送到对话栏输入框（复用全局单实例）。
+  insertChatText,
 }) {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState("zhejiang-map");
   const [cfg, setCfg] = useState(null);
   const [style, setStyle] = useState(null);
   const [files, setFiles] = useState([]);
+  // 图层归属视图（阶段 1）：[{id,name,type,group,origin,owner,ref,editable,visible}]。
+  // 来源是服务端图层仓库，只返回"共享 + 本工作区"可见的图层。
+  const [layerViews, setLayerViews] = useState([]);
+  // 临时层清单：当前画面上存在的临时可视化（OD / 等时圈 / 路径 / 绘制 / Agent 分析）。
+  const [tempLayers, setTempLayers] = useState([]);
   const [basemapMeta, setBasemapMeta] = useState([]);
   const [drill, setDrill] = useState(null); // 下钻状态 {source, code, name, level}
   const [regionOptions, setRegionOptions] = useState([{ value: "", label: "全省 / 全部区域" }]);
@@ -172,11 +183,12 @@ export default function MapPanel({
   const [layerScope, setLayerScope] = useState("region"); // 当前区域 / 当前地市 / 全省
   const [regionQuery, setRegionQuery] = useState("");
   const [annotationsVisible, setAnnotationsVisible] = useState(true);
-  const [m2Tab, setM2Tab] = useState(null); // M2 宏观分析标签
-  const [m3Tab, setM3Tab] = useState(null); // M3 公交分析标签
-  const [cambodiaOpen, setCambodiaOpen] = useState(false);
-  const [demoOpen, setDemoOpen] = useState(false);
-  const [analysisMenuOpen, setAnalysisMenuOpen] = useState(false);
+  // 阶段 2：顶栏收敛后的菜单与面板开关
+  const [visualOpen, setVisualOpen] = useState(false);   // 可视面板（替代 6 个旧分析面板）
+  const [dataMenuOpen, setDataMenuOpen] = useState(false);
+  const [viewMenuOpen, setViewMenuOpen] = useState(false);
+  const [regionMenuOpen, setRegionMenuOpen] = useState(false);
+  const [leftHidden, setLeftHidden] = useState(false);
   const [globeMode, setGlobeMode] = useState(false);
   const [activeAnalysis, setActiveAnalysis] = useState(null);
   const [msg, setMsg] = useState("");
@@ -255,9 +267,61 @@ export default function MapPanel({
 
   const clearOdLayers = useCallback(() => {
     const m = mapRef.current?.getMap();
-    if (!m) return;
-    for (const id of ["od-heat", "od-lines"]) { if (m.getLayer(id)) m.removeLayer(id); }
-    for (const src of ["od-heat-src", "od-lines-src"]) { if (m.getSource(src)) m.removeSource(src); }
+    if (m) {
+      for (const id of ["od-heat", "od-lines"]) { if (m.getLayer(id)) m.removeLayer(id); }
+      for (const src of ["od-heat-src", "od-lines-src"]) { if (m.getSource(src)) m.removeSource(src); }
+    }
+    // 主动清除时同时注销重放，否则下次样式重载会把它画回来。
+    if (odSpecRef.current) {
+      odSpecRef.current = null;
+      const mm = mapRef.current?.getMap();
+      if (mm) unregisterLayerReplay(mm, "od");
+    }
+  }, []);
+
+  // OD 的绘制规格（点/线的 FeatureCollection + 最大流量）。存成 ref 供样式重载后重放，
+  // 与当前输入的解析结果解耦：重放时不应再依赖 odText/odCols 这些界面状态。
+  const odSpecRef = useRef(null);
+
+  // 纯绘制：只做"清旧 → 加图层 → 缩放到范围"，不读界面状态，可被重放安全调用。
+  const paintOd = useCallback((m, spec) => {
+    if (!m || !spec) return;
+    for (const id of ["od-heat", "od-lines"]) { try { if (m.getLayer(id)) m.removeLayer(id); } catch {} }
+    for (const src of ["od-heat-src", "od-lines-src"]) { try { if (m.getSource(src)) m.removeSource(src); } catch {} }
+    const { points, odLines = [], maxFlow = 1 } = spec;
+    if (!points?.length) return;
+    m.addSource("od-heat-src", { type: "geojson", data: { type: "FeatureCollection", features: points } });
+    m.addLayer({
+      id: "od-heat", type: "heatmap", source: "od-heat-src",
+      paint: {
+        "heatmap-weight": ["interpolate", ["linear"], ["get", "flow"], 0, 0, maxFlow, 1],
+        "heatmap-intensity": 1.2,
+        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 18, 10, 36],
+        "heatmap-opacity": 0.65,
+        "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
+          0, "rgba(33,102,172,0)", 0.25, "rgb(103,169,207)", 0.45, "rgb(229,245,249)",
+          0.6, "rgb(253,219,199)", 0.8, "rgb(239,138,98)", 1, "rgb(178,24,43)"],
+      },
+    });
+    if (odLines.length) {
+      m.addSource("od-lines-src", { type: "geojson", data: { type: "FeatureCollection", features: odLines } });
+      m.addLayer({
+        id: "od-lines", type: "line", source: "od-lines-src",
+        paint: {
+          "line-color": ["interpolate", ["linear"], ["get", "flow"], 0, "#9ecae1", maxFlow / 2, "#fd8d3c", maxFlow, "#a50f15"],
+          "line-width": ["interpolate", ["linear"], ["get", "flow"], 0, 1, maxFlow, 4],
+          "line-opacity": 0.55,
+        },
+      });
+    }
+    // 只有首次绘制才缩放视野；重放时保持用户当前视角，不打断操作。
+    if (spec.fitBounds && points.length) {
+      const lngs = points.map((p) => p.geometry.coordinates[0]);
+      const lats = points.map((p) => p.geometry.coordinates[1]);
+      try {
+        m.fitBounds([[Math.min(...lngs) - 0.05, Math.min(...lats) - 0.05], [Math.max(...lngs) + 0.05, Math.max(...lats) + 0.05]], { padding: 50 });
+      } catch {}
+    }
   }, []);
 
   const renderOd = useCallback(() => {
@@ -292,36 +356,13 @@ export default function MapPanel({
       }
     }
     if (!count) { setOdMsg("没有解析到有效记录，请检查列名映射"); return; }
-    clearOdLayers();
-    m.addSource("od-heat-src", { type: "geojson", data: { type: "FeatureCollection", features: points } });
-    m.addLayer({
-      id: "od-heat", type: "heatmap", source: "od-heat-src",
-      paint: {
-        "heatmap-weight": ["interpolate", ["linear"], ["get", "flow"], 0, 0, maxFlow, 1],
-        "heatmap-intensity": 1.2,
-        "heatmap-radius": ["interpolate", ["linear"], ["zoom"], 5, 18, 10, 36],
-        "heatmap-opacity": 0.65,
-        "heatmap-color": ["interpolate", ["linear"], ["heatmap-density"],
-          0, "rgba(33,102,172,0)", 0.25, "rgb(103,169,207)", 0.45, "rgb(209,229,240)",
-          0.6, "rgb(253,219,199)", 0.8, "rgb(239,138,98)", 1, "rgb(178,24,43)"],
-      },
-    });
-    if (odLines.length) {
-      m.addSource("od-lines-src", { type: "geojson", data: { type: "FeatureCollection", features: odLines } });
-      m.addLayer({
-        id: "od-lines", type: "line", source: "od-lines-src",
-        paint: {
-          "line-color": ["interpolate", ["linear"], ["get", "flow"], 0, "#9ecae1", maxFlow / 2, "#fd8d3c", maxFlow, "#a50f15"],
-          "line-width": ["interpolate", ["linear"], ["get", "flow"], 0, 1, maxFlow, 4],
-          "line-opacity": 0.55,
-        },
-      });
-    }
-    const lngs = points.map((p) => p.geometry.coordinates[0]);
-    const lats = points.map((p) => p.geometry.coordinates[1]);
-    m.fitBounds([[Math.min(...lngs) - 0.05, Math.min(...lats) - 0.05], [Math.max(...lngs) + 0.05, Math.max(...lats) + 0.05]], { padding: 50 });
+    const spec = { points, odLines, maxFlow, fitBounds: true };
+    odSpecRef.current = spec;
+    paintOd(m, spec);
+    // 登记重放：改样式或被样式热更新清掉后，自动画回来。
+    registerLayerReplay(m, "od", (map) => paintOd(map, odSpecRef.current));
     setOdMsg(`已渲染 ${count} 条 OD（总流量 ${Math.round(totalFlow).toLocaleString()}，最大 ${maxFlow}），起点热力图${odLines.length ? " + 流向线" : ""}`);
-  }, [odText, odCols, odShowLines, clearOdLayers]);
+  }, [odText, odCols, odShowLines, clearOdLayers, paintOd]);
   const mapRef = useRef(null);
 
   const flash = useCallback((t) => {
@@ -329,18 +370,20 @@ export default function MapPanel({
     setTimeout(() => setMsg(""), 4000);
   }, []);
 
-  // 加载项目详情（config + style + 图层文件清单）
+  // 加载项目详情（config + style + 图层文件清单 + 归属视图）
   const loadProject = useCallback(async (name) => {
     try {
-      const p = await mapProject(name);
+      // 归属视图随工作区变化：共享数据集 + 本工作区自有图层（阶段 1）。
+      const p = await mapProject(name, workspace);
       setCfg(p.config);
       setStyle(p.style);
       setFiles(p.files || []);
+      setLayerViews(Array.isArray(p.layerViews) ? p.layerViews : []);
       setBasemapMeta(Array.isArray(p.basemapMeta) && p.basemapMeta.length ? p.basemapMeta : BASEMAP_FALLBACK);
     } catch (e) {
       flash("加载项目失败: " + e.message);
     }
-  }, [flash]);
+  }, [flash, workspace]);
 
   // 行政区选择器：边界数据已有 name/adcode，前端只读取一次并复用地图矢量源。
   useEffect(() => {
@@ -427,6 +470,15 @@ export default function MapPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project]);
 
+  // 工作区切换时"我的图层"跟随（阶段 1 · 修 X6）：
+  // 共享数据集不变，工作区自有图层随 owner 过滤重新拉取。
+  const workspaceRef = useRef(workspace);
+  useEffect(() => {
+    if (workspaceRef.current === workspace) return;
+    workspaceRef.current = workspace;
+    loadProject(project);
+  }, [workspace, project, loadProject]);
+
   // 临时分析只属于当前对话；切换会话时清理运行时图层，但保留共享基础图层和正式文件图层。
   useEffect(() => {
     mapRef.current?.clearAllAnalysis?.();
@@ -436,13 +488,12 @@ export default function MapPanel({
     setRegionCode("");
     setLayerScope("region");
     mapRef.current?.setCoverageMode("region");
-    setAnalysisMenuOpen(false);
-    setDemoOpen(false);
     setOdOpen(false);
     setIsoOpen(false);
-    setM2Tab(null);
-    setM3Tab(null);
-    setCambodiaOpen(false);
+    setVisualOpen(false);
+    setDataMenuOpen(false);
+    setViewMenuOpen(false);
+    setRegionMenuOpen(false);
   }, [threadId, project]);
 
   // 保存 style.json 并热更新地图
@@ -451,6 +502,33 @@ export default function MapPanel({
     try { await mapSaveStyle(project, nextStyle); } catch (e) { flash("保存样式失败: " + e.message); }
     mapRef.current?.reloadStyle();
   }, [project, flash]);
+
+  // 临时层清单：从地图实例读"画面上真实存在的临时可视化"。
+  // 这些图层不在 style.json 里，属于本次会话；此处只做展示，不参与写入。
+  const TEMP_LAYER_LABELS = useMemo(() => ([
+    { key: "od", match: (id) => id === "od-heat" || id === "od-lines", label: "OD 流量热力" },
+    { key: "iso", match: (id) => id.startsWith("iso-"), label: "等时圈" },
+    { key: "route", match: (id) => id === "route-line" || id === "route-pts", label: "路径规划" },
+    { key: "draw", match: (id) => id.startsWith("draw-"), label: "测量 / 绘制" },
+    { key: "analysis", match: (id) => id.includes("agent-analysis") || id.startsWith("analysis-"), label: "分析结果" },
+  ]), []);
+
+  const syncTempLayers = useCallback(() => {
+    const m = mapRef.current?.getMap?.();
+    if (!m?.getStyle) { setTempLayers([]); return; }
+    let ids = [];
+    try { ids = (m.getStyle().layers || []).map((l) => String(l.id)); } catch { ids = []; }
+    const found = [];
+    for (const item of TEMP_LAYER_LABELS) {
+      if (ids.some((id) => item.match(id))) found.push({ key: item.key, label: item.label });
+    }
+    setTempLayers(found);
+  }, [TEMP_LAYER_LABELS]);
+
+  // 临时层变化没有统一事件源：跟随样式与选中状态做轻量重扫（开销极小，仅读 id 列表）。
+  useEffect(() => {
+    syncTempLayers();
+  }, [syncTempLayers, style, activeAnalysis, odMsg, iso.info]);
 
   // ---- 图层操作 ----
   const toggleLayer = useCallback((layerId, target) => {
@@ -954,7 +1032,29 @@ export default function MapPanel({
         { padding: 60 }
       );
     }
+    // 登记重放：样式重载后路径与起终点标记也要留住。
+    routeSpecRef.current = { coords, from, to };
+    registerLayerReplay(m, "route", (map) => {
+      const spec = routeSpecRef.current;
+      if (!spec?.coords?.length) return;
+      for (const id of ["route-line", "route-pts"]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
+      try { if (map.getSource("route-src")) map.removeSource("route-src"); } catch {}
+      try { if (map.getSource("route-pts-src")) map.removeSource("route-pts-src"); } catch {}
+      map.addSource("route-src", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: spec.coords } }] },
+      });
+      map.addLayer({ id: "route-line", type: "line", source: "route-src", paint: { "line-color": "#1f77b4", "line-width": 4, "line-opacity": 0.85 } });
+      map.addSource("route-pts-src", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [spec.from, spec.to].filter(Boolean).map((p, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: p } })) },
+      });
+      map.addLayer({ id: "route-pts", type: "circle", source: "route-pts-src", paint: { "circle-radius": 7, "circle-color": ["match", ["get", "i"], 0, "#d62728", "#2ca02c"], "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+    });
   }, []);
+
+  // 路径重放规格（线坐标 + 起终点）。
+  const routeSpecRef = useRef(null);
 
   const runRoute = useCallback(async () => {
     const { from, to, mode } = iso.route;
@@ -984,10 +1084,12 @@ export default function MapPanel({
         geometry: { type: "Polygon", coordinates: [pts] },
       })),
     };
+    if (m.getSource(src)) { try { m.removeLayer(`iso-fill${suffix}`); } catch {} try { m.removeLayer(`iso-line${suffix}`); } catch {} try { m.removeSource(src); } catch {} }
     m.addSource(src, { type: "geojson", data: fc });
     m.addLayer({ id: `iso-fill${suffix}`, type: "fill", source: src, paint: { "fill-color": color, "fill-opacity": opacity } });
     m.addLayer({ id: `iso-line${suffix}`, type: "line", source: src, paint: { "line-color": color, "line-width": 2, "line-opacity": 0.9 } });
     if (center && !suffix) {
+      if (m.getSource("iso-center-src")) { try { m.removeLayer("iso-center"); } catch {} try { m.removeSource("iso-center-src"); } catch {} }
       m.addSource("iso-center-src", {
         type: "geojson",
         data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: center } },
@@ -1016,6 +1118,46 @@ export default function MapPanel({
     for (const id of layerIds) { try { m.removeLayer(id); } catch {} }
     const srcIds = Object.keys(m.getStyle().sources || {}).filter((id) => id.startsWith("iso-"));
     for (const id of srcIds) { try { m.removeSource(id); } catch {} }
+    // 主动清除时注销重放，避免样式重载把它们画回来。
+    if (isoSpecRef.current) {
+      isoSpecRef.current = null;
+      unregisterLayerReplay(m, "iso");
+    }
+  }, []);
+
+  // 等时圈重放规格：保存"画了哪几档、中心在哪"，供样式重载后恢复。
+  const isoSpecRef = useRef(null);
+
+  // 纯绘制：按规格画回全部等时圈（多档叠加），可被重放安全调用。
+  const paintIso = useCallback((m, spec) => {
+    if (!m || !spec?.results?.length) return;
+    const colors = ["#6a1b9a", "#9c27b0", "#ce93d8", "#e1bee7", "#f3e5f5"];
+    spec.results.forEach((r, i) => {
+      const suffix = i ? `-${i}` : "";
+      const src = `iso-temp${suffix}`;
+      try { if (m.getLayer(`iso-fill${suffix}`)) m.removeLayer(`iso-fill${suffix}`); } catch {}
+      try { if (m.getLayer(`iso-line${suffix}`)) m.removeLayer(`iso-line${suffix}`); } catch {}
+      try { if (m.getSource(src)) m.removeSource(src); } catch {}
+      if (!r?.polygons?.length) return;
+      m.addSource(src, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: r.polygons.map((pts) => ({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [pts] } })),
+        },
+      });
+      const color = colors[i % colors.length];
+      const opacity = Math.max(0.12, 0.32 - i * 0.06);
+      m.addLayer({ id: `iso-fill${suffix}`, type: "fill", source: src, paint: { "fill-color": color, "fill-opacity": opacity } });
+      m.addLayer({ id: `iso-line${suffix}`, type: "line", source: src, paint: { "line-color": color, "line-width": 2, "line-opacity": 0.9 } });
+    });
+    const center = spec.results[0]?.center;
+    if (center) {
+      try { if (m.getLayer("iso-center")) m.removeLayer("iso-center"); } catch {}
+      try { if (m.getSource("iso-center-src")) m.removeSource("iso-center-src"); } catch {}
+      m.addSource("iso-center-src", { type: "geojson", data: { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: center } } });
+      m.addLayer({ id: "iso-center", type: "circle", source: "iso-center-src", paint: { "circle-radius": 6, "circle-color": "#6a1b9a", "circle-stroke-color": "#ffffff", "circle-stroke-width": 2 } });
+    }
   }, []);
 
   const runIso = useCallback(async () => {
@@ -1039,17 +1181,20 @@ export default function MapPanel({
       ));
       // 深→浅紫色渐变，多档叠加
       const colors = ["#6a1b9a", "#9c27b0", "#ce93d8", "#e1bee7", "#f3e5f5"];
-      let allBbox = null;
       results.forEach((r, i) => {
         drawIsoPolygons(r.polygons, r.center, colors[i % colors.length], Math.max(0.12, 0.32 - i * 0.06), i ? `-${i}` : "");
       });
+      // 登记重放：样式重载（改颜色 / 切底图 / 服务端热更新）后自动画回等时圈。
+      isoSpecRef.current = { results, ranges, mode: iso.mode };
+      const mm = mapRef.current?.getMap();
+      if (mm) registerLayerReplay(mm, "iso", (map) => paintIso(map, isoSpecRef.current));
       const polyCounts = results.map((r, i) => `${ranges[i]}min:${r.polygons.length}个`).join("  ");
       setIso((s) => ({ ...s, info: `计算完成（${ranges.join("/")} 分钟）：${polyCounts}，已叠加绘制` }));
     } catch (e) {
       setIso((s) => ({ ...s, err: e.message }));
     }
     setIso((s) => ({ ...s, loading: false }));
-  }, [iso.loc, iso.mode, iso.range, iso.multi, iso.ranges, project, drawIsoPolygons, clearIsoLayers]);
+  }, [iso.loc, iso.mode, iso.range, iso.multi, iso.ranges, project, drawIsoPolygons, clearIsoLayers, paintIso]);
 
   // ---------- 测量 / 绘制 ----------
   const haversineM = useCallback((a, b) => {
@@ -1094,7 +1239,12 @@ export default function MapPanel({
     }
     if (m.getSource("draw-temp")) m.removeSource("draw-temp");
     if (m.getSource("draw-pts-src")) m.removeSource("draw-pts-src");
-    if (!points.length) return;
+    if (!points.length) {
+      // 清空时注销重放，避免样式重载把已结束的绘制画回来。
+      drawSpecRef.current = null;
+      unregisterLayerReplay(m, "draw");
+      return;
+    }
     const isPoly = kind === "measure-polygon" || kind === "draw-polygon";
     const isMeasure = kind.startsWith("measure");
     const color = isMeasure ? "#1f77b4" : "#2ca02c";
@@ -1120,7 +1270,36 @@ export default function MapPanel({
       },
     });
     m.addLayer({ id: "draw-pts", type: "circle", source: "draw-pts-src", paint: { "circle-radius": 5, "circle-color": "#ffffff", "circle-stroke-color": color, "circle-stroke-width": 2 } });
+    // 登记重放：测量结果与绘制中的草稿都该在地图上留住。
+    drawSpecRef.current = { points, kind };
+    registerLayerReplay(m, "draw", (map) => {
+      const spec = drawSpecRef.current;
+      if (!spec) return;
+      // 重放时复用同一套绘制逻辑（不走 renderDrawLayer，避免依赖组件 state）。
+      const { points: pts, kind: k } = spec;
+      const poly = k === "measure-polygon" || k === "draw-polygon";
+      const measure = k.startsWith("measure");
+      const c = measure ? "#1f77b4" : "#2ca02c";
+      for (const id of ["draw-line", "draw-fill", "draw-pts"]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
+      try { if (map.getSource("draw-temp")) map.removeSource("draw-temp"); } catch {}
+      try { if (map.getSource("draw-pts-src")) map.removeSource("draw-pts-src"); } catch {}
+      const f = { type: "FeatureCollection", features: [] };
+      if (pts.length >= (poly ? 3 : 2)) {
+        const coords = poly ? [...pts, pts[0]] : pts;
+        f.features.push({ type: "Feature", properties: {}, geometry: { type: poly ? "Polygon" : "LineString", coordinates: poly ? [coords] : coords } });
+      } else if (pts.length === 1) {
+        f.features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: pts[0] } });
+      }
+      map.addSource("draw-temp", { type: "geojson", data: f });
+      if (poly) map.addLayer({ id: "draw-fill", type: "fill", source: "draw-temp", paint: { "fill-color": c, "fill-opacity": 0.15 } });
+      map.addLayer({ id: "draw-line", type: "line", source: "draw-temp", paint: { "line-color": c, "line-width": 2, "line-opacity": 0.9, "line-dasharray": [2, 1.5] } });
+      map.addSource("draw-pts-src", { type: "geojson", data: { type: "FeatureCollection", features: pts.map((co, i) => ({ type: "Feature", properties: { i }, geometry: { type: "Point", coordinates: co } })) } });
+      map.addLayer({ id: "draw-pts", type: "circle", source: "draw-pts-src", paint: { "circle-radius": 5, "circle-color": "#ffffff", "circle-stroke-color": c, "circle-stroke-width": 2 } });
+    });
   }, []);
+
+  // 绘制/测量重放规格（points + kind）。
+  const drawSpecRef = useRef(null);
 
   const clearDrawLayers = useCallback(() => {
     const m = mapRef.current?.getMap();
@@ -1130,6 +1309,8 @@ export default function MapPanel({
     }
     if (m.getSource("draw-temp")) m.removeSource("draw-temp");
     if (m.getSource("draw-pts-src")) m.removeSource("draw-pts-src");
+    drawSpecRef.current = null;
+    unregisterLayerReplay(m, "draw");
   }, []);
 
   // 结束测量/绘制：measure 保留显示，draw 提交为新图层
@@ -1222,13 +1403,6 @@ export default function MapPanel({
     document.addEventListener("click", close);
     return () => document.removeEventListener("click", close);
   }, [toolMenu]);
-
-  useEffect(() => {
-    if (!analysisMenuOpen) return undefined;
-    const close = () => setAnalysisMenuOpen(false);
-    document.addEventListener("click", close);
-    return () => document.removeEventListener("click", close);
-  }, [analysisMenuOpen]);
 
   const startTool = useCallback((type, kind) => {
     setToolMenu(null);
@@ -1354,6 +1528,7 @@ export default function MapPanel({
     if (action.action === "clear_analysis") {
       mapRef.current?.clearAnalysis(action.id || "agent-analysis");
       setActiveAnalysis(null);
+      syncTempLayers();
       flash("已清除地图临时分析结果");
       return;
     }
@@ -1367,14 +1542,18 @@ export default function MapPanel({
     const render = () => {
       attempts += 1;
       const rendered = mapRef.current?.showAnalysis(action);
-      if (rendered || attempts >= 12) clearInterval(timer);
+      if (rendered || attempts >= 12) {
+        clearInterval(timer);
+        // 图层真正落到地图上之后再重扫临时层清单，否则清单里看不到刚生成的结果。
+        syncTempLayers();
+      }
     };
     const timer = setInterval(render, 250);
     render();
     const title = action.title || (action.analysis === "isochrone" ? "等时圈" : action.analysis === "od" ? "出行 OD" : "热力图");
     const source = action.source === "demo" ? " · 演示数据" : "";
     flash(`${title}${source}已显示`);
-  }, [project, regionOptions, selectRegion, flash]);
+  }, [project, regionOptions, selectRegion, flash, syncTempLayers]);
 
   const saveAnalysis = useCallback(async (action = activeAnalysis) => {
     if (!action?.geojson) return flash("当前没有可保存的分析结果");
@@ -1391,16 +1570,6 @@ export default function MapPanel({
     }
   }, [activeAnalysis, project, loadProject, flash]);
 
-  const runDemoAnalysis = useCallback(async (analysis, region = "义乌市") => {
-    try {
-      const action = await mapDemoAnalysis({ analysis, region, project });
-      handleMapAction(action);
-      setDemoOpen(false);
-    } catch (e) {
-      flash(`演示分析失败：${e.message}`);
-    }
-  }, [project, handleMapAction, flash]);
-
   const handleAgentEnd = useCallback(() => {
     setTimeout(() => {
       loadProject(project);
@@ -1416,17 +1585,49 @@ export default function MapPanel({
   useEffect(() => {
     if (!bridgeRef) return undefined;
     bridgeRef.current = { onMapAction: handleMapAction, onFileChanged: handleFileChanged, onAgentEnd: handleAgentEnd, onOpenFile: handleOpenFile };
+    // 测试钩子：把同一套处理器暴露到 window，供 L3 场景在真实事件路径上触发
+    // （与 MapViewer 的 window.__oawMap 同类：只读引用，不参与业务逻辑）。
+    try {
+      window.__oawMapBridge = {
+        mapAction: handleMapAction,
+        fileChanged: handleFileChanged,
+        agentEnd: handleAgentEnd,
+      };
+    } catch {}
     return () => {
       if (bridgeRef.current?.onMapAction === handleMapAction) bridgeRef.current = null;
+      try { if (window.__oawMapBridge?.mapAction === handleMapAction) window.__oawMapBridge = null; } catch {}
     };
   }, [bridgeRef, handleMapAction, handleFileChanged, handleAgentEnd, handleOpenFile]);
 
   return (
     <div className={`mp ${hideChat ? "mp-shared-chat" : ""} ${hideChat && !chatVisible ? "mp-chat-hidden" : ""}`}>
-      {/* 顶栏：工具栏 */}
+      {/* 顶栏：收敛为 9 个一级控件（阶段 2 §2.4）
+          场景（项目/底图/区域）· 内容（图层/可视化/数据）· 输出（导出）· 会话（模式/返回）
+          测量与绘制移到画布浮动条（C5）。 */}
       <div className="mp-topbar">
         <Icon name="map" size={14} />
         <span className="mp-title">地图</span>
+
+        {/* 模式切换：地图内直接切，不必返回主对话。 */}
+        {onModeChange && (
+          <div className="mp-mode-switch" role="group" aria-label="对话工作模式">
+            <button
+              type="button"
+              className={`mp-mode-option ${conversationMode === "chat" ? "active" : ""}`}
+              aria-pressed={conversationMode === "chat"}
+              title="Chat：查询地图数据、生成临时可视化（刷新后不保留）"
+              onClick={() => onModeChange("chat")}
+            >Chat</button>
+            <button
+              type="button"
+              className={`mp-mode-option work ${conversationMode === "agent" ? "active" : ""}`}
+              aria-pressed={conversationMode === "agent"}
+              title="Work：可新增/修改图层并保存为正式图层（写操作需审批）"
+              onClick={() => onModeChange("agent")}
+            >Work</button>
+          </div>
+        )}
         <TaskCenter
           sessions={sessions}
           currentThreadId={threadId}
@@ -1434,34 +1635,34 @@ export default function MapPanel({
           onSelectSession={onSelectSession}
           onFocusRun={onFocusRun}
         />
+
+        {/* 1) 场景：项目菜单（含新建/复制/重命名/归档/删除，收敛 4 个控件） */}
         {projects.length > 0 && (
-          <>
-          <select
-            className="mp-project-select"
-            value={project}
-            onChange={(e) => setProject(e.target.value)}
-            title="地图项目"
-          >
-            {projects.map((p) => (
-              <option key={p.project || p.name} value={p.project || p.name}>{p.name}</option>
-            ))}
-          </select>
-          <button className="btn-sm mp-project-create" onClick={handleCreateProject} title="新建独立地图项目">
-            <Icon name="plus" size={13} /> 新建项目
-          </button>
           <div className="mp-project-manage">
             <button
-              className="btn-sm"
+              className="btn-sm mp-menu-btn"
               onClick={() => setProjectMenuOpen((v) => !v)}
-              title="项目管理：复制 / 重命名 / 归档 / 删除"
+              title="地图项目：切换 / 新建 / 复制 / 重命名 / 归档 / 删除"
               aria-expanded={projectMenuOpen}
             >
-              <Icon name="gear" size={13} />
+              <Icon name="folder" size={13} /> {projects.find((x) => (x.project || x.name) === project)?.name || project}
+              <Icon name="chevronDown" size={11} />
             </button>
             {projectMenuOpen && (
               <>
                 <div className="mp-project-menu-backdrop" onClick={() => setProjectMenuOpen(false)} />
                 <div className="mp-project-menu" role="menu">
+                  <div className="mp-menu-label">切换项目</div>
+                  {projects.map((p) => {
+                    const id = p.project || p.name;
+                    return (
+                      <button key={id} type="button" role="menuitem" className={id === project ? "active" : ""} onClick={() => { setProject(id); setProjectMenuOpen(false); }}>
+                        {p.name}{id === project ? " ✓" : ""}
+                      </button>
+                    );
+                  })}
+                  <div className="mp-analysis-menu-sep" />
+                  <button type="button" role="menuitem" onClick={() => { handleCreateProject(); setProjectMenuOpen(false); }}>新建项目</button>
                   <button type="button" role="menuitem" onClick={() => handleProjectAction("duplicate")}>复制为副本</button>
                   <button type="button" role="menuitem" onClick={() => handleProjectAction("rename")}>重命名</button>
                   {currentProjectArchived ? (
@@ -1474,8 +1675,9 @@ export default function MapPanel({
               </>
             )}
           </div>
-          </>
         )}
+
+        {/* 2) 底图 */}
         <select
           className="mp-project-select mp-basemap-select"
           value={cfg?.basemap || "gaode-road"}
@@ -1486,190 +1688,178 @@ export default function MapPanel({
             <option key={b.id} value={b.id}>{b.name}</option>
           ))}
         </select>
-        {drill && (
+
+        {/* 3) 区域（下钻 / 范围 / 搜索 / 标注，收敛 4 个控件） */}
+        <div className="mp-project-manage">
           <button
-            className="mp-drill-btn"
-            onClick={() => { mapRef.current?.clearDrill(); setDrill(null); }}
-            title="清除下钻过滤，恢复全省路网"
+            className={`btn-sm mp-menu-btn ${regionMenuOpen ? "active" : ""}`}
+            onClick={() => setRegionMenuOpen((v) => !v)}
+            title="区域：切换地市/县市区、显示范围、标注开关"
+            aria-expanded={regionMenuOpen}
           >
-            <Icon name="locate" size={12} /> {drill.name} <span className="mp-drill-x">✕</span>
+            <Icon name="locate" size={13} /> {drill ? drill.name : "全省"}
+            <Icon name="chevronDown" size={11} />
           </button>
-        )}
+          {regionMenuOpen && (
+            <>
+              <div className="mp-project-menu-backdrop" onClick={() => setRegionMenuOpen(false)} />
+              <div className="mp-project-menu mp-region-menu" role="menu">
+                <div className="mp-menu-label">区域</div>
+                <div className="mp-region-menu-tools">
+                  <input
+                    className="mp-region-search"
+                    value={regionQuery}
+                    onChange={(e) => setRegionQuery(e.target.value)}
+                    placeholder="搜索地市 / 县市区"
+                    title="按名称筛选"
+                  />
+                </div>
+                <div className="mp-region-menu-list">
+                  {regionOptions
+                    .filter((r) => !regionQuery.trim() || !r.value || r.name?.includes(regionQuery.trim()) || r.label?.includes(regionQuery.trim()))
+                    .map((r) => (
+                      <button
+                        key={r.value || "all"}
+                        type="button"
+                        role="menuitem"
+                        className={r.value === regionCode ? "active" : ""}
+                        onClick={() => { selectRegion(r.value); setRegionMenuOpen(false); }}
+                      >
+                        {r.label}{r.value === regionCode ? " ✓" : ""}
+                      </button>
+                    ))}
+                </div>
+                <div className="mp-analysis-menu-sep" />
+                <div className="mp-menu-label">显示范围</div>
+                {[["region", "当前区域"], ["city", "当前地市"], ["province", "全省"]].map(([v, label]) => (
+                  <button key={v} type="button" role="menuitem" className={layerScope === v ? "active" : ""} onClick={() => { changeLayerScope(v); setRegionMenuOpen(false); }}>
+                    {label}{layerScope === v ? " ✓" : ""}
+                  </button>
+                ))}
+                <div className="mp-analysis-menu-sep" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { const next = !annotationsVisible; setAnnotationsVisible(next); mapRef.current?.setAnnotationVisibility(next); }}
+                >
+                  {annotationsVisible ? "隐藏标注" : "显示标注"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+
         <span className="mp-sep" />
-        <button className="btn-sm" onClick={handleRebuild} title="重建矢量瓦片（数据变更后）">
-          <Icon name="refresh" size={13} /> 重建瓦片
+
+        {/* 4) 图层（开合左栏） */}
+        <button
+          className={`btn-sm ${!leftHidden ? "active" : ""}`}
+          onClick={() => setLeftHidden((v) => !v)}
+          title={leftHidden ? "显示图层栏" : "隐藏图层栏（地图更宽）"}
+          aria-pressed={!leftHidden}
+        >
+          <Icon name="layers" size={13} /> 图层
         </button>
-        <button className="btn-sm" onClick={() => setImportOpen(true)} title="导入路网数据（批量 GeoJSON 或目录一键生成）">
-          <Icon name="upload" size={13} /> 导入数据
+
+        {/* 5) 可视化（开可视面板） */}
+        <button className={`btn-sm ${visualOpen ? "active" : ""}`} onClick={() => setVisualOpen((v) => !v)} title="可视化：数据集、分析与图层结果">
+          <Icon name="chart" size={13} /> 可视化
         </button>
-        <button className="btn-sm" onClick={refreshMap} title="重新读取地图项目、图层和样式">
-          <Icon name="refresh" size={13} /> 刷新地图
-        </button>
+
+        {/* 6) 数据（导入 / 重建瓦片 / 刷新） */}
         <div className="mp-analysis-wrap">
           <button
-            className={`btn-sm ${analysisMenuOpen || odOpen || isoOpen || m2Tab || m3Tab || cambodiaOpen ? "active" : ""}`}
-            onClick={(e) => { e.stopPropagation(); setAnalysisMenuOpen((v) => !v); }}
-            title="打开地图分析工具"
+            className={`btn-sm ${dataMenuOpen ? "active" : ""}`}
+            onClick={(e) => { e.stopPropagation(); setDataMenuOpen((v) => !v); }}
+            title="数据：导入、重建瓦片、刷新地图"
+            aria-expanded={dataMenuOpen}
           >
-            <Icon name="chart" size={13} /> 分析工具
+            <Icon name="upload" size={13} /> 数据 <Icon name="chevronDown" size={11} />
           </button>
-          {analysisMenuOpen && (
+          {dataMenuOpen && (
             <div className="mp-analysis-menu" onClick={(e) => e.stopPropagation()}>
-              <div className="mp-analysis-menu-label">地图分析</div>
-              <button onClick={() => { setOdOpen(true); setAnalysisMenuOpen(false); }}><Icon name="flow" size={13} /> OD 出行热力与流向</button>
-              <button onClick={() => { setIsoOpen(true); setAnalysisMenuOpen(false); }}><Icon name="history" size={13} /> 可达性与路径规划</button>
-              <button onClick={() => { setM2Tab("traffic"); setAnalysisMenuOpen(false); }}><Icon name="road" size={13} /> 道路运行分析</button>
-              <button onClick={() => { setM3Tab("routes"); setAnalysisMenuOpen(false); }}><Icon name="route" size={13} /> 公交线网分析</button>
-              <div className="mp-analysis-menu-sep" />
-              <button className="secondary" onClick={() => { setCambodiaOpen(true); setAnalysisMenuOpen(false); }}><Icon name="flow" size={13} /> 暹粒公交演示</button>
+              <button onClick={() => { setImportOpen(true); setDataMenuOpen(false); }}><Icon name="upload" size={13} /> 导入数据</button>
+              <button onClick={() => { handleRebuild(); setDataMenuOpen(false); }}><Icon name="refresh" size={13} /> 重建矢量瓦片</button>
+              <button onClick={() => { refreshMap(); setDataMenuOpen(false); }}><Icon name="refresh" size={13} /> 刷新地图</button>
             </div>
           )}
         </div>
-        <button className={`btn-sm mp-iso-btn ${isoOpen ? "active" : ""}`} onClick={() => setIsoOpen((v) => !v)} title="等时圈与路径规划分析">
-          <Icon name="history" size={13} /> 可达性
-        </button>
-        <div className="mp-demo-wrap">
-          <button className={`btn-sm ${demoOpen ? "active" : ""}`} onClick={() => setDemoOpen((v) => !v)} title="打开浙江地图演示分析">
-            <Icon name="chart" size={13} /> 示例数据
+
+        <span className="mp-sep" />
+
+        {/* 7) 视图（地球/平面 + 隐藏对话） */}
+        <div className="mp-analysis-wrap">
+          <button
+            className={`btn-sm ${viewMenuOpen ? "active" : ""}`}
+            onClick={(e) => { e.stopPropagation(); setViewMenuOpen((v) => !v); }}
+            title="视图：地球/平面、Agent 对话开关"
+            aria-expanded={viewMenuOpen}
+          >
+            <Icon name="globe" size={13} /> 视图 <Icon name="chevronDown" size={11} />
           </button>
-          {demoOpen && (
-            <div className="mp-demo-menu">
-              <button onClick={() => runDemoAnalysis("heatmap")}><Icon name="locate" size={13} /> 义乌点位热力图</button>
-              <button onClick={() => runDemoAnalysis("isochrone")}><Icon name="history" size={13} /> 义乌可达性等时圈</button>
-              <button onClick={() => { mapRef.current?.clearAnalysis("agent-analysis"); setActiveAnalysis(null); setDemoOpen(false); flash("已清除临时分析结果"); }}><Icon name="trash" size={13} /> 清除临时结果</button>
-              <button onClick={() => { mapRef.current?.undoAnalysis("agent-analysis"); setDemoOpen(false); flash("已撤销上一次临时分析"); }}><Icon name="back" size={13} /> 撤销上一次结果</button>
-              <button disabled={!activeAnalysis} onClick={() => { saveAnalysis(); setDemoOpen(false); }}><Icon name="download" size={13} /> 保存当前结果</button>
+          {viewMenuOpen && (
+            <div className="mp-analysis-menu" onClick={(e) => e.stopPropagation()}>
+              <button onClick={() => { toggleGlobe(); setViewMenuOpen(false); }}>
+                <Icon name="globe" size={13} /> 切换为{globeMode ? "平面地图" : "地球视图"}
+              </button>
+              {hideChat && (
+                <button onClick={() => { onToggleChat?.(); setViewMenuOpen(false); }}>
+                  <Icon name="comment" size={13} /> {chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}
+                </button>
+              )}
             </div>
           )}
         </div>
+
+        {/* 8) 导出 */}
         <button className="btn-sm" onClick={() => setExportOpen(true)} title="导出报告图（含图例/比例尺/指北针）">
           <Icon name="download" size={13} /> 导出
         </button>
-        <button className={`btn-sm ${globeMode ? "active" : ""}`} onClick={toggleGlobe} title="切换平面地图 / 地球视图">
-          <Icon name="globe" size={13} /> {globeMode ? "平面" : "地球"}
-        </button>
-        {hideChat && (
-          <button className={`btn-sm ${chatVisible ? "active" : ""}`} onClick={onToggleChat} title={chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"} aria-label={chatVisible ? "隐藏 Agent 对话" : "显示 Agent 对话"}>
-            <Icon name="comment" size={13} /> {chatVisible ? "隐藏 Agent" : "显示 Agent"}
-          </button>
-        )}
-        <select
-          className="mp-project-select mp-region-select"
-          value={regionCode}
-          onChange={(e) => selectRegion(e.target.value)}
-          title="切换浙江省地市和县市区"
-        >
-          {regionOptions.filter((r) => !regionQuery.trim() || !r.value || r.name?.includes(regionQuery.trim()) || r.label?.includes(regionQuery.trim())).map((r) => <option key={r.value || "all"} value={r.value}>{r.label}</option>)}
-        </select>
-        <select
-          className="mp-project-select mp-scope-select"
-          value={layerScope}
-          onChange={(e) => changeLayerScope(e.target.value)}
-          title="道路与设施显示范围"
-        >
-          <option value="region">范围：当前区域</option>
-          <option value="city">范围：当前地市</option>
-          <option value="province">范围：全省</option>
-        </select>
-        <input className="mp-region-search" value={regionQuery} onChange={(e) => setRegionQuery(e.target.value)} placeholder="搜索区域" title="按名称筛选地市和县市区" />
-        <button
-          className={`btn-sm mp-annotation-btn ${annotationsVisible ? "active" : ""}`}
-          onClick={() => { const next = !annotationsVisible; setAnnotationsVisible(next); mapRef.current?.setAnnotationVisibility(next); }}
-          title="显示或隐藏行政区和道路标注"
-        >
-          <Icon name="penTool" size={13} /> 标注
-        </button>
-        <button
-          className={`btn-sm mp-tool-btn ${draw?.kind?.startsWith("measure") ? "active" : ""}`}
-          onClick={(e) => { e.stopPropagation(); setToolMenu({ x: e.currentTarget.offsetLeft, y: 40, type: "measure" }); }}
-          title="测量距离/面积（点击加点，双击结束）"
-        >
-          <Icon name="locate" size={13} /> 测量
-        </button>
-        <button
-          className={`btn-sm mp-tool-btn ${draw && !draw.kind.startsWith("measure") ? "active" : ""}`}
-          onClick={(e) => { e.stopPropagation(); setToolMenu({ x: e.currentTarget.offsetLeft, y: 40, type: "draw" }); }}
-          title="绘制点/线/面并保存为图层"
-        >
-          <Icon name="penTool" size={13} /> 绘制
-        </button>
+
         {msg && <span className="mp-msg">{msg}</span>}
+
+        {/* 9) 返回 */}
         <button className="btn-sm mp-exit" onClick={onExit}><Icon name="back" size={14} /> 返回</button>
       </div>
 
       <div className="mp-body">
-        {cambodiaOpen && (
-          <div className="cambodia-overlay">
-            <CambodiaODPanel mapRef={mapRef} onClose={() => setCambodiaOpen(false)} onSaveAnalysis={saveAnalysis} />
+        {/* 可视面板（阶段 2.2）：替代 M2 宏观 4 tab / M3 公交 4 tab / 柬埔寨 OD / 示例数据菜单。
+            旧面板组件已下线（删除前已按脚本确认无引用、未进构建产物、无测试断言依赖）。 */}
+        {visualOpen && (
+          <div className="vp-overlay">
+            <可视面板
+              project={project}
+              workspace={workspace}
+              mapRef={mapRef}
+              conversationMode={conversationMode}
+              onClose={() => setVisualOpen(false)}
+              onSaveAnalysis={saveAnalysis}
+              onAskAgent={(text) => {
+                // 自然语言路径交给对话栏（复用全局单实例，消息与 SSE 连续）
+                insertChatText?.(text);
+                setVisualOpen(false);
+              }}
+              onResultChange={(result) => {
+                setActiveAnalysis(result);
+                syncTempLayers();
+              }}
+            />
           </div>
         )}
-        {/* M2 宏观交通分析面板 */}
-        {m2Tab && (
-          <div className="m2-overlay">
-            <div className="m2-overlay-header">
-              <h3>道路与区域交通分析</h3>
-              <div className="m2-tabs">
-                <button className={`m2-tab-btn ${m2Tab === "traffic" ? "active" : ""}`} onClick={() => setM2Tab("traffic")}>
-                  <Icon name="chart" size={12} /> 流量带宽
-                </button>
-                <button className={`m2-tab-btn ${m2Tab === "od" ? "active" : ""}`} onClick={() => setM2Tab("od")}>
-                  <Icon name="flow" size={12} /> OD 期望线
-                </button>
-                <button className={`m2-tab-btn ${m2Tab === "exchange" ? "active" : ""}`} onClick={() => setM2Tab("exchange")}>
-                  <Icon name="sankey" size={12} /> 区域交换量
-                </button>
-                <button className={`m2-tab-btn ${m2Tab === "structure" ? "active" : ""}`} onClick={() => setM2Tab("structure")}>
-                  <Icon name="road" size={12} /> 路网结构
-                </button>
-                <button className="m2-tab-btn" onClick={() => setM2Tab(null)}>
-                  <Icon name="close" size={12} /> 关闭
-                </button>
-              </div>
-            </div>
-            <div className="m2-overlay-body">
-              <M2Analysis project={project} mapRef={mapRef} activeTab={m2Tab} />
-            </div>
-          </div>
-        )}
-        {/* M3 新昌公交分析面板 */}
-        {m3Tab && (
-          <div className="m2-overlay m3-overlay">
-            <div className="m2-overlay-header m3-overlay-header">
-              <h3>公交线网与客流分析 · 新昌 Demo</h3>
-              <div className="m2-tabs m3-tabs">
-                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "routes" ? "active" : ""}`} onClick={() => setM3Tab("routes")}>
-                  <Icon name="route" size={12} /> 公交线路
-                </button>
-                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "stations" ? "active" : ""}`} onClick={() => setM3Tab("stations")}>
-                  <Icon name="locate" size={12} /> 站点客流
-                </button>
-                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "od" ? "active" : ""}`} onClick={() => setM3Tab("od")}>
-                  <Icon name="flow" size={12} /> OD 期望线
-                </button>
-                <button className={`m2-tab-btn m3-tab-inner ${m3Tab === "stats" ? "active" : ""}`} onClick={() => setM3Tab("stats")}>
-                  <Icon name="chart" size={12} /> 线网统计
-                </button>
-                <button className="m2-tab-btn" onClick={() => setM3Tab(null)}>
-                  <Icon name="close" size={12} /> 关闭
-                </button>
-              </div>
-            </div>
-            <div className="m2-overlay-body m3-overlay-body">
-              <M3Analysis mapRef={mapRef} activeTab={m3Tab} />
-            </div>
-          </div>
-        )}
-        {/* 左栏：QGIS 风格图层面板 */}
+        {/* 左栏：QGIS 风格图层面板（顶栏「图层」可开合，把地图让出来） */}
+        {!leftHidden && (
         <div className="mp-left" style={{ width: leftW, minWidth: leftW, maxWidth: leftW }}>
           <div className="mp-left-title">
             <Icon name="layers" size={12} /> 图层
-            <span className="mp-layer-count">{files.length}</span>
+            <span className="mp-layer-count">{layerViews.length || files.length}</span>
           </div>
           <LayerPanel
             project={project}
             cfg={cfg}
             style={style}
             files={files}
+            layerViews={layerViews}
+            tempLayers={tempLayers}
             selected={selectedLayer}
             onSelect={setSelectedLayer}
             onToggleLayer={toggleLayer}
@@ -1687,7 +1877,8 @@ export default function MapPanel({
             onMoveLayerToGroup={moveLayerToGroup}
           />
         </div>
-        <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />
+        )}
+        {!leftHidden && <div className="mp-hresize left" onMouseDown={(e) => startPaneDrag(e, "left")} title="拖动调整左栏宽度" />}
 
         {/* 中栏：地图 */}
         <div className="mp-center">
@@ -1696,7 +1887,11 @@ export default function MapPanel({
             project={project}
             config={cfg}
             onBasemapResolved={(id) => setCfg((prev) => (prev && prev.basemap === id ? prev : { ...(prev || {}), basemap: id }))}
-            onViewportChange={onViewportChange}
+            onViewportChange={(context) => {
+              // 视口上报时带上当前下钻区域名：对话栏的"地图状态行"与 Agent 上下文
+              // 都要显示"义乌市附近"这类可读位置，而不只是经纬度。
+              onViewportChange?.({ ...context, regionName: drill?.name || "" });
+            }}
             onLayerTilesChanged={async (layerIds = []) => {
               await loadProject(project);
               await mapRef.current?.reloadStyle?.();
@@ -1715,6 +1910,83 @@ export default function MapPanel({
               mapRef.current?.drillTo(resolved);
             }}
           />
+          {/* 画布浮动条（阶段 2 §2.4）：测量 / 绘制 / 分析工具 / 清除从顶栏移到这里，
+              贴近地图操作，也让顶栏只保留场景与内容级控件。 */}
+          <div className="mp-floatbar" role="toolbar" aria-label="地图工具">
+            <button
+              className={`mp-float-btn ${odOpen ? "active" : ""}`}
+              onClick={() => { setOdOpen(true); setIsoOpen(false); }}
+              title="OD 流量分析：粘贴 CSV 出热力图与流向线"
+              aria-pressed={odOpen}
+            >
+              <Icon name="flow" size={13} /> OD
+            </button>
+            <button
+              className={`mp-float-btn ${isoOpen ? "active" : ""}`}
+              onClick={() => { setIsoOpen(true); setOdOpen(false); }}
+              title="可达性：等时圈与路径规划"
+              aria-pressed={isoOpen}
+            >
+              <Icon name="history" size={13} /> 可达性
+            </button>
+            <span className="mp-float-sep" />
+            <button
+              className={`mp-float-btn ${draw?.kind?.startsWith("measure") ? "active" : ""}`}
+              onClick={(e) => { e.stopPropagation(); setToolMenu({ type: "measure" }); }}
+              title="测量距离/面积（点击加点，双击结束）"
+              aria-pressed={Boolean(draw?.kind?.startsWith("measure"))}
+            >
+              <Icon name="locate" size={13} /> 测量
+            </button>
+            <button
+              className={`mp-float-btn ${draw && !draw.kind.startsWith("measure") ? "active" : ""}`}
+              onClick={(e) => { e.stopPropagation(); setToolMenu({ type: "draw" }); }}
+              title="绘制点/线/面并保存为图层"
+              aria-pressed={Boolean(draw && !draw.kind.startsWith("measure"))}
+            >
+              <Icon name="penTool" size={13} /> 绘制
+            </button>
+            {(activeAnalysis || tempLayers.length > 0 || measureResult) && (
+              <button
+                className="mp-float-btn"
+                onClick={() => {
+                  // 清除语义 = "清掉地图上所有临时图层"，所以按图层 id 前缀兜底扫描，
+                  // 而不是只清"最后一次结果"——连续出图后 activeAnalysis 只记得最后一条，
+                  // 逐条清会漏掉更早的（用户看到"清不干净"）。
+                  const m = mapRef.current?.getMap?.();
+                  const analysisBases = new Set();
+                  try {
+                    for (const layer of m?.getStyle?.().layers || []) {
+                      const id = String(layer.id || "");
+                      // 两套 id 族都要认：rich 路径 analysis-<base>-<suffix>，
+                      // Agent 路径 <base>-heat/-circles/-labels/-od-lines。
+                      // agent 路径只认 agent-* 前缀，避免误伤名字恰好以 -fill/-line 结尾的业务图层。
+                      const rich = id.match(/^analysis-(.+?)-(src|heat|points|fill|lines|lines-src|labels|circles)$/);
+                      if (rich) { analysisBases.add(rich[1]); continue; }
+                      const agent = id.match(/^(agent-.+?)-(heat|circles|labels|fill|line|od-lines)$/);
+                      if (agent) analysisBases.add(agent[1]);
+                    }
+                  } catch { /* 读不到样式时退回逐条清 */ }
+                  const ids = new Set(["agent-analysis", "analysis"]);
+                  if (activeAnalysis?.id) ids.add(String(activeAnalysis.id));
+                  for (const base of analysisBases) ids.add(base);
+                  for (const id of ids) {
+                    mapRef.current?.clearAnalysisRich?.(id);
+                    mapRef.current?.clearAnalysis?.(id);
+                  }
+                  mapRef.current?.clearAllAnalysis?.();
+                  clearDrawLayers();
+                  setMeasureResult(null);
+                  setActiveAnalysis(null);
+                  syncTempLayers();
+                  flash("已清除临时图层");
+                }}
+                title="清除地图上的临时图层（分析结果 / 测量 / 绘制）"
+              >
+                <Icon name="trash" size={13} /> 清除
+              </button>
+            )}
+          </div>
           {/* 测量/绘制提示条 */}
           {draw && (
             <div className="mp-draw-hint">
@@ -1765,9 +2037,9 @@ export default function MapPanel({
         <div className="mp-hresize right" onMouseDown={(e) => startPaneDrag(e, "right")} title="拖动调整右栏宽度" />
       </div>
 
-      {/* 顶栏工具菜单（测量/绘制） */}
+      {/* 画布工具菜单（测量/绘制，由浮动条触发；位置由 CSS 锚定在浮动条下方） */}
       {toolMenu && (
-        <div className="mp-toolmenu" style={{ left: toolMenu.x, top: toolMenu.y }} onClick={(e) => e.stopPropagation()}>
+        <div className="mp-toolmenu" onClick={(e) => e.stopPropagation()}>
           {toolMenu.type === "measure" ? (
             <>
               <button onClick={() => startTool("measure", "measure-line")}><Icon name="penTool" size={12} /> 测量距离</button>

@@ -89,7 +89,7 @@ export function isAppleScriptCancel(error) {
   return /-128\b|User canceled|用户已取消|\/-1743\b/.test(text);
 }
 
-/** 生成 Windows OpenFileDialog 的 PowerShell 脚本。 */
+/** 生成 Windows OpenFileDialog 的 PowerShell 脚本（同样用 TopMost owner 保证窗口在前台）。 */
 export function buildWindowsPickFilesScript({ prompt = "选择要打开的文件", multiple = false, extensions = [] } = {}) {
   const exts = normalizeExtensions(extensions);
   const filter = exts.length
@@ -97,22 +97,41 @@ export function buildWindowsPickFilesScript({ prompt = "选择要打开的文件
     : "所有文件 (*.*)|*.*";
   return [
     "Add-Type -AssemblyName System.Windows.Forms",
+    "$owner = New-Object System.Windows.Forms.Form",
+    "$owner.TopMost = $true",
+    "$owner.ShowInTaskbar = $false",
+    "$owner.WindowState = [System.Windows.Forms.FormWindowState]::Minimized",
+    "$owner.Show()",
     "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
     `$dialog.Title = ${JSON.stringify(prompt)}`,
     `$dialog.Filter = ${JSON.stringify(filter)}`,
     `$dialog.Multiselect = $(${multiple ? "true" : "false"})`,
-    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $dialog.FileNames | ForEach-Object { Write-Output $_ } }",
+    "$result = $dialog.ShowDialog($owner)",
+    "$owner.Close()",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $dialog.FileNames | ForEach-Object { Write-Output $_ } }",
   ].join("; ");
 }
 
-/** 生成 Windows FolderBrowserDialog 的 PowerShell 脚本。 */
+/**
+ * 生成 Windows 文件夹选择器的 PowerShell 脚本。
+ *
+ * FolderBrowserDialog 没有 owner 时常常出现在浏览器窗口**后面**，用户看不到就以为
+ * "选择文件夹失效了"。这里用一个 TopMost 的隐藏窗体当 owner，把对话框强制带到前台。
+ */
 export function buildWindowsPickFolderScript({ prompt = "选择文件夹" } = {}) {
   return [
     "Add-Type -AssemblyName System.Windows.Forms",
+    "$owner = New-Object System.Windows.Forms.Form",
+    "$owner.TopMost = $true",
+    "$owner.ShowInTaskbar = $false",
+    "$owner.WindowState = [System.Windows.Forms.FormWindowState]::Minimized",
+    "$owner.Show()",
     "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
     `$dialog.Description = ${JSON.stringify(prompt)}`,
     "$dialog.ShowNewFolderButton = $true",
-    "if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath }",
+    "$result = $dialog.ShowDialog($owner)",
+    "$owner.Close()",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $dialog.SelectedPath }",
   ].join("; ");
 }
 
@@ -123,6 +142,52 @@ function nativeError(message, code) {
 }
 
 /* ------------------------------ 命令执行 ------------------------------ */
+
+/**
+ * 正在等待用户操作的选择器进程。系统对话框是独立进程，用户点「取消等待」或再点一次
+ * 「选择文件夹」时必须能把它收掉——否则桌面上会留下没人管的弹窗，用户以为界面卡死。
+ */
+let activePicker = null;
+
+/** 收掉正在等待的选择器进程；返回是否真的收掉了。 */
+export function cancelActivePicker() {
+  const current = activePicker;
+  activePicker = null;
+  if (!current) return false;
+  current.cancelled = true;
+  try { current.child.kill(); } catch {}
+  return true;
+}
+
+export function activePickerInfo() {
+  if (!activePicker) return null;
+  return { kind: activePicker.kind, startedAt: activePicker.startedAt, pid: activePicker.child?.pid || null };
+}
+
+/**
+ * 运行一个"等待用户操作"的选择器进程（仍走 execFile + 参数数组，不经 shell）。
+ * execFile 返回的子进程句柄让我们可以主动收掉对话框：用户点「取消等待」或再点一次
+ * 「选择文件夹」时，桌面上不该留下没人管的弹窗。
+ */
+function runPicker(file, args, { timeout = PICKER_TIMEOUT_MS, kind = "" } = {}) {
+  // 新的选择请求先收掉上一个：重复点击不应该在桌面上堆出多个对话框。
+  cancelActivePicker();
+  return new Promise((resolve, reject) => {
+    let entry = null;
+    const child = execFile(file, args, { timeout: Math.max(5000, timeout), maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: false }, (error, stdout, stderr) => {
+      if (activePicker === entry) activePicker = null;
+      if (entry?.cancelled) return reject(nativeError("已取消等待系统选择器", "PICKER_CANCELLED"));
+      if (error?.killed) return reject(nativeError("选择器等待超时", "PICKER_TIMEOUT"));
+      if (error) {
+        error.stderr = stderr;
+        return reject(error);
+      }
+      resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
+    });
+    entry = { child, kind, startedAt: Date.now(), cancelled: false };
+    activePicker = entry;
+  });
+}
 
 function run(file, args, { timeout = ACTION_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
@@ -143,12 +208,12 @@ export async function pickFiles({ prompt = "选择要打开的文件", multiple 
   if (!capability.picker) throw nativeError("当前平台没有可用的原生文件选择器", "PICKER_UNSUPPORTED");
   try {
     if (capability.pickerKind === "osascript") {
-      const { stdout } = await run("osascript", buildPickFilesScript({ prompt, multiple, extensions }), { timeout: PICKER_TIMEOUT_MS });
+      const { stdout } = await runPicker("osascript", buildPickFilesScript({ prompt, multiple, extensions }), { kind: "files" });
       const paths = parseAppleScriptOutput(stdout);
       return paths.length ? { canceled: false, paths } : { canceled: true, paths: [] };
     }
     if (capability.pickerKind === "powershell") {
-      const { stdout } = await run("powershell.exe", ["-NoProfile", "-STA", "-Command", buildWindowsPickFilesScript({ prompt, multiple, extensions })], { timeout: PICKER_TIMEOUT_MS });
+      const { stdout } = await runPicker("powershell.exe", ["-NoProfile", "-STA", "-Command", buildWindowsPickFilesScript({ prompt, multiple, extensions })], { kind: "files" });
       const paths = parseAppleScriptOutput(stdout);
       return paths.length ? { canceled: false, paths } : { canceled: true, paths: [] };
     }
@@ -156,11 +221,11 @@ export async function pickFiles({ prompt = "选择要打开的文件", multiple 
     const args = ["--file-selection", "--separator", "\n", `--title=${prompt}`];
     if (multiple) args.push("--multiple");
     for (const ext of normalizeExtensions(extensions)) args.push(`--file-filter=${ext} | *.${ext}`);
-    const { stdout } = await run("zenity", args, { timeout: PICKER_TIMEOUT_MS });
+    const { stdout } = await runPicker("zenity", args, { kind: "files" });
     const paths = parseAppleScriptOutput(stdout);
     return paths.length ? { canceled: false, paths } : { canceled: true, paths: [] };
   } catch (error) {
-    if (isAppleScriptCancel(error)) return { canceled: true, paths: [] };
+    if (error?.code === "PICKER_CANCELLED" || isAppleScriptCancel(error)) return { canceled: true, paths: [] };
     if (error?.code === "ENOENT") throw nativeError(`未找到系统选择器（${capability.pickerKind}）`, "PICKER_UNAVAILABLE");
     if (error?.killed) throw nativeError("选择器等待超时", "PICKER_TIMEOUT");
     throw nativeError(`选择器执行失败：${error?.message || error}`, "PICKER_FAILED");
@@ -173,20 +238,20 @@ export async function pickFolder({ prompt = "选择文件夹" } = {}) {
   if (!capability.picker) throw nativeError("当前平台没有可用的原生文件夹选择器", "PICKER_UNSUPPORTED");
   try {
     if (capability.pickerKind === "osascript") {
-      const { stdout } = await run("osascript", buildPickFolderScript({ prompt }), { timeout: PICKER_TIMEOUT_MS });
+      const { stdout } = await runPicker("osascript", buildPickFolderScript({ prompt }), { kind: "folder" });
       const paths = parseAppleScriptOutput(stdout);
       return paths.length ? { canceled: false, path: paths[0] } : { canceled: true, path: "" };
     }
     if (capability.pickerKind === "powershell") {
-      const { stdout } = await run("powershell.exe", ["-NoProfile", "-STA", "-Command", buildWindowsPickFolderScript({ prompt })], { timeout: PICKER_TIMEOUT_MS });
+      const { stdout } = await runPicker("powershell.exe", ["-NoProfile", "-STA", "-Command", buildWindowsPickFolderScript({ prompt })], { kind: "folder" });
       const paths = parseAppleScriptOutput(stdout);
       return paths.length ? { canceled: false, path: paths[0] } : { canceled: true, path: "" };
     }
-    const { stdout } = await run("zenity", ["--file-selection", "--directory", `--title=${prompt}`], { timeout: PICKER_TIMEOUT_MS });
+    const { stdout } = await runPicker("zenity", ["--file-selection", "--directory", `--title=${prompt}`], { kind: "folder" });
     const paths = parseAppleScriptOutput(stdout);
     return paths.length ? { canceled: false, path: paths[0] } : { canceled: true, path: "" };
   } catch (error) {
-    if (isAppleScriptCancel(error)) return { canceled: true, path: "" };
+    if (error?.code === "PICKER_CANCELLED" || isAppleScriptCancel(error)) return { canceled: true, path: "" };
     if (error?.code === "ENOENT") throw nativeError(`未找到系统选择器（${capability.pickerKind}）`, "PICKER_UNAVAILABLE");
     if (error?.killed) throw nativeError("选择器等待超时", "PICKER_TIMEOUT");
     throw nativeError(`选择器执行失败：${error?.message || error}`, "PICKER_FAILED");

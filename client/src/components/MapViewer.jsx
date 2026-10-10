@@ -4,6 +4,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import shp from "shpjs";
 import Icon from "./Icon.jsx";
 import { mapImportLayer } from "../api.js";
+import { replayTemporaryLayers, clearLayerRegistry, registerLayerReplay, unregisterLayerReplay } from "../图层注册表.js";
 
 // 样式文件包含 Agent/用户实时修改，使用查询参数避免浏览器沿用失效的旧样式缓存。
 const STYLE_PATH = (project) => `/api/map/data/${project}/style.json?ts=${Date.now()}`;
@@ -444,6 +445,9 @@ const MapViewer = forwardRef(function MapViewer(
       attributionControl: { compact: true },
     });
     mapRef.current = map;
+    // 测试/调试钩子：把当前地图实例挂到 window，供自动化断言读取"画面上真实存在的图层"。
+    // 只读用途；不参与业务逻辑，也不影响生产行为（仅一个引用）。
+    try { window.__oawMap = map; } catch {}
     map.addControl(new NavigationControl({ visualizePitch: true }), "bottom-right");
     map.addControl(new ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-left");
     let ready = false;
@@ -532,6 +536,8 @@ const MapViewer = forwardRef(function MapViewer(
     map.on("moveend", publishViewport);
     publishViewport();
     return () => {
+      try { clearLayerRegistry(mapRef.current || map); } catch {}
+      try { if (window.__oawMap === map) window.__oawMap = null; } catch {}
       try { map.remove(); } catch {}
       window.clearTimeout(fallbackTimer);
       if (viewportTimerRef.current) window.clearTimeout(viewportTimerRef.current);
@@ -668,6 +674,9 @@ const MapViewer = forwardRef(function MapViewer(
       }).catch(() => {});
       const payloads = [...analysisPayloadsRef.current.values()];
       payloads.forEach((payload) => showAnalysisLayer(map, payload));
+      // 重放注册在图层注册表里的其它临时层（OD / 等时圈 / 路径 / 测量绘制）。
+      // setStyle 会把它们一并清掉，这里统一画回来，避免"改个样式颜色，分析结果就没了"。
+      replayTemporaryLayers(map);
     });
   }, []);
 
@@ -954,6 +963,38 @@ const MapViewer = forwardRef(function MapViewer(
           walk(data); if (linesData) walk(linesData);
           if (coords.length) { const b = new LngLatBounds(); coords.forEach((c) => b.extend(c)); if (!b.isEmpty()) map.fitBounds(b, { padding: 55, maxZoom: 14, duration: 600 }); }
         }
+        // 登记本次渲染：① clearAllAnalysis 能清掉它（此前只登记旧路径，导致
+        // 浮动条"清除"清不掉可视面板出的图）；② 样式重载后重放，改颜色/切底图
+        // 不会让分析结果消失（阶段 2 验收 C3）。
+        // 重放走 rich 路径本身，保证恢复出来的图层 id 与首次渲染一致（analysis-* 前缀）。
+        analysisIdsRef.current.add(rawId);
+        analysisPayloadsRef.current.set(rawId, action);
+        analysisKindsRef.current.set(rawId, action.type || action.analysis || "heatmap");
+        registerLayerReplay(map, `analysis:${rawId}`, (m) => {
+          const payload = analysisPayloadsRef.current.get(rawId);
+          if (!payload) return;
+          const base = `analysis-${rawId || "result"}`;
+          const restore = (sourceId, layerId, spec) => {
+            const src = m.getSource(sourceId);
+            if (!src && payload.geojson) m.addSource(sourceId, { type: "geojson", data: payload.geojson });
+            if (!m.getLayer(layerId)) m.addLayer({ id: layerId, source: sourceId, ...spec });
+          };
+          try {
+            const data = payload.geojson?.type === "FeatureCollection" ? payload.geojson : { type: "FeatureCollection", features: [] };
+            const first = data.features?.[0]?.geometry?.type || "";
+            const polygon = payload.analysis === "isochrone" || first === "Polygon" || first === "MultiPolygon";
+            const points = data.features?.some((f) => ["Point", "MultiPoint"].includes(f.geometry?.type));
+            if (polygon) {
+              restore(`${base}-src`, `${base}-fill`, { type: "fill", paint: { "fill-color": ["coalesce", ["get", "color"], "#8b5cf6"], "fill-opacity": 0.24, "fill-outline-color": "#7c3aed" } });
+            } else if (points) {
+              restore(`${base}-src`, `${base}-heat`, { type: "heatmap", paint: { "heatmap-weight": 1, "heatmap-intensity": 1.15, "heatmap-radius": 18, "heatmap-opacity": 0.72 } });
+              restore(`${base}-src`, `${base}-points`, { type: "circle", minzoom: 10, paint: { "circle-radius": 4, "circle-color": "#eb5757", "circle-opacity": 0.72, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+            }
+            if (payload.lines?.type === "FeatureCollection") {
+              restore(`${base}-lines-src`, `${base}-lines`, { type: "line", paint: { "line-color": "#7c3aed", "line-width": 1.5, "line-opacity": 0.65 } });
+            }
+          } catch { /* 单条重放失败不连累其它临时层 */ }
+        });
         return true;
       } catch { return false; }
     },
@@ -963,6 +1004,12 @@ const MapViewer = forwardRef(function MapViewer(
       const base = `analysis-${String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
       for (const id of [`${base}-fill`, `${base}-heat`, `${base}-points`, `${base}-lines`]) { try { if (map.getLayer(id)) map.removeLayer(id); } catch {} }
       for (const id of [`${base}-src`, `${base}-lines-src`]) { try { if (map.getSource(id)) map.removeSource(id); } catch {} }
+      // 同步注销登记与重放，否则清除后一次样式重载又把它画回来。
+      const rawId = String(analysisId).replace(/[^a-zA-Z0-9_-]/g, "-");
+      analysisIdsRef.current.delete(rawId);
+      analysisPayloadsRef.current.delete(rawId);
+      analysisKindsRef.current.delete(rawId);
+      try { unregisterLayerReplay(map, `analysis:${rawId}`); } catch {}
     },
     /** 临时分析图层显隐，不写入业务 style，关闭弹窗后仍可恢复。 */
     setAnalysisVisibility: (analysisId = "analysis", visible = true) => {

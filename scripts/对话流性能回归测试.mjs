@@ -148,7 +148,10 @@ try {
   assert.match(serverSource, /requireWorkspaceWriteForTask\(initialWritePlan, requestedWorkspace\)/, "工作区产物任务必须在创建 Runtime 和模型初始化前探测写权限");
   assert.match(serverSource, /publishableStagedValidations/, "暂存产物校验失败时应跳过失败文件并继续发布其他文件");
   assert.match(runProjectionSource, /previous\?\.products \|\| \[\]/, "空的终结事件不能覆盖已有产物列表");
-  assert.match(chatPanelSource, /window\.setTimeout\(resolve, 3000\)/, "发送应给 SSE 握手最多 3 秒，超时后靠服务端回放补齐 admission 事件");
+  // 握手等待从 3 秒收到 600ms：早先每轮发送都要先等 SSE 握手，用户要多等最多 3 秒
+  // 才看到模型动；服务端 channel.history 会按游标补齐 admission 事件，不需要等这么久。
+  assert.match(chatPanelSource, /window\.setTimeout\(resolve, 600\)/, "发送只给 SSE 握手很短的窗口，超时后靠服务端回放补齐 admission 事件");
+  assert.match(chatPanelSource, /setAgentPhase\("思考中"\)/, "提交后必须立刻显示「思考中」，不能先显示一串「准备…」");
   assert.match(chatPanelSource, /streamIdsRef/, "SSE 游标必须按通道代际隔离，避免 Runtime 重建后事件被旧游标过滤");
   assert.match(chatPanelSource, /streamGenerationRef/, "切换会话后必须隔离旧 EventSource 的迟到回调");
   assert.match(chatPanelSource, /generation === streamGenerationRef\.current/, "旧会话 SSE 回调不能写入当前会话");
@@ -194,6 +197,10 @@ try {
   assert.match(stylesSource, /\.run-metrics \{ display: flex;[\s\S]{0,120}?font-size: 10px;/, "指标行应是一行小字（无卡片框）");
   assert.match(stylesSource, /\.run-turns-row \{/, "每轮明细应有样式");
   assert.match(chatPanelSource, /className="run-metrics-text"/, "指标行应是单行文本");
+  // 刚跑完的一轮也要有指标：SSE 的 run_finished 不带事件（体积考虑），
+  // 只有终态对账会拉取完整 Run——这条路径必须把 events 补进摘要，否则要重开会话才看得到。
+  assert.match(chatPanelSource, /events: Array\.isArray\(run\.events\) \? run\.events : \[\],[\s\S]{0,120}?recovered: true/, "终态对账必须把本轮事件补进摘要（否则刚跑完的一轮没有用时/token）");
+  assert.match(chatPanelSource, /const turnMetrics = useMemo\(\(\) => \(Array\.isArray\(m\.events\) && m\.events\.length \? reduceTurnMetrics\(m\.events\) : \[\]\)/, "每轮指标应由摘要里的事件归约而来");
   assert.doesNotMatch(stylesSource, /\.run-metrics \{[^}]*border: 1px solid/, "指标行不应再画卡片边框");
   assert.match(chatPanelSource, /const open = typeof override === "boolean" \? override : isLiveFold/, "运行中执行过程默认展开，但用户可随时收起（状态由用户决定）");
   assert.match(chatPanelSource, /isLiveFold \? "is-live" : ""/, "运行中过程区应维持有界滚动容器");
@@ -205,6 +212,23 @@ try {
   assert.match(livePlainStyles, /\.product-card-main/, "产物卡片应有可点击主体样式");
   assert.match(livePlainStyles, /\.artifact-inline \{/, "结论内嵌产物应有行内文件条样式");
   assert.match(livePlainStyles, /\.center-chat-slot \.chat-body > \.msg,[\s\S]{0,220}?margin-left: auto;/, "无侧栏时消息列应居中（有侧栏时自适应）");
+  // 会话定位导航栏：细横杠刻度（ZCode 风格），不再有轨道线/圆珠；当前阅读位置高亮
+  const timelineSource = fs.readFileSync(new URL("../client/src/components/ChatTimeline.jsx", import.meta.url), "utf8");
+  assert.doesNotMatch(timelineSource, /timeline-rail/, "导航栏不再画连续轨道线");
+  assert.match(timelineSource, /className=\{`timeline-bead\$\{b\.idx === activeKey \? " active" : ""\}/, "刻度应标记当前阅读位置");
+  assert.match(timelineSource, /root\.addEventListener\("scroll", onScroll, \{ passive: true \}\)/, "滚动跟随应挂在消息容器上且 passive");
+  assert.match(livePlainStyles, /\.bead-dot \{\s*\n\s*display: block;\s*\n\s*width: 12px;\s*\n\s*height: 2px;/, "刻度应是 12×2 的短横杠");
+  assert.match(livePlainStyles, /\.timeline-bead\.active \.bead-dot \{ width: 20px; background: var\(--accent\); \}/, "当前位置刻度应加长并高亮");
+  assert.doesNotMatch(livePlainStyles, /\.bead-dot \{[^}]*border-radius: 50%/, "刻度不再是圆珠");
+  // 中断后的终态必须可见：本地标记会丢，Run 终态要在（徽标 + 说明 + 结果卡条件）
+  assert.match(chatPanelSource, /const runInterrupted = \/\^\(cancelled\|aborted\)\$\/\.test\(String\(runSummary\?\.runStatus \|\| m\.runStatus \|\| ""\)\)/, "中断判定应同时认本地标记与 Run 终态");
+  assert.match(chatPanelSource, /\{m\.stopped \? "已停止生成" : "本轮已中断"\}/, "中断应显示明确的徽标文案");
+  assert.match(chatPanelSource, /const interrupted = view\.lifecycle === "cancelled" \|\| completion\?\.status === "cancelled"/, "结果卡应识别被中断的一轮");
+  assert.match(chatPanelSource, /本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。/, "被中断的一轮应说明终态与可继续的方式");
+  // 准备阶段的状态行要如实推进（否则从"任务已受理"到"请求模型"之间看起来是卡住的）
+  assert.match(chatPanelSource, /setAgentPhase\("准备能力与工具边界"\)/, "capability_plan 阶段应推进状态行");
+  assert.match(chatPanelSource, /setAgentPhase\(`应用\$\{mode === "chat" \? "只读" : mode === "review" \? "审查" : "执行"\}工具边界`\)/, "mode_policy 阶段应推进状态行");
+  assert.match(chatPanelSource, /setAgentPhase\(`设置思考深度：/, "thinking_level 阶段应推进状态行");
   // 本轮产物 tab + 面板宽度
   assert.match(chatPanelSource, /className="result-tabbed" aria-label="本轮结果"/, "结论之后应是本轮产物的页签区域");
   assert.match(chatPanelSource, /className="loading-inline"/, "等待首块应为无框行内指示");
@@ -264,7 +288,11 @@ try {
   assert.match(chatPanelSource, /markLatency\("firstTextDeltaAt"\)/, "首个正文 token 应打点");
   assert.match(chatPanelSource, /if \(hasVisibleAnswer\) markFirstDomText\(\)/, "正文真正进 DOM 时应打点（不是 token 到达内存）");
   assert.match(chatPanelSource, /finalizeLatencyProbe\(\{ runId: data\?\.runId/, "run_finished 时结算一次样本");
-  assert.match(serverSource, /markRunTiming\(run\.id, "admissionReadyAt"\)/, "服务端应记录 admission 完成时刻");
+  assert.match(serverSource, /markRunTiming\(run\.id, "admissionReadyAt", admissionReadyAt\)/, "服务端应记录 admission 完成时刻");
+  // 细分耗时（准入/派发内部构成）：只看"准入慢"无法优化，必须能看到段内在等什么。
+  assert.match(serverSource, /attachRunTimingSpans\(run\.id, \{ \.\.\.admissionSpans/, "准入阶段应记录细分耗时");
+  assert.match(agentSource, /attachRunTimingSpans\(entry\.activeRunId, \{[\s\S]{0,260}?queueWait/, "派发阶段应记录排队/工具边界/上下文细分耗时");
+  assert.match(serverSource, /const admissionReadyAt = Date\.now\(\);/, "admission 完成时刻要有单一变量，避免打点与 span 口径不一致");
   assert.match(serverSource, /if \(type === "run_finished" && eventData\.runId\) \{\s*finishRunTiming\(eventData\.runId\);/, "所有终态路径统一结算样本");
 
   // UI 的模式说明不可混入用户输入；普通 Agent 任务不应因此误触发 Office 或 Skills。
@@ -354,6 +382,24 @@ try {
   assert.match(appSource, /if \(previewAutoOpen === "never"\) return;/, "never 应从不自动打开");
   assert.match(appSource, /if \(previewAutoOpen === "deliverable"\) \{[\s\S]{0,200}?acceptanceStatus/, "deliverable 应只认通过验收的交付文件");
   assert.match(appSource, /\}, \[currentWorkspace, open, previewAutoOpen, threadId\]\)/, "策略变化应立即生效（依赖数组）");
+
+  // 卡死防护：同源 HTTP/1.1 只有 6 个连接槽位，SSE 长期占位。
+  // App 不再为"浏览器活跃"常驻第二条 /api/browser/stream，改由对话流的工具事件驱动。
+  assert.ok(!/new EventSource\(`\/api\/browser\/stream/.test(appSource), "App 不应再常驻浏览器流（改由 ChatPanel 工具事件通知）");
+  assert.match(appSource, /onBrowserActivity=\{handleBrowserActivity\}/, "App 应把浏览器活动回调接给 ChatPanel");
+  assert.match(chatPanelSource, /if \(String\(data\.name \|\| ""\)\.startsWith\("browser_"\)\) onBrowserActivity\?\.\(\)/, "browser_* 工具开始时应通知外层展开内置浏览器");
+  assert.match(chatPanelSource, /acquireStream\("chat", \{ essential: true, priority: 1, label: "对话流" \}\)/, "对话流应登记为必需长连接");
+  assert.match(appSource, /acquireStream\("agent-events", \{ essential: true, priority: 2, label: "全局事件流" \}\)/, "全局事件流应登记为必需长连接");
+  assert.match(apiSource, /import \{ closeOptionalStreams \} from "\.\/长连接预算\.js"/, "api.js 超时应能回收可放弃的长连接");
+  assert.match(apiSource, /export const switchWorkspace = \(path\) =>\n  apiControl\("\/api\/workspace\/switch"/, "切工作区必须走带超时与自愈的控制面请求");
+  assert.match(apiSource, /return apiControl\(`\/api\/sessions\$\{query \? `\?\$\{query\}` : ""\}`\)/, "会话列表必须走带超时与自愈的控制面请求");
+  assert.match(apiSource, /return apiControl\(`\/api\/files\$\{qs \? `\?\$\{qs\}` : ""\}`\)/, "文件列表必须走带超时与自愈的控制面请求");
+  for (const endpoint of ["/api/agent/stream", "/api/agent/events", "/api/browser/stream", "/api/memory/stream"]) {
+    assert.ok(serverSource.includes(`path: "${endpoint}"`), `${endpoint} 应登记到服务端流登记表（同键去重）`);
+  }
+  assert.match(serverSource, /app\.get\("\/api\/diagnostics\/streams"/, "应提供长连接诊断端点");
+  const streamModuleSource = fs.readFileSync(new URL("../server/流连接.mjs", import.meta.url), "utf8");
+  assert.match(streamModuleSource, /const MAX_SAME_KEY = 1;/, "同键只允许一条流存活");
   console.log("对话流性能回归：通过");
 } finally {
   if (runId) {

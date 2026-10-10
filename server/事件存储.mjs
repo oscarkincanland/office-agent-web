@@ -27,9 +27,10 @@ const PERSISTED_TYPES = PERSISTED_REGISTRY;
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(0);
-let loaded = false;
-let nextSeq = 0;
+let loaded = false;let nextSeq = 0;
 let events = [];
+// 活动事件文件的已读字节偏移（增量读取用；归档/替换时回退为整读）
+let activeFileOffset = 0;
 
 function ensureStore() {
   ensureDirectory(EVENT_DIR);
@@ -62,6 +63,56 @@ function loadStore(force = false) {
   }
   events = collected.slice(-MAX_MEMORY_EVENTS);
   for (const item of collected) nextSeq = Math.max(nextSeq, Number(item.seq) || 0);
+  activeFileOffset = fileSizeOf(EVENT_FILE);
+}
+
+function fileSizeOf(file) {
+  try { return fs.statSync(file).size; } catch { return 0; }
+}
+
+/**
+ * 只读取活动文件在 offset 之后新增的部分。
+ *
+ * 早先每次 appendEvent 都 `loadStore(true)` 整读活动文件：事件流涨到几 MB 后，
+ * 每条事件追加都要读+解析整个文件，一轮对话开头几次追加就叠加出秒级延迟
+ * （首字延迟实测里"准入/派发"两段的大头）。这里改为按字节偏移增量读取：
+ * 文件被归档/替换（体积回退）时才退回整读。
+ */
+function syncAppendedEvents() {
+  const size = fileSizeOf(EVENT_FILE);
+  if (size < activeFileOffset) { loadStore(true); return; }
+  if (size === activeFileOffset) return;
+  let chunk = "";
+  try {
+    const fd = fs.openSync(EVENT_FILE, "r");
+    try {
+      const length = size - activeFileOffset;
+      const buffer = Buffer.allocUnsafe(length);
+      fs.readSync(fd, buffer, 0, length, activeFileOffset);
+      chunk = buffer.toString("utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    loadStore(true);
+    return;
+  }
+  activeFileOffset = size;
+  // 最后一行可能正在写入：只消费完整行，剩余部分下次再读。
+  const lastBreak = chunk.lastIndexOf("\n");
+  if (lastBreak < 0) { activeFileOffset = size - Buffer.byteLength(chunk, "utf8"); return; }
+  const complete = chunk.slice(0, lastBreak);
+  activeFileOffset = size - Buffer.byteLength(chunk.slice(lastBreak + 1), "utf8");
+  for (const line of complete.split(/\r?\n/)) {
+    if (!line) continue;
+    try {
+      const item = JSON.parse(line);
+      if (!item || item.seq === undefined) continue;
+      events.push(item);
+      nextSeq = Math.max(nextSeq, Number(item.seq) || 0);
+    } catch {}
+  }
+  if (events.length > MAX_MEMORY_EVENTS) events = events.slice(-MAX_MEMORY_EVENTS);
 }
 
 /** 读取一个事件文件（容错：坏行跳过） */
@@ -175,10 +226,11 @@ export function appendEvent({ clientId = null, threadId = null, runId = null, ty
   let lockFd;
   try {
     lockFd = acquireEventLock();
-    // 归档检查：活动文件超过阈值先切片，避免单文件无限增长
-    try { rotateEventLog(); } catch (error) { console.warn("[events] 归档检查失败：", error?.message || error); }
-    // 另一进程可能在当前进程上次读取后追加过事件，分配序号前必须重新读取。
-    loadStore(true);
+      // 归档检查：活动文件超过阈值先切片，避免单文件无限增长
+      try { rotateEventLog(); } catch (error) { console.warn("[events] 归档检查失败：", error?.message || error); }
+      // 另一进程可能在当前进程上次读取后追加过事件，分配序号前必须同步新增部分。
+      // 只读新增字节（早先是整读活动文件，几 MB 的事件流会让每次追加都变成百毫秒级）。
+      syncAppendedEvents();
     const event = {
       eventId: `event_${crypto.randomUUID()}`,
       seq: ++nextSeq,
@@ -190,6 +242,8 @@ export function appendEvent({ clientId = null, threadId = null, runId = null, ty
       data: safeJson(data),
     };
     appendJsonLine(EVENT_FILE, event);
+    // 自己刚追加的字节也算已读：否则下次增量同步会把这一行再读一遍，内存里出现重复事件。
+    activeFileOffset = fileSizeOf(EVENT_FILE);
     events.push(event);
     if (events.length > MAX_MEMORY_EVENTS) events = events.slice(-MAX_MEMORY_EVENTS);
     releaseEventLock(lockFd);

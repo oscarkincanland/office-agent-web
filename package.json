@@ -1,6 +1,6 @@
 {
   "name": "open-plan",
-  "version": "0.11.39",
+  "version": "0.11.48",
   "private": true,
   "description": "Open Plan（规聚）— 面向规划工程师的 AI 一体化工作台：Office 文档、知识库、地图可视化与 Agent 协作",
   "keywords": [
@@ -55,6 +55,15 @@
     "test:run-budget": "node scripts/运行预算测试.mjs",
     "test:memory-admission": "node scripts/记忆准入治理测试.mjs",
     "test:workspace-isolation": "node scripts/工作区隔离回归测试.mjs",
+    "test:map-readonly": "node scripts/地图只读能力与临时层测试.mjs",
+    "test:map-layers": "node scripts/地图图层模型与入口测试.mjs",
+    "test:map-layers:live": "node scripts/地图图层入口场景测试.mjs",
+    "test:map-visual": "node scripts/地图可视化统一与面板整合测试.mjs",
+    "test:map-visual:live": "node scripts/地图可视面板场景测试.mjs",
+    "test:traffic-sources": "node scripts/交通数据源与可视化描述符测试.mjs",
+    "test:map-chat": "node scripts/地图对话栏适配测试.mjs",
+    "test:map-chat:live": "node scripts/地图对话栏场景测试.mjs",
+    "map:cleanup-layers": "node scripts/清理地图残留层.mjs",
     "test:search": "node scripts/联网搜索测试.mjs",
     "test:browser": "node scripts/内置浏览器测试.mjs",
     "test:browser:live": "node scripts/内置浏览器测试.mjs --live",
@@ -65,6 +74,7 @@
     "map:data": "npm run map:fetch && npm run map:prepare && npm run map:tiles",
     "map:m2-data": "node scripts/生成M2数据.mjs",
     "setup": "node scripts/install-officecli.mjs",
+    "map:glyphs": "node scripts/生成地图字形.mjs",
     "test:write-lock": "node scripts/写入锁并发测试.mjs",
     "test:repeat-guard": "node scripts/重复调用抑制测试.mjs",
     "test:event-registry": "node scripts/事件注册表测试.mjs",
@@ -75,7 +85,8 @@
     "test:native-files": "node scripts/原生文件测试.mjs",
     "test:run-view": "node scripts/运行展示投影测试.mjs",
     "test:preview-identity": "node scripts/预览身份测试.mjs",
-    "test:file-diff": "node scripts/文件差异测试.mjs"
+    "test:file-diff": "node scripts/文件差异测试.mjs",
+    "test:stream-budget": "node scripts/长连接预算与流去重测试.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.1.0",

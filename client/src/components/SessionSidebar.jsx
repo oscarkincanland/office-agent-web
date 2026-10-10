@@ -1,6 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from "react";
 import { Document, Packer, Paragraph } from "docx";
-import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
+import { uploadFile, deleteFile, fileToBase64, searchFiles, listRuns, listPublishedArtifacts, getRunAcceptance, confirmArtifactAcceptance, publishArtifact, rollbackPublishedArtifact, validateWorkspace, pickWorkspace, cancelWorkspacePick, listFileRoots, addFileRoot, removeFileRoot, deleteWorkspace, pickNativeFiles, openInSystem, revealInSystem } from "../api.js";
 import { sortFiles } from "./文件排序.js";
 import { artifactTypeInfo } from "../产物类型.js";
 import ContextMenu from "./ContextMenu.jsx";
@@ -318,6 +318,10 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   const [customMode, setCustomMode] = useState(false);
   const [customPath, setCustomPath] = useState("");
   const [applying, setApplying] = useState(false);
+  // 等待系统文件夹对话框的状态：对话框是独立窗口，可能被浏览器挡住，
+  // 所以界面必须明说"在等系统对话框"并给一个取消入口，而不是只把按钮变灰。
+  const [picking, setPicking] = useState(false);
+  const [pickNotice, setPickNotice] = useState("");
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [historyProjectId, setHistoryProjectId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -448,22 +452,40 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
   };
 
   const pickCustomWorkspace = async () => {
-    if (applying) return;
+    if (applying || picking) return;
     setApplying(true);
+    setPicking(true);
+    setPickNotice("已打开系统文件夹对话框：请在弹出的窗口里选择文件夹（若没看到，请查看任务栏——它可能被浏览器窗口挡住）。");
     try {
       const result = await pickWorkspace();
-      if (result.canceled) return;
+      if (result.canceled) { setPickNotice("已取消选择。"); return; }
       if (result.workspace) setCustomPath(result.workspace);
       if (!result.ok) {
         const reason = result.writeAccess?.message || result.error || "无效目录";
+        setPickNotice("");
         alert(`无法将此目录用作可写工作区：${reason}`);
         return;
       }
+      setPickNotice("");
       await onWorkspaceChange(result.workspace);
       setCustomMode(false);
       setSwitcherOpen(false);
-    } catch (e) { alert("选择工作区失败: " + e.message); }
-    finally { setApplying(false); }
+    } catch (e) {
+      setPickNotice("");
+      alert("选择工作区失败: " + e.message);
+    }
+    finally { setApplying(false); setPicking(false); }
+  };
+
+  // 取消等待：把那个已经打开的系统对话框收掉（服务端持有选择器进程）。
+  const cancelPick = async () => {
+    setPickNotice("正在取消…");
+    try {
+      const result = await cancelWorkspacePick();
+      setPickNotice(result.cancelled ? "已取消等待，系统对话框已关闭。" : "当前没有等待中的系统对话框。");
+    } catch (e) {
+      setPickNotice("取消失败：" + (e.message || "网络错误"));
+    }
   };
 
   const handleUpload = async (e) => {
@@ -737,11 +759,18 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
             onKeyDown={(e) => { if (e.key === "Enter") applyCustom(); }}
           />
           <button className="btn-xs" onClick={applyCustom} disabled={applying}>
-            {applying ? "验证中..." : "打开"}
+            {applying && !picking ? "验证中..." : "打开"}
           </button>
           <button className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器">
-            <Icon name="folderOpen" size={11} /> 选择文件夹
+            <Icon name="folderOpen" size={11} /> {picking ? "等待选择…" : "选择文件夹"}
           </button>
+        </div>
+      )}
+      {(picking || pickNotice) && (
+        <div className="workspace-pick-notice" role="status">
+          <Icon name={picking ? "loading" : "info"} size={11} className={picking ? "icon-loading" : ""} />
+          <span>{pickNotice}</span>
+          {picking && <button type="button" className="btn-xs" onClick={cancelPick}>取消等待</button>}
         </div>
       )}
       {switcherOpen && (
@@ -780,8 +809,15 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
                 {customMode && (
                   <div className="workspace-switcher-custom-form">
                     <input autoFocus value={customPath} placeholder="输入文件夹绝对路径" onChange={(e) => setCustomPath(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") applyCustom(); }} />
-                    <button type="button" className="btn-xs" onClick={applyCustom} disabled={applying}>{applying ? "验证中…" : "打开"}</button>
-                    <button type="button" className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器"><Icon name="folderOpen" size={11} /> 选择文件夹</button>
+                    <button type="button" className="btn-xs" onClick={applyCustom} disabled={applying}>{applying && !picking ? "验证中…" : "打开"}</button>
+                    <button type="button" className="btn-xs" onClick={pickCustomWorkspace} disabled={applying} title="打开系统文件夹选择器"><Icon name="folderOpen" size={11} /> {picking ? "等待选择…" : "选择文件夹"}</button>
+                    {(picking || pickNotice) && (
+                      <div className="workspace-pick-notice" role="status">
+                        <Icon name={picking ? "loading" : "info"} size={11} className={picking ? "icon-loading" : ""} />
+                        <span>{pickNotice}</span>
+                        {picking && <button type="button" className="btn-xs" onClick={cancelPick}>取消等待</button>}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -886,6 +922,11 @@ export default function SessionSidebar({ files, currentName, onOpenFile, onRefre
           <span className="section-sort-text">{fileSort === "time" ? "时间" : "类型"}</span>
         </button>
         <span className="section-count">{files.length}</span>
+        {/* 图层入口（阶段 1 · B6 的"工作区入口"）：在工作区语境下也能一步到图层管理。
+            与「能力」页的地图入口同源（都打开地图模块），只是就近放在文件页工具条。 */}
+        <button className="btn-xs section-layers" onClick={onOpenMap} title="图层管理（打开地图模块，查看共享数据集与本工作区图层）">
+          <Icon name="layers" size={11} />
+        </button>
         <button className="btn-xs section-refresh" onClick={() => onRefreshFiles()} title="刷新文件">
           <Icon name="refresh" size={11} />
         </button>

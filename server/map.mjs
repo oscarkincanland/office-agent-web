@@ -19,6 +19,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPS_ROOT = path.join(WORKSPACE_DIR, "maps");
 export const DEFAULT_PROJECT = "zhejiang-map";
 
+// 字形地址（单一定义）：自托管到 /glyphs/，由 client/public/glyphs 提供
+// （scripts/生成地图字形.mjs 生成）。改这里即可全项目生效。
+export const GLYPHS_URL = "/glyphs/{fontstack}/{range}.pbf";
+
 export const STATIC_ROOT = MAPS_ROOT; // index.mjs 静态挂载点
 
 // 基础底图（始终可用）：高德 3 档，国内 CDN 稳定、CORS 全开
@@ -341,7 +345,9 @@ function getDefaultStyle(project, baseProject = null) {
     name: `${project} 地图样式`,
     sources,
     layers,
-    glyphs: "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf",
+    // 自托管字形：原先指向 glyphs.openfreestyle.com（域名已无法解析），
+    // 导致 15 个标注图层（道路注记、行政区名）全部缺字形。
+    glyphs: GLYPHS_URL,
   };
 }
 
@@ -676,6 +682,9 @@ export function getProject(name = DEFAULT_PROJECT) {
   ensureProject(name);
   const config = readJson(path.join(dir, "map.config.json"), defaultConfig(name));
   const style = readJson(path.join(dir, "style.json"), getDefaultStyle(name, config.baseProject));
+  // 字形地址升级：存量 style.json 里固化了已失效的远程 glyphs（openfreestyle.com 无法解析），
+  // 读取时就地改成本地 /glyphs/，避免逐个项目手工改文件，也避免下次写盘时又把旧值带回去。
+  if (style && String(style.glyphs || "") !== GLYPHS_URL) style.glyphs = GLYPHS_URL;
   const layersDir = path.join(dir, "layers");
   const files = fs.existsSync(layersDir)
     ? fs.readdirSync(layersDir, { withFileTypes: true })

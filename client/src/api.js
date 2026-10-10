@@ -13,6 +13,7 @@ export {
   looksUnsupported,
   previewStateFromError,
 } from "./文件地址.js";
+import { closeOptionalStreams } from "./长连接预算.js";
 
 export async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -24,6 +25,52 @@ export async function api(path, opts = {}) {
   return data;
 }
 
+/** 控制面请求的超时时间：超过它说明同源连接槽位被长连接占满或服务端卡住。 */
+export const CONTROL_TIMEOUT_MS = 8000;
+
+function isTimeoutError(error) {
+  return error?.name === "TimeoutError" || error?.name === "AbortError";
+}
+
+function withTimeout(opts, timeoutMs) {
+  // 调用方自带 signal 时用 any() 合并；不支持 any 的老浏览器退回调用方的 signal。
+  if (opts.signal) {
+    if (typeof AbortSignal !== "undefined" && typeof AbortSignal.any === "function") {
+      return { ...opts, signal: AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)]) };
+    }
+    return opts;
+  }
+  return { ...opts, signal: AbortSignal.timeout(timeoutMs) };
+}
+
+/**
+ * 控制面请求（切工作区、切会话、列文件等用户直接等待的操作）。
+ *
+ * 浏览器同源连接池只有 6 个槽位，长连接（SSE）一旦把槽位占满，这些请求会永远排队
+ * 而服务端其实完全空闲——界面看起来就是"整站卡死"。所以这里给控制面请求加超时：
+ * 超时先回收可放弃的长连接（浏览器帧流/记忆流等）腾出槽位，再原样重试一次；
+ * 仍失败则抛出可读原因，让界面显示"为什么点不动"而不是无限转圈。
+ */
+export async function apiControl(path, opts = {}, { timeoutMs = CONTROL_TIMEOUT_MS } = {}) {
+  try {
+    return await api(path, withTimeout(opts, timeoutMs));
+  } catch (error) {
+    if (!isTimeoutError(error)) throw error;
+    const reclaimed = closeOptionalStreams(`控制面请求超时：${path}`);
+    if (!reclaimed) {
+      throw new Error(`本地服务 ${Math.round(timeoutMs / 1000)} 秒未响应（${path}）。服务可能正在处理其他任务，请稍后重试。`);
+    }
+    try {
+      return await api(path, withTimeout(opts, timeoutMs));
+    } catch (retryError) {
+      if (isTimeoutError(retryError)) {
+        throw new Error(`本地服务连接被后台长连接占满，已自动回收 ${reclaimed} 条后仍超时。请重试；若仍失败请刷新页面。`);
+      }
+      throw retryError;
+    }
+  }
+}
+
 // 文件身份必须随请求显式携带：服务端 getWorkspace 是全局可变值，会被其他页面
 // 或后台任务改写，只传 dir 会出现“页面显示 A 工作区、列表来自 B”（交接文档交互 1）。
 export const listFiles = (dir, workspace = "") => {
@@ -31,7 +78,7 @@ export const listFiles = (dir, workspace = "") => {
   if (dir) params.set("dir", dir);
   if (workspace) params.set("workspace", workspace);
   const qs = params.toString();
-  return api(`/api/files${qs ? `?${qs}` : ""}`);
+  return apiControl(`/api/files${qs ? `?${qs}` : ""}`);
 };
 export const searchFiles = (query, limit = 200, workspace = "") => {
   const params = new URLSearchParams({ q: query, limit: String(limit) });
@@ -103,10 +150,11 @@ export const getApprovalMode = () => api("/api/agent/approval-mode");
 export const setApprovalMode = (mode) => api("/api/agent/approval-mode", { method: "PATCH", body: JSON.stringify({ mode }) });
 export const getPermissionRules = () => api("/api/agent/permissions");
 export const removePermissionRule = (rule) => api("/api/agent/permissions/rule", { method: "DELETE", body: JSON.stringify(rule) });
+// 会话切换/新会话属于控制面：连接被占满时要能自愈，超时给足 20 秒（Runtime 可能冷启动）。
 export const createAgentThread = (client, thread, cwd, options = {}) =>
-  api("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd, ...options }) });
+  apiControl("/api/agent/new", { method: "POST", body: JSON.stringify({ client, thread, cwd, ...options }) }, { timeoutMs: 20000 });
 export const resumeAgentThread = (client, thread, sessionId, cwd) =>
-  api("/api/agent/resume", { method: "POST", body: JSON.stringify({ client, thread, sessionId, cwd }) });
+  apiControl("/api/agent/resume", { method: "POST", body: JSON.stringify({ client, thread, sessionId, cwd }) }, { timeoutMs: 20000 });
 
 export const listSessions = (fileOrOptions) => {
   const params = new URLSearchParams();
@@ -118,7 +166,7 @@ export const listSessions = (fileOrOptions) => {
     for (const key of ["pinned", "frozen"]) if (options[key] !== undefined && options[key] !== null) params.set(key, String(options[key]));
   }
   const query = params.toString();
-  return api(`/api/sessions${query ? `?${query}` : ""}`);
+  return apiControl(`/api/sessions${query ? `?${query}` : ""}`);
 };
 export const listProjects = (options = {}) => {
   const params = new URLSearchParams();
@@ -134,13 +182,17 @@ export const pinProject = (id, pinned = true) => api(`/api/projects/${encodeURIC
 export const archiveProject = (id, archived = true) => api(`/api/projects/${encodeURIComponent(id)}/archive`, { method: "POST", body: JSON.stringify({ archived }) });
 export const getProjectSettings = (id) => api(`/api/projects/${encodeURIComponent(id)}/settings`);
 export const updateProjectSettings = (id, settings) => api(`/api/projects/${encodeURIComponent(id)}/settings`, { method: "PATCH", body: JSON.stringify(settings || {}) });
-export const listWorkspaces = () => api("/api/workspaces");
+export const listWorkspaces = () => apiControl("/api/workspaces");
 export const switchWorkspace = (path) =>
-  api("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
+  apiControl("/api/workspace/switch", { method: "POST", body: JSON.stringify({ path }) });
 export const validateWorkspace = (path) =>
   api("/api/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
 export const pickWorkspace = () =>
   api("/api/workspace/pick", { method: "POST", body: JSON.stringify({}) });
+// 取消等待系统选择器：关掉那个已经打开、但可能被浏览器窗口挡住的对话框。
+export const cancelWorkspacePick = () =>
+  api("/api/workspace/pick/cancel", { method: "POST", body: JSON.stringify({}) });
+export const workspacePickState = () => api("/api/workspace/pick/state");
 
 // 本机原生能力（macOS Finder / Windows 资源管理器）
 export const pickNativeFiles = (options = {}) =>
@@ -183,9 +235,9 @@ export const getSession = (id, options = {}) => {
   return api(`/api/sessions/${encodeURIComponent(id)}${suffix}`);
 };
 export const deleteSession = (id) =>
-  fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }).then((r) => r.json());
+  apiControl(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
 export const deleteSessions = (ids) =>
-  api("/api/sessions/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
+  apiControl("/api/sessions/batch-delete", { method: "POST", body: JSON.stringify({ ids }) }, { timeoutMs: 20000 });
 export const renameSession = (id, label) =>
   api(`/api/sessions/${encodeURIComponent(id)}/rename`, { method: "POST", body: JSON.stringify({ label }) });
 export const pinSession = (id, pinned = true) =>
@@ -292,7 +344,14 @@ export const mapArchiveProject = (project, archived = true) =>
   api("/api/map/projects/archive", { method: "POST", body: JSON.stringify({ project, archived }) });
 export const mapDeleteProject = (project) =>
   api("/api/map/projects/delete", { method: "POST", body: JSON.stringify({ project }) });
-export const mapProject = (name) => api(`/api/map/project${name ? `?name=${encodeURIComponent(name)}` : ""}`);
+export const mapProject = (name, workspace = "") => {
+  const params = new URLSearchParams();
+  if (name) params.set("name", name);
+  // 图层归属视图需要工作区身份：共享数据集 + 本工作区自有图层（阶段 1）。
+  if (workspace) params.set("workspace", workspace);
+  const qs = params.toString();
+  return api(`/api/map/project${qs ? `?${qs}` : ""}`);
+};
 export const mapSaveStyle = (name, style) =>
   api("/api/map/style", { method: "POST", body: JSON.stringify({ name, style }) });
 export const mapSaveConfig = (name, config) =>
@@ -325,6 +384,18 @@ export const mapM3Routes = () => api("/api/m3/bus-routes");
 export const mapM3Stations = () => api("/api/m3/station-heatmap");
 export const mapM3OD = () => api("/api/m3/od-lines");
 export const mapM3Stats = () => api("/api/m3/network-stats");
+// 统一可视化描述符（阶段 2.1）：把五套数据源适配为同一形状，可视面板只消费它。
+export const mapVisualSources = () => api("/api/map/visual/sources");
+export const mapVisual = (params = {}) => {
+  const query = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") query.set(k, String(v));
+  }
+  return api(`/api/map/visual?${query.toString()}`).then((r) => {
+    if (r?.error) throw new Error(r.error);
+    return r?.descriptor || r;
+  });
+};
 
 // ---------- 模版库 ----------
 export const tplList = (category) => api(`/api/templates${category ? `?category=${encodeURIComponent(category)}` : ""}`);

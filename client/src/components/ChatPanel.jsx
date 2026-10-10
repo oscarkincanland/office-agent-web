@@ -16,6 +16,7 @@ import { SessionList } from "./SessionSidebar.jsx";
 import { loadSettings } from "./SettingsPanel.jsx";
 import { isMotionReduced, motionScrollBehavior, useAppearance, useAppearanceSetter } from "../界面外观.js";
 import { startLatencyProbe, markLatency, patchLatencyMeta, markFirstDomText, finalizeLatencyProbe } from "../首字延迟埋点.js";
+import { acquireStream } from "../长连接预算.js";
 
 // 错误边界包装器
 class ErrorBoundary extends React.Component {
@@ -500,7 +501,7 @@ function parseReferenceMarkers(text = "") {
   return refs;
 }
 
-export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange }, ref) {
+export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "", project = null, mapProject = null, frozen = false, onFileChanged, onMapAction, currentDoc, mapContext, models: modelsProp, defaultModel, selectedModel = "", onModelChange, onAgentEnd, onRunFinished, onOpenRunChanges, onOpenRunArtifacts, historyMessages, historyThreadId = null, historyWindow = null, onNewSession, onOpenFile, referenceFiles = [], sessions = [], unreadByThread = {}, onSelectSession, onSessionChange, onRefreshSessions = () => {}, onDeleteSession, onBatchDeleteSession, onForkSession, onPinSession, onFreezeSession, embedded = false, compact = false, forcedMode = null, initialReferences = [], contextText = "", panelTitle = "Open Plan", onPromoteToAgent, onModeChange, onPhaseChange, onBrowserActivity }, ref) {
   const [messages, setMessages] = useState(() => loadEmbeddedMessages(threadId, embedded));
   const [messageWindowSize, setMessageWindowSize] = useState(MAX_VISIBLE_MESSAGES);
   // 草稿按 thread 恢复（交互 3）：模块导航会卸载本组件，重挂载时从缓存取回未发送内容。
@@ -529,6 +530,12 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const [model, setModel] = useState("");
   const [modelVision, setModelVision] = useState(false);
   const [modelMsg, setModelMsg] = useState("");
+  // 阶段 4.4：最近一次地图可视化（来自 map_action 事件）。用于结果区提示
+  // "已在地图上显示（临时，未保存）"——临时层不落盘，Run 的 artifacts 为空，
+  // 用户会问"我刚画的那层呢"。这里只做展示与引导保存，不改事件链路。
+  const [lastMapVisual, setLastMapVisual] = useState(null);
+  // 地图可视化的就地提示（如"保存需切 Work"）：显示在提示条内，比工具栏的 modelMsg 更醒目。
+  const [mapVisualHint, setMapVisualHint] = useState("");
   // 运行中切换模型会排队到本轮结束（Pi 会话不支持中途换模型）：这里记住"待切换"的目标，
   // 收到 model_switched(effective=now) 后再清掉。
   const [pendingModel, setPendingModel] = useState("");
@@ -709,6 +716,13 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   const textRevealRafRef = useRef(null);
   const streamingMsgIdRef = useRef(null);
   const stoppingRef = useRef(false);
+  // 本轮是否发出过中断请求：中断后到达的 agent_error（SDK 以 "Request aborted" 收尾）
+  // 要按中断处理，而不是当成"生成失败"。
+  const stopRequestedRef = useRef(false);
+  // 本轮是否已经按"中断"收尾：agent_end 常晚于 aborted 到达，早先它会把 busy 再拉回 true，
+  // 于是徽记已经写着「已停止生成」，输入区却还停在「中断」——用户以为没停住。
+  const roundStoppedRef = useRef(false);
+  const stopConfirmTimerRef = useRef(null);
   const agentErrorRef = useRef(false);
   const queueRef = useRef([]);
   // 组件挂载状态追踪，防止卸载后更新状态
@@ -995,9 +1009,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       // 的 run_finished/token 会被旧 runId 过滤掉。
       activeRunIdRef.current = isLiveRun ? latestRun.runId : null;
       runInProgressRef.current = isLiveRun;
-      if (latestRun?.task?.mode) setEditMode(normalizeUiMode(latestRun.task.mode));
-      stoppingRef.current = false;
-      setStopping(false);
+        if (latestRun?.task?.mode) setEditMode(normalizeUiMode(latestRun.task.mode));
+        stoppingRef.current = false;
+        stopRequestedRef.current = false;
+        roundStoppedRef.current = false;
+        setStopping(false);
       assistantIdRef.current = isLiveRun ? latestAssistant?.id || null : null;
       lastAssistantIdRef.current = latestAssistant?.id || null;
       streamBufRef.current = null;
@@ -1047,9 +1063,11 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (cached?.editMode) setEditMode(normalizeUiMode(cached.editMode));
       setBusy(Boolean(cached?.busy));
     }
-    setStopping(false);
-    stoppingRef.current = false;
-    assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
+      setStopping(false);
+      stoppingRef.current = false;
+      stopRequestedRef.current = false;
+      roundStoppedRef.current = false;
+      assistantIdRef.current = hydratedIsLive ? hydratedAssistant?.id || null : null;
     lastAssistantIdRef.current = hydratingHistory ? hydratedAssistant?.id || null : null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = assistantIdRef.current;
@@ -1079,12 +1097,14 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
   }, [historyMessages, historyThreadId, threadId]);
 
   // 新建会话：清空消息
-  const handleNewSession = useCallback(() => {
-    setMessages([]);
-    setMessageWindowSize(MAX_VISIBLE_MESSAGES);
-    setBusy(false);
-    stoppingRef.current = false;
-    setStopping(false);
+    const handleNewSession = useCallback(() => {
+      setMessages([]);
+      setMessageWindowSize(MAX_VISIBLE_MESSAGES);
+      setBusy(false);
+      stoppingRef.current = false;
+      stopRequestedRef.current = false;
+      roundStoppedRef.current = false;
+      setStopping(false);
     assistantIdRef.current = null;
     lastAssistantIdRef.current = null;
     streamBufRef.current = null;
@@ -1454,6 +1474,9 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
     let retryDelay = 500;
     let connectionSerial = 0;
     let watchdogTimer = null;
+    // 对话流是核心长连接（必需）：申请槽位时若超预算会顶掉可放弃的面板流，
+    // 保证"切工作区/切会话"这类控制面请求永远有槽位可用。
+    const slot = acquireStream("chat", { essential: true, priority: 1, label: "对话流" });
 
     const streamKey = `${clientId}::${threadId || ""}`;
     const isCurrentGeneration = () => (
@@ -1505,6 +1528,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       const streamQuery = knownStreamId ? `&stream=${encodeURIComponent(knownStreamId)}` : "";
       const nextSource = new EventSource(`/api/agent/stream?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId || "")}${workspaceQuery}${cursorQuery}${streamQuery}`);
       es = nextSource;
+      slot?.attach(() => nextSource.close());
       
       nextSource.onopen = () => {
         // 仅表示 HTTP/SSE 通道打开；Agent 是否已就绪由服务端 connected 握手确认。
@@ -1589,6 +1613,7 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
       if (es) es.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdogTimer) clearInterval(watchdogTimer);
+      slot?.release();
       markReady(false);
       if (streamReadyRef.current?.generation === generation && streamReadyRef.current?.streamKey === streamKey) {
         streamReadyRef.current = null;
@@ -1678,6 +1703,10 @@ export default forwardRef(function ChatPanel({ clientId, threadId, workspace = "
               references: run.references || [],
               verificationStatus: run.verificationStatus || "not_checked",
               finalText: [...(run.events || [])].reverse().find((item) => item?.type === "assistant_final" && String(item?.data?.text || "").trim())?.data?.text || "",
+              // 带上本轮事件：结果卡的「用时 / 每轮 token」明细由回合与用量事件归约而来，
+              // SSE 的 run_finished 不带事件（体积考虑），只有这条对账路径能补齐，
+              // 否则刚跑完的一轮要等重开会话才看得到指标。
+              events: Array.isArray(run.events) ? run.events : [],
               recovered: true,
             },
           });
@@ -1785,7 +1814,9 @@ case "runtime_connecting":
           };
         }
         setConnected(false);
-        setAgentPhase("准备会话运行时");
+        // 用户按下发送后最关心的是"模型在不在动"。这里保持"思考中"的措辞，
+        // 只把当前在等什么作为括号补充，不再让状态行读起来像"还没开始"。
+        setAgentPhase((current) => (/思考中/.test(String(current || "")) ? "思考中（准备运行时）" : "准备会话运行时"));
         break;
       case "runtime_init_failed":
         // 运行时初始化失败是终态：必须同时解除 busy 与运行锚点，
@@ -1900,6 +1931,10 @@ case "runtime_connecting":
         if (data.name === "run_subagent") break;
         flushToolOutput();
         setAgentPhase(`调用工具：${data.name || "处理中"}`);
+        // 浏览器类工具开始执行时通知外层展开内置浏览器侧栏。
+        // 这条通知替代了原先 App 常驻的 /api/browser/stream（只用它判断"浏览器活跃"），
+        // 少一条长连接就少占一个同源连接槽位。
+        if (String(data.name || "").startsWith("browser_")) onBrowserActivity?.();
         if (!aid) aid = ensureAssistant();
         if (aid) {
           if (streamBufRef.current) flushNow(aid);
@@ -2077,13 +2112,15 @@ case "runtime_connecting":
         // 已经发出 agent_end 并清空了 assistant 引用，这里重新建立一个
         // 流式气泡，避免恢复后的 token 被丢弃。
         if (connectionTimerRef.current) { window.clearTimeout(connectionTimerRef.current); connectionTimerRef.current = null; }
-        setConnectionNotice({ state: "retrying" });
-        agentErrorRef.current = false;
-        cancelTextReveal();
-        stoppingRef.current = false;
-        setStopping(false);
-        setBusy(true);
-        setRunState((s) => ({ ...s, status: "running" }));
+          setConnectionNotice({ state: "retrying" });
+          agentErrorRef.current = false;
+          cancelTextReveal();
+            stoppingRef.current = false;
+            stopRequestedRef.current = false;
+            roundStoppedRef.current = false;
+            setStopping(false);
+          setBusy(true);
+          setRunState((s) => ({ ...s, status: "running" }));
         if (!assistantIdRef.current) {
           const retryAid = newId();
           assistantIdRef.current = retryAid;
@@ -2168,6 +2205,7 @@ case "runtime_connecting":
         break;
       case "thinking_level":
         setRunState((s) => ({ ...s, thinkingLevel: data.effective || null }));
+        if (data.effective) setAgentPhase(`设置思考深度：${data.effective === "low" ? "低" : data.effective === "medium" ? "标准" : data.effective === "high" ? "高" : "最大"}`);
         break;
       case "agent_queued":
         setAgentPhase(`任务排队${data.position ? `（第 ${data.position} 项）` : ""}`);
@@ -2177,7 +2215,9 @@ case "runtime_connecting":
         {
           const plan = data.plan || {};
           if (data.runId) activeRunIdRef.current = data.runId;
-          setAgentPhase("准备执行");
+          // 准备阶段要如实推进状态行：从"任务已受理"到"请求模型"之间还有能力/工具边界/
+          // 思考深度几步（合计 1~2 秒），旧文案在这段时间是静止的，看起来就是"卡住了"。
+          setAgentPhase("准备能力与工具边界");
           setRunState((s) => ({ ...s, capabilityPlan: plan }));
         }
         break;
@@ -2185,6 +2225,7 @@ case "runtime_connecting":
         {
           const mode = normalizeUiMode(data.mode);
           setEditMode(forcedMode ? normalizeUiMode(forcedMode) : mode);
+          setAgentPhase(`应用${mode === "chat" ? "只读" : mode === "review" ? "审查" : "执行"}工具边界`);
           setRunState((s) => ({ ...s, mode, modePolicy: data }));
         }
         break;
@@ -2241,16 +2282,37 @@ case "runtime_connecting":
         // agent_end 只表示 Pi 当前回合结束；工作区快照、产物发布和
         // run_finished 仍可能在后台收尾。保持 busy 到权威终结事件，
         // 避免下一条排队消息抢先启动后又被旧 run_finished 清掉状态。
-        setBusy(true);
-        runInProgressRef.current = true;
+        // 例外：本轮已经按中断收尾（aborted 先到）——此时不能再把输入区拉回"运行中"，
+        // 否则徽记说「已停止生成」而输入框还显示「中断」。run_finished 到达时照常收尾。
+        if (!roundStoppedRef.current) {
+          setBusy(true);
+          runInProgressRef.current = true;
+        }
         stoppingRef.current = false;
+        stopRequestedRef.current = false;
         setStopping(false);
         setAgentPhase(endedWithError ? "模型调用失败" : "");
-        setRunState((s) => ({ ...s, status: endedWithError ? "failed" : "finishing" }));
+        setRunState((s) => ({ ...s, status: roundStoppedRef.current ? "aborted" : (endedWithError ? "failed" : "finishing") }));
         if (!endedWithError && onAgentEnd) onAgentEnd();
         break;
       }
       case "agent_error":
+        // 用户点了中断（或本轮已被标记取消）时，SDK 会以 "Request aborted" 之类收尾。
+        // 这不是"生成失败"：早先这里会先打上错误徽记与「模型调用失败：Request aborted」，
+        // 几秒后才被 aborted 改成「本轮已中断」——用户看到的就是"中断时先报错"。
+        if (stoppingRef.current || stopRequestedRef.current) {
+          const abortMessage = String(data.message || "");
+          if (/abort|cancel|中断|已取消|interrupted/i.test(abortMessage)) {
+            if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
+            connectionTimerRef.current = null;
+            setConnectionNotice(null);
+            flushToolOutput();
+            agentErrorRef.current = false;
+            cancelTextReveal({ preserveText: true });
+            finalizeStopped();
+            break;
+          }
+        }
         if (connectionTimerRef.current) window.clearTimeout(connectionTimerRef.current);
         connectionTimerRef.current = null;
         setConnectionNotice(null);
@@ -2290,6 +2352,8 @@ case "runtime_connecting":
         setBusy(Boolean(errorRunId));
         runInProgressRef.current = Boolean(errorRunId);
         stoppingRef.current = false;
+        stopRequestedRef.current = false;
+        roundStoppedRef.current = false;
         setStopping(false);
         setAgentPhase(errorLabels[errorCategory] || "模型调用失败");
         setRunState((s) => ({ ...s, status: "failed", runId: data.runId || s.runId || null }));
@@ -2329,8 +2393,19 @@ case "runtime_connecting":
         if (data && acceptSystemEvent(`map_action:${data.id || "analysis"}:${data.updatedAt || JSON.stringify(data.stats || {})}`)) {
           if (data.action === "clear_analysis") {
             pushSystem("已清除地图临时分析结果");
+            setLastMapVisual(null);
+            setMapVisualHint("");
           } else {
             pushSystem(`地图分析已生成：${data.title || data.analysis || "分析结果"}${data.source === "demo" ? "（演示数据）" : ""}`);
+            // 阶段 4.4：记住最近一次地图可视化，结果区据此提示"临时，未保存"。
+            // 数据源就是既有 map_action 事件（persist:false，不落盘），不新增 SSE。
+            setMapVisualHint("");
+            setLastMapVisual({
+              id: data.id || "agent-analysis",
+              title: data.title || data.analysis || "分析结果",
+              demo: data.source === "demo",
+              at: Date.now(),
+            });
           }
           onMapAction?.(data);
         }
@@ -2433,6 +2508,10 @@ case "runtime_connecting":
 
   // SSE 回调始终转发到最新的处理器，避免切换会话或模型后仍使用旧闭包。
   eventHandlerRef.current = handleEvent;
+  // 测试钩子：把同一套事件处理器暴露到 window，供 L3 场景在真实事件路径上注入
+  // （与 MapPanel 的 window.__oawMapBridge 同类：只读引用，不参与业务逻辑）。
+  // 注意：handler 会先经 handleEvent 的"当前 Run 归属"过滤，行为与真实 SSE 一致。
+  try { window.__oawChatEvents = { handle: handleEvent }; } catch {}
 
   // 立即刷新流式缓冲（工具边界、agent_end 前调用）
   const flushNow = useCallback((id) => {
@@ -2494,12 +2573,20 @@ case "runtime_connecting":
   const finalizeStopped = useCallback(() => {
     const id = assistantIdRef.current;
     cancelTextReveal({ preserveText: true });
-    if (id) patch(id, (m) => ({ ...m, status: "done", stopped: true }));
+    // 中断收尾必须清掉错误文案：否则结果卡里会留一条「模型调用失败：Request aborted」，
+    // 与「本轮已中断」并存，看起来像"中断顺带把模型弄坏了"。
+    if (id) patch(id, (m) => ({ ...m, status: "done", stopped: true, errorText: "" }));
     assistantIdRef.current = null;
     streamBufRef.current = null;
     streamingMsgIdRef.current = null;
     activeRunIdRef.current = null;
     stoppingRef.current = false;
+    stopRequestedRef.current = false;
+    roundStoppedRef.current = true;
+    if (stopConfirmTimerRef.current) {
+      window.clearTimeout(stopConfirmTimerRef.current);
+      stopConfirmTimerRef.current = null;
+    }
     setStopping(false);
     setBusy(false);
     runInProgressRef.current = false;
@@ -2654,13 +2741,16 @@ case "runtime_connecting":
     setAttachments([]);
     setInjectedContext([]);
     setContextFileDismissed(false);
-    setBusy(true);
-    runInProgressRef.current = true;
-    agentErrorRef.current = false;
-    activeRunIdRef.current = null;
+      setBusy(true);
+      runInProgressRef.current = true;
+      agentErrorRef.current = false;
+      roundStoppedRef.current = false;
+      activeRunIdRef.current = null;
     agentEventAtRef.current = 0;
     replaceExecutionEvents(runtimeConnectingEventRef.current ? [runtimeConnectingEventRef.current] : []);
-    setAgentPhase("准备会话运行时");
+    // 提交即显示"思考中"：用户按下回车后需要立刻看到模型在工作，
+    // 而不是先看到一串"准备…"。后续阶段事件会把这个措辞细化（等待首个事件/正在生成）。
+    setAgentPhase("思考中");
     setRunState({ status: "running", runId: null, artifacts: [], references: sendReferences, mode: selectedEditMode });
     // 请求失败（网络/服务端拒绝）时把草稿放回输入框，用户可以直接重试，
     // 不用重新打一遍；队列来源的 payload 不属于草稿，不重复回填。
@@ -2681,10 +2771,13 @@ case "runtime_connecting":
         : null;
       let handshakeWaitMs = 0;
       if (streamReady && !connected) {
+        // 早先这里等满 3 秒才开始 POST：SSE 没握手时用户每轮都要多等 3 秒才看到模型动。
+        // 其实不需要等——服务端 channel.history 会按游标把错过的事件补回来，
+        // 这里只留一个很短的窗口（连接刚好在建时避免重复建连）。
         const waitStartedAt = Date.now();
         await Promise.race([
           streamReady,
-          new Promise((resolve) => window.setTimeout(resolve, 3000)),
+          new Promise((resolve) => window.setTimeout(resolve, 600)),
         ]);
         handshakeWaitMs = Date.now() - waitStartedAt;
       }
@@ -2767,7 +2860,18 @@ case "runtime_connecting":
   const stop = async () => {
     if (!busy || stoppingRef.current) return;
     stoppingRef.current = true;
+    stopRequestedRef.current = true;
     setStopping(true);
+    // 服务端收尾可能要等模型响应中断（实测数秒）。这里给 10 秒确认窗口：
+    // 期间保持「中断中」而不是立刻假装停住——早先 1.2 秒就本地收尾，
+    // 会出现"界面说停了、模型还在输出"的错觉。
+    if (stopConfirmTimerRef.current) window.clearTimeout(stopConfirmTimerRef.current);
+    stopConfirmTimerRef.current = window.setTimeout(() => {
+      stopConfirmTimerRef.current = null;
+      if (!stoppingRef.current) return;
+      finalizeStopped();
+      pushSystem("已请求中断，但服务端未在 10 秒内确认收尾（可能卡在不响应中断的工具里）；如仍在输出可再点一次中断或刷新页面。", "stop-unconfirmed");
+    }, 10000);
     try {
       const res = await fetch("/api/agent/abort", {
         method: "POST",
@@ -2775,14 +2879,27 @@ case "runtime_connecting":
         body: JSON.stringify({ client: clientId, thread: threadId }),
       });
       if (!res.ok) throw new Error(`请求失败（${res.status}）`);
-      // SSE 正常会收到 aborted；断线时也要让输入框恢复可用。
-      window.setTimeout(() => {
-        if (stoppingRef.current) finalizeStopped();
-      }, 1200);
+      const result = await res.json().catch(() => ({}));
+      // 服务端如实返回是否真的取消了：没有在跑的任务时不要谎报"已中断"。
+      if (result && result.cancelled === false) {
+        if (stopConfirmTimerRef.current) {
+          window.clearTimeout(stopConfirmTimerRef.current);
+          stopConfirmTimerRef.current = null;
+        }
+        stoppingRef.current = false;
+        stopRequestedRef.current = false;
+        setStopping(false);
+        pushSystem("没有找到正在运行的任务，可能这一轮已经结束了。", "stop-nothing");
+      }
     } catch (e) {
+      if (stopConfirmTimerRef.current) {
+        window.clearTimeout(stopConfirmTimerRef.current);
+        stopConfirmTimerRef.current = null;
+      }
       stoppingRef.current = false;
+      stopRequestedRef.current = false;
       setStopping(false);
-      pushSystem(`中断失败：${e.message || "网络错误"}`);
+      pushSystem(`中断失败：${e.message || "网络错误"}`, "stop-failed");
     }
   };
 
@@ -3106,6 +3223,61 @@ case "runtime_connecting":
           <span className={`conn ${connected ? "on" : ""}`}>{connected ? "已连接" : "连接中..."}</span>
           <span className="doc-hint" title={hint}>{hint}</span>
         </div>
+        {/* 阶段 4.2：地图场景常驻显示当前地图状态。
+            用户要知道 Agent"看得见"当前地图，才敢说"就画这里"。
+            数据来自既有 props（mapProject / mapContext），不新增状态。 */}
+        {mapProject && (
+          <div className="chat-map-status" title="Agent 会读到当前地图项目与视口范围">
+            <Icon name="map" size={11} />
+            <span className="cms-project">{mapProject}</span>
+            {mapContext?.center && (
+              <>
+                <span className="cms-sep">·</span>
+                <span className="cms-view">
+                  {mapContext.regionName ? `${mapContext.regionName}附近 · ` : ""}缩放 {Math.round(Number(mapContext.zoom) || 0)}
+                </span>
+              </>
+            )}
+            <button
+              type="button"
+              className="cms-pin"
+              onClick={injectMapContext}
+              disabled={!mapContext?.center}
+              title={mapContext?.center ? "将当前地图视图加入下一轮上下文" : "地图就绪后可固定当前视图"}
+            >
+              <Icon name="pin" size={10} /> 固定视图
+            </button>
+          </div>
+        )}
+        {/* 阶段 4.4：地图可视化是"不落盘"的临时层，Run 的 artifacts 里看不到。
+            这里明确告知"临时，未保存"并给出保存入口，避免用户以为结果丢了。 */}
+        {mapProject && lastMapVisual && (
+          <div className="chat-map-visual" role="status">
+            <div className="cmv-row">
+              <Icon name="star" size={11} />
+              <span className="cmv-text">
+                已在地图上显示「{lastMapVisual.title}」<em>（临时，未保存）</em>
+              </span>
+              <button
+                type="button"
+                className="cmv-save"
+                title={editMode === "chat" ? "保存正式图层需要切换到 Work 模式" : "保存为正式图层（Agent 会请求确认后写入项目）"}
+                onClick={() => {
+                  if (editMode === "chat") {
+                    // 就地提示（不写 modelMsg——那在工具栏，地图紧凑模式下不显眼）
+                    setMapVisualHint("保存正式图层需要切换到 Work 模式（临时可视化不会写入项目）");
+                    return;
+                  }
+                  // Work 模式：把保存意图交给 Agent（走 map_save_analysis 与审批链路）
+                  send(`把刚才的地图分析「${lastMapVisual.title}」保存为正式图层。`);
+                }}
+              >
+                <Icon name="download" size={10} /> 保存为图层
+              </button>
+            </div>
+            {mapVisualHint && <div className="cmv-hint" role="alert">{mapVisualHint}</div>}
+          </div>
+        )}
         {!compact && (editMode === "agent" || editMode === "review") && (
           <details className="agent-capability-preview" title="本轮 Agent 启动前能力预览">
             <summary><span>{editMode === "review" ? "Review" : "Work"}</span><span>能力已就绪 · 点击查看配置</span></summary>
@@ -3707,10 +3879,14 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
   }, [m.events, m.reviewSources]);
   // 结果卡只在有文件、审查依据或需要用户处理的终态出现。
   // 单纯存在 completion/summary 不代表用户需要看到一张“0 项”卡。
+  // 例外：被中断的一轮必须留下终态说明——否则用户只看到"话说了一半就没了"，
+  // 分不清是中断、失败还是正常结束（实测用户反馈"中断后不对劲"的根因之一）。
+  const interrupted = view.lifecycle === "cancelled" || completion?.status === "cancelled";
   const showResultCard = fileChanges.length > 0
     || deliverables.length > 0
     || reviewSources.length > 0
     || Boolean(actionNeeded)
+    || interrupted
     || Boolean(completion?.incomplete?.length || completion?.blockers?.length);
   // 单一产物集合（交付优先、路径去重）＋ 类型/大小，供「本轮产物」tab 的卡片使用。
   const products = useMemo(() => artifactsFromView(view) || [], [view]);
@@ -3844,6 +4020,12 @@ function RunSummary({ m, onOpenFile, onRollbackRun, onOpenChanges, onOpenArtifac
         </details>
         )}
         {actionNeeded && <div className={`run-result-action ${actionNeeded.kind}`}><Icon name="arrowRight" size={11} /> {actionNeeded.text}</div>}
+        {/* 被中断的轮次：明确写出终态与可继续的方式，不靠"内容戛然而止"让用户猜 */}
+        {interrupted && !actionNeeded && (
+          <div className="run-result-action cancelled" role="status">
+            <Icon name="stop" size={11} /> 本轮已中断，已保留生成到一半的内容；可以重新发送、补充要求，或直接继续提问。
+          </div>
+        )}
         {/* 本轮用时与 token：明确到每一轮（回合）——总量常驻可见，逐轮明细一键展开 */}
         {hasTurnMetrics && (
           <div className="run-metrics" aria-label="本轮用时与 token">
@@ -4092,6 +4274,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
   };
   const answerClamped = answerDetail === "brief" && String(authoritativeFinalText || "").split(/\r?\n/).filter((line) => line.trim()).length > 3;
   const isTaskActivity = !isUser && Boolean(m.runId || runSummary || executionFlow);
+  // 本轮是否被中断：本地标记只管当下，刷新/切回会话后靠 Run 终态
+  const runInterrupted = /^(cancelled|aborted)$/.test(String(runSummary?.runStatus || m.runStatus || ""));
   const isTaskLive = streaming || Boolean(executionFlow?.running) || LIVE_RUN_STATUSES.has(String(runSummary?.runStatus || ""));
   const processBlockTypes = new Set(["thinking", "tool", "subagent", "ask", "approval", "process_note"]);
   // 模型发言（text）不再归入过程区：它是这一小节的结论，必须留在消息正文里。
@@ -4311,7 +4495,8 @@ function Message({ m, model, agentPhase, onToggleTool, onOpenFile, onMemoryAppro
           <span className="msg-time">{formatMsgTime(m.createdAt || Date.now())}</span>
           {!isUser && streaming && <span className="msg-streaming-badge"><StreamingDot /> 生成中</span>}
           {!isUser && m.status === "error" && <span className="msg-error-badge">生成失败</span>}
-          {!isUser && m.stopped && <span className="msg-stopped-badge">已停止生成</span>}
+          {/* 中断既要认本地标记，也要认 Run 的终态：刷新/切回会话后本地标记会丢，只有 runStatus 还在 */}
+          {!isUser && (m.stopped || runInterrupted) && <span className="msg-stopped-badge">{m.stopped ? "已停止生成" : "本轮已中断"}</span>}
         </div>
         )}
         {isUser ? (
@@ -5153,17 +5338,21 @@ function ToolCard({ tool, onToggle }) {
     }
   } catch {}
   const isCmd = name === "bash" || name === "officecli" || name === "find" || name === "grep" || name === "ls" || name === "cat";
+  // 阶段 4.3：地图工具与普通文件工具区分（左侧色条 + 可读徽标）。
+  // 判定沿用工具语义图标的同一来源（map_* 前缀），不另建映射。
+  const isMapTool = /^map_/.test(String(name || ""));
   const fullInput = inputStr.replace(/\s+/g, " ").trim();
   const cmdPreview = isCmd ? `${fullInput.slice(0, 96)}${fullInput.length > 96 ? "…" : ""}` : fullInput.slice(0, 80);
   const outputPreview = output?.length > 300 ? output.slice(0, 300) + "..." : output;
 
   return (
-    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"}`} onClick={onToggle}>
+    <div className={`tool-card ${done ? (isError ? "error" : "success") : "pending"} ${isMapTool ? "tool-card-map" : ""}`} onClick={onToggle}>
       <div className="tool-header">
         <span className={`tool-icon ${done ? (isError ? "err" : "ok") : "run"}`}>
           {done ? (isError ? <Icon name="x" size={12} /> : <Icon name="check" size={12} />) : <Icon name="loading" size={12} className="icon-loading" />}
         </span>
         <ToolIdentityIcon name={name} size={12} className="tool-identity-inline" />
+        {isMapTool && <span className="tool-map-badge" title="地图操作：结果会实时反映到地图上">地图</span>}
         <span className="tool-phrase" title={inputStr}>{toolPhrase(name, input, done)}</span>
         {tool.startMissing && <span className="tool-recovered" title="开始事件已丢失，状态由结束事件恢复">已恢复</span>}
         {isCmd && <code className="cmd-code" title={fullInput}>$ {cmdPreview}</code>}

@@ -356,6 +356,18 @@ export class PiRuntimeManager {
       try {
         return await operation();
       } catch (error) {
+        // 用户主动中断会让进行中的 prompt 以 "Request aborted" 拒绝：
+        // 这不是运行时故障，不能标成 failed——否则下一次发送会把它当作失效
+        // 运行时重建，用户看到的是"中断之后下一条消息启动特别慢"。
+        if (this.isUserAbort(record, error)) {
+          this.update(runtimeId, {
+            status: "idle",
+            health: { status: "healthy", checkedAt: now(), message: null },
+            error: null,
+            recoveryChain: [...(record?.recoveryChain || []), { at: now(), reason: "user_abort", status: "idle" }].slice(-20),
+          });
+          throw error;
+        }
         this.markFailure(runtimeId, error, { recovering: false });
         throw error;
       } finally {
@@ -372,14 +384,32 @@ export class PiRuntimeManager {
 
   async abort(runtimeId, session) {
     const record = this.find(runtimeId);
-    if (record) this.update(runtimeId, { status: "aborting" });
+    if (record) {
+      // 打上中断标记：随后 prompt 以 "Request aborted" 收尾时要能识别成"用户中断"而非故障。
+      record.abortRequestedAt = Date.now();
+      this.update(runtimeId, { status: "aborting" });
+    }
     try {
       await session?.abort?.();
       if (record) this.update(runtimeId, { status: "idle", health: { status: "healthy", checkedAt: now(), message: null } });
     } catch (error) {
+      if (this.isUserAbort(record, error)) {
+        if (record) this.update(runtimeId, { status: "idle", health: { status: "healthy", checkedAt: now(), message: null }, error: null });
+        return;
+      }
       this.markFailure(runtimeId, error, { reason: "abort_failed" });
       throw error;
     }
+  }
+
+  /** 这次收尾是否属于"用户主动中断"（中断标记 + 错误形如中断）。 */
+  isUserAbort(record, error) {
+    if (!record) return false;
+    const requested = record.status === "aborting"
+      || (record.abortRequestedAt && Date.now() - record.abortRequestedAt < 120000);
+    if (!requested) return false;
+    const message = String(error?.message || error?.cause?.message || error || "");
+    return /(?:request\s+aborted|aborted|aborting|\babort\b|cancelled|canceled|interrupted|用户请求中断|已中断|已取消)/i.test(message);
   }
 
   async compact(runtimeId, session, instructions = "") {

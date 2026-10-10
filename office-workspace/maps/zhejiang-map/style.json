@@ -498,7 +498,7 @@
       "type": "raster",
       "source": "maptiler-satellite",
       "layout": {
-        "visibility": "none"
+        "visibility": "visible"
       },
       "paint": {
         "raster-opacity": 1
@@ -542,7 +542,7 @@
       "type": "raster",
       "source": "maptiler-basic",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "paint": {
         "raster-opacity": 1
@@ -659,7 +659,7 @@
       "source": "boundary-county",
       "source-layer": "boundary-county",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "line",
       "paint": {
@@ -1510,7 +1510,7 @@
       "source": "ningbo-zhoushan-port-areas",
       "source-layer": "ningbo-zhoushan-port-areas",
       "layout": {
-        "visibility": "visible"
+        "visibility": "none"
       },
       "type": "circle",
       "paint": {
@@ -1522,5 +1522,5 @@
       }
     }
   ],
-  "glyphs": "https://glyphs.openfreestyle.com/{fontstack}/{range}.pbf"
+  "glyphs": "/glyphs/{fontstack}/{range}.pbf"
 }

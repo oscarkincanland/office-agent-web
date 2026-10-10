@@ -89,6 +89,39 @@ await test("Windows 脚本包含过滤器与多选开关", () => {
   assert.match(buildWindowsPickFolderScript({ prompt: "选目录" }), /FolderBrowserDialog/);
 });
 
+await test("Windows 对话框必须置顶显示（否则会被浏览器窗口挡住，看起来像选择文件夹失效）", () => {
+  for (const [label, script] of [["文件", buildWindowsPickFilesScript({})], ["文件夹", buildWindowsPickFolderScript({})]]) {
+    assert.match(script, /TopMost = \$true/, `${label}对话框应使用 TopMost owner`);
+    assert.match(script, /ShowDialog\(\$owner\)/, `${label}对话框应把 owner 传给 ShowDialog`);
+    assert.match(script, /\$owner\.Close\(\)/, `${label}对话框结束后应释放 owner 窗体`);
+  }
+});
+
+await test("选择器可取消：重复发起会先收掉上一个对话框", () => {
+  const src = read("server/原生文件.mjs");
+  assert.match(src, /export function cancelActivePicker\(\)/, "应导出取消函数供接口调用");
+  assert.match(src, /export function activePickerInfo\(\)/, "应导出等待状态供界面显示");
+  assert.match(src, /function runPicker\(file, args, \{ timeout = PICKER_TIMEOUT_MS, kind = "" \} = \{\}\)/, "选择器走统一的可取消执行器");
+  assert.match(src, /cancelActivePicker\(\);\s*\r?\n\s*return new Promise/, "新的选择请求先收掉上一个");
+  assert.match(src, /entry\?\.cancelled\) return reject\(nativeError\("已取消等待系统选择器", "PICKER_CANCELLED"\)\)/, "取消要区分于失败");
+  // 六个选择入口（文件/文件夹 × mac/win/linux）都必须走可取消执行器
+  assert.equal((src.match(/await runPicker\(/g) || []).length, 6, "所有平台选择器都应可取消");
+  // 请求被中断（关面板/离开页面）时要收掉弹窗
+  const indexSrc = read("server/index.mjs");
+  assert.match(indexSrc, /if \(!res\.writableEnded\) cancelActivePicker\(\);/, "客户端放弃等待时应关掉对话框");
+  assert.match(indexSrc, /app\.post\("\/api\/workspace\/pick\/cancel"/, "应提供取消等待接口");
+  assert.match(indexSrc, /app\.get\("\/api\/workspace\/pick\/state"/, "应提供等待状态接口");
+});
+
+await test("界面必须说明在等系统对话框，并给取消入口", () => {
+  const sidebar = read("client/src/components/SessionSidebar.jsx");
+  assert.match(sidebar, /picking \? "等待选择…" : "选择文件夹"/, "选择按钮要显示等待态");
+  assert.match(sidebar, /已打开系统文件夹对话框：请在弹出的窗口里选择文件夹/, "要说明已打开系统对话框");
+  assert.match(sidebar, /onClick=\{cancelPick\}>取消等待</, "要提供取消等待按钮");
+  assert.match(sidebar, /cancelWorkspacePick/, "取消走服务端接口（真的关掉对话框）");
+  assert.match(read("client/src/styles.css"), /\.workspace-pick-notice \{/, "等待提示需要样式");
+});
+
 console.log("\n▶ 安全约定");
 
 await test("原生命令全部走 execFile + 参数数组，不经 shell", () => {

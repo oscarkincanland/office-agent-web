@@ -4,6 +4,7 @@ import Icon from "./Icon.jsx";
 import { artifactStatusInfo } from "./验收状态.js";
 import FileChangesPanel from "./FileChangesPanel.jsx";
 import { projectRunView } from "../运行展示投影.js";
+import { acquireStream } from "../长连接预算.js";
 
 const statusText = { running: "执行中", queued: "排队中", waiting_user: "等待回答", recovering: "恢复中", completed: "已完成", failed: "失败", cancelled: "已取消", aborted: "已中断" };
 
@@ -39,6 +40,9 @@ function EventStream({ clientId, threadId }) {
     let retryTimer = null;
     let stopped = false;
     let retryDelay = 800;
+    // 事件页签的流是可放弃连接：拿不到槽位就保持"等待连接"，不挤占控制面请求的槽位。
+    const slot = acquireStream("thread-events", { priority: 4, label: "事件页签流" });
+    if (!slot) return undefined;
 
     const flush = () => {
       flushTimerRef.current = null;
@@ -64,6 +68,7 @@ function EventStream({ clientId, threadId }) {
       if (stopped) return;
       const after = cursorRef.current || 0;
       source = new EventSource(`/api/agent/events?client=${encodeURIComponent(clientId)}&thread=${encodeURIComponent(threadId)}&after=${after}&limit=400`);
+      slot.attach(() => source?.close());
       source.onopen = () => {
         retryDelay = 800;
         setConnected(true);
@@ -92,6 +97,7 @@ function EventStream({ clientId, threadId }) {
         clearTimeout(flushTimerRef.current);
         flushTimerRef.current = null;
       }
+      slot.release();
     };
   }, [clientId, threadId]);
 

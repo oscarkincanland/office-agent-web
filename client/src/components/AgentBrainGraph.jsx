@@ -5,7 +5,7 @@ import { completionLabel } from "../运行轨迹.js";
 // 工具 → 脑图分支分类
 const TOOL_CATEGORY = {
   read: "读取", grep: "读取", find: "读取", ls: "读取",
-  kb_search: "读取", kb_read: "读取", skills_search: "读取", skills_read: "读取", context_read: "读取", map_read: "读取",
+  kb_search: "读取", kb_read: "读取", skills_search: "读取", skills_read: "读取", context_read: "读取", map_read: "读取", map_datasets: "读取",
   write: "写入", edit: "写入", officecli: "写入", map_edit: "写入", map_import: "写入",
   bash: "命令",
   map_analyze: "分析", map_save_analysis: "分析", map_clear_analysis: "分析",

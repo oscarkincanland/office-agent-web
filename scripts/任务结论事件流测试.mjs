@@ -111,7 +111,7 @@ test("内置工具清单全部映射到确定图标（无遗漏、无异常）",
     bash: "terminal", officecli: "doc",
     grep: "search", find: "search", ls: "search", web_search: "search", web_fetch: "search",
     kb_search: "book", kb_read: "book", skills_search: "book", skills_read: "book", memory_update: "book",
-    map_read: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_save_analysis: "map", map_clear_analysis: "map",
+    map_read: "map", map_datasets: "map", map_edit: "map", map_import: "map", map_analyze: "map", map_save_analysis: "map", map_clear_analysis: "map",
     review_copy: "shield", ask_user: "comment", todo: "list", complete_task: "check", run_subagent: "flow",
   };
   const unmapped = [];
@@ -293,6 +293,69 @@ test("终态总结无条件发出：没有产物也要有总结卡与过程行",
   assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: completed\?\.summary/, "成功/取消路径总结与 run 记录同文案");
   assert.match(index源, /emitChannel\(entry, "agent_summary", \{[\s\S]{0,260}?summary: finished\?\.summary/, "恢复路径总结与 run 记录同文案");
   assert.match(index源, /未检测到文件变更/, "无产物轮次也要有明确文案");
+});
+
+// ---------- 6. 用户中断 ≠ 模型故障 ----------
+console.log("\n▶ 中断语义（不是故障）");
+
+test("中断识别：必须同时是'用户请求中断'且错误形如中断", () => {
+  assert.match(agent源, /export function isAbortLikeError\(value\)/, "应导出中断文案识别函数");
+  assert.match(agent源, /export function isUserAbortSettled\(entry, value\)/, "应导出'用户中断收尾'判定");
+  assert.match(agent源, /entry\.cancelRequested\) \|\| Boolean\(entry\.abortRequestedAt && Date\.now\(\) - entry\.abortRequestedAt < 120000\)/,
+    "只有用户确实请求过中断才算中断（避免把真实网络中断静默掉）");
+});
+
+test("中断收尾不发 agent_error，改发 aborted（且只发一次）", () => {
+  assert.match(agent源, /if \(isUserAbortSettled\(entry, settledError\)\) \{[\s\S]{0,220}?emitAbortedOnce\(entry, "用户请求中断"\)/,
+    "agent_settled 里的中断应走 aborted");
+  assert.match(agent源, /function emitAbortedOnce\(entry, reason = ""\)/, "中断终态事件必须幂等");
+  assert.match(agent源, /entry\.abortedEmittedRunId = token/, "同一 Run 只发一次 aborted");
+});
+
+test("发送路由：中断不写 runtime_error，也不发 agent_error", () => {
+  assert.match(index源, /const userAborted = cancelRequested && isAbortLikeError\(diagnostic\.message\)/,
+    "中断判定要结合取消标记与错误文案");
+  assert.match(index源, /if \(entry && userAborted\) \{[\s\S]{0,220}?emitChannel\(entry, "aborted"/, "中断只发 aborted");
+  // 两条执行路径（排队执行器 + 直接发送路由）都要守住：runtime_error 一旦写入，
+  // Run 会被标成"需要恢复"、Runtime 被标成 failed，用户中断后还要"恢复任务"。
+  const guards = index源.match(/if \(runtimeHealth && !userAborted\) recordRunEvent\(run\.id, "runtime_error"/g) || [];
+  assert.equal(guards.length, 2, "排队执行器与发送路由都必须跳过 runtime_error");
+  assert.match(index源, /const userAborted = cancelRequestedHere && isAbortLikeError\(diagnostic\.message\)/,
+    "排队执行器也要做同一套中断判定");
+  assert.match(index源, /const cancelled = userAborted \|\| getRun\(run\.id\)\?\.status === "cancel_requested"/, "中断必须落 cancelled");
+});
+
+test("中断不把 Runtime 标成失败（否则下一条消息被当作失效运行时重建）", () => {
+  const 运行时源 = read("server/Pi运行时管理.mjs");
+  assert.match(运行时源, /record\.abortRequestedAt = Date\.now\(\)/, "中断时打时间标记");
+  assert.match(运行时源, /isUserAbort\(record, error\)/, "收尾判定要认用户中断");
+  assert.match(运行时源, /if \(this\.isUserAbort\(record, error\)\) \{[\s\S]{0,260}?reason: "user_abort"/, "中断收尾记 user_abort 而不是 markFailure");
+});
+
+test("abort 接口返回真实结果，并按 client 兜底查找在跑会话", () => {
+  assert.match(agent源, /resolveLiveEntry\(clientId\)/, "找不到精确 key 时要按 client 前缀兜底");
+  assert.match(agent源, /return \{ ok: true, cancelled: false, reason: "no-live-session" \}/, "没有在跑的任务要如实返回");
+  assert.match(index源, /res\.json\(\{ \.\.\.result, runId: result\.runId \|\| runId \|\| null \}\)/, "中断结果要回传 runId");
+  assert.match(index源, /const running = listRuns\(\{ limit: 20 \}\)\.find/, "内存 key 不匹配时按 Run 记录兜底取消");
+});
+
+test("中断看门狗：静默超时后按用户意图收尾，不再永远停在 cancel_requested", () => {
+  assert.match(runs源, /const pendingCancellations = new Map\(\)/, "应记录待收尾的取消");
+  assert.match(runs源, /export function listPendingCancellations\(\)/, "应导出待收尾列表供看门狗消费");
+  assert.match(index源, /const cancelWatchdogTimer = setInterval/, "服务端应定时检查中断是否卡住");
+  assert.match(index源, /now - cancelAt < CANCEL_STALL_MS\) continue/, "未超时不动");
+  assert.match(index源, /if \(lastEventAt && now - lastEventAt < CANCEL_STALL_MS\) continue/, "仍在产出事件时不强制收尾");
+  assert.match(index源, /\[runs\] 中断后静默超时，已按中断收尾/, "强制收尾要留日志");
+});
+
+test("客户端：中断后的 agent_error 按中断处理，且不残留错误文案", () => {
+  assert.match(对话面板, /if \(stoppingRef\.current \|\| stopRequestedRef\.current\) \{[\s\S]{0,600}?finalizeStopped\(\);/,
+    "中断后到达的 agent_error 应直接收尾为中断");
+  assert.match(对话面板, /if \(id\) patch\(id, \(m\) => \(\{ \.\.\.m, status: "done", stopped: true, errorText: "" \}\)\)/,
+    "中断收尾要清掉 errorText，结果卡里不能再留「模型调用失败」");
+  assert.match(对话面板, /pushSystem\("已请求中断，但服务端未在 10 秒内确认收尾/, "服务端未确认时要说实话");
+  assert.match(对话面板, /pushSystem\("没有找到正在运行的任务，可能这一轮已经结束了。"/, "没有在跑的任务不要谎报已中断");
+  assert.match(对话面板, /}, 10000\);\n    try \{\n      const res = await fetch\("\/api\/agent\/abort"/, "确认窗口应为 10 秒而不是 1.2 秒本地收尾");
 });
 
 console.log(failed ? "\n✗ 任务结论事件流测试未通过\n" : "\n✓ 任务结论事件流测试全部通过\n");

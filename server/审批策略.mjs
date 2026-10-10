@@ -42,6 +42,15 @@ const DEFAULT_RULES = [
   // 地图样式/数据修改默认先问
   { tool: "map_edit", pattern: "*", action: "ask" },
   { tool: "map_import", pattern: "*", action: "ask" },
+  // 地图图层按归属细分（最后匹配生效，故置于上面的 catch-all 之后）：
+  //   shared/*    —— 共享数据集（高速公路、国省道等公共图层）只读，改样式需逐次授权，
+  //                  不允许往里新增文件（避免污染所有人共用的数据）。
+  //   workspace/* —— 当前工作区自有图层，可直接编辑。
+  // target 前缀由图层仓库 resolveLayer() 生成（阶段 1 落地）。
+  { tool: "map_import", pattern: "shared/*", action: "deny" },
+  { tool: "map_save_analysis", pattern: "shared/*", action: "deny" },
+  { tool: "map_edit", pattern: "shared/*", action: "ask" },
+  { tool: "map_edit", pattern: "workspace/*", action: "allow" },
   // 敏感文件禁止写入
   { tool: "write", pattern: "*.env", action: "deny" },
   { tool: "write", pattern: "*.env.*", action: "deny" },

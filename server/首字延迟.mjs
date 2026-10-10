@@ -127,6 +127,26 @@ export function attachRunTimingMeta(runId, meta = {}) {
   return entry;
 }
 
+/**
+ * 细分耗时打点（准入与派发阶段内部的构成）。
+ *
+ * 首字延迟的粗分项（准入/派发）只能告诉你"慢在哪一段"，要优化必须知道"这段里在等什么"。
+ * 这里按名字记录毫秒耗时，随样本一起输出，`/api/agent/timing` 可直接看到每一项的 p50/p90。
+ */
+export function attachRunTimingSpans(runId, spans = {}) {
+  const id = String(runId || "").trim();
+  if (!id) return null;
+  const entry = pending.get(id) || { runId: id, marks: {}, meta: {} };
+  const clean = {};
+  for (const [key, value] of Object.entries(spans || {})) {
+    const ms = Number(value);
+    if (Number.isFinite(ms) && ms >= 0) clean[key] = Math.round(ms);
+  }
+  entry.spans = { ...(entry.spans || {}), ...clean };
+  pending.set(id, entry);
+  return entry.spans;
+}
+
 /** Run 进入终态：把阶段打点与客户端样本合并成一条可统计样本。 */
 export function finishRunTiming(runId, extra = {}) {
   const id = String(runId || "").trim();
@@ -137,6 +157,7 @@ export function finishRunTiming(runId, extra = {}) {
   const marks = { ...(entry?.marks || {}), ...clientMarks };
   const meta = { ...(entry?.meta || {}), ...(extra.meta || {}) };
   if (!STAGE_KEYS.some((key) => marks[key] != null)) return null;
+  const spans = { ...(entry?.spans || {}), ...(extra.spans || {}) };
   const sample = {
     runId: id,
     at: Date.now(),
@@ -145,6 +166,7 @@ export function finishRunTiming(runId, extra = {}) {
     mode: extra.mode || meta.mode || null,
     ...marks,
     ...derive(marks),
+    ...(Object.keys(spans).length ? { spans } : {}),
   };
   samples.push(sample);
   if (samples.length > MAX_SAMPLES) samples.splice(0, samples.length - MAX_SAMPLES);
@@ -202,12 +224,20 @@ export function latencySummary() {
       p95: percentile(values, 95),
     };
   }
+  // 细分耗时（准入/派发内部的构成）：按出现过的 span 名聚合，便于定位"这一段在等什么"。
+  const spanNames = new Set();
+  for (const sample of samples) for (const key of Object.keys(sample.spans || {})) spanNames.add(key);
+  const spans = {};
+  for (const key of [...spanNames].sort()) {
+    const values = samples.map((sample) => numeric(sample.spans?.[key])).filter((value) => value != null);
+    spans[key] = { count: values.length, p50: percentile(values, 50), p95: percentile(values, 95) };
+  }
   const models = {};
   for (const sample of samples) {
     const name = String(sample.model || "unknown");
     models[name] = (models[name] || 0) + 1;
   }
-  return { sampleCount: samples.length, pendingRunCount: pending.size, stages, models };
+  return { sampleCount: samples.length, pendingRunCount: pending.size, stages, spans, models };
 }
 
 export function recentLatencySamples(limit = 20) {

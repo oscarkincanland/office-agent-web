@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Icon from "./Icon.jsx";
 import { browserClose, browserInput, browserOpen, browserReset, browserState } from "../api.js";
+import { acquireStream, waitForStreamSlot } from "../长连接预算.js";
 
 // 只有「启动 / profile 锁 / CDP 归属」这类异常才值得重置浏览器；
 // 导航失败、URL 无效、用户接管都不应销毁标签与登录态。
@@ -50,6 +51,8 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
     let source = null;
     let retryTimer = null;
     let retryCount = 0;
+    let slot = null;
+    let cancelWaiting = null;
 
     const syncState = async () => {
       try {
@@ -65,6 +68,7 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
       if (stopped) return;
       const params = new URLSearchParams({ client: clientId, thread: threadId || "", frames: "1" });
       source = new EventSource(`/api/browser/stream?${params.toString()}`);
+      slot?.attach(() => source?.close());
       sourceRef.current = source;
       source.onopen = () => { retryCount = 0; setConnected(true); };
       source.onerror = () => {
@@ -96,14 +100,33 @@ export default function BrowserPanel({ clientId, threadId, fullscreen = false, o
         } catch {}
       };
     };
+
+    // 帧流是可放弃的长连接：此槽位不够时宁可不连（保持"等待连接"），
+    // 也不能挤掉对话流/全局事件流，或把切工作区这类控制面请求堵死。
+    const start = () => {
+      if (stopped) return;
+      slot = acquireStream("browser-frames", { priority: 3, label: "浏览器帧流" });
+      if (!slot) {
+        setConnected(false);
+        cancelWaiting = waitForStreamSlot(() => {
+          cancelWaiting = null;
+          start();
+        });
+        return;
+      }
+      connect();
+    };
+
     void syncState();
-    connect();
+    start();
 
     return () => {
       stopped = true;
       try { source?.close(); } catch {}
       if (retryTimer) clearTimeout(retryTimer);
+      cancelWaiting?.();
       sourceRef.current = null;
+      slot?.release();
     };
   }, [clientId, threadId]);
 

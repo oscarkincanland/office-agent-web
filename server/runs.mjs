@@ -1,10 +1,12 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { getWorkspace } from "./workspace.mjs";
 import { appendEvent } from "./事件存储.mjs";
 import { atomicWriteJson, ensureDirectory } from "./持久化工具.mjs";
+import { attachRunTimingSpans } from "./首字延迟.mjs";
 import {
   discardStagedRun,
   ensureRunStaging,
@@ -33,6 +35,9 @@ const RECENT_SCAN_TIME_BUDGET_MS = Math.max(500, Number(process.env.OAW_RUN_RECE
 const MAX_BLOB_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_TOTAL = 80 * 1024 * 1024;
 const ACTIVE_RUN_STATUSES = new Set(["running", "queued", "waiting_user", "recovering", "cancel_requested"]);
+// 进入"取消中"但还没终结的 Run：runId → { cancelRequestedAt, lastEventAt }。
+// 中断后 SDK 若因工具卡住等原因迟迟不回来，看门狗据此强制收尾。
+const pendingCancellations = new Map();
 const TODO_STATUS_ALIASES = Object.freeze({
   pending: "planned",
   todo: "planned",
@@ -83,6 +88,35 @@ function hashFile(file) {
   return h.digest("hex");
 }
 
+/**
+ * 工作区快照的哈希缓存（进程内，按工作区根路径）。
+ *
+ * 每次发送都要拍一次快照，用来判断本轮改了什么；哈希是其中的大头——真实工作区
+ * 4.7GB / 581 个文件时，读 120MB 做 sha1 要 1.2 秒，而两次发送之间绝大多数文件
+ * 根本没变。这里按 (size, mtimeMs) 复用上次的哈希：不变的文件只 stat 不读盘，
+ * 于是同一工作区第二次快照从 ~1.2s 降到 ~0.1s（实测 1231ms → 110ms）。
+ * 口径与已有的"大文件用 size:mtime 近似"一致：内容变了但大小与 mtime 都没变
+ * 属于极端情况，不值得每轮全量重读。
+ */
+const snapshotHashCache = new Map();
+
+function hashCacheFor(root, rel) {
+  const bucket = snapshotHashCache.get(root);
+  if (!bucket) return null;
+  return bucket.get(rel) || null;
+}
+
+function rememberHash(root, rel, size, mtime, hash) {
+  let bucket = snapshotHashCache.get(root);
+  if (!bucket) { bucket = new Map(); snapshotHashCache.set(root, bucket); }
+  bucket.set(rel, { size, mtime, hash });
+}
+
+export function clearSnapshotHashCache(root = null) {
+  if (root) snapshotHashCache.delete(path.resolve(root));
+  else snapshotHashCache.clear();
+}
+
 function walk(dir, root, out, budget) {
   if (out.size >= MAX_FILES) { out.truncated = true; return; }
   let entries = [];
@@ -102,9 +136,13 @@ function walk(dir, root, out, budget) {
       const st = fs.statSync(full);
       const rel = path.relative(root, full).replace(/\\/g, "/");
       const item = { path: rel, size: st.size, mtime: st.mtimeMs, hash: null, reversible: false };
-      if (st.size <= 16 * 1024 * 1024 && budget.remaining > st.size) {
+      const cached = hashCacheFor(out.root, rel);
+      if (cached && cached.size === st.size && cached.mtime === st.mtimeMs && cached.hash) {
+        item.hash = cached.hash;
+      } else if (st.size <= 16 * 1024 * 1024 && budget.remaining > st.size) {
         item.hash = hashFile(full);
         budget.remaining -= st.size;
+        rememberHash(out.root, rel, st.size, st.mtimeMs, item.hash);
       } else {
         item.hash = `${st.size}:${st.mtimeMs}`;
       }
@@ -120,7 +158,7 @@ export function snapshotWorkspace(root = getWorkspace()) {
   return out;
 }
 
-function copyBeforeBlobs(runId, snapshot) {
+async function copyBeforeBlobs(runId, snapshot) {
   const dir = ensureDir(path.join(RUNS_DIR, runId, "before"));
   let remaining = MAX_BLOB_TOTAL;
   for (const item of Object.values(snapshot.files)) {
@@ -129,11 +167,54 @@ function copyBeforeBlobs(runId, snapshot) {
     const target = path.join(dir, item.path);
     try {
       ensureDir(path.dirname(target));
-      fs.copyFileSync(source, target);
+      // 用异步复制：同步 copyFileSync 即使放进 Promise 也会占满事件循环，
+      // 把"后台复制"变成"换个位置阻塞"。await 逐文件让出，让准入/派发继续推进。
+      await fsp.copyFile(source, target);
       item.reversible = true;
       remaining -= item.size;
     } catch {}
   }
+}
+
+/** 回滚底稿是否已落地（后台复制可能仍在进行，按磁盘实际状态判断）。 */
+function beforeBlobExists(runId, relPath) {
+  if (!runId || !relPath) return false;
+  try {
+    const target = path.resolve(path.join(RUNS_DIR, runId, "before", relPath));
+    const base = path.resolve(path.join(RUNS_DIR, runId, "before"));
+    if (target !== base && !target.startsWith(base + path.sep)) return false;
+    return fs.existsSync(target);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 回滚底稿改为后台复制。
+ *
+ * 它必须覆盖整个工作区（Agent 可能用 bash 直接改文件，不走暂存区），所以在几百个文件的
+ * 真实工作区上是 0.6–1.4 秒的纯 I/O——放在"发送到模型首个事件"之前等于每轮都先等一遍磁盘。
+ * 现在改为后台进行：本轮照常发给模型，回滚/收尾/验收前用 awaitBeforeBlobs 等它落地。
+ * 覆盖范围不变（仍是全量快照），只是不再挡在首字前面。
+ */
+const beforeBlobsTasks = new Map();
+
+function startBeforeBlobs(runId, snapshot) {
+  // setImmediate：让复制排到当前这一轮的微任务之后，不挡准入→派发的主路径。
+  const task = new Promise((resolve) => setImmediate(resolve))
+    .then(() => copyBeforeBlobs(runId, snapshot))
+    .catch((error) => {
+      console.warn(`[runs] 回滚底稿复制失败（回滚能力降级）：${String(error?.message || error).slice(0, 200)}`);
+    })
+    .finally(() => { beforeBlobsTasks.delete(runId); });
+  beforeBlobsTasks.set(runId, task);
+  return task;
+}
+
+/** 等本轮的回滚底稿复制完成（没有任务时立即返回）。 */
+export async function awaitBeforeBlobs(runId) {
+  const task = beforeBlobsTasks.get(String(runId || ""));
+  if (task) await task;
 }
 
 // Run JSON 解析缓存：按 mtime+size 指纹失效。
@@ -437,7 +518,10 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     : (beforeSnapshot?.root === path.resolve(cwd) && beforeSnapshot?.files && typeof beforeSnapshot.files === "object"
       ? beforeSnapshot
       : snapshotWorkspace(cwd));
-  if (normalizedSnapshotMode === "full") copyBeforeBlobs(id, before);
+  // beginRun 的内部构成：回滚底稿复制已改为后台任务，这里只记录"启动"耗时（应当≈0）。
+  const blobsStartedAt = Date.now();
+  if (normalizedSnapshotMode === "full") startBeforeBlobs(id, before);
+  const blobsMs = Date.now() - blobsStartedAt;
   const run = {
     id,
     version: 1,
@@ -484,8 +568,13 @@ export function beginRun({ clientId, threadId, sessionId = null, cwd = getWorksp
     run.steps.push({ id: `${id}:main`, index: 0, name: "执行 Agent 任务", status: "running", attempts: 1, startedAt: run.startedAt, finishedAt: null, error: null });
     run.currentStepId = `${id}:main`;
   }
+  const saveStartedAt = Date.now();
   const saved = saveRun(run);
+  const saveMs = Date.now() - saveStartedAt;
+  const appendStartedAt = Date.now();
   appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_started", data: { status: run.status, task: run.task, projectId: run.projectId } });
+  const appendMs = Date.now() - appendStartedAt;
+  try { attachRunTimingSpans(id, { blobs: blobsMs, saveRun: saveMs, appendEvent: appendMs, beforeFiles: Object.keys(before.files || {}).length }); } catch {}
   return saved;
 }
 
@@ -651,7 +740,7 @@ function finalizeFileChanges(run, changes, after) {
       if (beforeItem && afterItem && beforeItem.size === afterItem.size
         && Math.abs(Number(beforeItem.mtime || 0) - Number(afterItem.mtime || 0)) < 1) continue;
     }
-    const beforeReversible = Boolean(change.before?.reversible);
+    const beforeReversible = Boolean(change.before?.reversible) || beforeBlobExists(run.id, relativePath);
     const afterAvailable = Boolean(change.after?.reversible) || Boolean(after?.files?.[relativePath]);
     out.push({
       ...change,
@@ -854,6 +943,8 @@ export function finishRun(id, { status = "completed", error = null, summary = ""
     run.snapshotTruncated = Boolean(run.before?.truncated || after.truncated);
     run.status = finalStatus;
     run.error = finalError;
+    // 已落终态：从"待收尾的取消"表里移除，看门狗不再管它。
+    if (["completed", "failed", "cancelled", "aborted"].includes(finalStatus)) pendingCancellations.delete(run.id);
     if (sessionId) run.sessionId = sessionId;
     run.checkpoint = {
       ...(run.checkpoint || {}),
@@ -997,7 +1088,31 @@ export function requestRunCancellation(id, reason = "用户请求中断") {
     saveRun(run);
     appendEvent({ clientId: run.clientId, threadId: run.threadId, runId: run.id, type: "run_cancel_requested", data: { reason: run.cancelReason, status: run.status } });
   }
+  // 记入待收尾表：SDK 若迟迟不回来，服务端定时器会强制把这条 Run 收成 cancelled，
+  // 否则它会永远停在 cancel_requested（界面一直是「中断中」，任务中心一直算未完成）。
+  pendingCancellations.set(run.id, {
+    cancelRequestedAt: run.cancelRequestedAt || new Date().toISOString(),
+    lastEventAt: lastRunEventAt(run),
+  });
   return getRun(id);
+}
+
+/** 进入取消但尚未终结的 Run（供"中断后无响应"看门狗使用）。 */
+export function listPendingCancellations() {
+  return [...pendingCancellations.entries()].map(([id, info]) => ({ id, ...info }));
+}
+
+export function clearPendingCancellation(id) {
+  return pendingCancellations.delete(id);
+}
+
+function lastRunEventAt(run) {
+  const events = Array.isArray(run?.events) ? run.events : [];
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const at = Date.parse(events[i]?.at || "");
+    if (Number.isFinite(at)) return new Date(at).toISOString();
+  }
+  return run?.cancelRequestedAt || run?.startedAt || new Date().toISOString();
 }
 
 export function getRun(id) {

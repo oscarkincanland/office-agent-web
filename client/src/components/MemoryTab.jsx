@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import Icon from "./Icon.jsx";
 import { approveMemoryProposal, editMemoryProposal, listMemoryProposals, memoryProposalHistory, mergeMemoryProposals, rejectMemoryProposal } from "../api.js";
+import { acquireStream } from "../长连接预算.js";
 
 const MEMORY_CATEGORY_LABELS = {
   project_fact: "项目事实",
@@ -42,9 +43,17 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  // SSE 记忆变更监听
+  // SSE 记忆变更监听。
+  // 依赖数组必须为空：早先挂在 [active, dirty] 上，编辑一次文件就会关闭并重建连接，
+  // 既造成同源连接槽位抖动，也让"实时"变成"每次编辑重连"。
+  // 回调用 ref 取最新状态，连接本身只在挂载/卸载时建立和释放。
+  const memoryStateRef = useRef({ active: "", dirty: false });
+  memoryStateRef.current = { active, dirty };
   useEffect(() => {
+    const slot = acquireStream("memory-changes", { priority: 4, label: "记忆变更流" });
+    if (!slot) return undefined;
     const es = new EventSource("/api/memory/stream");
+    slot.attach(() => es.close());
     es.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
@@ -53,12 +62,16 @@ export default function MemoryTab({ workspace = "", projectId = "" }) {
           return next;
         });
         // 如果正在查看变更的文件，自动刷新
-        if (active === data.file && !dirty) loadFile(active);
+        const { active: currentFile, dirty: currentDirty } = memoryStateRef.current;
+        if (currentFile === data.file && !currentDirty) loadFile(currentFile);
       } catch {}
     };
     es.onerror = () => {};
-    return () => es.close();
-  }, [active, dirty]);
+    return () => {
+      es.close();
+      slot.release();
+    };
+  }, [loadFile]);
 
   const loadFile = useCallback(async (rel) => {
     try {

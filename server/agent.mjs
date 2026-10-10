@@ -26,7 +26,7 @@ import {
 import { importLocalPiSessionFile, readCredentials, readModelsConfig, readModelsStore, readRuntimeSettings, writeCredentials } from "./Pi配置管理.mjs";
 import { resolveReferences, readReference, contextSummary } from "./context.mjs";
 import { recordRunEvent, updateRunTodo, getRun } from "./runs.mjs";
-import { markRunTiming } from "./首字延迟.mjs";
+import { markRunTiming, attachRunTimingSpans } from "./首字延迟.mjs";
 import { modeDescription, modeLabel, normalizeTaskMode, taskSummary, toolPolicyForMode } from "./task.mjs";
 
 /**
@@ -413,6 +413,27 @@ function safeAgentErrorMessage(message) {
     .replace(/(api[_-]?key|authorization|bearer|access[_-]?token|refresh[_-]?token)([\s=:]+)[^\s,;]+/gi, "$1$2[已隐藏]")
     .slice(0, 1200);
 }
+
+/**
+ * 用户主动中断（或排队期取消）会让 SDK 以 "Request aborted" 之类的错误收尾。
+ * 这不是模型故障：一旦把它当错误上报，界面会先显示「生成失败 · 模型调用失败：
+ * Request aborted」，几秒后才变成「本轮已中断」，事件流里还会多出 agent_error /
+ * runtime_error，Runtime 也会被标成失败并在下一次发送时被当作失效运行时重建。
+ */
+const ABORT_LIKE_PATTERN = /(?:request\s+aborted|aborted|aborting|\babort\b|cancelled|canceled|interrupted|用户请求中断|已中断|已取消|任务在完成前被中断)/i;
+
+export function isAbortLikeError(value) {
+  const message = typeof value === "string" ? value : rawAgentErrorMessage(value);
+  return ABORT_LIKE_PATTERN.test(message);
+}
+
+/** 判断这次收尾是否属于"用户主动中断"：必须同时满足"用户要求中断" + 错误形如中断。 */
+export function isUserAbortSettled(entry, value) {
+  if (!entry) return false;
+  const requested = Boolean(entry.cancelRequested) || Boolean(entry.abortRequestedAt && Date.now() - entry.abortRequestedAt < 120000);
+  return requested && isAbortLikeError(value);
+}
+
 
 /** Pi 可能把最终模型错误放进 assistant message 后正常结束；转成可被上层 Run 捕获的错误。 */
 export function createSettledAgentError(message) {
@@ -1738,19 +1759,24 @@ execute: async (_toolCallId, params) => {
       name: "map_read",
       label: "地图读取",
       description:
-        "读取地图项目（默认 zhejiang-map 浙江省交通地图）的配置、图层清单与当前样式。用户在地图模式下询问地图状态/图层/样式时使用。返回：项目中心/缩放/底图、图层文件列表（id/名称/类型）、样式图层（显隐/颜色/线宽/透明度）。",
+        "读取地图项目（默认 zhejiang-map 浙江省交通地图）的配置、图层清单与当前样式。用户在地图模式下询问地图状态/图层/样式时使用。返回：项目中心/缩放/底图、图层文件列表（id/名称/类型/归属）、样式图层（显隐/颜色/线宽/透明度）。只返回共享数据集与当前工作区自有的图层。",
       parameters: Type.Object({
         project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
+        const repo = await import("./图层仓库.mjs");
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const p = map.getProject(name);
         if (!p) return { content: [{ type: "text", text: `项目不存在: ${name}` }], details: {} };
+        // 归属过滤（D2）：只列共享数据集 + 本工作区自有图层，不暴露其他工作区的图层。
+        const views = repo.listLayers(name, { workspace: String(entry.workspace || "") });
+        const visibleIds = new Set(views.map((v) => v.id));
+        const originOf = new Map(views.map((v) => [v.id, v.origin]));
         const cfgLines = `项目: ${p.config.name}\n中心: ${p.config.center} 缩放: ${p.config.zoom} 底图: ${p.config.basemap}`;
-        const files = (p.files || []).length
-          ? p.files.map((f) => `  ${f.id}（${(f.size / 1024).toFixed(1)} KB）`).join("\n")
-          : "  （无图层文件）";
+        const files = (p.files || []).filter((f) => visibleIds.has(f.id)).length
+          ? p.files.filter((f) => visibleIds.has(f.id)).map((f) => `  ${f.id}（${(f.size / 1024).toFixed(1)} KB · ${originOf.get(f.id) === "shared" ? "共享" : "我的"}）`).join("\n")
+          : "  （无可见图层文件）";
         const styleLayers = p.style.layers
           .filter((l) => !l.id.startsWith("basemap-"))
           .map((l) => {
@@ -1762,7 +1788,7 @@ execute: async (_toolCallId, params) => {
         return {
           content: [{
             type: "text",
-            text: `${cfgLines}\n\n图层文件（${p.files?.length || 0}）:\n${files}\n\n样式图层:\n${styleLayers}`,
+            text: `${cfgLines}\n\n图层文件（${p.files.filter((f) => visibleIds.has(f.id)).length}）:\n${files}\n\n样式图层:\n${styleLayers}`,
           }],
           details: {},
         };
@@ -1773,7 +1799,14 @@ execute: async (_toolCallId, params) => {
       name: "map_edit",
       label: "地图样式编辑",
       description:
-        "修改地图项目样式（style.json），立即反映到前端地图。action 支持：\n1) setVisibility：显示/隐藏图层（layerId + visible）\n2) setPaint：修改图层绘制属性（layerId + paint，JSON 字符串，如 {\"line-color\":\"#ff0000\",\"line-width\":3,\"line-opacity\":0.8}；线图层用 line-*，点图层用 circle-*，面图层用 fill-*）\n3) move：调整图层叠放顺序（layerId + direction up/down）\n4) add：新增样式图层（layerId + type 如 fill/line/circle + paint JSON + source 可选，默认引用同名矢量源）\n修改前建议先 map_read 查看当前样式。",
+        "修改地图项目样式（style.json），立即反映到前端地图。action 支持：\n1) setVisibility：显示/隐藏图层（target + visible）\n2) setPaint：修改图层绘制属性（target + paint，JSON 字符串，如 {\"line-color\":\"#ff0000\",\"line-width\":3,\"line-opacity\":0.8}；线图层用 line-*，点图层用 circle-*，面图层用 fill-*）\n3) move：调整图层叠放顺序（target + direction up/down）\n4) add：新增样式图层（target + type 如 fill/line/circle + paint JSON + source 可选，默认引用同名矢量源）\n"
+        + "target 支持四种写法（一次可作用于多个图层）：\n"
+        + "  id:highways        精确匹配图层 id\n"
+        + "  group:公路网       按图层分组（整组一次改，例如「隐藏所有公路」）\n"
+        + "  name:~高速         按名称/id 模糊匹配\n"
+        + "  origin:shared      按归属筛选（shared=共享数据集，workspace=本工作区自有）\n"
+        + "不写前缀时按 id 处理。共享数据集改样式需用户逐次授权；本工作区自有图层可直接改。\n"
+        + "修改前建议先 map_read 或 map_datasets 查看现有图层。",
       parameters: Type.Object({
         project: Type.Optional(Type.String({ description: "项目名，默认 zhejiang-map" })),
         action: Type.Union([
@@ -1782,71 +1815,126 @@ execute: async (_toolCallId, params) => {
           Type.Literal("move"),
           Type.Literal("add"),
         ]),
-        layerId: Type.String({ description: "样式图层 id，如 highways / boundary-city / toll-stations" }),
+        target: Type.Optional(Type.String({ description: "图层选择器：id:xxx / group:xxx / name:~xxx / origin:shared|workspace；不写前缀按 id。可传数组一次操作多个" })),
+        layerId: Type.Optional(Type.String({ description: "兼容写法：等同于 target（按 id 精确匹配）" })),
         visible: Type.Optional(Type.Boolean({ description: "setVisibility: 是否显示" })),
         paint: Type.Optional(Type.String({ description: "setPaint/add: 绘制属性 JSON 字符串" })),
         direction: Type.Optional(Type.String({ description: "move: up / down" })),
         type: Type.Optional(Type.String({ description: "add: fill / line / circle" })),
-        source: Type.Optional(Type.String({ description: "add: 数据源 id，默认等于 layerId" })),
+        source: Type.Optional(Type.String({ description: "add: 数据源 id，默认等于 target" })),
       }),
       execute: async (_toolCallId, params) => {
         const map = await import("./map.mjs");
+        const repo = await import("./图层仓库.mjs");
         const name = params.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const dir = map.projectDir(name);
         if (!dir) return { content: [{ type: "text", text: "项目不存在" }], details: {} };
         const fs = (await import("node:fs")).default;
         const path = (await import("node:path")).default;
         const stylePath = path.join(dir, "style.json");
-        const ctx = activeWriteContext("map_edit");
-        await requireToolApproval({
-          entry, tool: "map_edit", input: `${params.action} ${params.layerId || ""}`.trim(),
-          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
-        });
-        const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
-        const layerId = String(params.layerId || "");
-        if (!layerId) return { content: [{ type: "text", text: "layerId 必填" }], details: {} };
+        const workspace = String(entry.workspace || "");
+
+        // add 是新增样式图层，不需要先解析已有图层；其余动作都要把选择器解析成具体图层。
+        const selectorInput = params.target ?? params.layerId ?? "";
+        const selectors = (Array.isArray(selectorInput) ? selectorInput : [selectorInput])
+          .map((v) => String(v || "").trim())
+          .filter(Boolean);
+        if (params.action !== "add" && !selectors.length) {
+          return { content: [{ type: "text", text: "target 必填（如 id:highways / group:公路网 / name:~高速）" }], details: {} };
+        }
+
+        // 解析选择器 → 具体图层（只在"共享 + 本工作区"范围内，避免误改其他工作区的图层）
+        let matched = [];
+        if (params.action !== "add") {
+          const seen = new Set();
+          for (const selector of selectors) {
+            const r = repo.resolveLayer(name, selector, { workspace });
+            if (!r.ok) return { content: [{ type: "text", text: r.error }], details: {} };
+            for (const item of r.matches) {
+              if (seen.has(item.id)) continue;
+              seen.add(item.id);
+              matched.push(item);
+            }
+          }
+        }
+
+        // 归属决定审批粒度：共享数据集需逐次授权，本工作区图层直接放行。
+        const refs = matched.map((l) => l.ref);
+        const sharedRefs = refs.filter((r) => r.startsWith("shared/"));
+        const approvalPattern = sharedRefs.length
+          ? (sharedRefs.length === refs.length ? sharedRefs[0] : refs.join(" "))
+          : (refs[0] || `workspace/${selectors[0]}`);
+
         let paint = null;
         if (params.paint) {
           try { paint = JSON.parse(params.paint); } catch { return { content: [{ type: "text", text: `paint 不是合法 JSON: ${params.paint}` }], details: {} }; }
         }
-        if (params.action === "setVisibility") {
-          const l = style.layers.find((x) => x.id === layerId);
-          if (!l) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
-          l.layout = { ...(l.layout || {}), visibility: params.visible ? "visible" : "none" };
-        } else if (params.action === "setPaint") {
-          const l = style.layers.find((x) => x.id === layerId);
-          if (!l) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
-          l.paint = { ...(l.paint || {}), ...paint };
-        } else if (params.action === "move") {
-          const idx = style.layers.findIndex((x) => x.id === layerId);
-          if (idx === -1) return { content: [{ type: "text", text: `样式图层不存在: ${layerId}` }], details: {} };
-          const target = params.direction === "up" ? idx + 1 : idx - 1;
-          if (target < 0 || target >= style.layers.length) {
-            return { content: [{ type: "text", text: "已到边界，无法继续移动" }], details: {} };
-          }
-          const [item] = style.layers.splice(idx, 1);
-          style.layers.splice(target, 0, item);
-        } else if (params.action === "add") {
+
+        const ctx = activeWriteContext("map_edit");
+        await requireToolApproval({
+          entry, tool: "map_edit", input: `${params.action} ${approvalPattern}`.trim(),
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
+
+        const style = JSON.parse(fs.readFileSync(stylePath, "utf8"));
+        const applied = [];
+        const missing = [];
+
+        if (params.action === "add") {
+          const layerId = String(selectors[0] || "");
+          if (!layerId) return { content: [{ type: "text", text: "add: target 必填" }], details: {} };
           const src = params.source || layerId;
           const base = { id: layerId, source: src, type: params.type || "fill", "source-layer": src };
-          const defs = { fill: { "fill-color": "#8abeb7", "fill-opacity": 0.4 }, line: { "line-color": "#8abeb7", "line-width": 2 }, circle: { "circle-radius": 5, "circle-color": "#8abeb7" } };
+          const defs = { fill: { "fill-color": "#8abeb7", "fill-opacity": 0.4 }, line: { "line-color": "#8abeb7", "line-width": 2 }, circle: { "circle-radius": 4, "circle-color": "#8abeb7" } };
           base.layout = { visibility: "visible" };
           base.paint = paint || defs[params.type] || defs.fill;
           style.layers.push(base);
+          applied.push(layerId);
+        } else {
+          for (const item of matched) {
+            // 样式层可能比业务层多（例如 -label 派生层），按"同名或该图层为前缀"一起改，
+            // 这样"隐藏高速公路"会连它的注记一起隐藏，符合用户预期。
+            const targets = style.layers.filter((x) => x.id === item.id || String(x.id).startsWith(`${item.id}-`));
+            if (!targets.length) { missing.push(item.id); continue; }
+            for (const l of targets) {
+              if (params.action === "setVisibility") {
+                l.layout = { ...(l.layout || {}), visibility: params.visible ? "visible" : "none" };
+              } else if (params.action === "setPaint") {
+                l.paint = { ...(l.paint || {}), ...paint };
+              } else if (params.action === "move") {
+                const idx = style.layers.findIndex((x) => x.id === l.id);
+                const target = params.direction === "up" ? idx + 1 : idx - 1;
+                if (target < 0 || target >= style.layers.length) continue;
+                const [moved] = style.layers.splice(idx, 1);
+                style.layers.splice(target, 0, moved);
+              }
+            }
+            applied.push(item.ref);
+          }
         }
+
+        if (!applied.length) {
+          return {
+            content: [{ type: "text", text: `没有可修改的样式图层（业务层存在但样式里没有：${missing.join("、") || "无"}）` }],
+            details: {},
+          };
+        }
+
         await withWorkspaceWriteLock(ctx, "map_edit", async () => {
           writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}/style.json`, kind: "map_edit" });
           atomicWriteFile(stylePath, JSON.stringify(style, null, 2), "utf8");
           emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/style.json`] });
         });
-        const vis = style.layers.find((x) => x.id === layerId)?.layout?.visibility;
+
+        const visText = params.action === "setVisibility" ? `，可见性=${params.visible ? "visible" : "none"}` : "";
         return {
-          content: [{ type: "text", text: `已更新样式图层 ${layerId}（${params.action}${vis ? ", 可见性=" + vis : ""}），前端地图已实时刷新。` }],
-          details: {},
+          content: [{ type: "text", text: `已更新 ${applied.length} 个图层（${params.action}${visText}）：${applied.join("、")}。前端地图已实时刷新。` }],
+          details: { refs: applied },
         };
       },
     });
+
 
     const mapImportTool = defineTool({
       name: "map_import",
@@ -1886,9 +1974,18 @@ execute: async (_toolCallId, params) => {
         const fallbackId = path.basename(rel, path.extname(rel)).replace(/[^a-zA-Z0-9_-]/g, "_") || "layer";
         const layerId = (params.layerId || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "_");
         const r = await withWorkspaceWriteLock(ctx, "map_import", async () => {
-          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
+          // 台账记**具体文件**（不是项目目录）：产物归属按精确路径匹配，
+          // 记目录会让导入的图层只落到"待确认"（run-window）而不是"已确认"（write-ledger）。
+          const wrote = [`maps/${name}/layers/${layerId}.geojson`, `maps/${name}/style.json`, `maps/${name}/map.config.json`];
+          for (const file of wrote) {
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: file, kind: "map_import" });
+          }
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${name}`, kind: "map_import" });
-          return map.importLayer(name, layerId, geojson);
+          const imported = await map.importLayer(name, layerId, geojson);
+          // 标注归属：导入的图层属于当前工作区（共享数据集内的 id 不会被改写）。
+          const repo = await import("./图层仓库.mjs");
+          repo.markLayerOwnership(name, layerId, { workspace: String(ws || entry.workspace || "") });
+          return imported;
         });
         const count = geojson.features?.length || 0;
         emitChannelSafe(entry, "file_changed", { files: [`maps/${name}/layers/${layerId}.geojson`] });
@@ -1899,18 +1996,122 @@ execute: async (_toolCallId, params) => {
       },
     });
 
+    // 列出"当前可用的地图数据"：项目清单 + 每个项目的图层 + 数据源适配器。
+    // Chat 模式可用（只读）：让模型先知道有什么数据，再决定用 map_analyze 画什么。
+    const mapDatasetsTool = defineTool({
+      name: "map_datasets",
+      label: "地图数据集",
+      description:
+        "列出当前可用的地图数据集与图层清单。用户问「有哪些地图数据 / 有哪些图层 / 能用什么数据」时使用；也适合在执行分析前先确认数据是否齐备。返回：每个地图项目（含共享基础数据集）及其图层 id、名称、类型、归属（共享 / 我的），以及可直接出图的数据源适配器。只读，不修改任何文件。",
+      parameters: Type.Object({
+        project: Type.Optional(Type.String({ description: "可选：只看某个项目" })),
+      }),
+      execute: async (_toolCallId, params) => {
+        const map = await import("./map.mjs");
+        const repo = await import("./图层仓库.mjs");
+        const wanted = String(params.project || "").trim();
+        const projects = map.listProjects() || [];
+        if (!projects.length) {
+          return { content: [{ type: "text", text: "当前没有可用的地图项目。请先在「地图」模块中创建项目或导入数据。" }], details: {} };
+        }
+        const current = String(entry.task?.mapProject || map.DEFAULT_PROJECT);
+        const workspace = String(entry.workspace || "");
+        const rows = [];
+        for (const cfg of projects) {
+          const name = cfg.project || cfg.name;
+          if (wanted && name !== wanted) continue;
+          const isCurrent = name === current;
+          const base = cfg.baseProject ? `（基础数据来自 ${cfg.baseProject}）` : "";
+          rows.push(`${isCurrent ? "▶ " : "  "}${name} —— ${cfg.name || name}${base}`);
+          // 归属视图（D2）：只列共享数据集 + 本工作区自有图层，并标注归属，
+          // 让模型知道"哪些能直接改、哪些要授权"，也不会暴露其他工作区的图层。
+          const views = repo.listLayers(name, { workspace });
+          if (!views.length) { rows.push("    （无可见图层）"); continue; }
+          const shared = views.filter((v) => v.origin === "shared");
+          const mine = views.filter((v) => v.origin === "workspace");
+          if (shared.length) {
+            rows.push(`    共享数据集（${shared.length}）：`);
+            for (const v of shared) rows.push(`      ${v.id}（${v.name}·${v.type || "?"}）${v.visible === false ? " 隐藏" : ""}`);
+          }
+          if (mine.length) {
+            rows.push(`    我的图层（${mine.length}）：`);
+            for (const v of mine) rows.push(`      ${v.id}（${v.name}·${v.type || "?"}）${v.visible === false ? " 隐藏" : ""}`);
+          }
+        }
+        // 数据源适配器（阶段 5）：让模型知道"除了项目图层，还有哪些数据可以直接出图"，
+        // 尤其是 local-file——用户把 CSV/GeoJSON 丢进工作区时，这条是唯一入口。
+        let sourceRows = [];
+        try {
+          const { listSources } = await import("./地图可视化.mjs");
+          await import("./交通数据源.mjs");
+          const sources = listSources();
+          if (sources.length) {
+            sourceRows = [
+              "",
+              "可直接出图的数据源（用 map_analyze 的 dataSource 参数，或让用户在地图「可视化」面板里选）：",
+              ...sources.map((s) => `    ${s.id}（${s.label}）${s.kind === "*" ? " · 通用兜底" : ` · ${s.kind}`}`),
+            ];
+          }
+        } catch { /* 数据源清单失败不影响项目列表 */ }
+        const text = rows.length
+          ? `当前地图项目：${current}\n\n${rows.join("\n")}${sourceRows.join("\n")}\n\n提示：用 map_analyze 可在当前项目上生成临时可视化（热力图 / OD 流向 / 等时圈）；保存为正式图层需要切到 Work 模式。`
+          : `未找到项目：${wanted}`;
+        return { content: [{ type: "text", text }], details: { current } };
+      },
+    });
+
     const mapAnalyzeTool = defineTool({
       name: "map_analyze",
       label: "地图分析结果",
       description:
-        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
+        "生成并直接显示地图分析结果。用户说‘在义乌生成热力图’、‘生成演示等时圈’、‘生成玉环市与台州各县市区 OD’、‘把分析结果显示在地图中间’时使用。支持 heatmap、od 和 isochrone 三种演示分析；也支持用 dataSource 指向数据源适配器（如 local-file 读工作区里的车流量 CSV、bundled-xinchang 读新昌公交）。结果通过 map_action 事件局部更新前端地图，不重载完整地图样式。没有真实数据时必须明确标记为演示数据。",
       parameters: Type.Object({
         analysis: Type.Union([Type.Literal("heatmap"), Type.Literal("od"), Type.Literal("isochrone")]),
         region: Type.Optional(Type.String({ description: "区域名称，如义乌市、金华市、新昌县" })),
         project: Type.Optional(Type.String({ description: "地图项目名，默认 zhejiang-map" })),
         count: Type.Optional(Type.Number({ description: "演示点数量，默认 36，最多 120" })),
+        dataSource: Type.Optional(Type.String({ description: "数据源适配器 id（如 local-file / bundled-xinchang）；给出时优先用它出图，忽略演示数据" })),
+        path: Type.Optional(Type.String({ description: "dataSource=local-file 时的文件路径（相对工作区）；省略则自动选最新的 CSV/GeoJSON" })),
       }),
       execute: async (_toolCallId, params) => {
+        // 数据源适配器路径（阶段 5）：有真实数据时优先，避免把用户的数据当演示。
+        if (params.dataSource) {
+          try {
+            const visual = await import("./地图可视化.mjs");
+            await import("./交通数据源.mjs");
+            const descriptor = await visual.loadSource(String(params.dataSource), {
+              path: params.path,
+              kind: params.analysis === "od" ? "od" : params.analysis === "isochrone" ? "isochrone" : "stations",
+              workspace: String(entry.workspace || ""),
+            });
+            if (descriptor?.error) {
+              return { content: [{ type: "text", text: `数据源加载失败：${descriptor.error}` }], details: {} };
+            }
+            const action = {
+              action: "show_analysis",
+              analysis: descriptor.kind === "points" ? "heatmap" : descriptor.kind,
+              type: descriptor.kind,
+              id: descriptor.id,
+              project: params.project || entry.task?.mapProject || "zhejiang-map",
+              title: descriptor.title,
+              source: descriptor.provenance?.demo ? "demo" : "data",
+              fitBounds: true,
+              geojson: descriptor.geojson,
+              lines: descriptor.lines,
+              stats: descriptor.stats,
+              updatedAt: Date.now(),
+            };
+            entry.lastMapAnalysis = action;
+            emitChannelSafe(entry, "map_action", action);
+            const count = descriptor.stats?.count ?? descriptor.geojson?.features?.length ?? 0;
+            return {
+              content: [{ type: "text", text: `已用数据源 ${params.dataSource} 生成「${descriptor.title}」（${count} 个要素）${descriptor.provenance?.demo ? "，使用演示数据" : ""}。结果已发送到中间地图；保存为正式图层需切到 Work 模式。` }],
+              details: { mapAction: action },
+            };
+          } catch (e) {
+            return { content: [{ type: "text", text: `数据源出图失败：${e.message}` }], details: {} };
+          }
+        }
         const action = createDemoAnalysis({ analysis: params.analysis, region: String(params.region || "义乌市"), project: params.project || entry.task?.mapProject || "zhejiang-map", count: params.count });
         action.updatedAt = Date.now();
         entry.lastMapAnalysis = action;
@@ -1937,11 +2138,32 @@ execute: async (_toolCallId, params) => {
         const ctx = activeWriteContext("map_save_analysis");
         const project = params.project || action.project || entry.task?.mapProject || map.DEFAULT_PROJECT;
         const layerId = String(params.layerId || action.id || `analysis-${action.analysis || "result"}`).replace(/[^a-zA-Z0-9_-]/g, "-");
+        // 保存会把 GeoJSON 落进项目 layers/ 并重建瓦片，属于写操作：与 map_import 一样先申请审批。
+        // 此前只做了写入锁、漏了审批门，等于把"落盘新图层"变成了免审批操作。
+        await requireToolApproval({
+          entry, tool: "map_save_analysis", input: `${project}/${layerId}`,
+          runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, emit: writeEvent,
+        });
         await withWorkspaceWriteLock(ctx, "map_save_analysis", async () => {
-          writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${project}`, kind: "map_save_analysis" });
+          // 台账记具体文件（含 -lines 派生层）：产物归属按精确路径匹配，
+          // 记目录会让保存的图层只落到"待确认"而不是"已确认"。
+          const wrote = [
+            `maps/${project}/layers/${layerId}.geojson`,
+            ...(action.lines ? [`maps/${project}/layers/${layerId}-lines.geojson`] : []),
+            `maps/${project}/style.json`,
+            `maps/${project}/map.config.json`,
+          ];
+          for (const file of wrote) {
+            writeEvent("write_started", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: file, kind: "map_save_analysis" });
+          }
           writeEvent("write_locked", { runId: ctx.runId, threadId: ctx.threadId, workspace: ctx.workspace, path: `maps/${project}`, kind: "map_save_analysis" });
           await map.importLayer(project, layerId, action.geojson);
           if (action.lines) await map.importLayer(project, `${layerId}-lines`, action.lines);
+          // 标注归属：分析结果保存后属于当前工作区，前端「我的图层」分组可见。
+          const repo = await import("./图层仓库.mjs");
+          const owner = String(entry.workspace || "");
+          repo.markLayerOwnership(project, layerId, { workspace: owner });
+          if (action.lines) repo.markLayerOwnership(project, `${layerId}-lines`, { workspace: owner });
           emitChannelSafe(entry, "file_changed", { files: [`maps/${project}/layers/${layerId}.geojson`] });
         });
         return { content: [{ type: "text", text: `已将${action.title || "分析结果"}保存为正式图层 ${layerId}。` }], details: { project, layerId } };
@@ -2271,8 +2493,8 @@ execute: async (_toolCallId, params) => {
         sessionPath: writableSessionPath,
         sessionStore: SESSION_STORE,
         model: initialModel || undefined,
-        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, ...mcpToolDefinitions],
-        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
+        customTools: [managedReadTool, managedBashTool, managedEditTool, managedWriteTool, reviewCopyTool, askUserTool, officeTool, todoTool, kbSearchTool, kbReadTool, reviewSourceApplyTool, skillsSearchTool, skillsReadTool, contextReadTool, mapReadTool, mapDatasetsTool, mapEditTool, mapImportTool, mapAnalyzeTool, mapSaveAnalysisTool, mapClearAnalysisTool, memoryUpdateTool, completeTaskTool, webSearchTool, webFetchTool, browserOpenTool, browserSnapshotTool, browserClickTool, browserTypeTool, browserPressTool, browserScrollTool, browserScreenshotTool, browserTabsTool, browserBackTool, browserCloseTool, subagentTool, ...mcpToolDefinitions],
+        tools: ["read", "bash", "grep", "find", "ls", "write", "edit", "officecli", "review_copy", "ask_user", "todo", "kb_search", "kb_read", "review_source_apply", "skills_search", "skills_read", "context_read", "map_read", "map_datasets", "map_edit", "map_import", "map_analyze", "map_save_analysis", "map_clear_analysis", "memory_update", "complete_task", "web_search", "web_fetch", "browser_open", "browser_snapshot", "browser_click", "browser_type", "browser_press", "browser_scroll", "browser_screenshot", "browser_tabs", "browser_back", "browser_close", "run_subagent", ...mcpToolDefinitions.map((tool) => tool.name), ...piExtensionToolNames],
       }));
     } catch (error) {
       piRuntimeManager.markFailure(runtimeRecord.runtimeId, error, { recovering: true, reason: "session_create_failed" });
@@ -2309,10 +2531,15 @@ execute: async (_toolCallId, params) => {
     };
     session.subscribe((ev) => {
       if (entry) entry.lastPiEventAt = Date.now();
-      // 首个 provider 事件：只记第一次，重试/多回合不会覆盖首字口径。
-      // 从 sdk_request_dispatched 到这里的等待包含 SDK 准备、网络、网关与模型服务，
-      // 因此这一段不能单独算成 SSE 传输延迟。
-      markRunTiming(entry?.activeRunId, "firstProviderEventAt");
+      // 首个 provider 事件：每个 Run 只记一次。订阅是会话级的、跨回合常驻——
+      // 上一轮收尾时迟到的 provider 事件（或 SDK 回放）会带着"新 Run 的 activeRunId"
+      // 抢先打点，导致 firstProviderEventAt 早于 sdkRequestDispatchedAt（负耗时）。
+      // 这里按 Run 幂等：只有本轮还没记过、且已经派发过请求时才落点。
+      const providerRunId = entry?.activeRunId;
+      if (providerRunId && entry.firstProviderEventRunId !== providerRunId && entry.sdkDispatchedRunId === providerRunId) {
+        entry.firstProviderEventRunId = providerRunId;
+        markRunTiming(providerRunId, "firstProviderEventAt");
+      }
       // forward interesting events
       switch (ev.type) {
         case "agent_start":
@@ -2526,14 +2753,20 @@ execute: async (_toolCallId, params) => {
           {
             const settledError = captureSettledAgentError(entry);
             if (settledError) {
-              const classification = classifyAgentError(settledError);
-              emit("agent_error", {
-                message: classification.message,
-                code: classification.code || "PI_SETTLED_ERROR",
-                category: classification.category,
-                providerStatus: classification.status,
-                retryable: classification.retryable,
-              });
+              if (isUserAbortSettled(entry, settledError)) {
+                // 中断不是故障：不发 agent_error，改发 aborted 让界面立刻进入终态。
+                entry.lastAgentError = null;
+                emitAbortedOnce(entry, "用户请求中断");
+              } else {
+                const classification = classifyAgentError(settledError);
+                emit("agent_error", {
+                  message: classification.message,
+                  code: classification.code || "PI_SETTLED_ERROR",
+                  category: classification.category,
+                  providerStatus: classification.status,
+                  retryable: classification.retryable,
+                });
+              }
             }
           }
           if (entry.lastAssistantText && !entry.suppressFinalText) {
@@ -2552,6 +2785,11 @@ execute: async (_toolCallId, params) => {
         case "error":
           {
             const message = safeAgentErrorMessage(rawAgentErrorMessage(ev.error?.message || ev.error || "模型调用失败"));
+            if (isUserAbortSettled(entry, message)) {
+              entry.lastAgentError = null;
+              emitAbortedOnce(entry, "用户请求中断");
+              break;
+            }
             entry.lastAgentError = message;
             const classification = classifyAgentError(ev.error || message);
             emit("agent_error", {
@@ -2667,11 +2905,16 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       });
     }
     entry.queuedCount += 1;
+    const queuedAt = Date.now();
     const operation = entry.promptChain.then(async () => {
       entry.queuedCount = Math.max(0, entry.queuedCount - 1);
+      // 排队等待时长：上一轮还没收尾（或正在压缩）时，这段时间会直接叠加到本轮首字延迟上。
+      entry.queueWaitMs = Date.now() - queuedAt;
       // 手动压缩不在 promptChain 内执行；新消息必须等它完成后再进入 Runtime。
       if (entry.compactionPromise) await entry.compactionPromise.catch(() => {});
+      const compactionStartedAt = Date.now();
       await this._maybeCompact(entry, payload.runContext);
+      entry.compactionCheckMs = Date.now() - compactionStartedAt;
       return this._promptEntry(entry, payload.text, payload.images, payload.effort, payload.references, payload.runContext);
     });
     // 保留链路继续执行，同时不让前一个失败阻断后续排队请求。
@@ -2785,6 +3028,7 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
   }
 
   async _promptEntry(entry, text, images = [], effort, references = [], runContext = null) {
+    const prologueStartedAt = Date.now();
     const isStreaming = entry.busy;
     entry.busy = true;
     entry.references = Array.isArray(references) ? references : [];
@@ -2799,6 +3043,8 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     entry.runStartedAt = Date.now();
     // 新一轮任务：取消标记与 Run 状态缓存都重置
     entry.cancelRequested = false;
+    entry.abortRequestedAt = 0;
+    entry.abortedEmittedRunId = null;
     entry.runStopCache = false;
     entry.runStopCheckedAt = 0;
     entry.completionNudgeSent = false;
@@ -2867,9 +3113,14 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
           ? [...(entry.mcpToolNames || []), ...(entry.piExtensionToolNames || []), ...(entry.hasSubagent ? ["run_subagent"] : [])]
           : [];
       const modePolicy = { ...baseModePolicy, tools: [...new Set([...baseModePolicy.tools, ...modeDynamicTools])] };
+      // 从 _promptEntry 进入到工具边界之前的所有同步/异步准备（模式、review 目标、资源刷新登记）
+      entry.promptPrologueMs = Date.now() - prologueStartedAt;
+      const modePolicyStartedAt = Date.now();
+      let modePolicyApplied = 0;
       try {
         const modePolicyKey = `${modePolicy.mode}:${entry.task?.agentProfile || "通用 Agent"}:${modeDynamicTools.join(",")}`;
         if (entry.modePolicyKey !== modePolicyKey) {
+          modePolicyApplied = 1;
           piRuntimeManager.setActiveTools(entry.runtimeId, entry.session, modePolicy.tools);
           entry.modePolicy = modePolicy;
           entry.modePolicyKey = modePolicyKey;
@@ -2895,7 +3146,9 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
         throw error;
       }
       // 刷新 .agent-context.md（当前工作区路径/记忆/当前文件动态注入）
+      const contextFileStartedAt = Date.now();
       this.writeContextFile(entry, entry.currentFile);
+      const contextFileMs = Date.now() - contextFileStartedAt;
       // 按 Pi 模型目录归一化推理档位；不支持的 medium 优先降到 low，避免
       // UI 显示标准但 SDK 实际沿用高延迟默认档位。
       const requestedThinkingLevel = effort || "low";
@@ -2919,10 +3172,13 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       }
       // 每次对话前注入动态上下文（当前工作区绝对路径 + 记忆摘要）——直接进 prompt 文本，
       // 不依赖 agent 主动 read .agent-context.md（agentsFiles 注入的是会话创建时的静态快照，会过时）
+      const dynamicContextStartedAt = Date.now();
+      let dynamicContextMs = 0;
       try {
         const dyn = this.buildDynamicContext(entry, entry.currentFile);
+        dynamicContextMs = Date.now() - dynamicContextStartedAt;
         if (dyn) text = dyn + "\n\n" + text;
-      } catch {}
+      } catch { dynamicContextMs = Date.now() - dynamicContextStartedAt; }
       const recoveredAnswers = consumeRecoveredAnswers(entry.clientId || "");
       if (recoveredAnswers.length) {
         text = `## 恢复的用户回答\n${recoveredAnswers.map((a) => `- ${a.question}: ${a.answer}`).join("\n")}\n请把这些回答视为对上次中断提问的确认，并继续原任务。\n\n${text}`;
@@ -2936,6 +3192,20 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       // 它在 runPrompt 之前，因此到首个 provider 事件之间的等待包含 SDK 准备、
       // 网络与网关，不能整体算成 SSE 传输延迟。
       markRunTiming(entry.activeRunId, "sdkRequestDispatchedAt");
+      // 派发阶段细分：排队等待 / 压缩检查 / 工具边界 / 上下文文件 / 动态上下文各占多少
+      attachRunTimingSpans(entry.activeRunId, {
+        queueWait: Number(entry.queueWaitMs || 0),
+        compactionCheck: Number(entry.compactionCheckMs || 0),
+        prologue: Number(entry.promptPrologueMs || 0),
+        modePolicy: Date.now() - modePolicyStartedAt,
+        modePolicyApplied,
+        contextFile: contextFileMs,
+        dynamicContext: dynamicContextMs,
+        dispatchTotal: runContext?.admissionReadyAt ? Date.now() - runContext.admissionReadyAt : undefined,
+      });
+      // 记录"本轮已派发"，供 provider 事件按 Run 幂等打点使用（见 session.subscribe）。
+      entry.sdkDispatchedRunId = entry.activeRunId;
+      entry.firstProviderEventRunId = null;
       emitChannelSafe(entry, "model_request_started", {
         runId: entry.activeRunId,
         mode: entry.mode,
@@ -3179,22 +3449,51 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
     }
   }
 
-  /** 中止当前 agent 运行。 */
-  async abort(clientId) {
-    const entry = this.sessions.get(clientId);
-    if (!entry) return { ok: true };
+  /**
+   * 中止当前 agent 运行。
+   *
+   * 返回真实结果（cancelled / runId），不再无条件回 ok：
+   * 客户端据此区分"真的停了"与"没找到在跑的任务"，避免界面自称已中断、
+   * 服务端却仍在继续执行。查找也做了兜底——页面上的 thread 标识可能因为
+   * 重载/切会话与运行中的 key 不一致，此时按 client 前缀找到真正在跑的那个会话。
+   */
+  async abort(clientId, options = {}) {
+    const entry = this.resolveLiveEntry(clientId);
+    if (!entry) return { ok: true, cancelled: false, reason: "no-live-session" };
     // 打标：后续的轮次提醒与 ask_user 续跑都要据此停止
     entry.cancelRequested = true;
+    entry.abortRequestedAt = Date.now();
     entry.runStopCache = true;
     entry.runStopCheckedAt = Date.now();
+    const runId = entry.activeRunId || options.runId || null;
+    let runtimeAborted = false;
     try {
       await piRuntimeManager.abort(entry.runtimeId, entry.session);
-      emitChannelSafe(entry, "aborted", {});
+      runtimeAborted = true;
     } catch (error) {
-      emitChannelSafe(entry, "agent_error", { message: error?.message || String(error), code: "RUNTIME_ABORT_FAILED" });
+      if (!isAbortLikeError(error)) {
+        emitChannelSafe(entry, "agent_error", { message: error?.message || String(error), code: "RUNTIME_ABORT_FAILED" });
+      }
     }
+    // 只要确实有在跑的运行，就发出中断终态事件（幂等：同一 Run 只发一次）。
+    const aborted = emitAbortedOnce(entry, "用户请求中断");
     entry.busy = false;
-    return { ok: true };
+    return { ok: true, cancelled: true, runId, runtimeAborted, thread: entry.threadId || null, emitted: aborted };
+  }
+
+  /** 按 key 找活跃会话；key 不匹配时按 client 前缀兜底（页面 thread 标识可能已变）。 */
+  resolveLiveEntry(key) {
+    if (!key) return null;
+    const exact = this.sessions.get(key);
+    if (exact) return exact;
+    const prefix = `${String(key).split("::")[0]}::`;
+    let fallback = null;
+    for (const [sessionKey, candidate] of this.sessions) {
+      if (!sessionKey.startsWith(prefix)) continue;
+      if (!fallback) fallback = candidate;
+      if (candidate.busy || candidate.activeRunId) return candidate;
+    }
+    return fallback;
   }
 
   /** 手动压缩当前会话上下文。压缩属于 pi session 能力，不通过伪造 /compact 文本实现。 */
@@ -3339,8 +3638,15 @@ promptWithContext(clientId, text, images = [], effort, references = [], runConte
       // 线程级上下文文件是权威版本（同工作区多会话并发时不互相覆盖）；
       // 同时写一份旧文件名兼容外部读取习惯。
       const threadFile = entry?.threadId ? path.join(ws, `.agent-context.${entry.threadId}.md`) : null;
+      const compatFile = path.join(ws, ".agent-context.md");
+      // 内容没变就不要写：这是每轮都跑的同步磁盘写（两次原子写 ≈ 0.1–0.4 秒），
+      // 而绝大多数轮次的工作区/当前文件/记忆都没变。读两份小文件比写两份便宜得多。
+      const sameContent = (file) => {
+        try { return fs.existsSync(file) && fs.readFileSync(file, "utf8") === ctx; } catch { return false; }
+      };
+      if ((!threadFile || sameContent(threadFile)) && sameContent(compatFile)) return;
       if (threadFile) atomicWriteFile(threadFile, ctx, "utf8");
-      atomicWriteFile(path.join(ws, ".agent-context.md"), ctx, "utf8");
+      atomicWriteFile(compatFile, ctx, "utf8");
     } catch {}
   }
 
@@ -3696,6 +4002,21 @@ function emitChannelSafe(entry, type, data, { persist = true } = {}) {
       try { recordRunEvent(entry.activeRunId, type, data || {}); } catch {}
     }
   } catch {}
+}
+
+/**
+ * 中断终态事件幂等：同一 Run 只发一次 aborted。
+ * 中断可能从两条路收尾（abort() 主动发 / agent_settled 发现 SDK 以中断收尾），
+ * 不幂等的话客户端会收到两次「本轮已中断」。
+ */
+function emitAbortedOnce(entry, reason = "") {
+  if (!entry) return false;
+  const runId = entry.activeRunId || null;
+  const token = runId || `no-run:${entry.abortRequestedAt || 0}`;
+  if (entry.abortedEmittedRunId === token) return false;
+  entry.abortedEmittedRunId = token;
+  emitChannelSafe(entry, "aborted", { runId, reason });
+  return true;
 }
 
 /**

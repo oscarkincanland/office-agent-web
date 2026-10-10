@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { listWorkspace, searchWorkspace, filePath, safeName, WORKSPACE_DIR, CLIENT_DIST, OFFICECLI, AGENT_DIR, getWorkspace, setWorkspace, normalizeWorkspace, resolvePath, PROJECT_DIR, listFileRoots, addFileRoot, removeFileRoot, resolveExternalPath, getHiddenWorkspaces, hideWorkspace, isInside } from "./workspace.mjs";
 import { runOfficecli, checkOfficecli, view, get, set, batch, renderHtml, queryComments, startWatch, stopWatch, stopAllWatches } from "./office.mjs";
 import { getApprovalMode, listPendingApprovals, listPermissionRules, removeUserRule, resolveToolApproval, setApprovalMode } from "./审批策略.mjs";
-import { agentManager, classifyAgentError, getCredentialErrors, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
+import { agentManager, classifyAgentError, getCredentialErrors, isAbortLikeError, listAuth, setApiKey, removeApiKey } from "./agent.mjs";
 import * as kb from "./kb.mjs";
 import * as tpl from "./tpl.mjs";
 import * as map from "./map.mjs";
@@ -15,8 +15,8 @@ import * as cambodiaOD from "./柬埔寨OD.mjs";
 import { createDemoAnalysis } from "./地图演示.mjs";
 import * as mapAnalysis from "./map-analysis.mjs";
 import { parseReferences, resolveReferences, readReference, contextSummary } from "./context.mjs";
-import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges } from "./runs.mjs";
-import { markRunTiming, attachRunTimingMeta, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
+import { beginRun, recordRunEvent, updateRunStep, finishRun, getRun, listRuns, listRunSummaries, runSummaryView, rollbackRun, recoverActiveRuns, requestRunCancellation, filterRunChanges, listPendingCancellations, clearPendingCancellation, awaitBeforeBlobs } from "./runs.mjs";
+import { markRunTiming, attachRunTimingMeta, attachRunTimingSpans, finishRunTiming, mergeClientTiming, latencySummary, recentLatencySamples, STAGE_KEYS } from "./首字延迟.mjs";
 import { appendEvent, eventStoreInfo, getReadCursor, listEvents, markReadCursor, subscribeEvents } from "./事件存储.mjs";
 import { createTaskEnvelope, normalizeTaskMode, planTaskCapabilities } from "./task.mjs";
 import { validateArtifactFile, validateArtifacts } from "./产物验证.mjs";
@@ -31,7 +31,7 @@ import { evaluateWorkspaceWrite, runRuntimeEvaluation } from "./运行评测.mjs
 import { normalizeOfficeFailure, normalizeWorkspaceWriteError, workspaceWriteHttpStatus } from "./文件权限错误.mjs";
 import { PROTOCOL_VERSION, isHistoryTruncated, resolveReplayCursor, pushChannelEvent, CHANNEL_HISTORY_LIMIT } from "./事件协议.mjs";
 import * as searchModule from "./联网搜索.mjs";
-import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager } from "./原生文件.mjs";
+import { nativeCapabilities, openWithDefaultApp, pickFiles, pickFolder, revealInFileManager, cancelActivePicker, activePickerInfo } from "./原生文件.mjs";
 import { DIFF_LIMITS, diffFileContents } from "./文件差异.mjs";
 import * as browserModule from "./内置浏览器.mjs";
 import { inferCompletion } from "./运行轨迹.mjs";
@@ -40,6 +40,7 @@ import { createPiNetworkAdapter } from "./Pi网络代理.mjs";
 import { listMcpServers, saveMcpServer, updateMcpServer, deleteMcpServer, testMcpServer, closeMcpConnections } from "./mcp管理.mjs";
 import { listPiExtensions, addPiExtension, updatePiExtension, checkPiExtension, deletePiExtension } from "./pi扩展管理.mjs";
 import { searchPiPackageCatalog, resolveInstalledPiPackage } from "./pi包目录.mjs";
+import { registerServerStream, releaseServerStream, noteStreamWrite, listServerStreams, serverStreamStats, closeServerStreams, sweepServerStreams } from "./流连接.mjs";
 import {
   getConfigStatus,
   importLocalPiConfig,
@@ -319,6 +320,8 @@ app.get("/api/status", (req, res) => {
     authRequired: Boolean(API_TOKEN),
     platform: process.platform,
     native: nativeCapabilities(),
+    // 是否有等待用户操作的系统选择器（前端可据此显示"等待选择/取消等待"）
+    picker: activePickerInfo(),
     service: {
       pid: process.pid,
       startedAt: SERVICE_STARTED_AT,
@@ -327,6 +330,21 @@ app.get("/api/status", (req, res) => {
       sandboxIdentity: IS_SANDBOX_IDENTITY,
     },
   });
+});
+
+// ---------- 长连接诊断 ----------
+// 同源 HTTP/1.1 连接池只有 6 个槽位、SSE 长期占位：流连接一旦泄漏（重连堆积、
+// 半开连接、多标签页），表现就是"切工作区/切会话点不动、服务端却完全空闲"。
+// 这两个接口让这种故障可以被直接看见和收掉，而不是靠猜。
+app.get("/api/diagnostics/streams", (_req, res) => {
+  // 顺手清扫一次：诊断数据只反映真正存活的流。
+  const swept = sweepServerStreams();
+  res.json({ stats: serverStreamStats(), streams: listServerStreams(), swept });
+});
+
+app.post("/api/diagnostics/streams/close", (req, res) => {
+  const { id = "", path = "", client = "" } = req.body || {};
+  res.json({ closed: closeServerStreams({ id, path, client }), stats: serverStreamStats() });
 });
 
 // ---------- 知识库（本地索引 + IMA 云端） ----------
@@ -605,9 +623,16 @@ app.post("/api/map/projects", (req, res) => {
   }
 });
 
-app.get("/api/map/project", (req, res) => {
+app.get("/api/map/project", async (req, res) => {
   const p = map.getProject(req.query.name || map.DEFAULT_PROJECT);
   if (!p) return res.status(404).json({ error: "project not found" });
+  // 图层归属视图（阶段 1）：共享 / 本工作区 / 其他工作区。
+  // 原有 config/style/files 字段保持不变，只增补 layerViews 供图层树分组使用。
+  try {
+    const repo = await import("./图层仓库.mjs");
+    const workspace = String(req.query.workspace || "");
+    p.layerViews = repo.listLayers(p.config?.project || req.query.name || map.DEFAULT_PROJECT, { workspace });
+  } catch { /* 归属视图失败不影响项目详情 */ }
   res.json(p);
 });
 
@@ -1868,12 +1893,24 @@ app.get("/api/browser/stream", (req, res) => {
   let closed = false;
   let unsubscribe = () => {};
   let heartbeat = null;
+  let streamId = null;
   const cleanup = () => {
     if (closed) return;
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
     unsubscribe();
+    if (streamId) releaseServerStream(streamId);
   };
+  // 登记 + 同键去重：同一 (路径, client, thread) 只保留最新一条，
+  // 旧连接由登记表收尾，否则客户端每次重连都会多占一个浏览器连接池槽位。
+  ({ id: streamId } = registerServerStream({
+    path: "/api/browser/stream",
+    client,
+    thread,
+    note: withFrames ? "frames" : "state",
+    probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
+    close: () => { cleanup(); try { res.end(); } catch {} },
+  }));
   // 背压处理：帧是「最新即可」的数据，写不进去时只保留最新一帧，避免无限缓冲；
   // 状态/标签类事件体积小且需要保序，单独排队。
   const pendingEvents = [];
@@ -1887,7 +1924,9 @@ app.get("/api/browser/stream", (req, res) => {
       if (next.type === "frame") pendingFrame = null;
       let ok = false;
       try {
-        ok = res.write(`data: ${JSON.stringify(next)}\n\n`);
+        const chunk = `data: ${JSON.stringify(next)}\n\n`;
+        ok = res.write(chunk);
+        if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
       } catch {
         cleanup();
         return;
@@ -1931,6 +1970,10 @@ app.get("/api/browser/stream", (req, res) => {
     cleanup();
     if (session) Promise.resolve(session.noteSubscribers(browserModule.browserSubscriberCount(key))).catch(() => {});
   });
+  // 响应侧与 socket 侧的错误/关闭也要收尾：半开连接的 req 不一定触发 close，
+  // 让登记表留下一条永远"存活"的僵尸流，切会话/切工作区就可能被它堵住。
+  res.on("close", cleanup);
+  res.on("error", cleanup);
 });
 
 app.post("/api/browser/input", async (req, res) => {
@@ -2662,17 +2705,47 @@ app.get("/api/agent/events", (req, res) => {
     "X-Accel-Buffering": "no",
   });
   let lastSent = after;
+  let streamId = null;
+  let closed = false;
+  let heartbeat = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    unsubscribe();
+    if (streamId) releaseServerStream(streamId);
+  };
   const matches = (event) => event.clientId === clientId && (!threadId || event.threadId === threadId);
   const send = (event) => {
-    if (!event || !matches(event) || Number(event.seq) <= lastSent) return;
+    if (closed || !event || !matches(event) || Number(event.seq) <= lastSent) return;
     lastSent = Number(event.seq);
-    try { res.write(`id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`); } catch {}
+    try {
+      const chunk = `id: ${event.seq}\ndata: ${JSON.stringify({ event })}\n\n`;
+      res.write(chunk);
+      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
+    } catch {}
   };
   const unsubscribe = subscribeEvents(send);
+  ({ id: streamId } = registerServerStream({
+    path: "/api/agent/events",
+    client: clientId,
+    thread: threadId,
+    probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
+    close: () => { cleanup(); try { res.end(); } catch {} },
+  }));
+  // 心跳：半开连接（页面被强杀、代理静默断开）否则会一直挂在连接池里。
+  heartbeat = setInterval(() => {
+    if (closed) return;
+    try {
+      res.write(`event: heartbeat\ndata: {"at":"${new Date().toISOString()}"}\n\n`);
+    } catch { cleanup(); }
+  }, 15000);
   const replay = listEvents({ after, clientId, threadId, limit: replayLimit });
   for (const event of replay.events) send(event);
   try { res.write(`event: open\ndata: ${JSON.stringify({ cursor: lastSent, latest: replay.latest, earliest: replay.earliest, truncated: replay.truncated })}\n\n`); } catch {}
-  req.on("close", unsubscribe);
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
 });
 
 app.get("/api/agent/events/state", (req, res) => {
@@ -2712,8 +2785,10 @@ app.post("/api/runs/:id/cancel", async (req, res) => {
   }
 });
 
-app.post("/api/runs/:id/rollback", (req, res) => {
+app.post("/api/runs/:id/rollback", async (req, res) => {
   if (req.body?.confirm !== true) return res.status(400).json({ error: "rollback requires confirm=true" });
+  // 回滚底稿是后台复制的：先确保它落地，再按它还原（否则会"回滚了但没内容可还原"）。
+  try { await awaitBeforeBlobs(req.params.id); } catch {}
   const result = rollbackRun(req.params.id, req.body?.paths);
   if (!result.ok) return res.status(400).json(result);
   res.json(result);
@@ -3033,7 +3108,7 @@ app.post("/api/workspace/switch", (req, res) => {
 });
 
 // POST /api/workspace/pick - 调用系统原生文件夹选择器（macOS Finder / Windows 资源管理器 / Linux），再复用同一套可写探针。
-app.post("/api/workspace/pick", async (_req, res) => {
+app.post("/api/workspace/pick", async (req, res) => {
   try {
     const picked = await pickFolder({ prompt: "选择 Open Plan 可写工作区" });
     if (picked.canceled) return res.json({ ok: false, canceled: true });
@@ -3049,7 +3124,22 @@ app.post("/api/workspace/pick", async (_req, res) => {
     const unsupported = ["PICKER_UNSUPPORTED", "PICKER_UNAVAILABLE"].includes(error?.code);
     const code = unsupported ? "FOLDER_PICKER_UNAVAILABLE" : error?.code === "PICKER_TIMEOUT" ? "FOLDER_PICKER_TIMEOUT" : "FOLDER_PICKER_FAILED";
     res.status(unsupported ? 501 : 500).json({ error: `文件夹选择器不可用：${error?.message || error}`, code });
+  } finally {
+    // 用户关掉面板/离开页面时请求会被浏览器中断：此时把仍在等待的系统对话框收掉，
+    // 否则桌面上会留下一个没人管的弹窗（用户会以为"选择文件夹"卡死了）。
+    if (!res.writableEnded) cancelActivePicker();
   }
+});
+
+// POST /api/workspace/pick/cancel - 取消正在等待的系统选择器（关掉那个对话框）
+app.post("/api/workspace/pick/cancel", (_req, res) => {
+  const info = activePickerInfo();
+  res.json({ ok: true, cancelled: cancelActivePicker(), picker: info });
+});
+
+// GET /api/workspace/pick/state - 当前是否有等待中的系统选择器（界面据此显示"等待选择"）
+app.get("/api/workspace/pick/state", (_req, res) => {
+  res.json({ picker: activePickerInfo() });
 });
 
 // POST /api/workspace/validate - 验证自定义路径是否可作为工作区
@@ -3437,9 +3527,18 @@ app.post("/api/agent/abort", async (req, res) => {
   if (!client) return res.status(400).json({ error: "client required" });
   try {
     const key = agentKey(client, thread);
-    const live = agentManager.sessions?.get(key);
-    if (live?.activeRunId) requestRunCancellation(live.activeRunId, "用户在对话栏请求中断");
-    res.json(await agentManager.abort(key));
+    const live = agentManager.resolveLiveEntry(key);
+    // 双保险：内存里的活跃会话可能因为重载/切会话换了 key，而 Run 记录里还留着
+    // 真正在跑的那条。按 client(+thread) 兜底标记取消，避免"界面说停了、任务还在跑"。
+    let runId = live?.activeRunId || "";
+    if (!runId) {
+      const running = listRuns({ limit: 20 }).find((item) => ["running", "queued", "waiting_user"].includes(item.status)
+        && item.clientId === client && (!thread || !item.threadId || item.threadId === thread));
+      runId = running?.id || "";
+    }
+    if (runId) requestRunCancellation(runId, "用户在对话栏请求中断");
+    const result = await agentManager.abort(key, { runId });
+    res.json({ ...result, runId: result.runId || runId || null });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -3551,10 +3650,10 @@ function resolveRunCompletion(entry, runStatus, { artifacts = 0, validations = [
   return explicit || inferCompletion({ runStatus, artifacts, validations });
 }
 
-async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId }) {
+async function executeAgentRun({ entry, key, client, thread, normalizedText, images, effort, resolved, task, workflow, run, before, runWorkspace, effectiveModel, capabilityPlan, preflight, requestId, admissionReadyAt = 0 }) {
   const tracksWorkspace = run?.snapshotMode !== "none";
   try {
-    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow });
+    await agentManager.promptWithContext(key, normalizedText, images, effort, resolved, { runId: run.id, task, workflow, admissionReadyAt: Number(admissionReadyAt) || 0 });
   } catch (e) {
     const currentModel = entry?.session?.model;
     const diagnostic = recordAgentDiagnostic({ requestId }, {
@@ -3564,7 +3663,18 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
       error: e,
     });
-    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
+    // 与发送路由同一条规矩：用户主动中断时 SDK 会以 "Request aborted" 拒绝这次 prompt，
+    // 这不是模型/运行时故障——不发 agent_error、不写 runtime_error
+    //（写了会把 Run 标成"需要恢复"、把 Runtime 标成 failed）。
+    const cancelRequestedHere = getRun(run.id)?.status === "cancel_requested"
+      || Boolean(entry?.cancelRequested)
+      || Boolean(entry?.abortRequestedAt && Date.now() - entry.abortRequestedAt < 120000);
+    const userAborted = cancelRequestedHere && isAbortLikeError(diagnostic.message);
+    if (entry && userAborted) {
+      emitChannel(entry, "aborted", { runId: run?.id || null, reason: "用户请求中断" });
+    } else if (entry) {
+      emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, runId: run?.id || null, requestId, retryable: diagnostic.retryable });
+    }
     // 失败前已生成的权威文本也写入 run 记录，供前端断线兜底渲染
     if (run && entry?.lastFinalText) recordRunEvent(run.id, "assistant_final", { text: entry.lastFinalText });
 // 出错也检测产物（agent 可能已部分写入文件）
@@ -3584,14 +3694,14 @@ async function executeAgentRun({ entry, key, client, thread, normalizedText, ima
       });
     }
     const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
-    if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
-    const cancelled = getRun(run.id)?.status === "cancel_requested";
+    if (runtimeHealth && !userAborted) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode || e?.code || null, message: diagnostic.message, runtime: runtimeHealth });
+    const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
     const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
     const failed = finishRun(run.id, {
       status: cancelled ? "cancelled" : "failed",
       sessionId: entry?.session?.sessionId || null,
       error: cancelled ? "用户请求取消" : e.message,
-      summary: cancelled ? "任务已取消" : "Agent 执行失败",
+      summary: cancelled ? "任务已中断" : "Agent 执行失败",
       validations: [...validations, ...stagedValidations],
       completion: failureCompletion,
     });
@@ -3646,30 +3756,36 @@ app.post("/api/agent/prompt", async (req, res) => {
     return res.status(400).json({ error: "text, image, or attachment required" });
   }
   const normalizedText = String(text || "").trim() || (hasImages ? "[图片消息]" : "[附件消息]");
-  const key = agentKey(client, thread);
-  const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
-  const initialWritePlan = planTaskCapabilities({ text: normalizedText, task: taskInput || {}, attachments });
-  let writeAccessPreflight = null;
-  try {
-    writeAccessPreflight = requireWorkspaceWriteForTask(initialWritePlan, requestedWorkspace);
-  } catch (error) {
-    return res.status(workspaceWriteHttpStatus(error)).json({
-      error: error.message,
-      code: error.code || "WORKSPACE_WRITE_UNAVAILABLE",
-      writeAccess: error.writeAccess || null,
-      requestId: req.requestId,
-    });
-  }
-  const initialProject = projectManager.getProjectForWorkspace(requestedWorkspace);
-  const initialProjectSettings = initialProject?.settings || projectManager.defaultProjectSettings();
-  const initialModel = String(requestedModel || initialProjectSettings.defaultModel || "").trim();
-  let entry;
-  try {
-    entry = await ensureRuntimeWithTimeout(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel });
-  } catch (e) {
-    const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
-    return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
-  }
+    const key = agentKey(client, thread);
+    const requestedWorkspace = normalizeWorkspace(taskInput?.workspace || taskInput?.cwd || getWorkspace()) || getWorkspace();
+    // 准入阶段的细分计时：粗分项只说"准入慢"，这里回答"慢在等什么"（运行时/写探针/快照/写记录）。
+    const admissionSpans = {};
+    const timed = async (name, fn) => {
+      const started = Date.now();
+      try { return await fn(); } finally { admissionSpans[name] = Date.now() - started; }
+    };
+    const initialWritePlan = planTaskCapabilities({ text: normalizedText, task: taskInput || {}, attachments });
+    let writeAccessPreflight = null;
+    try {
+      writeAccessPreflight = await timed("writeProbe", async () => requireWorkspaceWriteForTask(initialWritePlan, requestedWorkspace));
+    } catch (error) {
+      return res.status(workspaceWriteHttpStatus(error)).json({
+        error: error.message,
+        code: error.code || "WORKSPACE_WRITE_UNAVAILABLE",
+        writeAccess: error.writeAccess || null,
+        requestId: req.requestId,
+      });
+    }
+    const initialProject = projectManager.getProjectForWorkspace(requestedWorkspace);
+    const initialProjectSettings = initialProject?.settings || projectManager.defaultProjectSettings();
+    const initialModel = String(requestedModel || initialProjectSettings.defaultModel || "").trim();
+    let entry;
+    try {
+      entry = await timed("ensureRuntime", () => ensureRuntimeWithTimeout(key, { threadId: thread, cwd: requestedWorkspace, modelSpec: initialModel }));
+    } catch (e) {
+      const diagnostic = recordAgentDiagnostic(req, { client, thread, error: e });
+      return res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
+    }
   emitChannel(entry, "run_admitting", { requestId: req.requestId, startedAt: admissionStartedAt });
   const runWorkspace = entry.workspace || requestedWorkspace;
   const project = projectManager.getProjectForWorkspace(runWorkspace) || initialProject;
@@ -3694,29 +3810,34 @@ app.post("/api/agent/prompt", async (req, res) => {
       return res.status(409).json({ error: `模型同步失败：${diagnostic.message}`, requestId: req.requestId, retryable: diagnostic.retryable });
     }
   }
-  let before = [];
-  let run = null;
-  let resolved = [];
-  let task = null;
-  let capabilityPlan = null;
-  let preflight = null;
-  try {
-    resolved = resolveReferences(references, normalizedText, runWorkspace);
-    const requestedMode = normalizeTaskMode(taskInput?.mode);
-    const workflowId = requestedMode === "chat" ? null : (taskInput?.workflowId || workflowIdFromText(normalizedText));
-    const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
-    // Chat 允许搜索/阅读 Skills，但不把项目默认 Skills 作为执行依赖，避免只读问答
-    // 因历史配置缺失而被 Agent 预检拦截。
-    const requestedSkills = requestedMode === "chat"
-      ? []
-      : [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
-    // 普通 Agent 问答不需要在 admission 阶段扫描所有 SKILL.md；只有显式工作流/技能
-    // 依赖才加载技能目录，避免首次对话把本地扫描延迟叠加到模型首事件之前。
-    const skills = (workflowId || requestedSkills.length) ? scanSkills() : [];
-    const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
-    preflight = requestedMode === "chat"
-      ? { ok: true, workflow: null, required: [], checks: [], missing: [], message: "Chat 不执行 Skills 依赖预检" }
-      : preflightSkills({ workflowId, requestedSkills, skills });
+    // 插话（steer）：会话正在执行时，新消息并入当前 Run，不再新建。
+    // 早先每次插话都 beginRun 出一条新 Run：同一会话会同时出现两条"执行中"，
+    // 会话列表与任务中心互相矛盾，而且真正执行的回合结束后插话 Run 仍留在 running
+    // （用户反馈的"会话之间切换混乱"）。
+    const steeringRun = entry.busy && entry.activeRunId ? getRun(entry.activeRunId) : null;
+    let before = [];
+    let run = null;
+    let resolved = [];
+    let task = null;
+    let capabilityPlan = null;
+    let preflight = null;
+    try {
+      resolved = await timed("resolveReferences", async () => resolveReferences(references, normalizedText, runWorkspace));
+      const requestedMode = normalizeTaskMode(taskInput?.mode);
+      const workflowId = requestedMode === "chat" ? null : (taskInput?.workflowId || workflowIdFromText(normalizedText));
+      const mentionedSkills = [...normalizedText.matchAll(/@技能\[([^\]]+)\]/g)].map((match) => match[1].trim()).filter(Boolean);
+      // Chat 允许搜索/阅读 Skills，但不把项目默认 Skills 作为执行依赖，避免只读问答
+      // 因历史配置缺失而被 Agent 预检拦截。
+      const requestedSkills = requestedMode === "chat"
+        ? []
+        : [...new Set([...projectSkills, ...(Array.isArray(taskInput?.skills) ? taskInput.skills : []), ...mentionedSkills])];
+      // 普通 Agent 问答不需要在 admission 阶段扫描所有 SKILL.md；只有显式工作流/技能
+      // 依赖才加载技能目录，避免首次对话把本地扫描延迟叠加到模型首事件之前。
+      const skills = (workflowId || requestedSkills.length) ? await timed("scanSkills", async () => scanSkills()) : [];
+      const workflow = workflowId ? getWorkflow(workflowId, skills) : null;
+      preflight = requestedMode === "chat"
+        ? { ok: true, workflow: null, required: [], checks: [], missing: [], message: "Chat 不执行 Skills 依赖预检" }
+        : preflightSkills({ workflowId, requestedSkills, skills });
     const effectiveTaskInput = {
       ...(taskInput || {}),
       projectId: project?.id || taskInput?.projectId || null,
@@ -3727,15 +3848,15 @@ app.post("/api/agent/prompt", async (req, res) => {
       workflowId,
     };
     capabilityPlan = planTaskCapabilities({ text: normalizedText, task: effectiveTaskInput, references: resolved, attachments });
-    if (writeAccessPreflight) capabilityPlan.workspaceWrite = writeAccessPreflight;
-    if (capabilityPlan.routing.officecli === "preferred") {
-      capabilityPlan.officecli = await checkOfficecli();
-      if (!capabilityPlan.officecli.available) {
-        const error = new Error(`Office CLI 预检失败：${capabilityPlan.officecli.message}`);
-        error.code = "OFFICE_PREFLIGHT_FAILED";
-        throw error;
+      if (writeAccessPreflight) capabilityPlan.workspaceWrite = writeAccessPreflight;
+      if (capabilityPlan.routing.officecli === "preferred") {
+        capabilityPlan.officecli = await timed("officecliPrecheck", () => checkOfficecli());
+        if (!capabilityPlan.officecli.available) {
+          const error = new Error(`Office CLI 预检失败：${capabilityPlan.officecli.message}`);
+          error.code = "OFFICE_PREFLIGHT_FAILED";
+          throw error;
+        }
       }
-    }
     if ((workflowId || requestedSkills.length) && !preflight.ok) {
       const error = new Error(preflight.message);
       error.code = "SKILL_PREFLIGHT_FAILED";
@@ -3754,16 +3875,17 @@ app.post("/api/agent/prompt", async (req, res) => {
         ...(workflow && !workflow.valid ? [`工作流缺少技能：${workflow.missing.join(", ")}`] : []),
       ],
     });
-    // Chat 没有上传文件时是严格只读模式，不需要为每轮问答扫描工作区。
-    // 用户明确上传的附件需要在成功后发布为可追溯文件，因此保留完整快照。
-    const tracksWorkspace = task.mode !== "chat" || Boolean(attachments?.length);
-    before = tracksWorkspace ? snapshotWorkspace(runWorkspace) : [];
-    const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
-      profile: task.agentProfile,
-      taskMode: task.mode,
-      capabilityPlanVersion: capabilityPlan?.version || null,
-    });
-    run = beginRun({
+      // Chat 没有上传文件时是严格只读模式，不需要为每轮问答扫描工作区。
+      // 用户明确上传的附件需要在成功后发布为可追溯文件，因此保留完整快照。
+      const tracksWorkspace = task.mode !== "chat" || Boolean(attachments?.length);
+      // 插话沿用当前 Run 的"运行前快照"：整个回合（含插话）的改动要在同一个窗口里比对。
+      before = steeringRun ? (steeringRun.before || []) : (tracksWorkspace ? await timed("snapshot", async () => snapshotWorkspace(runWorkspace)) : []);
+      const runtimeSnapshot = agentManager.runtimeSnapshot(key, {
+        profile: task.agentProfile,
+        taskMode: task.mode,
+        capabilityPlanVersion: capabilityPlan?.version || null,
+      });
+      run = steeringRun || await timed("beginRun", async () => beginRun({
       clientId: client,
       threadId: thread || null,
       sessionId: entry.session?.sessionId || null,
@@ -3778,11 +3900,17 @@ app.post("/api/agent/prompt", async (req, res) => {
       beforeSnapshot: tracksWorkspace ? before : null,
       // 本轮实际使用的模型（含刚恢复的备用模型）：会话里按轮显示模型与切换分割线都靠它。
       model: effectiveModel || null,
-    });
-    // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
-    markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
-    markRunTiming(run.id, "admissionReadyAt");
-    attachRunTimingMeta(run.id, { model: requestedModel || taskInput?.model || null, mode: task.mode });
+      }));
+      // admission 完成（含快照/运行时准备）——这是服务端可控准备耗时的上界。
+      const admissionReadyAt = Date.now();
+      // 插话不重写首字打点：当前 Run 的 marks 已经反映它自己的首个回合。
+      if (!steeringRun) {
+        markRunTiming(run.id, "serverReceivedAt", serverReceivedAt);
+        markRunTiming(run.id, "admissionReadyAt", admissionReadyAt);
+        // 细分耗时：准入这一段到底慢在等什么（运行时/写探针/引用读取/快照/写 Run 记录）
+        attachRunTimingSpans(run.id, { ...admissionSpans, admissionTotal: admissionReadyAt - serverReceivedAt });
+      }
+      attachRunTimingMeta(run.id, { model: requestedModel || taskInput?.model || null, mode: task.mode });
     // 上传附件先进入当前 Run 的暂存区；Agent 可以通过 staging overlay 读取，成功后才发布到工作区。
     if (Array.isArray(attachments) && attachments.length) {
       for (const att of attachments) {
@@ -3799,17 +3927,21 @@ app.post("/api/agent/prompt", async (req, res) => {
         });
       }
     }
-    recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length });
-    recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
-    if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
-    emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
-    emitChannel(entry, "run_admitted", {
-      runId: run.id,
-      requestId: req.requestId,
-      startedAt: admissionStartedAt,
-      admittedAt: new Date().toISOString(),
-      snapshotMode: tracksWorkspace ? "full" : "none",
-    });
+      recordRunEvent(run.id, "prompt", { text: normalizedText.slice(0, 4000), workflowId, referenceCount: resolved.length, steer: Boolean(steeringRun) });
+      if (steeringRun) recordRunEvent(run.id, "steer", { text: normalizedText.slice(0, 2000), source: "user", merged: true });
+      recordRunEvent(run.id, "capability_plan", { plan: capabilityPlan, preflight });
+      if (runtimeSnapshot) recordRunEvent(run.id, "runtime_health", runtimeSnapshot);
+      // 插话已经并入当前回合：不再重复发 capability_plan/run_admitted（那些属于本轮开头的准入）。
+      if (!steeringRun) {
+        emitChannel(entry, "capability_plan", { plan: capabilityPlan, preflight, runId: run.id });
+        emitChannel(entry, "run_admitted", {
+          runId: run.id,
+          requestId: req.requestId,
+          startedAt: admissionStartedAt,
+          admittedAt: new Date().toISOString(),
+          snapshotMode: tracksWorkspace ? "full" : "none",
+        });
+      }
     // 先启动入队，再返回 admission 响应。executeAgentRun 在现有 entry 上
     // 会同步登记 queuedCount，避免响应里的 queued/queuePosition 与真实状态错位。
     const execution = executeAgentRun({
@@ -3829,6 +3961,7 @@ app.post("/api/agent/prompt", async (req, res) => {
       effectiveModel,
       capabilityPlan,
       preflight,
+      admissionReadyAt,
       requestId: req.requestId,
     });
     execution.catch((error) => {
@@ -3872,7 +4005,20 @@ app.post("/api/agent/prompt", async (req, res) => {
       model: effectiveModel || (currentModel?.provider && currentModel?.id ? `${currentModel.provider}/${currentModel.id}` : null),
       error: e,
     });
-    if (entry) emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
+    // 用户主动中断会让 SDK 以 "Request aborted" 拒绝这次 prompt。这不是模型故障：
+    // 必须"用户确实请求过中断" + "错误形如中断"同时成立才算中断，避免把真实的
+    // 连接中断（socket aborted）误判成用户操作而静默掉。
+    const runStatusNow = run ? String(getRun(run.id)?.status || "") : "";
+    const cancelRequested = ["cancel_requested", "cancelled", "aborted"].includes(runStatusNow)
+      || Boolean(entry?.cancelRequested)
+      || Boolean(entry?.abortRequestedAt && Date.now() - entry.abortRequestedAt < 120000);
+    const userAborted = cancelRequested && isAbortLikeError(diagnostic.message);
+    if (entry && userAborted) {
+      // 中断终态：只发 aborted，界面据此进入「本轮已中断」而不是「生成失败」。
+      emitChannel(entry, "aborted", { runId: run?.id || null, reason: "用户请求中断" });
+    } else if (entry) {
+      emitChannel(entry, "agent_error", { message: diagnostic.message, code: diagnostic.errorCode || e?.code || null, category: diagnostic.errorCategory || null, providerStatus: diagnostic.providerStatus || null, requestId: req.requestId, retryable: diagnostic.retryable });
+    }
     // 出错也检测产物（agent 可能已部分写入文件）
     const changed = run ? filterRunChanges(run, await waitForFlush(before, runWorkspace)) : await waitForFlush(before, runWorkspace);
     const validations = validateArtifacts(changed, runWorkspace);
@@ -3891,10 +4037,12 @@ app.post("/api/agent/prompt", async (req, res) => {
     }
     if (run) {
       const runtimeHealth = entry ? agentManager.runtimeHealth(key) : null;
-      if (runtimeHealth) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
-      const cancelled = getRun(run.id)?.status === "cancel_requested";
+      // 用户中断不是运行时故障：不写 runtime_error，否则事件流与诊断里会多出一条
+      // 「Request aborted」的假故障，也让 Runtime 被误判为需要重建。
+      if (runtimeHealth && !userAborted) recordRunEvent(run.id, "runtime_error", { code: diagnostic.errorCode, message: diagnostic.message, runtime: runtimeHealth });
+      const cancelled = userAborted || getRun(run.id)?.status === "cancel_requested";
       const failureCompletion = resolveRunCompletion(entry, cancelled ? "cancelled" : "failed", { artifacts: changed.length, validations: [...validations, ...stagedValidations], runId: run.id });
-      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已取消" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
+      const failed = finishRun(run.id, { status: cancelled ? "cancelled" : "failed", sessionId: entry?.session?.sessionId || null, error: cancelled ? "用户请求取消" : e.message, summary: cancelled ? "任务已中断" : "Agent 执行失败", validations: [...validations, ...stagedValidations], completion: failureCompletion });
       if (entry) emitChannel(entry, "run_finished", { runId: run.id, task, artifacts: failed?.artifacts || [], references: resolved, reviewSources: entry.reviewSources || [], status: failed?.status || (cancelled ? "cancelled" : "failed"), verificationStatus: failed?.verificationStatus || "not_checked", completion: failed?.completion || failureCompletion, finalText: getRunFinalText(getRun(run.id)), model: getRun(run.id)?.model || null, finalMessageId: getRun(run.id)?.finalMessageId || null });
     }
     res.status(500).json({ error: diagnostic.message, requestId: req.requestId, retryable: diagnostic.retryable });
@@ -4126,17 +4274,31 @@ app.get("/api/agent/stream", async (req, res) => {
   let heartbeat = null;
   let entry = null;
   let onEvent = null;
+  let streamId = null;
   const cleanup = () => {
     if (closed) return;
     closed = true;
     if (heartbeat) clearInterval(heartbeat);
     if (entry && onEvent) entry.channel.emitter.off("event", onEvent);
+    if (streamId) releaseServerStream(streamId);
   };
+  // 登记 + 同键去重：切会话/切工作区会重连对话流，旧连接不主动收掉就会一直占着
+  // 浏览器同源连接池的槽位（6 个），占满后切工作区/切会话的请求会永远排队。
+  ({ id: streamId } = registerServerStream({
+    path: "/api/agent/stream",
+    client,
+    thread,
+    probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
+    close: () => { cleanup(); try { res.end(); } catch {} },
+  }));
   req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
   const write = (chunk) => {
     if (closed) return false;
     try {
       res.write(chunk);
+      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(String(chunk)));
       return true;
     } catch {
       cleanup();
@@ -4359,9 +4521,32 @@ app.get("/api/memory", (_req, res) => {
 app.get("/api/memory/stream", (req, res) => {
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
   startMemoryWatcher();
-  const onChange = (data) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+  let closed = false;
+  let streamId = null;
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    memoryEmitter.off("change", onChange);
+    if (streamId) releaseServerStream(streamId);
+  };
+  const onChange = (data) => {
+    if (closed) return;
+    try {
+      const chunk = `data: ${JSON.stringify(data)}\n\n`;
+      res.write(chunk);
+      if (streamId) noteStreamWrite(streamId, Buffer.byteLength(chunk));
+    } catch { cleanup(); }
+  };
+  ({ id: streamId } = registerServerStream({
+    path: "/api/memory/stream",
+    client: String(req.query.client || ""),
+    probe: () => !closed && !res.writableEnded && !res.socket?.destroyed,
+    close: () => { cleanup(); try { res.end(); } catch {} },
+  }));
   memoryEmitter.on("change", onChange);
-  req.on("close", () => memoryEmitter.off("change", onChange));
+  req.on("close", cleanup);
+  res.on("close", cleanup);
+  res.on("error", cleanup);
 });
 
 app.post("/api/memory/init", (_req, res) => {
@@ -4450,6 +4635,69 @@ app.post(/^\/api\/memory\/([^/]+)$/, (req, res) => {
 
 // ---------- 地图项目（MapLibre 可视化） ----------
 import * as mapSvc from "./map.mjs";
+// 统一可视化描述符 + 数据源适配层（阶段 2 §2.1 / 阶段 5）。
+// 导入即注册内置适配器（local-file / bundled-xinchang）。
+import * as visual from "./地图可视化.mjs";
+import "./交通数据源.mjs";
+
+// 列出可用数据源（供可视面板与 Agent 发现；与 map_datasets 同源）
+app.get("/api/map/visual/sources", async (_req, res) => {
+  const { PLANNED_SOURCES } = await import("./交通数据源.mjs");
+  res.json({ sources: visual.listSources(), planned: PLANNED_SOURCES });
+});
+
+// 统一可视化入口：把五套数据源适配为同一份描述符（阶段 2 §2.1）。
+// 旧端点保持不变（验证脚本的 10 条契约），这里只做"读侧统一"。
+app.get("/api/map/visual", async (req, res) => {
+  const dataset = String(req.query.dataset || "").trim();
+  const params = {
+    kind: req.query.kind || undefined,
+    path: req.query.path || undefined,
+    measure: req.query.measure || undefined,
+    project: req.query.project || undefined,
+    minFlow: req.query.threshold || undefined,
+    region: req.query.region || undefined,
+    workspace: String(req.query.workspace || ""),
+  };
+  try {
+    // 1) 优先按数据源适配器解析（local-file / bundled-xinchang / 未来接入的源）
+    const sources = visual.listSources();
+    if (dataset && sources.some((s) => s.id === dataset)) {
+      const descriptor = await visual.loadSource(dataset, params);
+      if (descriptor?.error) return res.status(400).json(descriptor);
+      return res.json({ descriptor });
+    }
+    // 2) 否则按既有数据集 id 适配（M2 / 柬埔寨 / 演示）
+    if (dataset === "m2-traffic-bandwidth") {
+      const r = mapSvc.getTrafficBandwidth(params.project || mapSvc.DEFAULT_PROJECT);
+      if (r?.error) return res.status(400).json(r);
+      return res.json({ descriptor: visual.fromTrafficBandwidth(r) });
+    }
+    if (dataset === "m2-od-lines") {
+      const r = mapSvc.getODLines(params.project || mapSvc.DEFAULT_PROJECT);
+      if (r?.error) return res.status(400).json(r);
+      return res.json({ descriptor: visual.fromOdLines(r) });
+    }
+    if (dataset === "cambodia-od") {
+      const r = await import("./柬埔寨OD.mjs").then((m) => m.getCambodiaOD({ minFlow: params.minFlow }));
+      return res.json({ descriptor: visual.fromCambodiaOd(r) });
+    }
+    if (dataset === "demo-analysis") {
+      const action = createDemoAnalysis({
+        analysis: params.kind === "flow" ? "od" : params.kind === "isochrone" ? "isochrone" : "heatmap",
+        region: params.region || "义乌市",
+        project: params.project || mapSvc.DEFAULT_PROJECT,
+      });
+      return res.json({ descriptor: visual.fromDemoAnalysis(action) });
+    }
+    return res.status(400).json({
+      error: `未知 dataset：${dataset || "(空)"}`,
+      available: [...sources.map((s) => s.id), "m2-traffic-bandwidth", "m2-od-lines", "cambodia-od", "demo-analysis"],
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // 底图服务设置（Key 不回传明文，只回传是否已配置）
 app.get("/api/map/settings", (_req, res) => {
@@ -4756,6 +5004,9 @@ app.post("/api/system/pick-files", async (req, res) => {
     res.json({ ok: true, canceled: false, files, fileManager: nativeCapabilities().fileManagerName });
   } catch (error) {
     sendNativeError(res, error, "PICKER_FAILED");
+  } finally {
+    // 同文件夹选择器：请求被中断（关面板/离开页面）时收掉仍在等待的系统对话框。
+    if (!res.writableEnded) cancelActivePicker();
   }
 });
 
@@ -5015,6 +5266,70 @@ httpServer = app.listen(PORT, HOST, () => {
 httpServer.requestTimeout = 0;
 httpServer.timeout = 0;
 httpServer.keepAliveTimeout = 65000;
+// TCP keepalive：页面被强杀/网络静默断开时不会发 FIN，默认要等 2 小时才回收，
+// 这期间连接一直挂在服务端（登记表把它算成"存活"）。15 秒探测让半开连接尽快暴露。
+httpServer.on("connection", (socket) => {
+  try { socket.setKeepAlive(true, 15000); } catch {}
+});
+// 定期清扫：登记表里 socket 已经关闭/响应已结束的流主动摘掉，
+// 免得诊断数据和 MAX_PER_CLIENT 计数被僵尸流污染。
+const streamSweepTimer = setInterval(() => {
+  try {
+    const closed = sweepServerStreams();
+    if (closed) console.log(`[streams] 回收 ${closed} 条已断开的流连接`);
+  } catch {}
+}, 60000);
+streamSweepTimer.unref?.();
+
+// 中断看门狗：用户点了中断、Run 也进了 cancel_requested，但如果底层工具卡住
+// （浏览器/网页抓取这类不响应 abort 的调用），SDK 可能永远不回来。此时界面会一直
+// 停在「中断中」、任务中心一直把这条 Run 算作未完成。静默超过阈值就按用户意图强制收尾。
+const CANCEL_STALL_MS = Math.max(8000, Number.parseInt(process.env.OAW_CANCEL_STALL_MS || "15000", 10) || 15000);
+const cancelWatchdogTimer = setInterval(() => {
+  for (const pending of listPendingCancellations()) {
+    try {
+      const run = getRun(pending.id);
+      if (!run || run.status !== "cancel_requested") { clearPendingCancellation(pending.id); continue; }
+      const cancelAt = Date.parse(run.cancelRequestedAt || pending.cancelRequestedAt || "") || 0;
+      const lastEventAt = Date.parse(run.events?.[run.events.length - 1]?.at || pending.lastEventAt || "") || 0;
+      const now = Date.now();
+      if (!cancelAt || now - cancelAt < CANCEL_STALL_MS) continue;
+      if (lastEventAt && now - lastEventAt < CANCEL_STALL_MS) continue;
+      const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId));
+      const completion = resolveRunCompletion(entry, "cancelled", { artifacts: 0, runId: run.id });
+      const finished = finishRun(run.id, {
+        status: "cancelled",
+        sessionId: run.sessionId || entry?.session?.sessionId || null,
+        error: "用户请求中断（等待模型收尾超时，已按中断收尾）",
+        summary: "任务已中断",
+        completion,
+      });
+      clearPendingCancellation(pending.id);
+      if (entry) {
+        // 让活跃会话也回到空闲：否则下一条消息会被判定为 steer 插进这个已收尾的回合。
+        entry.cancelRequested = false;
+        entry.busy = false;
+        emitChannel(entry, "run_finished", {
+          runId: run.id,
+          task: run.task || null,
+          artifacts: finished?.artifacts || [],
+          references: run.references || [],
+          reviewSources: entry.reviewSources || [],
+          status: finished?.status || "cancelled",
+          verificationStatus: finished?.verificationStatus || "not_checked",
+          completion: finished?.completion || completion,
+          finalText: getRunFinalText(getRun(run.id)),
+          model: getRun(run.id)?.model || null,
+          finalMessageId: getRun(run.id)?.finalMessageId || null,
+        });
+      }
+      console.log(`[runs] 中断后静默超时，已按中断收尾：${run.id}`);
+    } catch (error) {
+      console.warn(`[runs] 中断看门狗处理失败：${String(error?.message || error).slice(0, 200)}`);
+    }
+  }
+}, 5000);
+cancelWatchdogTimer.unref?.();
 httpServer.on("error", (error) => {
   console.error(`[server] 监听 ${HOST}:${PORT} 失败：`, error?.stack || error);
   if (error?.code === "EADDRINUSE") {
@@ -5023,6 +5338,70 @@ httpServer.on("error", (error) => {
   // 所有 listen 错误都应退出干净进程；只记录后继续会留下“进程活着但服务不可用”的假健康状态。
   setImmediate(() => { void shutdownService("listen_error", 1); });
 });
+
+// 静默 Run 回收：Run 停在 running/queued/recovering 但事件已经很久没有推进，
+// 且它所属的运行时并没有在忙——说明这一轮实际上已经不会再有结果了（进程重启、
+// 运行时被替换、插话接管等）。不回收的话会话列表会永远显示「执行中」，
+// 在会话之间切换时看起来就是"状态对不上"（用户反馈的会话间混乱）。
+const RUN_STALL_MS = Math.max(60000, Number.parseInt(process.env.OAW_RUN_STALL_MS || "180000", 10) || 180000);
+function reapStalledRuns() {
+  let candidates = [];
+  try {
+    candidates = listRuns({ limit: 50, includeEvents: "latest" }).filter((item) => ["running", "queued", "recovering"].includes(item.status));
+  } catch (error) {
+    console.warn(`[runs] 静默 Run 回收：读取 Run 列表失败 ${String(error?.message || error).slice(0, 160)}`);
+    return;
+  }
+  for (const item of candidates) {
+    try {
+      const run = getRun(item.id);
+      if (!run) continue;
+      const events = Array.isArray(run.events) ? run.events : [];
+      const lastAt = Date.parse(events[events.length - 1]?.at || run.startedAt || "") || 0;
+      if (!lastAt || Date.now() - lastAt < RUN_STALL_MS) continue;
+      const entry = agentManager.resolveLiveEntry(agentKey(run.clientId, run.threadId));
+      const runtime = entry ? agentManager.runtimeSnapshot(agentKey(run.clientId, run.threadId)) : null;
+      const runtimeBusy = Boolean(entry?.busy) || ["running", "queued", "compacting"].includes(String(runtime?.status || ""));
+      // 运行时仍在忙：可能只是长工具在跑，交给它自己收尾。
+      if (runtimeBusy && entry?.activeRunId === run.id) continue;
+      const idleMinutes = Math.round((Date.now() - lastAt) / 60000);
+      const completion = resolveRunCompletion(entry, "cancelled", { artifacts: 0, runId: run.id });
+      const finished = finishRun(run.id, {
+        status: "cancelled",
+        sessionId: run.sessionId || entry?.session?.sessionId || null,
+        error: `运行已静默 ${idleMinutes} 分钟且运行时不再执行，按中断收尾`,
+        summary: "任务已中断（运行无响应）",
+        completion,
+      });
+      if (entry) {
+        entry.busy = false;
+        entry.cancelRequested = false;
+        if (entry.activeRunId === run.id) entry.activeRunId = null;
+        emitChannel(entry, "run_finished", {
+          runId: run.id,
+          task: run.task || null,
+          artifacts: finished?.artifacts || [],
+          references: run.references || [],
+          reviewSources: entry.reviewSources || [],
+          status: finished?.status || "cancelled",
+          verificationStatus: finished?.verificationStatus || "not_checked",
+          completion: finished?.completion || completion,
+          finalText: getRunFinalText(getRun(run.id)),
+          model: getRun(run.id)?.model || null,
+          finalMessageId: getRun(run.id)?.finalMessageId || null,
+        });
+      }
+      console.log(`[runs] 静默 ${idleMinutes} 分钟的 Run 已按中断收尾：${run.id}`);
+    } catch (error) {
+      console.warn(`[runs] 静默 Run 回收失败：${String(error?.message || error).slice(0, 160)}`);
+    }
+  }
+}
+const runReaperTimer = setInterval(reapStalledRuns, 30000);
+runReaperTimer.unref?.();
+// 启动后先跑一次：进程重启留下的 recovering/running 会在几分钟内被收尾，
+// 不必等满一个周期，用户打开界面时看到的会话状态就是准的。
+setTimeout(reapStalledRuns, 5000).unref?.();
 
 process.on("SIGINT", () => { void shutdownService("SIGINT", 0); });
 process.on("SIGTERM", () => { void shutdownService("SIGTERM", 0); });

@@ -101,6 +101,17 @@ console.log("\n▶ 产物检测：大工作区 / 无明确路径（P0 回归）"
     const paths = recent.map((item) => item.path).sort();
     assert.deepEqual(paths, ["old.md", "sub/数据.csv", "报告.md"].sort(), `应检出运行窗口内的变更，实际 ${paths.join(",")}`);
 
+    // 快照哈希缓存：文件没变就复用上次哈希（省掉每轮读 120MB 的 1.2 秒），
+    // 但内容变了必须换新哈希——否则产物差异会漏报。
+    const snapA = snapshotWorkspace(root);
+    const hashReportA = snapA.files["报告.md"].hash;
+    const snapB = snapshotWorkspace(root);
+    assert.equal(snapB.files["报告.md"].hash, hashReportA, "未变更文件应复用缓存哈希");
+    fs.writeFileSync(path.join(root, "报告.md"), "new product v2");
+    const snapC = snapshotWorkspace(root);
+    assert.notEqual(snapC.files["报告.md"].hash, hashReportA, "内容变更后哈希必须更新（缓存不能吞掉改动）");
+    assert.equal(snapC.files["sub/数据.csv"].hash, snapB.files["sub/数据.csv"].hash, "未变更的其它文件仍应命中缓存");
+
     // 关键回归：touchedPaths 只有 "."（bash/officecli 写入拿不到具体文件）时，
     // 也必须保留检出的变更，而不是把产物全部过滤掉。
     const run = { cwd: root, touchedPaths: ["."], before: { files: { "old.md": { hash: "x" } } } };

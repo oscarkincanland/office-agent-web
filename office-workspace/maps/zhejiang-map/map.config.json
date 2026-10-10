@@ -6,7 +6,7 @@
     29.2
   ],
   "zoom": 7,
-  "basemap": "maptiler-basic",
+  "basemap": "maptiler-satellite",
   "layers": [
     {
       "id": "boundary-city",
@@ -15,7 +15,8 @@
       "visible": true,
       "minzoom": 0,
       "maxzoom": 9,
-      "group": "行政区划"
+      "group": "行政区划",
+      "origin": "shared"
     },
     {
       "id": "boundary-county",
@@ -24,7 +25,8 @@
       "visible": true,
       "minzoom": 0,
       "maxzoom": 11,
-      "group": "行政区划"
+      "group": "行政区划",
+      "origin": "shared"
     },
     {
       "id": "highways",
@@ -33,7 +35,8 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13,
-      "group": "公路网"
+      "group": "公路网",
+      "origin": "shared"
     },
     {
       "id": "roads-trunk",
@@ -42,7 +45,8 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 13,
-      "group": "公路网"
+      "group": "公路网",
+      "origin": "shared"
     },
     {
       "id": "toll-stations",
@@ -51,7 +55,8 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 14,
-      "group": "设施点"
+      "group": "设施点",
+      "origin": "shared"
     },
     {
       "id": "junctions",
@@ -60,7 +65,8 @@
       "visible": true,
       "minzoom": 5,
       "maxzoom": 14,
-      "group": "设施点"
+      "group": "设施点",
+      "origin": "shared"
     },
     {
       "id": "roads-province",
@@ -69,7 +75,8 @@
       "group": "公路网",
       "visible": true,
       "minzoom": 5,
-      "maxzoom": 13
+      "maxzoom": 13,
+      "origin": "shared"
     },
     {
       "id": "gis_osm_railways_free_1",
@@ -78,7 +85,8 @@
       "group": "公路网",
       "visible": true,
       "minzoom": 5,
-      "maxzoom": 13
+      "maxzoom": 13,
+      "origin": "shared"
     },
     {
       "id": "gis_osm_roads_free_1",
@@ -87,7 +95,8 @@
       "group": "公路网",
       "visible": true,
       "minzoom": 5,
-      "maxzoom": 13
+      "maxzoom": 13,
+      "origin": "shared"
     },
     {
       "id": "taizhou_od",
@@ -96,7 +105,9 @@
       "group": "公路网",
       "visible": true,
       "minzoom": 5,
-      "maxzoom": 13
+      "maxzoom": 13,
+      "origin": "workspace",
+      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
     },
     {
       "id": "ningbo-zhoushan-port-areas",
@@ -105,10 +116,17 @@
       "group": "设施点",
       "visible": true,
       "minzoom": 5,
-      "maxzoom": 13
+      "maxzoom": 13,
+      "origin": "workspace",
+      "owner": "F:\\Claude code本地文件\\office-agent-web\\office-workspace"
     }
   ],
   "groups": [
     "测试demo"
+  ],
+  "sharedLayers": [
+    "roads-province",
+    "gis_osm_roads_free_1",
+    "gis_osm_railways_free_1"
   ]
 }
